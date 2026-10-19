@@ -1,0 +1,69 @@
+# Plugin di pyarchinit-photogrammetry
+
+*[English](README.md)*
+
+I plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
+(dalla 1.1) e il loro indice, `index.json`, che il programma legge in *Strumenti > Plugin* e con
+`ppg plugins available`.
+
+| Plugin | Cosa fa |
+|---|---|
+| [`gis-archive`](plugins/gis-archive) - Archivio GIS | Il rilievo del progetto - quote, curve di livello, US disegnate, sezioni, pietre, marker, DEM e ortofoto - in un database GIS diverso da PyArchInit: GeoPackage, PostgreSQL/PostGIS o SpatiaLite |
+
+## Installare un plugin
+
+* Dal programma: *Strumenti > Plugin...*, il plugin nell'elenco in basso, *Installa / aggiorna*,
+  poi *Riavvia ora*. Funziona anche nell'applicazione impacchettata, che non ha pip.
+* Da terminale: `ppg plugins install gis-archive`, poi `ppg plugins list`.
+* Con pip, nell'ambiente Python del programma:
+
+  ```bash
+  pip install "ppg-gis-archive @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/gis-archive"
+  ```
+
+I plugin girano con gli stessi permessi del programma: l'indice elenca solo plugin controllati, e
+il programma installa una wheel solo se il suo SHA-256 e' quello scritto nell'indice.
+
+## Scrivere un plugin
+
+La guida e' [docs/plugins.md](https://github.com/enzococca/pyarchinit-photogrammetry/blob/main/docs/plugins.md)
+nel repository del programma; [`template/`](template) e' un plugin da cui partire (azioni di menu,
+lavoro in background con la barra di avanzamento, un comando, un formato di esportazione,
+impostazioni, test).
+
+## Proporre un plugin
+
+Un plugin puo' stare nel suo repository o qui, in `plugins/`.
+
+* **Nel tuo repository.** Costruisci una wheel solo Python (`python -m build --wheel`), allegala a
+  una release e apri una pull request che aggiunge la sua voce a `index.json`. La voce si ricava
+  dalla wheel:
+
+  ```bash
+  python scripts/make_entry.py https://github.com/tu/ppg-cosa/releases/download/v0.1.0/ppg_cosa-0.1.0-py3-none-any.whl --write
+  ```
+
+* **Qui.** Una pull request che aggiunge `plugins/<nome>/` (pacchetto, `pyproject.toml`,
+  `README.md`, test). Dopo l'unione, le versioni si pubblicano con il tag `<nome>-v<versione>`: il
+  workflow `release` costruisce la wheel e la allega alla release di GitHub, poi la voce entra
+  nell'indice.
+
+I campi di una voce sono descritti nello [schema](schema/index.schema.json) e nel
+[README inglese](README.md#submitting-a-plugin): `name` e' il nome dell'entry point, `api` la
+versione dell'API dei plugin, `min_app` la versione minima del programma, `requires` i moduli che
+il plugin importa oltre a quelli del programma, `i18n` titolo e descrizione in altre lingue (per
+esempio `{"it": {"title": "Archivio GIS", "description": "..."}}`).
+
+Ogni pull request passa dal workflow `checks`: formato dell'indice, poi ogni wheel viene scaricata
+(hash, versione, entry point, nessun percorso fuori dalla sua cartella) e il plugin viene avviato
+con il programma; i plugin di questo repository eseguono i loro test, PostGIS compreso. In locale:
+
+```bash
+pip install jsonschema
+python scripts/check_index.py --load        # con pyarchinit-photogrammetry installato
+```
+
+I plugin devono avere una licenza compatibile con la GPL (girano dentro un programma GPL); quelli di
+questo repository sono GPL-2.0-or-later.
+
+Licenza: GPL-2.0-or-later. Autore: Enzo Cocca.

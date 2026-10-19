@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-my-plugin"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: summary of the chunk and statistics of the DEM"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Your Name", email = "you@example.org" }]
+requires-python = ">=3.10"
+# nothing the program does not already carry: the packaged application has no pip
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/you/ppg-my-plugin"
+
+# the name before "=" is the name of the plugin (lowercase letters, digits and dashes)
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+my-plugin = "ppg_my_plugin:MyPlugin"
+
+[tool.setuptools]
+packages = ["ppg_my_plugin"]

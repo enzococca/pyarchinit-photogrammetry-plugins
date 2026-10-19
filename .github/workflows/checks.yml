@@ -1,0 +1,62 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # the program with the plugin system: from its main branch until 1.1.0 is on PyPI,
+  # then "pyarchinit-photogrammetry[gui,postgis]>=1.1"
+  PPG_APP: "pyarchinit-photogrammetry[gui,postgis] @ git+https://github.com/enzococca/pyarchinit-photogrammetry.git@main"
+  PPG_NO_UPDATE_CHECK: "1"
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  index:
+    name: index and wheels
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-mod-spatialite libegl1 libgl1 libgomp1
+      - name: The program
+        run: python -m pip install "$PPG_APP" jsonschema
+      - name: Index, wheels, plugins started by the program
+        run: python scripts/check_index.py --load
+
+  plugins:
+    name: tests of ${{ matrix.plugin }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [plugins/gis-archive, template]
+    services:
+      postgis:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_PASSWORD: ppg
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PPG_TEST_POSTGIS_URL: postgresql://postgres:ppg@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-mod-spatialite libegl1 libgl1 libgomp1
+      - name: The program and the plugin
+        run: python -m pip install "$PPG_APP" pytest -e "${{ matrix.plugin }}"
+      - name: Tests
+        run: python -m pytest -q -p no:cacheprovider "${{ matrix.plugin }}/tests"

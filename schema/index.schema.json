@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/enzococca/pyarchinit-photogrammetry-plugins/main/schema/index.schema.json",
+  "title": "Index of the pyarchinit-photogrammetry plugins",
+  "description": "The list the program reads in Strumenti > Plugin and with `ppg plugins available`.",
+  "type": "object",
+  "required": ["format", "plugins"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "format": {"const": 1, "description": "Version of this format."},
+    "plugins": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/plugin"}
+    }
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)*((a|b|rc|\\.dev)[0-9]*)?$"
+    },
+    "plugin": {
+      "type": "object",
+      "required": ["name", "version", "title", "description", "author", "license", "api", "min_app",
+                   "requires", "wheel", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The name of the entry point in the group pyarchinit_photogrammetry.plugins.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "version": {"$ref": "#/$defs/version", "description": "The version of the wheel."},
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+        "description": {"type": "string", "minLength": 1, "maxLength": 400},
+        "i18n": {
+          "description": "Title and description in other languages, shown when the interface speaks them.",
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z]{2}$"},
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "title": {"type": "string", "minLength": 1, "maxLength": 80},
+              "description": {"type": "string", "minLength": 1, "maxLength": 400}
+            }
+          }
+        },
+        "author": {"type": "string", "minLength": 1},
+        "homepage": {"type": "string", "pattern": "^https://"},
+        "license": {"type": "string", "minLength": 1, "description": "An SPDX expression."},
+        "api": {
+          "description": "The plugin API the plugin was written for (pyarchinit_photogrammetry.plugins.API_VERSION).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_app": {"$ref": "#/$defs/version", "description": "The oldest version of the program it works with."},
+        "requires": {
+          "description": "Modules the plugin imports beyond those of the program (installation is refused without them).",
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"},
+          "uniqueItems": true
+        },
+        "wheel": {
+          "description": "A pure-Python wheel by HTTPS URL.",
+          "type": "string",
+          "pattern": "^https://[^ ]+-py3-none-any\\.whl$"
+        },
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

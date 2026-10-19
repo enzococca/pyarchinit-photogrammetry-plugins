@@ -1,0 +1,63 @@
+name: release
+
+# A release tagged <plugin>-v<version> (gis-archive-v0.1.0): the wheel of plugins/<plugin> is built
+# and attached to it; the entry of the index is in the summary of the run.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "the tag of the release (<plugin>-v<version>)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The plugin of the tag
+        id: tag
+        run: |
+          plugin="${TAG%-v*}"
+          version="${TAG##*-v}"
+          test -f "plugins/$plugin/pyproject.toml" || { echo "::error::no plugins/$plugin for the tag $TAG"; exit 1; }
+          python - "$plugin" "$version" <<'PY'
+          import sys
+          import tomllib
+
+          plugin, version = sys.argv[1:]
+          with open(f"plugins/{plugin}/pyproject.toml", "rb") as f:
+              found = tomllib.load(f)["project"]["version"]
+          if found != version:
+              sys.exit(f"::error::plugins/{plugin} is at version {found}, the tag says {version}")
+          PY
+          echo "plugin=$plugin" >> "$GITHUB_OUTPUT"
+      - name: Wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel --outdir dist "plugins/${{ steps.tag.outputs.plugin }}"
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/*-py3-none-any.whl --clobber --repo "${{ github.repository }}"
+      - name: Entry of the index
+        run: |
+          wheel=$(ls dist/*-py3-none-any.whl)
+          {
+            echo '### Entry of index.json'
+            echo '```json'
+            python scripts/make_entry.py "$wheel" --url "https://github.com/${{ github.repository }}/releases/download/$TAG/$(basename "$wheel")"
+            echo '```'
+            echo 'Locally: `python scripts/make_entry.py <that URL> --write`, then a pull request.'
+          } >> "$GITHUB_STEP_SUMMARY"

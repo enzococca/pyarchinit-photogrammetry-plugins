@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-gis-archive"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: the survey of a project into a GeoPackage, PostgreSQL/PostGIS or SpatiaLite database"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# what it imports comes with pyarchinit-photogrammetry 1.1 or later: SQLAlchemy and psycopg2
+# (PostgreSQL), rasterio (GDAL), shapely, the SpatiaLite the program finds
+dependencies = []
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+gis-archive = "ppg_gis_archive:GisArchivePlugin"
+
+[tool.setuptools]
+packages = ["ppg_gis_archive"]
