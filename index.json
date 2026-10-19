@@ -1,5 +1,26 @@
 {
   "$schema": "./schema/index.schema.json",
   "format": 1,
-  "plugins": []
+  "plugins": [
+    {
+      "name": "gis-archive",
+      "version": "0.1.0",
+      "title": "GIS archive",
+      "description": "Spot heights, contour lines, units, sections, stones, markers, DEM and orthomosaic of a project into a GeoPackage, PostgreSQL/PostGIS or SpatiaLite database",
+      "i18n": {
+        "it": {
+          "title": "Archivio GIS",
+          "description": "Quote, curve di livello, US, sezioni, pietre, marker, DEM e ortofoto del progetto in un database GeoPackage, PostgreSQL/PostGIS o SpatiaLite"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/gis-archive",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.1.0",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/gis-archive-v0.1.0/ppg_gis_archive-0.1.0-py3-none-any.whl",
+      "sha256": "ffe7cdf9c652324286c8b1383cc7493e84f401e5e62e9047c783a0fc9f753a61"
+    }
+  ]
 }

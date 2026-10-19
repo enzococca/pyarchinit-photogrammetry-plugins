@@ -22,18 +22,18 @@ I plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-
   ```
 
 I plugin girano con gli stessi permessi del programma: l'indice elenca solo plugin controllati, e
-il programma installa una wheel solo se il suo SHA-256 e' quello scritto nell'indice.
+il programma installa una wheel solo se il suo SHA-256 è quello scritto nell'indice.
 
 ## Scrivere un plugin
 
-La guida e' [docs/plugins.md](https://github.com/enzococca/pyarchinit-photogrammetry/blob/main/docs/plugins.md)
-nel repository del programma; [`template/`](template) e' un plugin da cui partire (azioni di menu,
+La guida è [docs/plugins.md](https://github.com/enzococca/pyarchinit-photogrammetry/blob/main/docs/plugins.md)
+nel repository del programma; [`template/`](template) è un plugin da cui partire (azioni di menu,
 lavoro in background con la barra di avanzamento, un comando, un formato di esportazione,
 impostazioni, test).
 
 ## Proporre un plugin
 
-Un plugin puo' stare nel suo repository o qui, in `plugins/`.
+Un plugin può stare nel suo repository o qui, in `plugins/`.
 
 * **Nel tuo repository.** Costruisci una wheel solo Python (`python -m build --wheel`), allegala a
   una release e apri una pull request che aggiunge la sua voce a `index.json`. La voce si ricava
@@ -49,7 +49,7 @@ Un plugin puo' stare nel suo repository o qui, in `plugins/`.
   nell'indice.
 
 I campi di una voce sono descritti nello [schema](schema/index.schema.json) e nel
-[README inglese](README.md#submitting-a-plugin): `name` e' il nome dell'entry point, `api` la
+[README inglese](README.md#submitting-a-plugin): `name` è il nome dell'entry point, `api` la
 versione dell'API dei plugin, `min_app` la versione minima del programma, `requires` i moduli che
 il plugin importa oltre a quelli del programma, `i18n` titolo e descrizione in altre lingue (per
 esempio `{"it": {"title": "Archivio GIS", "description": "..."}}`).
