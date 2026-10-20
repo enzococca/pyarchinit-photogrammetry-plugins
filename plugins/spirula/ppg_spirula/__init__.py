@@ -323,7 +323,7 @@ class SpirulaPlugin(Plugin):
         p.add_argument("--port", type=int, default=7007)
         p.add_argument("--name", help="name of the run")
         p.add_argument("--spirula", help="the executable (else the setting, PPG_SPIRULA, the PATH)")
-        p.add_argument("extra", nargs="*", help="more flags for spirula train, e.g. -- --cap-max 500000")
+        p.epilog = "Flags for spirula train itself go after --: ppg plugin spirula train P -- --cap-max 500000"
         p = sub.add_parser("mesh", help="a mesh from the splats of a chunk")
         p.add_argument("project")
         p.add_argument("--chunk")
@@ -341,7 +341,15 @@ class SpirulaPlugin(Plugin):
         p = sub.add_parser("install", help="download the Spirula Studio release for this computer and install it")
         p.add_argument("--dir", help="the folder (the system's by default: /Applications, %LOCALAPPDATA%\\Programs\\Spirula "
                                      "Studio, ~/.local/share/spirula-studio)")
-        a = parser.parse_args(list(args))
+        args, extra = list(args), []
+        if "--" in args:  # what follows goes to spirula train as it is
+            cut = args.index("--")
+            args, extra = args[:cut], args[cut + 1:]
+        a, unknown = parser.parse_known_args(args)
+        if a.what == "train":  # flags argparse does not know are spirula's own (ppg drops the "--" before them)
+            extra = unknown + extra
+        elif unknown:
+            parser.error("unrecognized arguments: " + " ".join(unknown))
         settings = self.context.settings if self.context is not None else {}
         if a.what == "install":
             from pyarchinit_photogrammetry.core.progress import print_progress
@@ -378,7 +386,7 @@ class SpirulaPlugin(Plugin):
                 divisor = a.divisor if a.divisor else runner.suggested_divisor(chunk)
                 report = runner.train(chunk, exe, preset=a.preset, quality=a.quality, iterations=a.iterations,
                                       divisor=divisor, sh_degree=a.sh_degree, seed=a.seed, masks=not a.no_masks,
-                                      viewer=a.viewer, port=a.port, name=a.name, extra=a.extra, progress=print_progress)
+                                      viewer=a.viewer, port=a.port, name=a.name, extra=extra, progress=print_progress)
                 doc.save()
                 print(summary_train(report))
             elif a.what == "mesh":

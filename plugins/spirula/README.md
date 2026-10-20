@@ -42,8 +42,10 @@ ppg plugin spirula open scavo.ppg
 
 ## Notes
 
-* The splat is in the internal frame of the chunk (the frame of the COLMAP model): to place it in
-  the world apply `chunk.transform`, as for the dense cloud.
+* Spirula recentres and reorients the scene before training: the splat is in that frame, and
+  `chunk.meta["splat"]["world_from_train"]` (from the `scene_transform.json` of the run) is the
+  4 x 4 matrix that brings it back into the frame of the COLMAP model, the internal frame of the
+  chunk; `chunk.transform` then places it in the world, as for the dense cloud.
 * Spirula trains at the resolution of the photos it is given: 48-megapixel photos at full
   resolution need a lot of memory and time; the suggested reduction brings them to about
   4 megapixels. The quality sets Spirula's `--quality` macro (iterations and the cap of splats).

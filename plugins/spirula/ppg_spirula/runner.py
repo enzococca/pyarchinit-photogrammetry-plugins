@@ -12,6 +12,7 @@ mesh files beside it. Every hundred steps it prints ``step N/TOTAL (P%)  splats 
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -306,7 +307,9 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
             raise RuntimeError(f"spirula wrote no splat.ply in {run_dir}:\n" + "\n".join(lines[-12:]))
         splat = found[-1]
     chunk._set_product("splat", splat)
+    frame = scene_transform(run_dir)
     chunk.meta["splat"] = {
+        "world_from_train": frame,  # the splats are trained in a frame of Spirula's: this 4 x 4 brings them back
         "file": chunk.products["splat"], "run": os.path.relpath(run_dir, chunk.data_dir), "preset": preset,
         "quality": quality, "iterations": state["total"], "steps": state["step"], "splats": state["splats"],
         "sh_degree": int(sh_degree), "resolution_divisor": float(divisor or 0), "seed": "dense" if ds["seed"] else "sparse",
@@ -316,6 +319,19 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
     progress(1.0, f"Splat: {state['splats']:,} splats after {state['step']:,} steps" if state["splats"]
              else f"Splat: {splat.name}")
     return dict(chunk.meta["splat"], path=splat, run_dir=run_dir)
+
+
+def scene_transform(run_dir: Path) -> list | None:
+    """The 4 x 4 matrix (rows) that brings the splats of a run from the frame Spirula trained them
+    in back into the frame of the COLMAP model (``scene_transform.json`` of the run: Spirula
+    recentres and reorients the scene before training); ``None`` when the run has none."""
+    path = Path(run_dir) / "scene_transform.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        matrix = data["world_from_train"]["matrix_4x4"]
+        return [[float(v) for v in row] for row in matrix]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def keep_model_version(chunk, ply: Path, name: str, params: dict | None = None) -> dict:
@@ -349,9 +365,9 @@ def mesh(chunk, spirula, formats=("ply",), colour: str = "vertex", texture_size:
     run_dir = Path(run) if run else (chunk.data_dir / info["run"] if info.get("run") else None)
     if run_dir is None or not run_dir.is_dir():
         raise RuntimeError("train the splats first (Plugin > Spirula > Addestra Gaussian splatting)")
-    cmd = [exe, "mesh", run_dir, "--data", dataset_dir(chunk), "--format", ",".join(formats), "--color", colour,
-           "--texture-size", int(texture_size), "--lang", "en"]
-    before = {p for p in run_dir.glob("mesh*") if p.is_file()}
+    cmd = [exe, "mesh", run_dir, "--data", dataset_dir(chunk), "--output", run_dir / "mesh", "--format",
+           ",".join(formats), "--color", colour, "--texture-size", int(texture_size), "--lang", "en"]
+    before = {p for p in run_dir.rglob("mesh*") if p.is_file()}
 
     def on_line(line: str) -> None:
         m = PERCENT.search(line)
@@ -362,9 +378,12 @@ def mesh(chunk, spirula, formats=("ply",), colour: str = "vertex", texture_size:
     code, lines = _run(cmd, progress, on_line, log)
     if code != 0:
         raise RuntimeError(f"spirula mesh ended with code {code}:\n" + "\n".join(lines[-12:]))
-    files = sorted(p for p in run_dir.glob("mesh*") if p.is_file() and (p not in before or p.stat().st_mtime >= time.time() - 3600))
+    files = sorted(p for p in run_dir.rglob("mesh*")  # beside the splat, or in its checkpoint folder
+                   if p.is_file() and (p not in before or p.stat().st_mtime >= time.time() - 3600))
     if not files:
         raise RuntimeError(f"spirula mesh wrote no mesh file in {run_dir}:\n" + "\n".join(lines[-12:]))
+    by_name = {p.name: p for p in sorted(files, key=lambda p: len(p.parts), reverse=True)}  # the shallowest of a name
+    files = sorted(by_name.values())
     chunk.meta.setdefault("splat", {})["mesh"] = [os.path.relpath(p, chunk.data_dir) for p in files]
     ply = next((p for p in files if p.suffix.lower() == ".ply"), None)
     version = None
