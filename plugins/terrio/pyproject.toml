@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-terrio"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: point clouds (LAS, LAZ, COPC, EPT, PLY, E57), ground classification and web rasters through terrio, without GDAL or PDAL"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# terrio is a compiled wheel (pure Rust, no C library): pip installs it here; the packaged
+# application, which has no pip, downloads it from PyPI into the plugin folder (Installa terrio)
+dependencies = ["terrio>=0.3.2,<0.4"]
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/terrio"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+terrio = "ppg_terrio:TerrioPlugin"
+
+[tool.setuptools]
+packages = ["ppg_terrio"]
