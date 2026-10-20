@@ -230,7 +230,8 @@ def test_exporter_and_plugin_in_the_program(tmp_path, fake_spirula):
     info = manager.get("spirula")
     assert info is not None and info.active, info and info.error
     assert [a.title for a in manager.actions if a.plugin == "spirula"] == [
-        "Addestra Gaussian splatting...", "Mesh dallo splat...", "Apri lo splat in Spirula Studio", "Dove sta Spirula Studio..."]
+        "Addestra Gaussian splatting...", "Mesh dallo splat...", "Apri lo splat in Spirula Studio",
+        "Installa Spirula Studio...", "Dove sta Spirula Studio..."]
     assert "spirula" in manager.commands
     assert [e.suffix for e in manager.exporters if e.plugin == "spirula"] == [".ply"]
     doc = _project(tmp_path)

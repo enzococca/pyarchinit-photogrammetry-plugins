@@ -8,10 +8,13 @@ AMD, Intel and Apple GPUs, one executable, no Python or CUDA).
 * *Plugin > Spirula > Mesh dallo splat...* - ``spirula mesh``: PLY, OBJ, glTF/GLB or STL beside
   the splat, the PLY also among the versions of the model;
 * *Plugin > Spirula > Apri lo splat in Spirula Studio* - the viewer of Spirula on the splat;
+* *Plugin > Spirula > Installa Spirula Studio...* - the release of GitHub for this computer
+  (macOS on Apple Silicon, Windows and Linux x86_64) downloaded, checked and installed; offered
+  by itself the first time Spirula is needed and missing;
 * *Plugin > Spirula > Dove sta Spirula Studio...* - the executable (found by itself on the PATH
   and in the usual folders);
 * *File > Esporta > Splat (PLY)* - a copy of the splat;
-* ``ppg plugin spirula train|mesh|open|where ...`` - the same from the command line.
+* ``ppg plugin spirula train|mesh|open|install|where ...`` - the same from the command line.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from pathlib import Path
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-from . import runner
+from . import installer, runner
 
 __version__ = "0.1.0"
 
@@ -62,8 +65,12 @@ class SpirulaPlugin(Plugin):
                            tip=t("spirula mesh: PLY, OBJ, glTF/GLB o STL accanto allo splat, il PLY fra le versioni del modello",
                                  "spirula mesh: PLY, OBJ, glTF/GLB or STL beside the splat, the PLY among the model versions"))
         context.add_action(t("Apri lo splat in Spirula Studio", "Open the splat in Spirula Studio"), self.open_splat)
+        context.add_action(t("Installa Spirula Studio...", "Install Spirula Studio..."), self.install_dialog,
+                           tip=t("Scarica la release di GitHub per questo computer e la installa",
+                                 "Download the GitHub release for this computer and install it"))
         context.add_action(t("Dove sta Spirula Studio...", "Where Spirula Studio is..."), self.where_dialog)
-        context.add_command("spirula", self.command, help="Gaussian splatting with Spirula Studio: train, mesh, open, where")
+        context.add_command("spirula", self.command,
+                            help="Gaussian splatting with Spirula Studio: train, mesh, open, install, where")
         context.add_exporter(t("Splat (PLY 3D Gaussian Splatting)", "Splat (PLY 3D Gaussian Splatting)"), ".ply",
                              self.export_splat)
 
@@ -76,16 +83,66 @@ class SpirulaPlugin(Plugin):
         return runner.find_spirula(self.context.settings.get("spirula"))
 
     def _spirula_or_ask(self) -> Path | None:
+        """The executable; when missing, the window offers to download and install Spirula Studio
+        (then the step is started again once it is there) or to be told where it is."""
         exe = self.spirula()
         if exe is None:
-            from pyarchinit_photogrammetry.gui.dialogs import message
+            from pyarchinit_photogrammetry.gui.dialogs import choice
 
-            message(self.context.window, "warning", self.title,
-                    t("Spirula Studio non e' stato trovato. Scaricalo da {0} e indica al plugin dove sta.",
-                      "Spirula Studio was not found. Download it from {0} and tell the plugin where it is.").format(RELEASES))
-            self.where_dialog()
+            picked = choice(self.context.window, "question", self.title,
+                            t("Spirula Studio non e' stato trovato. Scaricarlo da GitHub e installarlo adesso (circa 50-60 MB), "
+                              "oppure indicare dove sta?",
+                              "Spirula Studio was not found. Download it from GitHub and install it now (about 50-60 MB), "
+                              "or say where it is?"),
+                            [t("Scarica e installa", "Download and install"), t("Indica dove sta", "Say where it is"),
+                             t("Annulla", "Cancel")])
+            if picked == 0:
+                self.install_dialog()
+            elif picked == 1:
+                self.where_dialog()
             exe = self.spirula()
         return exe
+
+    def install_dialog(self) -> None:
+        """Plugin > Spirula > Installa Spirula Studio: the release for this computer, downloaded in
+        the background into the folder chosen (the system's by default)."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog, message
+
+        window = self.context.window
+        if window is None:
+            return
+        if installer.platform_key() is None:
+            message(window, "warning", self.title,
+                    t("Spirula Studio non ha una versione per questo computer ({0} {1}): le release coprono macOS su "
+                      "Apple Silicon, Windows x86_64 e Linux x86_64.",
+                      "Spirula Studio has no build for this computer ({0} {1}): the releases cover macOS on Apple "
+                      "Silicon, Windows x86_64 and Linux x86_64.").format(installer.platform.system(),
+                                                                          installer.platform.machine()))
+            return
+        found = self.spirula()
+        v = ParamDialog.ask(window, t("Installa Spirula Studio", "Install Spirula Studio"), [
+            Field("folder", t("Cartella", "Folder"), str(installer.default_folder()), kind="dir"),
+        ], intro=t("L'ultima release di Spirula Studio ({0}) viene scaricata da GitHub, controllata con il suo SHA-256 e "
+                   "installata nella cartella (su macOS l'applicazione, su Windows e Linux l'eseguibile spirula). {1}",
+                   "The latest release of Spirula Studio ({0}) is downloaded from GitHub, checked with its SHA-256 and "
+                   "installed into the folder (the application on macOS, the spirula executable on Windows and Linux). {1}")
+                 .format(RELEASES, t("Quella trovata ora: {0}.", "The one found now: {0}.").format(found) if found else ""))
+        if v is None:
+            return
+        settings = self.context.settings
+
+        def job(progress):
+            report = installer.install(v["folder"], progress)
+            settings["spirula"] = str(report["executable"])
+            self.context.save_settings()
+            return report
+
+        def done(report):
+            message(window, "info", self.title,
+                    t("Spirula Studio {0} installato: {1}", "Spirula Studio {0} installed: {1}")
+                    .format(report["version"], report["executable"]))
+
+        self.context.run(t("Installazione di Spirula Studio", "Installing Spirula Studio"), job, done)
 
     def _run(self, title: str, job, done=None):
         window = self.context.window
@@ -281,8 +338,24 @@ class SpirulaPlugin(Plugin):
         p.add_argument("--spirula")
         p = sub.add_parser("where", help="the spirula executable the plugin uses")
         p.add_argument("--set", help="remember this path")
+        p = sub.add_parser("install", help="download the Spirula Studio release for this computer and install it")
+        p.add_argument("--dir", help="the folder (the system's by default: /Applications, %LOCALAPPDATA%\\Programs\\Spirula "
+                                     "Studio, ~/.local/share/spirula-studio)")
         a = parser.parse_args(list(args))
         settings = self.context.settings if self.context is not None else {}
+        if a.what == "install":
+            from pyarchinit_photogrammetry.core.progress import print_progress
+
+            try:
+                report = installer.install(a.dir, print_progress)
+            except installer.InstallError as exc:
+                print(f"error: {exc}")
+                return 1
+            settings["spirula"] = str(report["executable"])
+            if self.context is not None:
+                self.context.save_settings()
+            print(f"Spirula Studio {report['version']} installed: {report['executable']}")
+            return 0
         if a.what == "where":
             if a.set:
                 settings["spirula"] = a.set

@@ -70,7 +70,8 @@ def candidates() -> list[Path]:
             if base:
                 out += [Path(base) / "Programs" / "Spirula Studio" / EXE, Path(base) / "Spirula Studio" / EXE,
                         Path(base) / "spirula-studio" / EXE]
-    out += [home / "spirula-studio" / EXE, home / ".local" / "bin" / EXE, Path("/opt/spirula-studio") / EXE]
+    out += [home / ".local" / "share" / "spirula-studio" / EXE, home / "spirula-studio" / EXE,
+            home / ".local" / "bin" / EXE, Path("/opt/spirula-studio") / EXE]
     return out
 
 
@@ -88,10 +89,10 @@ def find_spirula(setting: str | None = None) -> Path | None:
 def require(setting: str | None = None) -> Path:
     exe = find_spirula(setting)
     if exe is None:
-        raise SpirulaMissing("Spirula Studio not found: download it from "
-                             "https://github.com/harry7557558/spirula-studio/releases and give the plugin its "
-                             "path (Plugin > Spirula > Dove sta Spirula Studio, PPG_SPIRULA, or `ppg plugin "
-                             "spirula where --set PATH`)")
+        raise SpirulaMissing("Spirula Studio not found: `ppg plugin spirula install` downloads it (Plugin > Spirula > "
+                             "Installa Spirula Studio in the window), or give the plugin its path (Plugin > Spirula > "
+                             "Dove sta Spirula Studio, PPG_SPIRULA, `ppg plugin spirula where --set PATH`); releases: "
+                             "https://github.com/harry7557558/spirula-studio/releases")
     return exe
 
 
