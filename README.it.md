@@ -9,6 +9,8 @@ I plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-
 | Plugin | Cosa fa |
 |---|---|
 | [`gis-archive`](plugins/gis-archive) - Archivio GIS | Il rilievo del progetto - quote, curve di livello, US disegnate, sezioni, pietre, marker, DEM e ortofoto - in un database GIS diverso da PyArchInit: GeoPackage, PostgreSQL/PostGIS o SpatiaLite |
+| [`spirula`](plugins/spirula) - Spirula | Gaussian splatting 3D delle foto allineate con [Spirula Studio](https://github.com/harry7557558/spirula-studio) (Vulkan: GPU NVIDIA, AMD, Intel e Apple): lo splat come prodotto del chunk, una mesh da esso, il visualizzatore |
+| [`terrio`](plugins/terrio) - terrio | Nuvole di punti di qualsiasi formato (LAS, LAZ, COPC, EPT, PLY, E57, anche dal web) nel progetto, classificazione del terreno con i filtri SMRF, CSF e PMF, raster di riferimento dal web come versioni del DEM o dell'ortofoto, esportazioni E57, EPT, PMTiles e MBTiles, con [terrio](https://github.com/opengeos/terrio) (Rust puro, senza GDAL o PDAL) |
 
 ## Installare un plugin
 

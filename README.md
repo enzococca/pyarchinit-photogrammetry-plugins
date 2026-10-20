@@ -9,6 +9,8 @@ with `ppg plugins available`.
 | Plugin | What it does |
 |---|---|
 | [`gis-archive`](plugins/gis-archive) - Archivio GIS | The survey of a project - spot heights, contour lines, units drawn, sections, stones, markers, DEM and orthomosaic - into a GIS database outside PyArchInit: GeoPackage, PostgreSQL/PostGIS or SpatiaLite |
+| [`spirula`](plugins/spirula) - Spirula | 3D Gaussian splatting of the aligned photos with [Spirula Studio](https://github.com/harry7557558/spirula-studio) (Vulkan: NVIDIA, AMD, Intel and Apple GPUs): the splat as a product of the chunk, a mesh from it, the viewer |
+| [`terrio`](plugins/terrio) - terrio | Point clouds of any format (LAS, LAZ, COPC, EPT, PLY, E57, also from the web) into the project, ground classification with the SMRF, CSF and PMF filters, reference rasters from the web as versions of the DEM or orthomosaic, E57, EPT, PMTiles and MBTiles exports, through [terrio](https://github.com/opengeos/terrio) (pure Rust, no GDAL or PDAL) |
 
 ## Installing a plugin
 
