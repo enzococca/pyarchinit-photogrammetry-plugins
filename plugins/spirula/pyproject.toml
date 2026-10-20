@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-spirula"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: 3D Gaussian splatting of the aligned photos with Spirula Studio (Vulkan: NVIDIA, AMD, Intel and Apple GPUs), splat and mesh"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# nothing the program does not already carry: Spirula Studio is a separate program, found or chosen by the user
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/spirula"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+spirula = "ppg_spirula:SpirulaPlugin"
+
+[tool.setuptools]
+packages = ["ppg_spirula"]
