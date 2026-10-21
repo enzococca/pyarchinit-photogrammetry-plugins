@@ -7,7 +7,7 @@ compute on NVIDIA, AMD, Intel and Apple GPUs, no Python, CUDA or COLMAP to insta
 
 | Where | What |
 |---|---|
-| *Plugin > Spirula > Addestra Gaussian splatting...* | The COLMAP model of the chunk (text, `sparse/0`), its photos (linked, any camera model: Spirula undistorts by itself), its masks and its dense cloud as seed points go to `spirula train`, with a preset (`3dgs`, `in-the-wild`, `centered-object`, `360-camera`, `hdr`, `synthetic`, `meshing`), a quality (15 000 to 80 000 iterations), a reduction of the photos (suggested for about 4 megapixels each), the spherical harmonics degree and, if wanted, Spirula's web viewer while it trains. The run is in `<chunk data>/spirula/runs/<name>/`; `splat.ply` (the 3DGS PLY every viewer reads) becomes the product `splat` of the chunk. Progress and cancel in the window. |
+| *Plugin > Spirula > Addestra Gaussian splatting...* | The COLMAP model of the chunk (text, `sparse/0`), its photos (linked, any camera model: Spirula undistorts by itself), its masks and its dense cloud as seed points go to `spirula train`, with a preset (`3dgs`, `in-the-wild`, `centered-object`, `360-camera`, `hdr`, `synthetic`, `meshing`), a quality (15 000 to 80 000 iterations), a reduction of the photos (suggested for about 4 megapixels each), the spherical harmonics degree and, if wanted, Spirula's web viewer while it trains (the browser opens on it, `http://localhost:7007/` unless another port is given, as soon as Spirula starts it). The run is in `<chunk data>/spirula/runs/<name>/`; `splat.ply` (the 3DGS PLY every viewer reads) becomes the product `splat` of the chunk. Progress and cancel in the window. |
 | *Plugin > Spirula > Mesh dallo splat...* | `spirula mesh`: PLY, OBJ, glTF/GLB or STL (per-vertex colour or texture) beside the splat; a PLY also goes among the versions of the model (*Versioni*). |
 | *Plugin > Spirula > Apri lo splat in Spirula Studio* | the splat in the viewer of Spirula Studio |
 | *Plugin > Spirula > Installa Spirula Studio...* | the latest release of GitHub for this computer (macOS on Apple Silicon: the dmg, into `/Applications`; Windows and Linux x86_64: the zip with the executable, into `%LOCALAPPDATA%\Programs\Spirula Studio` or `~/.local/share/spirula-studio`), downloaded, checked with the SHA-256 GitHub publishes and installed. Offered by itself the first time a step needs Spirula and it is missing. |
@@ -19,7 +19,7 @@ From the command line:
 ```bash
 ppg plugin spirula install [--dir FOLDER]                  # the release for this computer
 ppg plugin spirula where [--set /path/to/spirula]
-ppg plugin spirula train scavo.ppg --preset in-the-wild --quality high --divisor 2 --viewer
+ppg plugin spirula train scavo.ppg --preset in-the-wild --quality high --divisor 2 --viewer   # web viewer in the browser (--port, --no-browser)
 ppg plugin spirula train scavo.ppg --quality low --no-masks --name prova -- --cap-max 500000
 ppg plugin spirula mesh scavo.ppg --format ply,glb --color texture
 ppg plugin spirula open scavo.ppg

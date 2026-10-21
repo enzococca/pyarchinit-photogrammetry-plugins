@@ -35,6 +35,7 @@ MAX_SEED_POINTS = 2_000_000
 STEP = re.compile(r"step\s+(\d+)\s*/\s*(\d+)\s*\(\s*(\d+)%\)")
 SPLATS = re.compile(r"splats\s+(\d+)")
 OUTPUT = re.compile(r"Output directory:\s*(.+)")
+VIEWER = re.compile(r"[Vv]iewer at\s+(https?://[^\s)]+)")  # "Viewer at http://0.0.0.0:7007/ (forward the port ...)"
 PERCENT = re.compile(r"(\d{1,3})%")
 EXE = "spirula.exe" if sys.platform == "win32" else "spirula"
 
@@ -244,13 +245,16 @@ def _run(cmd, progress, on_line=None, log=None) -> tuple[int, list[str]]:
 
 def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterations: int | None = None,
           divisor: float = 0.0, sh_degree: int = 3, seed: str = "dense", masks: bool = True, viewer: bool = False,
-          port: int = 7007, name: str | None = None, extra=(), progress=None, log=None) -> dict:
+          port: int = 7007, open_browser: bool = True, name: str | None = None, extra=(), progress=None,
+          log=None) -> dict:
     """Train the Gaussian splats of the chunk with Spirula: the dataset is laid out
     (:func:`prepare_dataset`), ``spirula train`` runs in ``<chunk data>/spirula/runs/<name>``
     with the preset and the quality (``iterations`` overrides the quality's), the photos reduced
     by ``divisor`` (0: their own size), ``sh_degree`` spherical harmonics, the web viewer of
-    Spirula on ``port`` when ``viewer``; ``extra``: more ``--flag value`` pairs. The splat
-    becomes the product ``splat`` of the chunk, its run is in ``chunk.meta["splat"]``."""
+    Spirula on ``port`` when ``viewer`` (opened in the browser as soon as Spirula announces it,
+    unless ``open_browser`` is False; its URL is ``viewer`` in the result); ``extra``: more
+    ``--flag value`` pairs. The splat becomes the product ``splat`` of the chunk, its run is in
+    ``chunk.meta["splat"]``."""
     progress = as_progress(progress)
     exe = resolve(spirula)
     if not exe.is_file():
@@ -277,10 +281,16 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
     if not ds["masks"]:
         cmd += ["--load-masks", "0"]
     cmd += list(extra) + ["--lang", "en"]
-    state = {"step": 0, "total": int(iterations or ITERATIONS[quality]), "splats": 0, "out": ""}
+    state = {"step": 0, "total": int(iterations or ITERATIONS[quality]), "splats": 0, "out": "", "viewer": ""}
     started = time.time()
 
     def on_line(line: str) -> None:
+        m = VIEWER.search(line)
+        if m and viewer and not state["viewer"]:
+            state["viewer"] = url = _local_url(m.group(1))
+            progress(0.05, f"Spirula: web viewer at {url}")
+            if open_browser:
+                open_url(url)
         m = STEP.search(line)
         if m:
             state["step"], state["total"] = int(m.group(1)), int(m.group(2))
@@ -318,7 +328,48 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
         "spirula": str(exe), "command": " ".join(str(c) for c in cmd)}
     progress(1.0, f"Splat: {state['splats']:,} splats after {state['step']:,} steps" if state["splats"]
              else f"Splat: {splat.name}")
-    return dict(chunk.meta["splat"], path=splat, run_dir=run_dir)
+    return dict(chunk.meta["splat"], path=splat, run_dir=run_dir, viewer=state["viewer"] or None)
+
+
+def _local_url(url: str) -> str:
+    """The URL Spirula announces its web viewer at, as this computer reaches it: ``0.0.0.0``
+    (every interface) becomes ``localhost``, the port stays."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    host = parts.hostname or "localhost"
+    if host in ("0.0.0.0", "::"):
+        host = "localhost"
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return urlunsplit((parts.scheme or "http", netloc, parts.path or "/", "", ""))
+
+
+def browser_command(url: str) -> list[str] | None:
+    """The command that opens ``url`` in the browser of this computer (``None`` on Windows,
+    where :func:`os.startfile` does it, and where no opener is found)."""
+    if sys.platform == "win32":
+        return None
+    if sys.platform == "darwin":
+        return ["/usr/bin/open", url]
+    opener = shutil.which("xdg-open")
+    return [opener, url] if opener else None
+
+
+def open_url(url: str) -> bool:
+    """Open ``url`` in the browser, detached from the program and without a fork (the program
+    may have SpatiaLite loaded); False when no browser can be started."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(url)  # type: ignore[attr-defined]
+            return True
+        cmd = browser_command(url)
+        if cmd is None:
+            return False
+        subprocess.Popen(cmd, close_fds=False, start_new_session=True, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
 
 
 def scene_transform(run_dir: Path) -> list | None:

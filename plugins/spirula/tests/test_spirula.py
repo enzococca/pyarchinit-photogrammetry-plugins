@@ -36,6 +36,9 @@ if args[0] == "train":
     os.makedirs(out, exist_ok=True)
     json.dump({"preset": preset, **opts}, open(os.path.join(out, "config.json"), "w"))
     print("Output directory: " + os.path.abspath(out), flush=True)
+    if opts.get("--disable-viewer") == "0":
+        p = opts.get("--viewer-port", "7007")
+        print("Viewer at http://0.0.0.0:%s/ (forward the port for remote boxes: ssh -L %s:localhost:%s <host>)" % (p, p, p), flush=True)
     if os.environ.get("FAKE_SPIRULA_FAIL"):
         print("Error: no Vulkan device", flush=True); sys.exit(1)
     n = int(opts.get("--num-iterations", {"low": 15000, "medium": 30000, "high": 50000, "ultra": 80000}[opts.get("--quality", "medium")]))
@@ -179,6 +182,30 @@ def test_train_mesh_and_open(tmp_path, fake_spirula):
             break
         time.sleep(0.1)
     assert (tmp_path / "log" / "opened.txt").read_text() == str(splat)
+
+
+def test_web_viewer_opens_in_the_browser(tmp_path, fake_spirula, monkeypatch):
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    opened = []
+    monkeypatch.setattr(runner, "open_url", lambda url: opened.append(url) or True)
+    seen = []
+    report = runner.train(chunk, fake_spirula, quality="low", viewer=True, port=7117, name="web",
+                          progress=lambda f, m: seen.append(m))
+    assert opened == ["http://localhost:7117/"] and report["viewer"] == "http://localhost:7117/"
+    assert any(m == "Spirula: web viewer at http://localhost:7117/" for m in seen)
+    calls = (tmp_path / "log" / "calls.txt").read_text()
+    assert "--disable-viewer 0" in calls and "--viewer-port 7117" in calls
+    # the browser declined, or no viewer at all: nothing opens
+    opened.clear()
+    quiet = runner.train(chunk, fake_spirula, quality="low", viewer=True, port=7117, open_browser=False, name="quiet")
+    none = runner.train(chunk, fake_spirula, quality="low", name="none")
+    assert opened == [] and quiet["viewer"] == "http://localhost:7117/" and none["viewer"] is None
+    assert runner._local_url("http://0.0.0.0:7007/") == "http://localhost:7007/"
+    assert runner._local_url("http://[::]:7007/") == "http://localhost:7007/"
+    assert runner._local_url("http://localhost:7007/") == "http://localhost:7007/"
+    if sys.platform == "darwin":
+        assert runner.browser_command("http://localhost:7007/") == ["/usr/bin/open", "http://localhost:7007/"]
 
 
 def test_train_failure_and_cancellation(tmp_path, fake_spirula, monkeypatch):

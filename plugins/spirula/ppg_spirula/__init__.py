@@ -319,8 +319,9 @@ class SpirulaPlugin(Plugin):
         p.add_argument("--sh-degree", type=int, default=3)
         p.add_argument("--seed", choices=["dense", "sparse"], default="dense")
         p.add_argument("--no-masks", action="store_true")
-        p.add_argument("--viewer", action="store_true", help="Spirula's web viewer while training")
+        p.add_argument("--viewer", action="store_true", help="Spirula's web viewer while training, opened in the browser")
         p.add_argument("--port", type=int, default=7007)
+        p.add_argument("--no-browser", action="store_true", help="do not open the web viewer in the browser")
         p.add_argument("--name", help="name of the run")
         p.add_argument("--spirula", help="the executable (else the setting, PPG_SPIRULA, the PATH)")
         p.epilog = "Flags for spirula train itself go after --: ppg plugin spirula train P -- --cap-max 500000"
@@ -386,7 +387,8 @@ class SpirulaPlugin(Plugin):
                 divisor = a.divisor if a.divisor else runner.suggested_divisor(chunk)
                 report = runner.train(chunk, exe, preset=a.preset, quality=a.quality, iterations=a.iterations,
                                       divisor=divisor, sh_degree=a.sh_degree, seed=a.seed, masks=not a.no_masks,
-                                      viewer=a.viewer, port=a.port, name=a.name, extra=extra, progress=print_progress)
+                                      viewer=a.viewer, port=a.port, open_browser=not a.no_browser, name=a.name,
+                                      extra=extra, progress=print_progress)
                 doc.save()
                 print(summary_train(report))
             elif a.what == "mesh":
