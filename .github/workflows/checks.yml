@@ -10,9 +10,8 @@ permissions:
   contents: read
 
 env:
-  # the program with the plugin system: from its main branch until 1.1.0 is on PyPI,
-  # then "pyarchinit-photogrammetry[gui,postgis]>=1.1"
-  PPG_APP: "pyarchinit-photogrammetry[gui,postgis] @ git+https://github.com/enzococca/pyarchinit-photogrammetry.git@main"
+  # the program with the plugin system, from PyPI (1.1.0 and later)
+  PPG_APP: "pyarchinit-photogrammetry[gui,postgis]>=1.1"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
