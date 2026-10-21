@@ -23,6 +23,26 @@
       "sha256": "ffe7cdf9c652324286c8b1383cc7493e84f401e5e62e9047c783a0fc9f753a61"
     },
     {
+      "name": "spirula",
+      "version": "0.1.0",
+      "title": "Spirula",
+      "description": "3D Gaussian splatting of the aligned photos with Spirula Studio (Vulkan: NVIDIA, AMD, Intel and Apple GPUs): the splat as a product of the chunk, a mesh from it, the viewer, the installation of Spirula Studio",
+      "i18n": {
+        "it": {
+          "title": "Spirula",
+          "description": "Gaussian splatting 3D delle foto allineate con Spirula Studio (Vulkan: GPU NVIDIA, AMD, Intel e Apple): lo splat come prodotto del chunk, una mesh da esso, il visualizzatore, l'installazione di Spirula Studio"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/spirula",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.1.0",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/spirula-v0.1.0/ppg_spirula-0.1.0-py3-none-any.whl",
+      "sha256": "a67bcd7af1ec258d927bb324c9555697c3e40a531e412b71596fb7bae0945d7a"
+    },
+    {
       "name": "terrio",
       "version": "0.1.0",
       "title": "terrio",
