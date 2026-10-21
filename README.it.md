@@ -56,7 +56,8 @@ Un plugin può stare nel suo repository o qui, in `plugins/`.
 I campi di una voce sono descritti nello [schema](schema/index.schema.json) e nel
 [README inglese](README.md#submitting-a-plugin): `name` è il nome dell'entry point, `api` la
 versione dell'API dei plugin, `min_app` la versione minima del programma, `requires` i moduli che
-il plugin importa oltre a quelli del programma, `i18n` titolo e descrizione in altre lingue (per
+il plugin importa oltre a quelli del programma e non sa procurarsi da solo (terrio, che scarica la sua
+wheel da PyPI, dice `[]`), `i18n` titolo e descrizione in altre lingue (per
 esempio `{"it": {"title": "Archivio GIS", "description": "..."}}`).
 
 Ogni pull request passa dal workflow `checks`: formato dell'indice, poi ogni wheel viene scaricata

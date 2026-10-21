@@ -75,8 +75,9 @@ An entry of the index ([schema](schema/index.schema.json)):
 
 * `name` is the name of the entry point in the group `pyarchinit_photogrammetry.plugins`;
 * `api` the plugin API it was written for, `min_app` the oldest version of the program it works with;
-* `requires` the modules it imports beyond those of the program (the installation is refused without
-  them: the packaged application cannot add modules);
+* `requires` the modules it imports beyond those of the program and cannot fetch by itself (the
+  installation is refused without them: the packaged application cannot add modules; terrio, which
+  downloads its own wheel from PyPI, says `[]`);
 * `i18n` title and description in other languages, shown when the interface speaks them.
 
 Each pull request is checked by the workflow `checks`: the format of the index, then each wheel is
