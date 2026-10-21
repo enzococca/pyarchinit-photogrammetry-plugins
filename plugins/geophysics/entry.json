@@ -1,0 +1,12 @@
+{
+  "title": "Geophysics",
+  "description": "Geophysical grids - magnetometry, resistivity, GPR time slices, EM - imported from Surfer GRD, XYZ/CSV, GeoTIFF or folders of slices, georeferenced with the markers or the pegs' coordinates, filtered (despike, destripe, high-pass, clip, fill), overlaid on the orthomosaic and the DEM with opacity, exported as GeoTIFF, Surfer GRD and GeoPackage, into the QGIS project",
+  "i18n": {
+    "it": {
+      "title": "Geofisica",
+      "description": "Griglie geofisiche - magnetometria, resistività, time slice GPR, EM - importate da Surfer GRD, XYZ/CSV, GeoTIFF o cartelle di slice, georeferenziate con i marker o le coordinate dei picchetti, filtrate (despike, destripe, passa-alto, clip, riempimento), sovrapposte a ortofoto e DEM con opacità, esportate in GeoTIFF, Surfer GRD e GeoPackage, nel progetto QGIS"
+    }
+  },
+  "min_app": "1.2.2",
+  "requires": []
+}
