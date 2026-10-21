@@ -1,0 +1,12 @@
+{
+  "title": "Powerlines",
+  "description": "Overhead powerlines in the dense cloud: conductors as catenaries with length, sag, clearance from the ground and distance from obstacles, the poles, the points classified; GeoPackage, DXF and CSV exports",
+  "i18n": {
+    "it": {
+      "title": "Linee elettriche",
+      "description": "Linee elettriche aeree nella nuvola densa: conduttori come catenarie con lunghezza, freccia, franco dal suolo e distanza dagli ostacoli, i pali, i punti classificati; esportazioni GeoPackage, DXF e CSV"
+    }
+  },
+  "min_app": "1.1.0",
+  "requires": []
+}

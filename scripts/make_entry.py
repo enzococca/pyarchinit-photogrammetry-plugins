@@ -1,11 +1,14 @@
 """The index entry of a plugin wheel: name from the entry point, version, description, author,
 licence and homepage from its metadata, SHA-256 of the file. What the index already says of the
-plugin (title, description, requires, min_app, api) is kept unless given here.
+plugin (title, description, requires, min_app, api) is kept; a plugin of this repository gives
+its texts in ``plugins/<name>/entry.json`` (title, description, i18n, requires, min_app, api),
+which win over the index; the options given here win over both.
 
     python scripts/make_entry.py WHEEL --url URL [--write] [--title ...] [--min-app 1.1.0]
 
 WHEEL is a file or an HTTPS URL (then ``--url`` defaults to it); ``--write`` puts the entry into
-index.json (in place of the one of the same name).
+index.json (in place of the one of the same name). The workflow ``release`` runs it for every
+release of a plugin of this repository and commits index.json on main.
 """
 from __future__ import annotations
 
@@ -42,6 +45,16 @@ def _metadata(wheel: Path) -> tuple[email.message.Message, str]:
     return meta, names[0]
 
 
+def texts_of(name: str) -> dict:
+    """What ``plugins/<name>/entry.json`` says of a plugin kept in this repository: the title,
+    the description, ``i18n``, ``requires``, ``min_app`` and ``api`` the wheel cannot carry."""
+    path = ROOT / "plugins" / name / "entry.json"
+    if not path.exists():
+        return {}
+    texts = json.loads(path.read_text(encoding="utf-8"))
+    return {k: v for k, v in texts.items() if k in ("title", "description", "i18n", "requires", "min_app", "api")}
+
+
 def entry_for(wheel: Path, url: str, old: dict | None = None, **given) -> dict:
     meta, name = _metadata(wheel)
     old = dict(old or {})
@@ -59,6 +72,7 @@ def entry_for(wheel: Path, url: str, old: dict | None = None, **given) -> dict:
         "license": meta.get("License-Expression") or meta.get("License") or old.get("license", ""),
         "api": old.get("api", 1), "min_app": old.get("min_app", "1.1.0"), "requires": old.get("requires", []),
         "wheel": url, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}
+    entry.update(texts_of(name))
     entry.update({k: v for k, v in given.items() if v is not None})
     for key in ("homepage", "i18n"):
         if not entry[key]:

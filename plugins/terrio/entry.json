@@ -1,0 +1,12 @@
+{
+  "title": "terrio",
+  "description": "Point clouds of any format (LAS, LAZ, COPC, EPT, PLY, E57, also from the web) into the project, ground classification with SMRF, CSF and PMF, reference rasters from the web as versions of the DEM or orthomosaic, E57, EPT, PMTiles and MBTiles exports, through terrio (pure Rust, no GDAL or PDAL)",
+  "i18n": {
+    "it": {
+      "title": "terrio",
+      "description": "Nuvole di punti di qualsiasi formato (LAS, LAZ, COPC, EPT, PLY, E57, anche dal web) nel progetto, classificazione del terreno con SMRF, CSF e PMF, raster di riferimento dal web come versioni del DEM o dell'ortofoto, esportazioni E57, EPT, PMTiles e MBTiles, con terrio (Rust puro, senza GDAL o PDAL)"
+    }
+  },
+  "min_app": "1.1.0",
+  "requires": ["terrio"]
+}

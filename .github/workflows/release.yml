@@ -1,7 +1,9 @@
 name: release
 
 # A release tagged <plugin>-v<version> (gis-archive-v0.1.0): the wheel of plugins/<plugin> is built
-# and attached to it; the entry of the index is in the summary of the run.
+# and attached to it, and index.json on main gets its entry (texts from plugins/<plugin>/entry.json),
+# committed as the person who published the release. Nothing else to do: the program lists the
+# plugin at its next "Aggiorna l'elenco".
 on:
   release:
     types: [published]
@@ -43,6 +45,7 @@ jobs:
               sys.exit(f"::error::plugins/{plugin} is at version {found}, the tag says {version}")
           PY
           echo "plugin=$plugin" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Wheel
         run: |
           python -m pip install build
@@ -51,13 +54,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/*-py3-none-any.whl --clobber --repo "${{ github.repository }}"
-      - name: Entry of the index
+      - name: The entry in index.json on main
         run: |
           wheel=$(ls dist/*-py3-none-any.whl)
+          url="https://github.com/${{ github.repository }}/releases/download/$TAG/$(basename "$wheel")"
+          git fetch --depth=1 origin main
+          git checkout -B main origin/main
+          python -m pip install jsonschema
+          python scripts/make_entry.py "$wheel" --url "$url" --write | tee entry.txt
+          python scripts/check_index.py
           {
             echo '### Entry of index.json'
             echo '```json'
-            python scripts/make_entry.py "$wheel" --url "https://github.com/${{ github.repository }}/releases/download/$TAG/$(basename "$wheel")"
+            sed '/^written into/d' entry.txt
             echo '```'
-            echo 'Locally: `python scripts/make_entry.py <that URL> --write`, then a pull request.'
           } >> "$GITHUB_STEP_SUMMARY"
+          if git diff --quiet -- index.json; then
+            echo "index.json on main already had this entry." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+          git add index.json
+          git commit -m "chore: index entry of ${{ steps.tag.outputs.plugin }} ${{ steps.tag.outputs.version }}"
+          for attempt in 1 2 3; do
+            git push origin main && break
+            git fetch origin main && git rebase origin/main || exit 1
+          done
+          echo "index.json on main updated: the program lists ${{ steps.tag.outputs.plugin }} ${{ steps.tag.outputs.version }} at its next *Aggiorna l'elenco*." >> "$GITHUB_STEP_SUMMARY"

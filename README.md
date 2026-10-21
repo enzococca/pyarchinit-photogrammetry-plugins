@@ -48,8 +48,10 @@ A plugin can live in its own repository or here, under `plugins/`.
   ```
 
 * **Here.** A pull request adding `plugins/<name>/` (package, `pyproject.toml`, `README.md`,
-  tests). Once merged, its releases are tagged `<name>-v<version>`: the workflow `release` builds
-  the wheel and attaches it to the GitHub release, then the entry goes into the index.
+  tests, `entry.json` with title, description and Italian texts). Once merged, its versions are
+  published as GitHub releases tagged `<name>-v<version>`: the workflow `release` builds the wheel,
+  attaches it to the release and commits the entry into `index.json` on `main` by itself (texts from
+  `entry.json`): the program lists the new version at its next *Aggiorna l'elenco*.
 
 An entry of the index ([schema](schema/index.schema.json)):
 

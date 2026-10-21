@@ -1,0 +1,12 @@
+{
+  "title": "Spirula",
+  "description": "3D Gaussian splatting of the aligned photos with Spirula Studio (Vulkan: NVIDIA, AMD, Intel and Apple GPUs): the splat as a product of the chunk, a mesh from it, the viewer, the installation of Spirula Studio",
+  "i18n": {
+    "it": {
+      "title": "Spirula",
+      "description": "Gaussian splatting 3D delle foto allineate con Spirula Studio (Vulkan: GPU NVIDIA, AMD, Intel e Apple): lo splat come prodotto del chunk, una mesh da esso, il visualizzatore, l'installazione di Spirula Studio"
+    }
+  },
+  "min_app": "1.1.0",
+  "requires": []
+}

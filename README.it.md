@@ -48,9 +48,10 @@ Un plugin può stare nel suo repository o qui, in `plugins/`.
   ```
 
 * **Qui.** Una pull request che aggiunge `plugins/<nome>/` (pacchetto, `pyproject.toml`,
-  `README.md`, test). Dopo l'unione, le versioni si pubblicano con il tag `<nome>-v<versione>`: il
-  workflow `release` costruisce la wheel e la allega alla release di GitHub, poi la voce entra
-  nell'indice.
+  `README.md`, test, `entry.json` con titolo, descrizione e testi italiani). Dopo l'unione, le versioni
+  si pubblicano come release di GitHub con il tag `<nome>-v<versione>`: il workflow `release` costruisce
+  la wheel, la allega alla release e scrive da solo la voce in `index.json` su `main` (testi da
+  `entry.json`): il programma mostra la nuova versione al prossimo *Aggiorna l'elenco*.
 
 I campi di una voce sono descritti nello [schema](schema/index.schema.json) e nel
 [README inglese](README.md#submitting-a-plugin): `name` è il nome dell'entry point, `api` la
