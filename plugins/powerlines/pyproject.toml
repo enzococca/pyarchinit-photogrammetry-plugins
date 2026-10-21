@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-powerlines"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: overhead powerlines in the dense cloud - conductors as catenaries, poles, clearance from the ground, distance from obstacles"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# nothing the program does not already carry (numpy, SciPy, shapely, ezdxf): the packaged application has no pip
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/powerlines"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+powerlines = "ppg_powerlines:PowerlinesPlugin"
+
+[tool.setuptools]
+packages = ["ppg_powerlines"]

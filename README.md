@@ -9,6 +9,7 @@ with `ppg plugins available`.
 | Plugin | What it does |
 |---|---|
 | [`gis-archive`](plugins/gis-archive) - Archivio GIS | The survey of a project - spot heights, contour lines, units drawn, sections, stones, markers, DEM and orthomosaic - into a GIS database outside PyArchInit: GeoPackage, PostgreSQL/PostGIS or SpatiaLite |
+| [`powerlines`](plugins/powerlines) - Powerlines | Overhead powerlines in the dense cloud: every conductor as a catenary with its length, sag, clearance from the ground and distance from the nearest obstacle, the poles, the points of wires and poles classified (14, 15); GeoPackage, DXF and CSV exports |
 | [`spirula`](plugins/spirula) - Spirula | 3D Gaussian splatting of the aligned photos with [Spirula Studio](https://github.com/harry7557558/spirula-studio) (Vulkan: NVIDIA, AMD, Intel and Apple GPUs): the splat as a product of the chunk, a mesh from it, the viewer |
 | [`terrio`](plugins/terrio) - terrio | Point clouds of any format (LAS, LAZ, COPC, EPT, PLY, E57, also from the web) into the project, ground classification with the SMRF, CSF and PMF filters, reference rasters from the web as versions of the DEM or orthomosaic, E57, EPT, PMTiles and MBTiles exports, through [terrio](https://github.com/opengeos/terrio) (pure Rust, no GDAL or PDAL) |
 
@@ -31,6 +32,8 @@ the program installs a wheel only when its SHA-256 matches the one in the index.
 The guide is [docs/plugins.md](https://github.com/enzococca/pyarchinit-photogrammetry/blob/main/docs/plugins.md)
 in the repository of the program; [`template/`](template) is a plugin to start from (menu actions, work
 in the background with the progress bar, a command, an export format, settings, tests).
+`ppg plugins new NAME` (or *Strumenti > Plugin... > Nuovo plugin...* in the program) writes the same
+project with your name, the parts you choose and its tests, ready for `pip install -e .`.
 
 ## Submitting a plugin
 
