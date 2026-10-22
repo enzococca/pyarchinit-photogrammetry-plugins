@@ -22,8 +22,8 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
-TERRIO_VERSION = "0.3.2"  # the version the plugin is written and tested with
-OLDEST, NEWEST = (0, 3, 2), (0, 4)  # accepted: from 0.3.2 up to (not including) 0.4
+TERRIO_VERSION = "0.4.0"  # the version the plugin is written and tested with
+OLDEST, NEWEST = (0, 3, 2), (0, 5)  # accepted: from 0.3.2 up to (not including) 0.5
 PYPI = "https://pypi.org/pypi/terrio/{version}/json"
 USER_AGENT = "pyarchinit-photogrammetry plugin terrio"
 
@@ -60,7 +60,7 @@ def _import():
     version = getattr(terrio, "__version__", "0")
     if not (OLDEST <= _key(version) < NEWEST):
         raise TerrioMissing(f"terrio {version} is installed, this plugin needs terrio {TERRIO_VERSION} "
-                            f"(0.3.2 or a later 0.3): pip install 'terrio>=0.3.2,<0.4'")
+                            f"(0.3.2 up to the 0.4 releases): pip install 'terrio>=0.3.2,<0.5'")
     return terrio
 
 

@@ -222,3 +222,28 @@ def test_command(tmp_path, capsys):
     assert plugin.command("export", str(doc.path), str(tmp_path / "o.tif"), "--chunk", "rilievo") == 1
     assert "error" in capsys.readouterr().out
     assert os.environ.get("PPG_LANG") == "it"
+
+
+def test_version_gate():
+    """The 0.3.2 and 0.4 releases of terrio are accepted, older and newer ones refused."""
+    inside = lambda v: environment.OLDEST <= environment._key(v) < environment.NEWEST  # noqa: E731
+    assert inside("0.3.2") and inside("0.4.0") and inside("0.4.7")
+    assert not inside("0.3.1") and not inside("0.5.0") and not inside("1.0.0")
+    assert environment._key(environment.TERRIO_VERSION) >= environment.OLDEST
+
+
+def test_import_from_a_zip(tmp_path):
+    """A zipped LAZ (terrio 0.4 opens zipped point clouds) comes in like the file itself."""
+    import zipfile
+
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    world = chunk.to_world(chunk.point_cloud.xyz)
+    laz = tmp_path / "rilievo.laz"
+    terrio.PointCloud.from_dict({"x": world[:, 0], "y": world[:, 1], "z": world[:, 2]}, crs=CRS).write(str(laz))
+    zipped = tmp_path / "rilievo.zip"
+    with zipfile.ZipFile(zipped, "w") as z:
+        z.write(laz, laz.name)
+    new = clouds.import_cloud(doc, zipped, label="zip")
+    assert new.label == "zip" and len(new.point_cloud) == len(world)
+    assert np.allclose(new.to_world(new.point_cloud.xyz), world, atol=0.002)

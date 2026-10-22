@@ -37,7 +37,7 @@ def t(it: str, en: str) -> str:
 
 METHOD_LABELS = [("smrf", "SMRF (Simple Morphological Filter)"), ("csf", "CSF (Cloth Simulation Filter)"),
                  ("pmf", "PMF (Progressive Morphological Filter)")]
-CLOUD_FILTER = "Nuvole di punti (*.las *.laz *.ply *.e57 *.json);;Tutti i file (*)"
+CLOUD_FILTER = "Nuvole di punti (*.las *.laz *.ply *.e57 *.json *.zip);;Tutti i file (*)"
 
 
 class TerrioPlugin(Plugin):
@@ -56,8 +56,8 @@ class TerrioPlugin(Plugin):
         environment.configure(context)
         context.add_action(t("Importa nuvola di punti...", "Import point cloud..."), self.import_dialog,
                            processing=True,
-                           tip=t("LAS, LAZ, COPC, EPT, PLY o E57, anche dal web, come nuvola densa",
-                                 "LAS, LAZ, COPC, EPT, PLY or E57, also from the web, as the dense cloud"))
+                           tip=t("LAS, LAZ, COPC, EPT, PLY o E57 (anche in uno zip), anche dal web, come nuvola densa",
+                                 "LAS, LAZ, COPC, EPT, PLY or E57 (also zipped), also from the web, as the dense cloud"))
         context.add_action(t("Classifica il terreno (SMRF, CSF, PMF)...", "Classify the ground (SMRF, CSF, PMF)..."),
                            self.ground_dialog, processing=True,
                            tip=t("Terreno e altri punti della nuvola densa con i filtri di PDAL",
@@ -147,7 +147,7 @@ class TerrioPlugin(Plugin):
         s = self.context.settings
         v = ParamDialog.ask(window, t("Importa nuvola di punti (terrio)", "Import point cloud (terrio)"), [
             Field("file", t("File", "File"), s.get("import_file", ""), kind="file_open", filter=CLOUD_FILTER,
-                  tip=t("LAS, LAZ, COPC (.copc.laz), PLY, E57 o l'ept.json di un EPT", "LAS, LAZ, COPC (.copc.laz), PLY, E57 or the ept.json of an EPT")),
+                  tip=t("LAS, LAZ, COPC (.copc.laz), PLY, E57, uno zip di questi o l'ept.json di un EPT", "LAS, LAZ, COPC (.copc.laz), PLY, E57, a zip of them or the ept.json of an EPT")),
             Field("url", t("Oppure URL (https, s3, gs, az)", "Or URL (https, s3, gs, az)"), "", kind="text",
                   tip=t("COPC ed EPT remoti sono letti sul posto, solo le parti che servono",
                         "Remote COPC and EPT are read in place, only the parts needed")),

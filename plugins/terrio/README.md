@@ -7,7 +7,7 @@ Linux x86_64 and aarch64).
 
 | Where | What |
 |---|---|
-| *Plugin > terrio > Importa nuvola di punti...* | LAS, LAZ, COPC, EPT, PLY and E57 files, on disk or on the web (https, S3, Google Cloud, Azure; remote COPC and EPT are read in place), as the dense cloud of a new chunk or of the active one (the current cloud is kept as a version). Colours, intensity (as grey) and classes come with the points; a limit of points, a choice of classes and a reference system for files without one. |
+| *Plugin > terrio > Importa nuvola di punti...* | LAS, LAZ, COPC, EPT, PLY and E57 files (also zipped), on disk or on the web (https, S3, Google Cloud, Azure; remote COPC and EPT are read in place), as the dense cloud of a new chunk or of the active one (the current cloud is kept as a version). Colours, intensity (as grey) and classes come with the points; a limit of points, a choice of classes and a reference system for files without one. |
 | *Plugin > terrio > Classifica il terreno (SMRF, CSF, PMF)...* | Ground (class 2) and other points (class 1) of the dense cloud with the PDAL-style filters of terrio: Simple Morphological Filter, Cloth Simulation Filter or Progressive Morphological Filter; low noise (class 7) found first with ELM; the other points optionally in the ASPRS vegetation classes 3, 4 and 5 by their height above the ground. Points labelled by hand keep their class. A DEM built from class 2 is then a DTM. |
 | *Plugin > terrio > Raster di riferimento dal web...* | A Cloud Optimized GeoTIFF by URL (or a STAC search, `STACIT:...`, or a file) read only over the survey plus a margin, reprojected into the chunk's system and kept as a version of the DEM or of the orthomosaic (*Versioni*): the active one does not change. |
 | *File > Esporta* | the dense cloud as **E57** or as an **EPT** dataset (a folder), the orthomosaic as **PMTiles** or **MBTiles** (Web Mercator tiles for web maps) |
@@ -37,7 +37,7 @@ ppg plugin terrio export scavo.ppg ortofoto.pmtiles
   pip install "ppg-terrio @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/terrio"
   ```
 
-The plugin is written for terrio 0.3.2 and accepts any 0.3 release (`terrio>=0.3.2,<0.4`):
+The plugin is written for terrio 0.4.0 and accepts the 0.3.2 and 0.4 releases (`terrio>=0.3.2,<0.5`):
 terrio is young and its API may still change before 1.0.
 
 ## Notes
