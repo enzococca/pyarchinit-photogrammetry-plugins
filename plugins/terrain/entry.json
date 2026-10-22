@@ -1,10 +1,10 @@
 {
   "title": "Terrain",
-  "description": "Terrain analysis of the DEM with WhiteboxTools (downloaded once): hydrology - depressions breached, flow accumulation, stream network and basins as lines and polygons; geomorphometry - topographic position, deviation from the mean height, geomorphons, curvatures, ruggedness, hours of daylight; nested depressions and mounds (level-set) with depth, volume and elongation; viewshed from a point. Overlaid on the orthomosaic and DEM, exported as GeoTIFF and GeoPackage, into the QGIS project",
+  "description": "Terrain analysis of the DEM with WhiteboxTools (downloaded once): stream network and basins, topographic position, geomorphons, curvatures, ruggedness and daylight, nested depressions and mounds with depth and volume, viewshed; overlaid on the orthomosaic and DEM, exported as GeoTIFF and GeoPackage, in the QGIS project",
   "i18n": {
     "it": {
       "title": "Terreno",
-      "description": "Analisi del terreno sul DEM con WhiteboxTools (scaricato una volta): idrologia - depressioni aperte, accumulo di flusso, reticolo e bacini come linee e poligoni; geomorfometria - posizione topografica, scarto dalla quota media, geomorphons, curvature, rugosità, ore di luce; depressioni e rilievi annidati (level-set) con profondità, volume e allungamento; visibilità da un punto. Sovrapposti a ortofoto e DEM, esportati in GeoTIFF e GeoPackage, nel progetto QGIS"
+      "description": "Analisi del terreno sul DEM con WhiteboxTools (scaricato una volta): reticolo e bacini, posizione topografica, geomorphons, curvature, rugosità e ore di luce, depressioni e rilievi annidati con profondità e volume, visibilità; sovrapposti a ortofoto e DEM, esportati in GeoTIFF e GeoPackage, nel progetto QGIS"
     }
   },
   "min_app": "1.2.2",
