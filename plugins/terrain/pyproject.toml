@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-terrain"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: terrain analysis of the DEM with WhiteboxTools - hydrology (streams and basins), geomorphometry (TPI, geomorphons, curvature, ruggedness, daylight), nested depressions and mounds, viewshed"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# WhiteboxTools is a program (MIT), downloaded once into the plugin's folder: no Python dependency
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/terrain"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+terrain = "ppg_terrain:TerrainPlugin"
+
+[tool.setuptools]
+packages = ["ppg_terrain"]
