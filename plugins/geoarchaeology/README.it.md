@@ -9,21 +9,31 @@ Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-ph
 trasformati in superfici e in un modello 3D dei depositi, sullo stesso terreno del rilievo
 fotogrammetrico (il DEM e l'ortofoto del chunk).
 
-* **Sondaggi** da CSV: una tabella dei collari (id, x, y nel sistema di riferimento del chunk,
-  quota della bocca, profondità) e una degli intervalli (id, da e a in metri dalla bocca,
-  l'unità - un numero di US o un'unità litologica -, descrizione, colore Munsell o RGB,
-  litologia), oppure una tabella sola con entrambi. Nomi delle colonne in italiano o in inglese
-  (`sondaggio`, `da`, `a`, `us`, `descrizione`, `colore`... oppure `hole_id`, `from`, `to`, `unit`,
-  `description`, `colour`...), separatore virgola, punto e virgola o tabulazione, decimali col punto
-  o con la virgola; gli intervalli si possono dare anche in quote (`quota_tetto`, `quota_letto`). I
-  collari senza quota la prendono dal DEM; quelli che l'hanno vengono confrontati con esso.
-  Sovrapposizioni, vuoti e unità fuori ordine vengono segnalati.
+* **Sondaggi** da CSV: una tabella dei collari (id, x, y nel sistema di riferimento del chunk, quota
+  della bocca, profondità) e una degli intervalli (id, da e a in metri dalla bocca, l'unità - un
+  numero di US o un'unità litologica -, descrizione, colore, litologia), oppure una tabella sola con
+  entrambi. Nomi delle colonne in italiano o in inglese come si scrivono sul campo
+  (`Sigla sondaggio`, `Quota s.l.m. (m)`, `Codice US`, `US n.`, `Da (cm)`... oppure `Hole ID`,
+  `Elevation (m a.s.l.)`, `From (cm)`, `Context No.`...), unità di misura convertite; un nome che il
+  campo lo indovina soltanto (`codice`, `h`, `tetto`/`letto` con dentro delle quote, distinte dalle
+  profondità in base ai valori) viene preso quando non c'è niente di più chiaro, e viene segnalato.
+  Separatore virgola, punto e virgola o tabulazione; numeri letti nel contesto del file (punto o
+  virgola decimale, separatori delle migliaia); un file separato da virgole con virgole decimali
+  senza virgolette viene ricomposto dove si può fare in un modo solo. Gli intervalli si possono dare
+  anche in quote (`quota_tetto`, `quota_letto`). Colori come notazioni Munsell (anche `2,5Y 5/2`),
+  `#rrggbb`, `r,g,b` o a parole in italiano o in inglese (`bruno rossastro`,
+  `light yellowish brown`). Codici delle unità confrontati in una forma sola (`US 1`, `US1`, `us 1`
+  e, quando un solo tipo ha quel numero, `1`), mostrati come sono scritti più spesso. I collari senza
+  quota la prendono dal DEM; quelli che l'hanno vengono confrontati con esso. Sovrapposizioni, vuoti,
+  unità fuori ordine, righe e colori lasciati fuori vengono segnalati, con le righe dei file.
 * **Ordine delle unità** dai log (un'unità sopra un'altra in un sondaggio sta sopra di essa, i
   disaccordi vanno alla maggioranza), oppure dato a mano.
 * **Colonne stratigrafiche**: un sondaggio con le sue descrizioni, oppure un pannello di più
   sondaggi su un asse comune delle quote con i tetti della stessa unità collegati; le unità nel
-  loro colore (il colore Munsell del log quando c'è) con un retino per le litologie nominate
-  (argilla, limo, sabbia, ghiaia, pietre, cenere, torba, organico); SVG e PNG con matplotlib.
+  loro colore (il colore Munsell del log quando c'è) con il retino della litologia nominata
+  (argilla, limo, sabbia, ghiaia, pietre, mattone crudo, cenere, torba, organico: prima la colonna
+  della litologia, poi la descrizione, e decide il nome principale - `ghiaia sabbiosa` è ghiaia,
+  `sandy gravel` anche); SVG e PNG con matplotlib, un pannello in un file suo (`colonne_S1-S2-S3`).
 * **Superfici di contatto per kriging**, scritto in NumPy: per il tetto di ogni unità il
   semivariogramma sperimentale, un modello sferico, esponenziale o gaussiano con effetto pepita
   adattato ai minimi quadrati pesati (pesi di Cressie), kriging ordinario o kriging universale con
@@ -58,20 +68,25 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   contatto, le unità colorate fra di essi, i sondaggi entro una distanza proiettati sulla traccia
   con i loro log e la distanza dalla traccia; in scala (scelta per un foglio A0 quando non data,
   come le sezioni del programma) con un'esagerazione verticale; SVG, PNG, DXF (coordinate di
-  sezione, unità come campiture del loro colore) e CSV del profilo.
+  sezione, unità come campiture del loro colore) e CSV del profilo. Dove matplotlib non sa scrivere
+  SVG o PDF (l'applicazione desktop fino alla 1.3.0 ha solo il backend del PNG), sezioni e colonne
+  vengono scritte solo in PNG, e il plugin lo dice.
 * **Modello 3D delle unità**: un solido chiuso per unità fra il suo tetto e il tetto dell'unità
   sotto (l'ultima fino a un fondo: il fondo più basso dei sondaggi, tenuto un margine - il 5 %
   della loro altezza - sotto il tetto più basso dell'ultima unità, perché il solido non abbia
-  buchi), costruito sulla griglia come
-  il programma costruisce i proxy delle unità stratigrafiche; un'unità il cui codice corrisponde a
-  US disegnate nel chunk viene ritagliata sui loro poligoni. Un PLY per unità (doppia precisione,
-  colorato), un OBJ con un oggetto e un materiale per unità, i volumi per unità in un CSV (sulle
-  celle col DEM, le altre nelle loro colonne).
+  buchi), costruito sulla griglia come il programma costruisce i proxy delle unità stratigrafiche;
+  un'unità il cui codice corrisponde a US disegnate nel chunk viene ritagliata sui loro poligoni.
+  Un PLY per unità (doppia precisione, colorato), un OBJ con un oggetto e un materiale per unità, i
+  volumi per unità in un CSV (sulle celle col DEM, le altre nelle loro colonne). Alla fine le unità
+  si vedono insieme nella vista 3D del programma, ognuna nel suo colore (`unita_vista.ply`, se si
+  vuole separate in verticale); il pannello le fa rivedere e apre la cartella del modello.
 * Il pannello *Geoarcheologia* del dock del progetto: sondaggi, superfici e sezioni in tre
   tabelle, i sondaggi come layer di punti della vista (id, quota, profondità, unità), una superficie
-  (la quota, la varianza o la correzione) o uno spessore sopra l'ortofoto o il DEM con palette e
-  opacità, le tracce delle sezioni come layer, le esportazioni, il progetto QGIS (superfici,
-  sondaggi e sezioni). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
+  (la quota, la varianza o la correzione - questa su una rampa divergente attorno a zero, celle
+  abbassate e alzate distinte) o uno spessore sopra l'ortofoto o il DEM con palette e opacità, una
+  sezione per i sondaggi nell'ordine in cui sono stati scelti, le tracce delle sezioni come layer,
+  le esportazioni, il progetto QGIS (superfici, sondaggi e sezioni; anche per un chunk in un sistema
+  locale). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
 * `ppg plugin geoarchaeology import|list|order|surfaces|section|model|logs|export|remove PROGETTO ...`;
   `ppg plugin geoarchaeology help` stampa le opzioni di ogni comando.
 

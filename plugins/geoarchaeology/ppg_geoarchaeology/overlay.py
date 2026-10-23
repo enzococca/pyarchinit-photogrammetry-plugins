@@ -1,7 +1,9 @@
 """The surfaces shown over the raster view of the program: a band of a surface (its elevation,
-the kriging variance or the clamping correction) or a thickness, with a palette between the 2nd
-and 98th percentiles of its values, as a pixmap in the frame of what the view shows, with an
-opacity; the boreholes as a layer of points of the view."""
+the kriging variance or the correction of the stack) or a thickness, with a palette between the
+2nd and 98th percentiles of its values - from zero for variances and thicknesses, around zero for
+the correction, whose cells lowered and raised take the two ends of a diverging ramp -, as a
+pixmap in the frame of what the view shows, with an opacity; the boreholes as a layer of points
+of the view."""
 from __future__ import annotations
 
 import numpy as np
@@ -18,18 +20,30 @@ PALETTES = {
     "diverging": [(0.0, (33, 102, 172)), (0.5, (247, 247, 247)), (1.0, (178, 24, 43))],
 }
 # the palette of what is shown: band 1 of a surface, its variance (2), its correction (3), a thickness
-DEFAULT = {("surface", 1): "terrain", ("surface", 2): "heat", ("surface", 3): "heat", ("thickness", 1): "thickness"}
+DEFAULT = {("surface", 1): "terrain", ("surface", 2): "heat", ("surface", 3): "diverging", ("thickness", 1): "thickness"}
 BOREHOLES_LAYER = "Geoarcheologia: sondaggi"
 SECTIONS_LAYER = "Geoarcheologia: sezioni"
 
 
-def limits(values: np.ndarray, zero: bool = False) -> tuple[float, float]:
+def style(kind: str, band: int) -> tuple[str, bool, bool]:
+    """``(palette, from zero, around zero)`` of a product shown: the elevation of a surface on the
+    hypsometric ramp, its kriging variance from zero, the correction of the stack around zero on a
+    diverging ramp (lowered one way, raised the other), a thickness from zero."""
+    palette = DEFAULT.get((kind, band), "terrain")
+    return palette, kind == "thickness" or (kind == "surface" and band == 2), kind == "surface" and band == 3
+
+
+def limits(values: np.ndarray, zero: bool = False, symmetric: bool = False) -> tuple[float, float]:
     """The ends of the ramp: the 2nd and 98th percentiles (from 0 when ``zero``: thicknesses,
-    variances, corrections)."""
+    variances; from -m to m, the larger of the two in size, when ``symmetric``: the corrections,
+    so that zero is the middle of a diverging ramp)."""
     v = values[np.isfinite(values)]
     if v.size == 0:
-        return 0.0, 1.0
+        return (-1.0, 1.0) if symmetric else (0.0, 1.0)
     lo, hi = (float(q) for q in np.percentile(v, [2, 98]))
+    if symmetric:
+        m = max(abs(lo), abs(hi)) or float(np.abs(v).max()) or 1e-6
+        return -m, m
     if zero:
         lo = 0.0
         if hi <= 0:
@@ -74,7 +88,7 @@ class Overlay:
         self.product_id = None
 
     def show(self, values: np.ndarray, transform, palette: str = "terrain", opacity: float = 0.7,
-             zero: bool = False, product_id: str | None = None) -> tuple[float, float]:
+             zero: bool = False, product_id: str | None = None, symmetric: bool = False) -> tuple[float, float]:
         from PySide6.QtGui import QPixmap
 
         from pyarchinit_photogrammetry.gui.image_views import to_qimage
@@ -85,7 +99,7 @@ class Overlay:
         self.remove()
         w, h = view._base_size
         values = resample_to(values, transform, view.tr, (h, w))
-        lo, hi = limits(values, zero)
+        lo, hi = limits(values, zero, symmetric)
         rgba = render(values, lo, hi, palette)
         item = view.scene().addPixmap(QPixmap.fromImage(to_qimage(rgba)))
         item.setZValue(-0.5)  # over the raster (-2) and its detail (-1), under the drawings (0 and above)

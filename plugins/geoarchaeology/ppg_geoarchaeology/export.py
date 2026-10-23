@@ -2,12 +2,14 @@
 
 * :func:`write_layers` - ``<chunk data>/geoarchaeology/sondaggi.gpkg``, kept up to date: the
   boreholes as points with their attributes (table ``sondaggi``), the intervals of the logs as a
-  table without geometry (``intervalli``: GeoPackage *attributes*), the traces of the sections
-  (``sezioni``); the QGIS project of the program reads it.
+  table without geometry (``intervalli``: GeoPackage *attributes*; ``unita`` the unit as shown,
+  ``unita_scritta`` its code as written in the log), the traces of the sections (``sezioni``); the
+  QGIS project of the program reads it.
 * :func:`export_gpkg` - the same into a GeoPackage chosen by the user, with the surfaces and
   thicknesses as GeoTIFFs and the volumes of the model as CSV beside it.
 * :func:`export_raster` - one surface or thickness as GeoTIFF.
-* :func:`qgis_entries` - the rasters and layers for ``window.qgis_providers``.
+* :func:`qgis_entries` - the rasters and layers for ``window.qgis_providers`` (also of a chunk in a
+  local system).
 
 The GeoPackages are written with the program's ``io.gpkg`` (sqlite3, no GDAL).
 """
@@ -26,7 +28,8 @@ BOREHOLE_COLUMNS = {"id": "TEXT", "x": "REAL", "y": "REAL", "z": "REAL", "z_sour
                     "depth": "REAL", "base_z": "REAL", "kind": "TEXT", "units": "TEXT", "intervals": "INTEGER",
                     "source": "TEXT"}
 INTERVAL_COLUMNS = {"sondaggio": "TEXT", "da_m": "REAL", "a_m": "REAL", "quota_tetto": "REAL", "quota_base": "REAL",
-                    "unita": "TEXT", "descrizione": "TEXT", "colore": "TEXT", "litologia": "TEXT"}
+                    "unita": "TEXT", "unita_scritta": "TEXT", "descrizione": "TEXT", "colore": "TEXT",
+                    "litologia": "TEXT"}
 SECTION_COLUMNS = {"nome": "TEXT", "lunghezza_m": "REAL", "distanza_m": "REAL", "scala": "INTEGER",
                    "sondaggi": "TEXT", "svg": "TEXT"}
 
@@ -105,6 +108,7 @@ def write_layers(chunk, path: Path | None = None) -> Path:
             ivs.append({"sondaggio": b.id, "da_m": iv.top, "a_m": iv.base,
                         "quota_tetto": None if b.z is None else b.z - iv.top,
                         "quota_base": None if b.z is None else b.z - iv.base, "unita": iv.unit,
+                        "unita_scritta": iv.unit_raw or iv.unit,
                         "descrizione": iv.description, "colore": iv.colour, "litologia": iv.lithology})
     write_attributes(path, "intervalli", INTERVAL_COLUMNS, ivs, crs, identifier="intervalli")
     secs = [(LineString(s["coords"]), {"nome": s["name"], "lunghezza_m": s["length"], "distanza_m": s["distance"],
@@ -154,10 +158,10 @@ def export_gpkg(chunk, path: str | Path, window=None, progress=None) -> Path:
 
 def qgis_entries(chunk) -> tuple[list[dict], list[dict]]:
     """The surfaces (grey, the thicknesses in the iron ramp) and the layers of the boreholes and
-    of the sections, for the QGIS project of the program (a georeferenced chunk only)."""
+    of the sections, for the QGIS project of the program. A chunk in a local system has them too,
+    as the program does with its own layers: GeoTIFFs and GeoPackage layers without a reference
+    system (an undefined cartesian one), in a project without one."""
     rasters, vectors = [], []
-    if _crs(chunk) is None:
-        return rasters, vectors
     for e in sf.entries(chunk):
         p = Path(chunk.data_dir) / e["file"]
         if not p.exists():

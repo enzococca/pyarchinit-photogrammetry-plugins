@@ -1,14 +1,18 @@
 """Stratigraphic columns of the boreholes, drawn with matplotlib.
 
-One borehole: its column at a scale (1:10 to 1:500, chosen to fit an A4 page when not given)
-with the depths on the left, the elevations on the right when the collar has one, and the
-description of every interval beside it. Several: a panel of columns side by side, on a common
-elevation axis when every collar has an elevation (on depth otherwise), the tops of the same unit
-joined between neighbouring columns by dashed lines, a legend of the units. The units take their
-colours (the Munsell colour of the log when given) and a hatch for the lithologies named in the
-log (clay, silt, sand, gravel, stones, ash, peat, organic).
+One borehole: its column at a scale (1:10 to 1:1000, chosen to fit an A4 page when not given)
+with the elevations on the left and the depths on the right when the collar has an elevation
+(the depths alone otherwise), and the description and colour of every interval beside it.
+Several: a panel of columns side by side, on a common elevation axis when every collar has an
+elevation (on depth otherwise), the tops of the same unit joined between neighbouring columns by
+dashed lines, a legend of the units. The units take their colours (the Munsell colour of the log
+when given) and the hatch of the lithology the log names (:func:`boreholes.hatch_of`: clay, silt,
+sand, gravel, stones, mudbrick, ash, peat, organic).
 
-SVG and PNG in ``<chunk data>/geoarchaeology/logs/`` unless another path is given.
+SVG and PNG in ``<chunk data>/geoarchaeology/logs/`` unless another path is given: the column of
+one borehole is ``<borehole>.svg``, a panel ``colonne_<the boreholes>.svg``, so a panel never
+replaces another. A vector format this installation cannot write is skipped and noted, the PNG
+kept (:mod:`figures`).
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ import textwrap
 from pathlib import Path
 
 from . import boreholes as bh
+from .figures import Written, save
 from .texts import num, t
 
 LOG_SCALES = (10, 20, 50, 100, 200, 500, 1000)
@@ -26,6 +31,19 @@ def folder(chunk) -> Path:
     return bh.folder(chunk) / "logs"
 
 
+def panel_name(ids) -> str:
+    """The file name of the panel of ``ids``: ``colonne_S5-S4-S3`` (shortened with a hash of the
+    whole list when long)."""
+    import hashlib
+
+    from .surfaces import slug
+
+    joined = "-".join(slug(i) for i in ids)
+    if len(joined) > 60:
+        joined = joined[:48] + "-" + hashlib.sha1("\n".join(map(str, ids)).encode()).hexdigest()[:8]
+    return "colonne_" + joined
+
+
 def _scale(height_m: float, scale: float | None) -> float:
     if scale:
         return float(scale)
@@ -33,11 +51,12 @@ def _scale(height_m: float, scale: float | None) -> float:
 
 
 def draw(chunk, ids=None, path: str | Path | None = None, vertical: str = "auto", scale: float | None = None,
-         correlate: bool = True) -> list[Path]:
+         correlate: bool = True) -> Written:
     """The log of one borehole, or the panel of several (``ids``: all when None, in their order);
     ``vertical``: "elevation", "depth" or "auto" (elevations when every collar has one).
-    ``path``: the file to write (its suffix .svg or .png chooses the format), both formats in the
-    logs folder when None. Returns the files written."""
+    ``path``: the file to write (its suffix .svg, .png or .pdf chooses the format), SVG and PNG in
+    the logs folder when None. Returns the files written, with ``notes`` on the formats this
+    installation cannot write (the PNG is written then)."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
     from matplotlib.patches import Patch, Rectangle
@@ -108,10 +127,12 @@ def draw(chunk, ids=None, path: str | Path | None = None, vertical: str = "auto"
             ax.add_patch(Rectangle((x0, y0), col_w, y1 - y0, facecolor=colour, edgecolor="black", linewidth=0.5,
                                    hatch=hatch, zorder=2))
             if (iv.base - iv.top) * k >= 3.0:
-                ax.text(x0 + col_w / 2, (y0 + y1) / 2, iv.unit, ha="center", va="center", fontsize=6, zorder=3,
+                written = (iv.unit_raw or iv.unit) if single else iv.unit
+                ax.text(x0 + col_w / 2, (y0 + y1) / 2, written, ha="center", va="center", fontsize=6, zorder=3,
                         bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "alpha": 0.7, "linewidth": 0})
             if single:
-                words = f"{num(iv.top, 2)}-{num(iv.base, 2)} m  {iv.unit}" + (f": {iv.description}" if iv.description else "")
+                words = f"{num(iv.top, 2)}-{num(iv.base, 2)} m  {iv.unit_raw or iv.unit}" + (
+                    f": {iv.description}" if iv.description else "")
                 if iv.colour:
                     words += f" ({iv.colour})"
                 ax.text(col_w + (16.0 if vertical == "elevation" else 4.0), (y0 + y1) / 2,
@@ -158,13 +179,11 @@ def draw(chunk, ids=None, path: str | Path | None = None, vertical: str = "auto"
 
         out = folder(chunk)
         out.mkdir(parents=True, exist_ok=True)
-        base = out / (slug(holes[0].id) if single else "colonne")
+        base = out / (slug(holes[0].id) if single else panel_name([b.id for b in holes]))
         targets = [base.with_suffix(".svg"), base.with_suffix(".png")]
     else:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         targets = [path] if path.suffix.lower() in (".svg", ".png", ".pdf") else [path.with_suffix(".svg"),
                                                                                     path.with_suffix(".png")]
-    for p in targets:
-        fig.savefig(p, dpi=200 if p.suffix.lower() == ".png" else None)
-    return targets
+    return save(fig, targets, png_dpi=200)

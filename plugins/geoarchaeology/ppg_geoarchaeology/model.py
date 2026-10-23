@@ -10,13 +10,13 @@ match the unit 12 drawn as US; ``USM3`` only a USM) is clipped to their polygons
 
 Files in ``<chunk data>/geoarchaeology/model/``: a PLY per unit (double precision coordinates,
 the colour of the unit), one OBJ with an object per unit and its material (``unita.obj``,
-``unita.mtl``), the volumes in ``volumi.csv``; the registry in
-``chunk.meta["geoarchaeology"]["model"]``.
+``unita.mtl``), the volumes in ``volumi.csv``, all the units in one PLY for the program's 3D view
+(``unita_vista.ply``, in the internal frame of the chunk, optionally set apart vertically); the
+registry in ``chunk.meta["geoarchaeology"]["model"]``.
 """
 from __future__ import annotations
 
 import csv
-import re
 import time
 from pathlib import Path
 
@@ -27,7 +27,7 @@ from . import surfaces as sf
 from .texts import t
 
 MODEL_CELLS = 60_000  # cells of the model grid when no cell is given (a coarser copy of the surfaces' grid)
-_US = re.compile(r"^\s*(US[A-Za-z]{0,2}|SU)[\s\-_.]*(?=\d)(.*)$", re.IGNORECASE)
+DISPLAY = "unita_vista.ply"  # the units together, for the 3D view of the program
 
 
 def folder(chunk) -> Path:
@@ -98,13 +98,8 @@ def signed_volume(verts: np.ndarray, faces: np.ndarray) -> float:
 # ------------------------------------------------------------------ stratigraphic units drawn
 def unit_key(code) -> tuple[str | None, str]:
     """``(kind, number)`` of a unit code: ``"US 12"`` -> ("US", "12"), ``"USM3"`` -> ("USM", "3"),
-    ``"12"`` -> (None, "12"), ``"Sabbia"`` -> (None, "sabbia")."""
-    s = str(code).strip()
-    m = _US.match(s)
-    if m:
-        kind = m.group(1).upper()
-        return ("US" if kind == "SU" else kind), m.group(2).strip().lower()
-    return None, s.lower()
+    ``"12"`` -> (None, "12"), ``"Sabbia"`` -> (None, "sabbia"); any spelling (:func:`boreholes.split_unit`)."""
+    return bh.split_unit(code)
 
 
 def drawn_units(chunk) -> list:
@@ -127,7 +122,8 @@ def polygons_for(code, units) -> list:
     for u in units:
         if not u.us or u.geometry is None or u.geometry.is_empty:
             continue
-        if str(u.us).strip().lower() == number and (kind is None or (u.tipo or "US").upper() == kind):
+        drawn_kind, drawn_number = unit_key(f"{u.tipo or 'US'} {u.us}")
+        if drawn_number == number and (kind is None or drawn_kind == kind):
             out.append(u)
     return out
 
@@ -168,12 +164,14 @@ def model_grid(grid: sf.Grid, cell: float | None) -> tuple[sf.Grid, int]:
 
 
 def build(chunk, cell: float | None = None, clip: bool = True, floor: float | None = None, last: bool = True,
-          min_thickness: float = 0.001, offset=None, units: list[str] | None = None, progress=None) -> dict:
+          min_thickness: float = 0.001, offset=None, units: list[str] | None = None, explode: float | None = None,
+          progress=None) -> dict:
     """A closed solid per unit (``units``: these only) from the surfaces of the chunk; ``clip``:
     the units drawn in the chunk cut the solids of their unit; ``last``: the last unit down to
     ``floor`` (by default the deepest bottom of the boreholes, kept a margin below the lowest top
     of the last unit: :func:`default_floor`); ``offset``: subtracted from the coordinates of the
-    OBJ (written in its header and in ``unita.obj.offset.txt``). The volumes are summed over the
+    OBJ (written in its header and in ``unita.obj.offset.txt``); ``explode``: metres between the
+    units in the file of the 3D view (:func:`write_display`). The volumes are summed over the
     cells with a DEM, the others reported apart (``outside_dem``). Returns the registry of the
     model."""
     from pyarchinit_photogrammetry.core.progress import as_progress
@@ -202,8 +200,9 @@ def build(chunk, cell: float | None = None, clip: bool = True, floor: float | No
             old.unlink()
     area = grid.cell * grid.cell
     rows, meshes = [], []
+    wanted = {bh.resolve_unit(u, [code for code, _v in tops]) for u in units or []}
     for k, (unit, top) in enumerate(tops):
-        if units and unit not in units:
+        if units and unit not in wanted:
             continue
         progress(0.05 + 0.8 * k / max(len(tops), 1), f"Solid of {unit}")
         if k + 1 < len(tops):
@@ -247,8 +246,12 @@ def build(chunk, cell: float | None = None, clip: bool = True, floor: float | No
         files["obj"] = str(obj.relative_to(chunk.data_dir))
     csv_path = write_volumes(out_dir / "volumi.csv", rows)
     files["csv"] = str(csv_path.relative_to(chunk.data_dir))
+    display = write_display(chunk, meshes, explode)
+    if display is not None:
+        files["display"] = str(display.relative_to(chunk.data_dir))
     registry = {"made": time.strftime("%Y-%m-%d %H:%M"), "cell": grid.cell, "factor": f, "floor": floor,
-                "floor_given": floor_given, "clip": bool(clip), "units": rows, "files": files}
+                "floor_given": floor_given, "clip": bool(clip), "units": rows, "files": files,
+                "explode": float(explode or 0.0)}
     bh.meta(chunk)["model"] = registry
     progress(1.0, f"{len(meshes)} solids, {sum(r['volume_m3'] for r in rows):.3f} m3")
     return registry
@@ -311,6 +314,61 @@ def write_volumes(path: Path, rows: list[dict]) -> Path:
 
 def registry(chunk) -> dict:
     return (chunk.meta.get("geoarchaeology") or {}).get("model") or {}
+
+
+def has_model(chunk) -> bool:
+    """Whether the chunk has the solids of a model of the units."""
+    return any(r.get("ply") and (Path(chunk.data_dir) / r["ply"]).exists() for r in registry(chunk).get("units", []))
+
+
+# ------------------------------------------------------------------ the units in the 3D view of the program
+def write_display(chunk, meshes, explode: float | None = None) -> Path | None:
+    """All the solids of ``meshes`` (``(unit, vertices in the world, faces, rgb)``, from the top
+    unit down) in one PLY for the program's 3D view, ``model/unita_vista.ply``: the vertices in the
+    internal frame of the chunk, as the model of the survey is kept (the view takes them to the
+    world with the chunk's transform), in double precision, every unit in its colour. ``explode``:
+    metres between the units, the upper ones raised (None or 0: as they lie). None without
+    solids."""
+    from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
+
+    if not meshes:
+        return None
+    gap = float(explode or 0.0)
+    V, F, C, n = [], [], [], 0
+    for k, (_unit, verts, faces, rgb) in enumerate(meshes):
+        world = np.array(verts, dtype=np.float64)
+        if gap:
+            world[:, 2] += gap * (len(meshes) - 1 - k)
+        V.append(chunk.to_internal(world))
+        F.append(np.asarray(faces, np.int64) + n)
+        C.append(np.tile(np.asarray(rgb, np.uint8).reshape(1, 3), (len(world), 1)))
+        n += len(world)
+    out = folder(chunk)
+    out.mkdir(parents=True, exist_ok=True)
+    return write_mesh_ply(out / DISPLAY, np.vstack(V), np.vstack(F), np.vstack(C), double=True)
+
+
+def display_mesh(chunk, explode: float | None = None) -> tuple[Path | None, int]:
+    """The file of the 3D view written again from the PLY of every unit (a model built before
+    0.1.2 has none; ``explode`` None keeps the one of the model). Returns the file (None without
+    solids) and the number of units in it; the registry of the model is updated."""
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
+
+    reg = registry(chunk)
+    meshes = []
+    for r in reg.get("units", []):
+        p = Path(chunk.data_dir) / r["ply"] if r.get("ply") else None
+        if p is None or not p.exists():
+            continue
+        m = read_mesh(p)
+        rgb = m.colors[0] if m.colors is not None and len(m.colors) else np.array([160, 160, 160], np.uint8)
+        meshes.append((r["unit"], m.xyz, m.faces, rgb))
+    gap = float(reg.get("explode") or 0.0) if explode is None else float(explode)
+    path = write_display(chunk, meshes, gap)
+    if path is not None and reg:
+        reg.setdefault("files", {})["display"] = str(path.relative_to(chunk.data_dir))
+        reg["explode"] = gap
+    return path, len(meshes)
 
 
 def remove(chunk) -> None:

@@ -9,20 +9,30 @@ A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-
 surfaces and a 3D model of the deposits, on the same ground as the photogrammetric survey (the
 DEM and the orthomosaic of the chunk).
 
-* **Boreholes** from CSV: a collar table (id, x, y in the reference system of the chunk, z of
-  the top, depth) and an interval table (id, from and to in metres below the collar, the unit -
-  a US number or a lithological unit -, description, Munsell or RGB colour, lithology), or one
-  table with both. Column names in Italian or English (`sondaggio`, `da`, `a`, `us`,
-  `descrizione`, `colore`... or `hole_id`, `from`, `to`, `unit`, `description`, `colour`...),
-  comma, semicolon or tab separated, decimal point or comma; intervals may also be given by their
-  elevations (`quota_tetto`, `quota_letto`). Collars without z take it from the DEM; those with
-  one are compared with it. Overlaps, gaps and units out of order are reported.
+* **Boreholes** from CSV: a collar table (id, x, y in the reference system of the chunk, z of the
+  top, depth) and an interval table (id, from and to in metres below the collar, the unit - a US
+  number or a lithological unit -, description, colour, lithology), or one table with both. Column
+  names in Italian or English as they are written in the field (`Sigla sondaggio`,
+  `Quota s.l.m. (m)`, `Codice US`, `US n.`, `Da (cm)`... or `Hole ID`, `Elevation (m a.s.l.)`,
+  `From (cm)`, `Context No.`...), units of length converted; a name that only guesses its field
+  (`codice`, `h`, `tetto`/`letto` holding elevations, told apart from depths by the values) is
+  taken when nothing clearer is there, and reported. Comma, semicolon or tab separated; numbers
+  read in the context of the file (decimal point or comma, thousands separators); a file separated
+  by commas with unquoted decimal commas put back together where that can be done in one way only.
+  Intervals may also be given by their elevations (`quota_tetto`, `quota_letto`). Colours as
+  Munsell notations (also `2,5Y 5/2`), `#rrggbb`, `r,g,b` or words in Italian or English
+  (`bruno rossastro`, `light yellowish brown`). Unit codes compared in one form (`US 1`, `US1`,
+  `us 1` and, when one kind has that number, `1`), shown as written most often. Collars without z
+  take it from the DEM; those with one are compared with it. Overlaps, gaps, units out of order,
+  rows and colours left out are reported, with the lines of the files.
 * **Order of the units** from the logs (a unit above another in a borehole lies above it, the
   disagreements to the majority), or set by hand.
 * **Stratigraphic columns**: one borehole with its descriptions, or a panel of several on a
   common elevation axis with the tops of the same unit joined; units in their colour (the Munsell
-  colour of the log when given) with a hatch for the lithologies named (clay, silt, sand, gravel,
-  stones, ash, peat, organic); SVG and PNG with matplotlib.
+  colour of the log when given) with the hatch of the lithology named (clay, silt, sand, gravel,
+  stones, mudbrick, ash, peat, organic: the lithology column first, then the description, the head
+  noun deciding - `ghiaia sabbiosa` is gravel, `sandy gravel` too); SVG and PNG with matplotlib,
+  a panel in a file of its own (`colonne_S1-S2-S3`).
 * **Contact surfaces by kriging**, written in NumPy: for the top of every unit the experimental
   semivariogram, a spherical, exponential or Gaussian model with nugget fitted by weighted least
   squares (Cressie's weights), ordinary kriging or universal kriging with a linear drift (a
@@ -56,20 +66,25 @@ DEM and the orthomosaic of the chunk).
   contact, the units filled between them, the boreholes within a distance projected onto the
   trace with their logs and their offset; at a scale (chosen to fit an A0 sheet when not given,
   as the program's own sections) with a vertical exaggeration; SVG, PNG, DXF (section
-  coordinates, units as hatches of their colour) and CSV of the profile.
+  coordinates, units as hatches of their colour) and CSV of the profile. Where matplotlib cannot
+  write SVG or PDF (the desktop application up to 1.3.0 carries only its PNG backend), sections and
+  columns are written as PNG only, and the user is told.
 * **3D model of the units**: a closed solid per unit between its top and the top of the unit
   below (the last one down to a floor: the deepest bottom of the boreholes, kept a margin - 5 %
   of their height - below the lowest top of the last unit, so that its solid has no hole), built
-  on the grid as the
-  program builds the proxies of the stratigraphic units; a unit whose code matches US drawn in
-  the chunk is clipped to their polygons. A PLY per unit (double precision, coloured), one OBJ
-  with an object and a material per unit, the volumes per unit in a CSV (on the cells with a DEM,
-  the others in their own columns).
+  on the grid as the program builds the proxies of the stratigraphic units; a unit whose code
+  matches US drawn in the chunk is clipped to their polygons. A PLY per unit (double precision,
+  coloured), one OBJ with an object and a material per unit, the volumes per unit in a CSV (on
+  the cells with a DEM, the others in their own columns). At the end the units are shown together
+  in the program's 3D view, each in its colour (`unita_vista.ply`, optionally set apart
+  vertically); the pane shows them again and opens the folder of the model.
 * The *Geoarcheologia* pane of the project dock: boreholes, surfaces and sections in three
   tables, the boreholes as a layer of points of the view (id, z, depth, units), a surface (its
-  elevation, variance or correction) or a thickness over the orthomosaic or DEM with palette and
-  opacity, the section traces as a layer, the exports, the QGIS project (surfaces, boreholes and
-  sections). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
+  elevation, variance or correction - this one on a diverging ramp around zero, lowered and raised
+  cells apart) or a thickness over the orthomosaic or DEM with palette and opacity, a section
+  through the boreholes in the order they were picked, the section traces as a layer, the
+  exports, the QGIS project (surfaces, boreholes and sections; also for a chunk in a local
+  system). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
 * `ppg plugin geoarchaeology import|list|order|surfaces|section|model|logs|export|remove PROJECT ...`;
   `ppg plugin geoarchaeology help` prints the options of every command.
 

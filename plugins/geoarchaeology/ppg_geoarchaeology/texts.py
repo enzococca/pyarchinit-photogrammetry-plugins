@@ -40,3 +40,10 @@ def signed(value, decimals: int) -> str:
     """:func:`num` with its sign, ``+0,07`` / ``-0,01``."""
     text = num(value, decimals)
     return text if text.startswith("-") else "+" + text
+
+
+def plural(n, one: str, many: str) -> str:
+    """``one`` or ``many`` (already in the language of the interface, see :func:`t`) for ``n``
+    things, ``{0}`` the number: ``plural(1, "{0} sondaggio", "{0} sondaggi")`` is "1 sondaggio"."""
+    text = one if abs(float(n)) == 1 else many
+    return text.format(n) if "{0}" in text else text

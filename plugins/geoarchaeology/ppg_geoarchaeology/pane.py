@@ -1,6 +1,8 @@
 """The Geoarcheologia pane: the steps as buttons (their parameters asked in dialogs), the
 boreholes, the surfaces and the sections of the chunk in three tables, the overlay of a surface
-on the raster view with its band, palette and opacity, the exports.
+on the raster view with its band, palette and opacity, the model of the units in the 3D view of
+the program and its folder, the exports. The boreholes selected are kept in the order they were
+picked: a section through them follows that order.
 
 Every row of buttons is a :class:`FlowLayout` and the combos keep a short minimum: in a narrow
 dock the pane wraps and never widens the column of the window."""
@@ -64,8 +66,10 @@ class GeoarchaeologyPane(QWidget):
     order_requested = Signal()
     surfaces_requested = Signal()
     model_requested = Signal()
+    model_view_requested = Signal()  # the units of the model in the 3D view of the program
+    model_folder_requested = Signal()  # the folder of the model in the file manager
     section_draw_requested = Signal()
-    section_through_requested = Signal(list)  # the boreholes selected, in the order of the table
+    section_through_requested = Signal(list)  # the boreholes selected, in the order they were picked
     logs_requested = Signal(list)
     boreholes_layer_requested = Signal()
     overlay_requested = Signal(str, int, str, float)  # product id, band, palette ("" = its own), opacity
@@ -78,6 +82,7 @@ class GeoarchaeologyPane(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.has_model = False  # the chunk has the solids of a model of the units
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         intro = QLabel(t("Sondaggi, carote e sezioni di scavo sul rilievo: colonne stratigrafiche, superfici di "
@@ -99,7 +104,13 @@ class GeoarchaeologyPane(QWidget):
         self.b_surfaces.setToolTip(t("Tetti delle unità e spessori per kriging (IDW sotto i 5 sondaggi)",
                                      "Tops of the units and thicknesses by kriging (IDW under 5 boreholes)"))
         self.b_model = QPushButton(t("Modello 3D...", "3D model..."))
-        for b in (self.b_import, self.b_order, self.b_surfaces, self.b_model):
+        self.b_model_view = QPushButton(t("Mostra nella vista 3D", "Show in the 3D view"))
+        self.b_model_view.setToolTip(t("Le unità del modello 3D nella vista 3D del programma, ognuna nel suo colore",
+                                       "The units of the 3D model in the program's 3D view, each in its colour"))
+        self.b_model_folder = QPushButton(t("Apri la cartella", "Open the folder"))
+        self.b_model_folder.setToolTip(t("La cartella del modello: un PLY per unità, l'OBJ, i volumi",
+                                         "The folder of the model: a PLY per unit, the OBJ, the volumes"))
+        for b in (self.b_import, self.b_order, self.b_surfaces, self.b_model, self.b_model_view, self.b_model_folder):
             bar.addWidget(b)
         lay.addWidget(holder)
         holder2 = QWidget()
@@ -108,8 +119,8 @@ class GeoarchaeologyPane(QWidget):
         self.b_draw.setToolTip(t("Due clic sull'ortofoto o sul DEM: inizio e fine della sezione",
                                  "Two clicks on the orthomosaic or DEM: start and end of the section"))
         self.b_through = QPushButton(t("Sezione per i sondaggi", "Section through the boreholes"))
-        self.b_through.setToolTip(t("Una sezione che passa per i sondaggi selezionati, nel loro ordine",
-                                    "A section through the selected boreholes, in their order"))
+        self.b_through.setToolTip(t("Una sezione che passa per i sondaggi selezionati, nell'ordine in cui li hai scelti",
+                                    "A section through the selected boreholes, in the order you picked them"))
         self.b_logs = QPushButton(t("Colonne stratigrafiche", "Stratigraphic columns"))
         self.b_layer = QPushButton(t("Sondaggi nella vista", "Boreholes in the view"))
         for b in (self.b_draw, self.b_through, self.b_logs, self.b_layer):
@@ -158,6 +169,8 @@ class GeoarchaeologyPane(QWidget):
         self.b_order.clicked.connect(self.order_requested)
         self.b_surfaces.clicked.connect(self.surfaces_requested)
         self.b_model.clicked.connect(self.model_requested)
+        self.b_model_view.clicked.connect(self.model_view_requested)
+        self.b_model_folder.clicked.connect(self.model_folder_requested)
         self.b_draw.clicked.connect(self.section_draw_requested)
         self.b_through.clicked.connect(lambda: self.section_through_requested.emit(self.selected_boreholes()))
         self.b_logs.clicked.connect(lambda: self.logs_requested.emit(self.selected_boreholes()))
@@ -169,6 +182,8 @@ class GeoarchaeologyPane(QWidget):
         self.b_qgis.clicked.connect(self.qgis_requested)
         self.b_remove.clicked.connect(self._remove)
         self.s_opacity.valueChanged.connect(lambda v: self.opacity_changed.emit(v / 100.0))
+        self._picked: list[str] = []  # the boreholes selected, in the order they were picked
+        self.t_holes.itemSelectionChanged.connect(self._track_picks)
         self.t_products.itemDoubleClicked.connect(lambda _it: self._overlay())
         self.t_sections.itemDoubleClicked.connect(lambda _it: self.open_requested.emit(self.current_section() or ""))
         for tw in (self.t_holes, self.t_products, self.t_sections):
@@ -179,9 +194,21 @@ class GeoarchaeologyPane(QWidget):
         self.set_state([], [], [], "")
 
     # --------------------------------------------------------------- selections
-    def selected_boreholes(self) -> list[str]:
+    def _selected_in_table(self) -> list[str]:
         rows = sorted({i.row() for i in self.t_holes.selectedIndexes()})
-        return [self.t_holes.item(r, 0).text() for r in rows]
+        return [self.t_holes.item(r, 0).text() for r in rows if self.t_holes.item(r, 0) is not None]
+
+    def _track_picks(self) -> None:
+        """The order of the picks: those still selected, then the new ones (in the order of the
+        table when several come at once, as with Shift)."""
+        now = self._selected_in_table()
+        self._picked = [i for i in self._picked if i in now] + [i for i in now if i not in self._picked]
+
+    def selected_boreholes(self) -> list[str]:
+        """The boreholes selected, in the order they were picked."""
+        now = self._selected_in_table()
+        picked = [i for i in self._picked if i in now]
+        return picked + [i for i in now if i not in picked]
 
     def current_product(self) -> str | None:
         rows = sorted({i.row() for i in self.t_products.selectedIndexes()})
@@ -218,6 +245,8 @@ class GeoarchaeologyPane(QWidget):
             b.setEnabled(has_holes)
         self.b_through.setEnabled(len(self.selected_boreholes()) >= 2)
         self.b_model.setEnabled(bool(self.products))
+        for b in (self.b_model_view, self.b_model_folder):
+            b.setEnabled(self.has_model)
         self.b_overlay.setEnabled(product is not None)
         self.c_band.setEnabled(entry is not None and entry.get("kind") == "surface")
         self.b_open.setEnabled(self.current_section() is not None)
@@ -261,10 +290,14 @@ class GeoarchaeologyPane(QWidget):
                 tip.append(t("assente su {0} m²", "missing on {0} m²").format(num(e["absent"]["area_m2"], 0)))
         return tip
 
-    def set_state(self, holes: list, products: list[dict], sections: list[dict], status: str) -> None:
+    def set_state(self, holes: list, products: list[dict], sections: list[dict], status: str,
+                  has_model: bool = False) -> None:
         """Fill the tables: ``holes`` (``Borehole``), ``products`` (surfaces and thicknesses),
-        ``sections``; keep the selections when the rows are still there."""
-        keep_holes = set(self.selected_boreholes())
+        ``sections``; keep the selections when the rows are still there. ``has_model``: the chunk
+        has a model of the units, to show or to open."""
+        self.has_model = bool(has_model)
+        picked = self.selected_boreholes()
+        keep_holes = set(picked)
         keep_product, keep_section = self.current_product(), self.current_section()
         self.t_holes.setRowCount(len(holes))
         for r, b in enumerate(holes):
@@ -279,6 +312,8 @@ class GeoarchaeologyPane(QWidget):
                 index = self.t_holes.model().index(r, 0)
                 self.t_holes.selectionModel().select(index, QItemSelectionModel.SelectionFlag.Select
                                                      | QItemSelectionModel.SelectionFlag.Rows)
+        now = self._selected_in_table()
+        self._picked = [i for i in picked if i in now] + [i for i in now if i not in picked]
         self.products = list(products)
         self.t_products.setRowCount(len(self.products))
         for r, e in enumerate(self.products):

@@ -19,6 +19,7 @@ import numpy as np
 
 from . import boreholes as bh
 from . import surfaces as sf
+from .figures import save
 from .texts import signed, t
 
 EXAGGERATIONS = (1, 2, 5, 10, 20, 50, 100)
@@ -47,8 +48,8 @@ def polyline(coords) -> np.ndarray:
     keep = np.r_[True, np.linalg.norm(np.diff(p, axis=0), axis=1) > 1e-9]
     p = p[keep]
     if len(p) < 2:
-        raise ValueError(t("La traccia della sezione vuole due punti diversi almeno",
-                           "The trace of a section needs two different points at least"))
+        raise ValueError(t("La traccia di una sezione vuole almeno due punti diversi",
+                           "The trace of a section needs at least two different points"))
     return p
 
 
@@ -141,7 +142,9 @@ def through(chunk, ids) -> np.ndarray:
 def build(chunk, coords, name: str | None = None, distance: float | None = None, scale: float | None = None,
           exaggeration: float | None = None, step: float | None = None, progress=None) -> dict:
     """The section along ``coords``: profile, boreholes within ``distance`` (half the usual spacing
-    of the boreholes by default), figure (SVG, PNG), DXF and CSV; returns its registry entry."""
+    of the boreholes by default), figure (SVG, PNG), DXF and CSV; returns its registry entry, with
+    ``warnings`` when a format could not be written (the SVG in an installation without its
+    matplotlib backend: the PNG is there)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
@@ -164,7 +167,7 @@ def build(chunk, coords, name: str | None = None, distance: float | None = None,
     info = {}
     try:
         info = figure(chunk, prof, holes, name, out / f"{stem}.svg", out / f"{stem}.png", scale, exaggeration)
-        files.update(svg=f"{stem}.svg", png=f"{stem}.png")
+        files.update({p.suffix.lstrip(".").lower(): p.name for p in info["files"]})
     except ImportError:  # no matplotlib: the DXF and the CSV still
         info = {"scale": scale or drawing_scale(prof["length"]), "exaggeration": exaggeration or 1}
     progress(0.75, "DXF and CSV")
@@ -186,6 +189,8 @@ def build(chunk, coords, name: str | None = None, distance: float | None = None,
     except Exception:  # noqa: BLE001 - the GeoPackage of the layers is a convenience
         pass
     progress(1.0, f"{name}: {prof['length']:.1f} m, {len(holes)} boreholes")
+    if info.get("notes"):  # a format this installation cannot write: said to the user, not kept
+        return {**entry, "warnings": list(info["notes"])}
     return entry
 
 
@@ -225,7 +230,8 @@ def _lower(prof: dict, holes: list[dict]) -> tuple[float, float]:
 
 def figure(chunk, prof: dict, holes: list[dict], name: str, svg: Path | None, png: Path | None,
            scale: float | None = None, exaggeration: float | None = None) -> dict:
-    """The section drawn at 1:``scale`` with ``exaggeration`` (None: chosen), as SVG and PNG."""
+    """The section drawn at 1:``scale`` with ``exaggeration`` (None: chosen), as SVG and PNG
+    (``files``: those written; ``notes``: the formats this installation cannot write)."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
     from matplotlib.patches import Patch, Rectangle
@@ -293,11 +299,9 @@ def figure(chunk, prof: dict, holes: list[dict], name: str, svg: Path | None, pn
     if handles:
         fig.legend(handles=handles, loc="upper left", bbox_to_anchor=((m_left + aw + 4) / W, 1 - m_top / H),
                    fontsize=6, frameon=False, title=t("Unità", "Units"), title_fontsize=7)
-    if svg is not None:
-        fig.savefig(svg)
-    if png is not None:
-        fig.savefig(png, dpi=min(150.0, 12000.0 / (W / 25.4)))
-    return {"scale": scale, "exaggeration": exaggeration, "width_mm": W, "height_mm": H}
+    written = save(fig, [p for p in (svg, png) if p is not None], png_dpi=min(150.0, 12000.0 / (W / 25.4)))
+    return {"scale": scale, "exaggeration": exaggeration, "width_mm": W, "height_mm": H, "files": list(written),
+            "notes": written.notes}
 
 
 def _darker(colour: str, f: float = 0.55) -> str:

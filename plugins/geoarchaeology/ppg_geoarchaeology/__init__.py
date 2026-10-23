@@ -5,9 +5,10 @@ photogrammetric survey (the DEM and the orthomosaic of the chunk).
 * the *Geoarcheologia* pane of the project dock: import of the logs (CSV of collars and
   intervals, or one table), the order of the units, the contact surfaces and the thicknesses by
   kriging, the sections (a trace drawn on the view, or through the boreholes chosen), the
-  stratigraphic columns, the 3D model of the units with their volumes; the boreholes as a layer of
-  points of the view, a surface or a thickness over the orthomosaic or DEM with palette and
-  opacity, the exports, the QGIS project;
+  stratigraphic columns, the 3D model of the units with their volumes (shown in the program's 3D
+  view, its folder opened in the file manager); the boreholes as a layer of points of the view, a
+  surface or a thickness over the orthomosaic or DEM with palette and opacity, the exports, the
+  QGIS project;
 * *Plugin > Geoarcheologia* menu actions for the same; *File > Esporta > Sondaggi e superfici
   geoarcheologiche (GeoPackage)*;
 * ``ppg plugin geoarchaeology import|list|order|surfaces|section|model|logs|export|remove PROJECT ...``.
@@ -21,9 +22,9 @@ from pathlib import Path
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-from .texts import num, signed, t
+from .texts import num, plural, signed, t
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 SECTION_COLOUR = "#ff7f0e"
 
 
@@ -110,6 +111,8 @@ class GeoarchaeologyPlugin(Plugin):
         p.order_requested.connect(self.order_dialog)
         p.surfaces_requested.connect(self.surfaces_dialog)
         p.model_requested.connect(self.model_dialog)
+        p.model_view_requested.connect(self.show_model)
+        p.model_folder_requested.connect(self.open_model_folder)
         p.section_draw_requested.connect(self.draw_section)
         p.section_through_requested.connect(self.section_through)
         p.logs_requested.connect(self.logs_dialog)
@@ -151,6 +154,7 @@ class GeoarchaeologyPlugin(Plugin):
 
     def refresh_pane(self) -> None:
         from . import boreholes as bh
+        from . import model as model_mod
         from . import section as section_mod
         from . import surfaces as sf
 
@@ -167,8 +171,10 @@ class GeoarchaeologyPlugin(Plugin):
                        "No borehole: import the tables of the collars and of the intervals (CSV).")
         else:
             codes = bh.order(chunk)
-            status = t("{0} sondaggi, {1} unità dall'alto: {2}.", "{0} boreholes, {1} units from the top: {2}.").format(
-                len(holes), len(codes), ", ".join(codes[:12]) + ("..." if len(codes) > 12 else ""))
+            status = (plural(len(holes), t("{0} sondaggio", "{0} borehole"), t("{0} sondaggi", "{0} boreholes")) + ", "
+                      + plural(len(codes), t("{0} unità dall'alto", "{0} unit from the top"),
+                               t("{0} unità dall'alto", "{0} units from the top"))
+                      + ": " + ", ".join(codes[:12]) + ("..." if len(codes) > 12 else "") + ".")
             if reg:
                 g = reg["grid"]
                 status += " " + t("Superfici del {0} su {1} x {2} celle di {3} m.",
@@ -177,7 +183,8 @@ class GeoarchaeologyPlugin(Plugin):
                 if reg.get("stale"):
                     status += " " + t("I sondaggi o l'ordine sono cambiati: ricostruiscile.",
                                       "The boreholes or the order changed: build them again.")
-        self.pane.set_state(holes, sf.entries(chunk), section_mod.entries(chunk), status)
+        self.pane.set_state(holes, sf.entries(chunk), section_mod.entries(chunk), status,
+                            has_model=model_mod.has_model(chunk))
         self._sync_traces()
 
     def show_pane(self) -> None:
@@ -270,19 +277,23 @@ class GeoarchaeologyPlugin(Plugin):
                                "Replace the boreholes of the chunk (otherwise they are added)"), False),
         ], intro=t("Collari: sondaggio (id), x, y nel sistema del chunk, quota (z, vuota = dal DEM), profondità. "
                    "Intervalli: sondaggio, da, a (metri dalla bocca; oppure quota_tetto e quota_letto), unità (US o "
-                   "unità litologica), descrizione, colore (Munsell o #rrggbb), litologia. Nomi delle colonne in "
-                   "italiano o in inglese, separatore virgola, punto e virgola o tabulazione, decimali col punto o "
-                   "con la virgola.",
+                   "unità litologica), descrizione, colore (Munsell, #rrggbb o a parole), litologia. Nomi delle colonne "
+                   "in italiano o in inglese, come si scrivono sul campo (Sigla sondaggio, Quota s.l.m., Codice US, "
+                   "Da (cm)...), separatore virgola, punto e virgola o tabulazione, decimali col punto o con la "
+                   "virgola. Quello che il plugin deve indovinare o lascia fuori viene detto, con la riga del file.",
                    "Collars: borehole (id), x, y in the reference system of the chunk, elevation (z, empty = from the "
                    "DEM), depth. Intervals: borehole, from, to (metres below the collar; or top_z and base_z), unit (US "
-                   "or lithological unit), description, colour (Munsell or #rrggbb), lithology. Column names in Italian "
-                   "or English, comma, semicolon or tab separated, decimal point or comma."))
+                   "or lithological unit), description, colour (Munsell, #rrggbb or in words), lithology. Column names "
+                   "in Italian or English, as written in the field (Hole ID, Elevation (m a.s.l.), Unit, From (cm)...), "
+                   "comma, semicolon or tab separated, decimal point or comma. What the plugin has to guess or leaves "
+                   "out is reported, with the line of the file."))
         if not v or not v["first"]:
             return
         paths = [p for p in (v["first"], v["second"]) if p]
 
         def done(report):
-            self._after(t("{0} sondaggi letti", "{0} boreholes read").format(report["read"]))
+            self._after(plural(report["read"], t("{0} sondaggio letto", "{0} borehole read"),
+                               t("{0} sondaggi letti", "{0} boreholes read")))
             self._message("info", self.import_text(report))
 
         self._run(t("Sondaggi", "Boreholes"),
@@ -291,11 +302,14 @@ class GeoarchaeologyPlugin(Plugin):
 
     @staticmethod
     def import_text(report: dict) -> str:
-        lines = [t("{0} sondaggi letti ({1} nel chunk), {2} intervalli; unità dall'alto: {3}",
-                   "{0} boreholes read ({1} in the chunk), {2} intervals; units from the top: {3}")
-                 .format(report["read"], report["boreholes"], report["intervals"], ", ".join(report["units"]))]
+        lines = [plural(report["read"], t("{0} sondaggio letto", "{0} borehole read"),
+                        t("{0} sondaggi letti", "{0} boreholes read"))
+                 + t(" ({0} nel chunk), ", " ({0} in the chunk), ").format(report["boreholes"])
+                 + plural(report["intervals"], t("{0} intervallo", "{0} interval"), t("{0} intervalli", "{0} intervals"))
+                 + t("; unità dall'alto: {0}", "; units from the top: {0}").format(", ".join(report["units"]))]
         if report.get("z_from_dem"):
-            lines.append(t("{0} quote prese dal DEM", "{0} elevations taken from the DEM").format(report["z_from_dem"]))
+            lines.append(plural(report["z_from_dem"], t("{0} quota presa dal DEM", "{0} elevation taken from the DEM"),
+                                t("{0} quote prese dal DEM", "{0} elevations taken from the DEM")))
         if report.get("no_z"):
             lines.append(t("Senza quota (né nel file né dal DEM): {0}", "Without elevation (neither in the file nor from "
                            "the DEM): {0}").format(", ".join(report["no_z"])))
@@ -435,7 +449,8 @@ class GeoarchaeologyPlugin(Plugin):
                             else "", num(e.get("loocv_rmse", 0.0), 3))
                 least = e.get("least_error") or {}
                 if least and (least.get("model"), least.get("trend")) != (model, e.get("trend")):
-                    how += t(" (il {0} dava {1} m: meno del 5 % di differenza)", " ({0} gave {1} m: less than 5 % apart)") \
+                    how += t(" (il modello {0} dava {1} m: meno del 5 % di differenza)",
+                             " (the {0} model gave {1} m: less than 5 % apart)") \
                         .format(model_names.get(least["model"], least["model"]), num(least["loocv_rmse"], 3))
             mode = GeoarchaeologyPlugin.mode_text(e)
             if mode:
@@ -448,8 +463,9 @@ class GeoarchaeologyPlugin(Plugin):
                     .format(num(cl["area_m2"], 0), num(cl.get("lowered_max_m", cl.get("max_m", 0.0)), 2),
                             num(cl.get("raised_max_m", 0.0), 2))
             if e.get("bottoms_used"):
-                extra += t("; {0} fondi di sondaggi usati come vincolo", "; {0} borehole bottoms used as a bound") \
-                    .format(e["bottoms_used"])
+                extra += "; " + plural(e["bottoms_used"],
+                                       t("{0} fondo di sondaggio usato come vincolo", "{0} borehole bottom used as a bound"),
+                                       t("{0} fondi di sondaggi usati come vincolo", "{0} borehole bottoms used as a bound"))
             lines.append(f"{e['name']}: {how}{extra}")
         for e in reg.get("thickness", []):
             st = e.get("stats") or {}
@@ -483,7 +499,7 @@ class GeoarchaeologyPlugin(Plugin):
         if not sf.registry(chunk).get("contacts"):
             self._message("warning", t("Costruisci prima le superfici di contatto.", "Build the contact surfaces first."))
             return
-        v = {"cell": None, "clip": True, "last": True, "floor": None}
+        v = {"cell": None, "clip": True, "last": True, "floor": None, "explode": None}
         if window is not None:
             v = ParamDialog.ask(window, t("Modello 3D delle unità", "3D model of the units"), [
                 Field("cell", t("Cella (m, vuota = automatica)", "Cell (m, empty = automatic)"), None, kind="optional_float"),
@@ -495,10 +511,15 @@ class GeoarchaeologyPlugin(Plugin):
                                  "Elevation of the floor (m, empty = the lowest bottom of the boreholes, kept below the "
                                  "lowest top of the last unit)"), None,
                       kind="optional_float"),
+                Field("explode", t("Nella vista 3D, unità separate in verticale di (m, vuoto = come stanno)",
+                                   "In the 3D view, units set apart vertically by (m, empty = as they lie)"), None,
+                      kind="optional_float"),
             ], intro=t("Un solido chiuso per unità fra il suo tetto e quello dell'unità sotto (PLY con il colore "
-                       "dell'unità, un OBJ con un oggetto per unità), i volumi in un CSV.",
+                       "dell'unità, un OBJ con un oggetto per unità), i volumi in un CSV; alla fine le unità si vedono "
+                       "nella vista 3D del programma.",
                        "A closed solid per unit between its top and the top of the unit below (PLY with the colour of "
-                       "the unit, one OBJ with an object per unit), the volumes in a CSV."))
+                       "the unit, one OBJ with an object per unit), the volumes in a CSV; at the end the units are "
+                       "shown in the program's 3D view."))
             if not v:
                 return
             self.context.store_drawings()  # the US drawn in the window into the project
@@ -506,11 +527,73 @@ class GeoarchaeologyPlugin(Plugin):
         def done(reg):
             self._after(t("Modello pronto", "Model ready"))
             if window is not None:
-                self._message("info", self.model_text(reg, model_mod.folder(chunk)))
+                shown = self.show_model(quiet=True)
+                text = self.model_text(reg, model_mod.folder(chunk))
+                text += "\n\n" + (t("Le unità sono nella vista 3D (Mostra nella vista 3D, nel pannello, per tornarci); "
+                                     "Apri la cartella apre i file del modello.",
+                                     "The units are in the 3D view (Show in the 3D view, in the pane, to come back to "
+                                     "them); Open the folder opens the files of the model.") if shown else
+                                   t("Apri la cartella, nel pannello, apre i file del modello.",
+                                     "Open the folder, in the pane, opens the files of the model."))
+                self._message("info", text)
 
         self._run(t("Modello 3D delle unità", "3D model of the units"),
                   lambda p: model_mod.build(chunk, cell=v["cell"], clip=bool(v["clip"]), floor=v["floor"],
-                                            last=bool(v["last"]), progress=p), done)
+                                            last=bool(v["last"]), explode=v.get("explode"), progress=p), done)
+
+    def show_model(self, quiet: bool = False) -> bool:
+        """The solids of the units in the 3D view of the program, each in its colour (the file of
+        the view written again when it is missing, as for a model built before 0.1.2). Choosing
+        another view in the list of the 3D view goes back to the products of the chunk. Returns
+        whether they are shown; ``quiet``: no message when they cannot be."""
+        from . import model as model_mod
+
+        window = self.context.window if self.context else None
+        chunk = self._chunk()
+        view = getattr(window, "model_view", None) if window is not None else None
+        if chunk is None or view is None or not hasattr(view, "show_version"):
+            return False
+        if not model_mod.has_model(chunk):
+            if not quiet:
+                self._message("warning", t("Costruisci prima il modello 3D delle unità.",
+                                           "Build the 3D model of the units first."))
+            return False
+        reg = model_mod.registry(chunk)
+        rel = (reg.get("files") or {}).get("display")
+        path = Path(chunk.data_dir) / rel if rel else None
+        n = sum(1 for r in reg.get("units", []) if r.get("ply"))
+        if path is None or not path.exists():
+            path, n = model_mod.display_mesh(chunk)
+            if path is None:
+                return False
+        title = plural(n, t("Unità geoarcheologiche ({0} unità)", "Geoarchaeological units ({0} unit)"),
+                       t("Unità geoarcheologiche ({0} unità)", "Geoarchaeological units ({0} units)"))
+        back = t("Scegli un'altra vista nell'elenco «Mostra» della vista 3D per tornare ai prodotti del chunk.",
+                 "Choose another view in the Show list of the 3D view to go back to the products of the chunk.")
+        view.show_version("model", path, title)
+        label = getattr(view, "version_label", None)
+        if label is not None:  # the units are not a version of the model of the survey
+            label.setText(title)
+            label.setToolTip(back)
+        if hasattr(window, "show_view"):
+            window.show_view(view)
+        if hasattr(window, "statusBar"):
+            window.statusBar().showMessage(f"{title}. {back}", 15000)
+        return True
+
+    def open_model_folder(self) -> None:
+        """The folder of the model of the units in the file manager."""
+        from . import model as model_mod
+
+        chunk = self._chunk()
+        if chunk is None:
+            return
+        out = model_mod.folder(chunk)
+        if not out.exists():
+            self._message("warning", t("Costruisci prima il modello 3D delle unità.",
+                                       "Build the 3D model of the units first."))
+            return
+        self._open_file(out)
 
     @staticmethod
     def model_text(reg: dict, folder=None) -> str:
@@ -601,8 +684,8 @@ class GeoarchaeologyPlugin(Plugin):
         if chunk is None:
             return
         if len(ids) < 2:
-            self._message("warning", t("Seleziona due sondaggi almeno nella tabella.", "Select two boreholes at least in "
-                                                                                       "the table."))
+            self._message("warning", t("Seleziona almeno due sondaggi nella tabella.",
+                                       "Select at least two boreholes in the table."))
             return
         self.section_dialog(section_mod.through(chunk, ids), name=t("Sezione {0}", "Section {0}").format(
             "-".join(str(i) for i in ids)))
@@ -635,10 +718,13 @@ class GeoarchaeologyPlugin(Plugin):
                 return
 
         def done(entry):
-            self._after(t("{0}: {1:.1f} m, {2} sondaggi", "{0}: {1:.1f} m, {2} boreholes").format(
-                entry["name"], entry["length"], len(entry["boreholes"])))
+            self._after(f"{entry['name']}: {num(entry['length'], 1)} m, "
+                        + plural(len(entry["boreholes"]), t("{0} sondaggio", "{0} borehole"),
+                                 t("{0} sondaggi", "{0} boreholes")))
             if self.pane is not None:
                 self.pane.tabs.setCurrentWidget(self.pane.t_sections)
+            if entry.get("warnings"):
+                self._message("warning", "\n".join(entry["warnings"]))
 
         self._run(t("Sezione geoarcheologica", "Geoarchaeological section"),
                   lambda p: section_mod.build(chunk, coords, name=v["name"] or None, distance=v["distance"],
@@ -709,6 +795,8 @@ class GeoarchaeologyPlugin(Plugin):
             self._after(t("Colonne in {0}", "Columns in {0}").format(paths[0].parent))
             png = next((p for p in paths if p.suffix == ".png"), paths[0])
             self._open_file(png)
+            if getattr(paths, "notes", None):
+                self._message("warning", "\n".join(paths.notes))
 
         self._run(t("Colonne stratigrafiche", "Stratigraphic columns"),
                   lambda p: logs.draw(chunk, chosen, vertical=v["vertical"], scale=v["scale"]), done)
@@ -742,7 +830,7 @@ class GeoarchaeologyPlugin(Plugin):
 
     def show_overlay(self, pid: str, band: int = 1, palette: str = "", opacity: float = 0.7) -> None:
         from . import surfaces as sf
-        from .overlay import DEFAULT, Overlay
+        from .overlay import Overlay, style
 
         window = self.context.window
         chunk = self._chunk()
@@ -759,10 +847,10 @@ class GeoarchaeologyPlugin(Plugin):
         values, transform = sf.load(chunk, pid, band)
         if self.overlay is None or self.overlay.view is not view:
             self.overlay = Overlay(view)
-        palette = palette or DEFAULT.get((kind, band), "terrain")
+        own, zero, symmetric = style(kind, band)
         try:
-            lo, hi = self.overlay.show(values, transform, palette, opacity, zero=kind == "thickness" or band > 1,
-                                       product_id=pid)
+            lo, hi = self.overlay.show(values, transform, palette or own, opacity, zero=zero, product_id=pid,
+                                       symmetric=symmetric)
         except RuntimeError as exc:
             self._message("warning", str(exc))
             return
@@ -901,6 +989,8 @@ class GeoarchaeologyPlugin(Plugin):
         p.add_argument("--floor", type=float, default=None, help="elevation of the base of the last unit")
         p.add_argument("--no-last", action="store_true", help="leave the last unit out")
         p.add_argument("--offset", default=None, help="X,Y,Z subtracted from the coordinates of the OBJ")
+        p.add_argument("--explode", type=float, default=None,
+                       help="metres between the units in unita_vista.ply, the file of the program's 3D view")
         p = sub.add_parser("logs", help="stratigraphic columns: one borehole or a panel")
         p.add_argument("project")
         p.add_argument("ids", nargs="*", help="the boreholes (all by default)")
@@ -967,10 +1057,12 @@ class GeoarchaeologyPlugin(Plugin):
                                       exaggeration=a.exaggeration, progress=print_progress)
                 print(json.dumps({k: e[k] for k in ("id", "name", "length", "scale", "exaggeration", "boreholes", "files")},
                                  indent=1, ensure_ascii=False))
+                for note in e.get("warnings", []):
+                    print(note)
             elif a.what == "model":
                 offset = [float(v) for v in a.offset.split(",")] if a.offset else None
                 reg = model_mod.build(chunk, cell=a.cell, clip=not a.no_clip, floor=a.floor, last=not a.no_last,
-                                      offset=offset, progress=print_progress)
+                                      offset=offset, explode=a.explode, progress=print_progress)
                 for r in reg["units"]:
                     print(f"{r['unit']}: {r['volume_m3']:.3f} m3 on {r.get('area_m2', 0.0):.2f} m2"
                           + (f" (+ {r['outside_dem']['volume_m3']:.3f} m3 where there is no DEM)"
@@ -978,8 +1070,11 @@ class GeoarchaeologyPlugin(Plugin):
                           + (" (clipped to the US drawn)" if r.get("clipped") else ""))
                 print(model_mod.folder(chunk))
             elif a.what == "logs":
-                for path in logs.draw(chunk, a.ids or None, path=a.out, vertical=a.vertical, scale=a.scale):
+                drawn = logs.draw(chunk, a.ids or None, path=a.out, vertical=a.vertical, scale=a.scale)
+                for path in drawn:
                     print(path)
+                for note in drawn.notes:
+                    print(note)
                 return 0
             elif a.what == "export":
                 print(export_mod.export_raster(chunk, a.id, a.out) if a.id else export_mod.export_gpkg(chunk, a.out))

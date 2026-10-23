@@ -386,23 +386,13 @@ def parse_modes(text) -> tuple[str, dict]:
 
 
 def unit_of(name: str, codes: list[str]) -> str:
-    """The unit of ``codes`` that ``name`` means: the same letters and digits ("US2" is "US 2"),
-    or the same number when ``name`` gives no kind and one unit only has it ("2" is "US 2")."""
-    from .model import unit_key
-
-    def plain(s):
-        return re.sub(r"[^0-9a-z]", "", bh.normalise(s))
-
-    same = [c for c in codes if plain(c) == plain(name)]
-    if len(same) == 1:
-        return same[0]
-    kind, number = unit_key(name)
-    if kind is None:
-        same = [c for c in codes if unit_key(c)[1] == number]
-        if len(same) == 1:
-            return same[0]
-    raise ValueError(t("Unità sconosciuta: {0} (le unità: {1})", "Unknown unit: {0} (the units: {1})")
-                     .format(name, ", ".join(codes)))
+    """The unit of ``codes`` that ``name`` means, in any spelling ("US2", "us 2" and, when one
+    unit only has that number, "2" are "US 2"): :func:`boreholes.resolve_unit`."""
+    unit = bh.resolve_unit(name, codes)
+    if unit is None:
+        raise ValueError(t("Unità sconosciuta: {0} (le unità: {1})", "Unknown unit: {0} (the units: {1})")
+                         .format(name, ", ".join(codes)))
+    return unit
 
 
 def scatter(xy, values) -> float:
@@ -759,7 +749,9 @@ def variogram_figures(chunk) -> list[Path]:
         ax.scatter(lags, gam, s=12 + 40 * pairs / max(pairs.max(), 1), color="#7d5a3c", zorder=3,
                    label=t("sperimentale", "experimental"))
         h = np.linspace(0, max(lags.max(), v.range) * 1.1, 200)
-        ax.plot(h[1:], v(h[1:]), color="#1f4e79", label=f"{v.model}, {t('portata', 'range')} {num(v.range, 1)} m")
+        model_name = {"spherical": t("sferico", "spherical"), "exponential": t("esponenziale", "exponential"),
+                      "gaussian": t("gaussiano", "Gaussian")}.get(v.model, v.model)
+        ax.plot(h[1:], v(h[1:]), color="#1f4e79", label=f"{model_name}, {t('portata', 'range')} {num(v.range, 1)} m")
         ax.set_xlabel(t("distanza (m)", "distance (m)"))
         ax.set_ylabel(t("semivarianza (m²)", "semivariance (m²)"))
         what = t("profondità", "depths") if mode == "depth" else t("quote", "elevations")
