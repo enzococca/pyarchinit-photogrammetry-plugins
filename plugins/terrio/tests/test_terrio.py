@@ -166,7 +166,7 @@ def test_reference_raster_as_a_version(tmp_path):
     assert report["path"].exists() and report["width"] == report["height"] == 60
     assert report["bounds"] == (ORIGIN[0] - 10, ORIGIN[1] - 10, ORIGIN[0] + SIZE + 10, ORIGIN[1] + SIZE + 10)
     kept = versions.versions(chunk, "dem")
-    assert len(kept) == 1 and kept[0]["name"].startswith("Riferimento") and kept[0]["params"]["source"] == str(big)
+    assert len(kept) == 1 and kept[0]["name"] == "Riferimento: regione.tif" and kept[0]["params"]["source"] == str(big)
     assert versions.version_file(chunk, "dem", kept[0]["id"]) == report["path"]
     assert chunk.dem_path.name == "dem.tif" and chunk.dem_path.parent == chunk.data_dir, "the active DEM is untouched"
     local = doc.add_chunk("locale")
@@ -210,14 +210,23 @@ def test_command(tmp_path, capsys):
     assert plugin.command("version") == 0 and terrio.__version__ in capsys.readouterr().out
     assert plugin.command("ground", str(doc.path), "--method", "csf", "--resolution", "0.5") == 0
     out = capsys.readouterr().out
-    assert "Filtro CSF" in out and "2 Ground" in out
+    assert "Filtro CSF" in out and "2 Terreno: " in out, "class names in the language of the program"
+    assert plugin.command("ground", str(doc.path), "--method", "pmf") == 0
+    capsys.readouterr()
+    import pyarchinit_photogrammetry as ppg
+
+    params = ppg.Document.open(doc.path).chunk.meta["terrio_ground"]
+    assert (params["method"], params["slope"], params["threshold"]) == ("pmf", 1.0, 0.15), "PMF's own defaults"
     assert plugin.command("export", str(doc.path), str(tmp_path / "n.e57")) == 0 and (tmp_path / "n.e57").exists()
     assert plugin.command("export", str(doc.path), str(tmp_path / "o.pmtiles")) == 0 and (tmp_path / "o.pmtiles").exists()
     assert plugin.command("import", str(doc.path), str(tmp_path / "n.e57"), "--label", "da E57", "--crs", CRS) == 0
-    import pyarchinit_photogrammetry as ppg
-
     again = ppg.Document.open(doc.path)
-    assert again.chunk.label == "da E57" and again.chunk.crs == CRS
+    assert again.chunk.label == "rilievo", "the active chunk stays"
+    new = next(c for c in again.chunks if c.label == "da E57")
+    assert new.crs == CRS and len(new.point_cloud) == len(doc.chunk.point_cloud)
+    assert plugin.command("import", str(doc.path), str(tmp_path / "n.e57"), "--label", "attivo", "--crs", CRS,
+                          "--activate") == 0
+    assert ppg.Document.open(doc.path).chunk.label == "attivo"
     assert plugin.command("ground", str(doc.path), "--chunk", "nessuno") == 2
     assert plugin.command("export", str(doc.path), str(tmp_path / "o.tif"), "--chunk", "rilievo") == 1
     assert "error" in capsys.readouterr().out
@@ -247,3 +256,106 @@ def test_import_from_a_zip(tmp_path):
     new = clouds.import_cloud(doc, zipped, label="zip")
     assert new.label == "zip" and len(new.point_cloud) == len(world)
     assert np.allclose(new.to_world(new.point_cloud.xyz), world, atol=0.002)
+
+
+def test_ground_changes_only_unclassified_and_ground_points(tmp_path):
+    """Only classes 0, 1 and 2 change (and 3, 4, 5 with the vegetation): buildings, walls,
+    water, noise, the classes of an imported lidar and the hand labels stay; the noise is
+    left out of the filters."""
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    kinds = np.array(chunk.meta["kinds"])
+    pc = chunk.point_cloud
+    codes = np.ones(len(pc), np.uint8)
+    ground = np.nonzero(kinds == 0)[0]
+    codes[ground[:300]] = 0  # never classified
+    codes[ground[300:400]] = 9  # water of an imported lidar
+    codes[ground[400:450]] = 18  # high noise
+    codes[ground[450:500]] = 7  # low noise
+    wall = np.nonzero(kinds == 1)[0]
+    codes[wall] = 64  # masonry, classified by the program (not by hand)
+    tree = np.nonzero(kinds == 2)[0]
+    codes[tree[:200]] = 4  # medium vegetation of an earlier classification
+    codes[tree[200:250]] = 6  # building
+    pc.classification = codes
+    chunk.point_cloud = pc
+    pc = chunk.point_cloud
+    pc.xyz[ground[450:500], 2] -= 5.0  # the low noise lies well below the ground
+    chunk.point_cloud = pc
+    report = clouds.ground(chunk, "smrf", cell=1.0)
+    after = chunk.point_cloud.classification
+    fixed = ~np.isin(codes, (0, 1, 2))
+    assert (after[fixed] == codes[fixed]).all(), "other classes stay"
+    assert report["kept"] == int(fixed.sum())
+    assert (after[ground[:300]] == 2).mean() > 0.95, "never classified points become ground"
+    assert (after[tree[250:]] == 1).all(), "the rest is class 1"
+    assert (after[ground[500:]] == 2).mean() > 0.95, "the low noise is no ground: it was left out"
+    # with the vegetation: 3, 4 and 5 may change, the others still stay
+    report = clouds.ground(chunk, "smrf", cell=1.0, vegetation=True)
+    after = chunk.point_cloud.classification
+    other = ~np.isin(codes, (0, 1, 2, 3, 4, 5))
+    assert (after[other] == codes[other]).all()
+    assert (after[tree[:200]] == 5).mean() > 0.9, "the earlier medium vegetation is classified again"
+    assert (after[wall] == 64).all(), "a wall classified as masonry does not become vegetation"
+    assert report["kept"] == int(other.sum())
+
+
+def test_ground_dialog_has_the_defaults_of_each_filter(tmp_path, monkeypatch):
+    """The window gives PMF its own defaults (slope 1.0, initial distance 0.15) and the
+    vegetation option says what it does to walls, sections and spoil heaps."""
+    from ppg_terrio import TerrioPlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import dialogs
+    from pyarchinit_photogrammetry.plugins import Context
+
+    doc = _project(tmp_path)
+    seen = {}
+
+    def ask(parent, title, fields, intro=""):
+        seen.update({f.name: f for f in fields}, intro=intro)
+        return {f.name: f.default for f in fields} | {"method": "pmf"}
+
+    class Window:
+        def run_task(self, title, job, done=None, refresh=True, save=True):
+            result = job(lambda *a: None)
+            if done is not None:
+                done(result)
+
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", staticmethod(ask))
+    monkeypatch.setattr(dialogs, "message", lambda *a, **k: None)
+    plugin = TerrioPlugin()
+    plugin.activate(Context("terrio", tmp_path / "_data", window=Window()))
+    previous, app.document = app.document, doc
+    try:
+        plugin.ground_dialog()
+    finally:
+        app.document = previous
+    assert seen["slope"].default == 0.15 and seen["threshold"].default == 0.5
+    assert seen["pmf_slope"].default == 1.0 and seen["pmf_distance"].default == 0.15
+    assert "muri" in seen["vegetation"].tip and "sezioni" in seen["vegetation"].tip
+    assert "0, 1 e 2" in seen["intro"]
+    params = doc.chunk.meta["terrio_ground"]
+    assert (params["method"], params["slope"], params["threshold"]) == ("pmf", 1.0, 0.15)
+
+
+def test_texts_in_the_language_of_the_program(tmp_path):
+    """Class names and the name of a reference version follow the language of the program."""
+    from ppg_terrio import summary_ground
+    from pyarchinit_photogrammetry.gui import i18n
+
+    doc = _project(tmp_path)
+    report = {"method": "smrf", "points": 1234, "changed": 1200, "kept": 34, "counts": {2: 1000, 64: 34}, "labels": {}}
+    assert "2 Terreno: 1.000" in summary_ground(report) and "1.234 punti" in summary_ground(report)
+    assert "64 Struttura muraria: 34" in summary_ground(report)
+    big = tmp_path / "regionale.tif"
+    terrio.Raster.from_array(np.full((50, 50), 50.0, np.float32), (ORIGIN[0] - 10, 2.0, 0.0, ORIGIN[1] + 60, 0.0, -2.0),
+                             crs=CRS, nodata=-9999.0).write(str(big), driver="COG")
+    try:
+        i18n.set_current("en")
+        text = summary_ground(report)
+        assert "2 Terrain: 1,000" in text and "64 Masonry structure: 34" in text and "Filter SMRF" in text
+        report = rasters.reference_raster(doc.chunk, big, product="dem", margin=0.0)
+        assert report["name"] == "Reference: regionale.tif"
+    finally:
+        i18n.set_current(None)
+    assert os.environ.get("PPG_LANG") == "it"

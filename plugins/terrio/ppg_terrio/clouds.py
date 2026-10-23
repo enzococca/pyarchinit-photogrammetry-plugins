@@ -18,6 +18,12 @@ from . import environment
 METHODS = ("smrf", "csf", "pmf")
 NOISE, GROUND, OTHER = 7, 2, 1
 VEGETATION = ((0.5, 3), (2.0, 4), (np.inf, 5))  # height above the ground -> ASPRS low, medium, high vegetation
+CHANGEABLE = (0, 1, 2)  # never classified, unclassified, ground: the classes the ground filters may change
+VEGETATION_CLASSES = (3, 4, 5)  # changed too when the vegetation classes are asked for
+# the defaults of the filters (terrio's, as PDAL's): the slope, and the height threshold - for PMF its
+# initial distance, the first height step of its growing windows
+DEFAULTS = {"smrf": {"slope": 0.15, "threshold": 0.5}, "csf": {"threshold": 0.5},
+            "pmf": {"slope": 1.0, "threshold": 0.15}}
 CLOUD_SUFFIXES = (".las", ".laz", ".ply", ".e57", ".ept", ".json")
 
 
@@ -118,15 +124,21 @@ def import_cloud(doc, source, chunk=None, label: str | None = None, crs: str | N
     return chunk
 
 
-def ground(chunk, method: str = "smrf", cell: float = 1.0, slope: float = 0.15, threshold: float = 0.5,
-           window: float | None = None, resolution: float = 1.0, rigidness: int = 3, noise: bool = False,
-           vegetation: bool = False, progress=None) -> dict:
+def ground(chunk, method: str = "smrf", cell: float = 1.0, slope: float | None = None,
+           threshold: float | None = None, window: float | None = None, resolution: float = 1.0, rigidness: int = 3,
+           noise: bool = False, vegetation: bool = False, progress=None) -> dict:
     """Ground (class 2) and other points (class 1) of the dense cloud, with PDAL's SMRF, CSF or
-    PMF filters run by terrio. ``noise``: low noise (class 7) found first with ELM and left out;
+    PMF filters run by terrio. Only the points in classes 0, 1 and 2 change (and 3, 4 and 5 with
+    ``vegetation``): every other class - buildings, walls and the other archaeological classes
+    (64 and up), noise, the classes of an imported lidar - stays as it is, and so do the points
+    labelled by hand. The points already classed as noise (7, 18) are left out of the filters.
+    ``slope`` and ``threshold`` (PMF: its initial distance) default to those of the filter
+    (:data:`DEFAULTS`). ``noise``: low noise (class 7) found first with ELM and left out;
     ``vegetation``: the other points get the ASPRS vegetation classes 3, 4 and 5 by their height
-    above the nearest ground points (below 0.5 m, below 2 m, above). Points labelled by hand keep
-    their class. Returns the classes counted."""
+    above the nearest ground points (below 0.5 m, below 2 m, above) - also walls, sections and
+    spoil heaps that are not classified otherwise. Returns the classes counted."""
     from pyarchinit_photogrammetry.ai.classify import keep_manual_labels
+    from pyarchinit_photogrammetry.core.pointcloud import NOISE_CLASSES
 
     terrio = environment.load()
     progress = as_progress(progress)
@@ -135,49 +147,65 @@ def ground(chunk, method: str = "smrf", cell: float = 1.0, slope: float = 0.15, 
     pc = chunk.point_cloud
     if pc is None:
         raise RuntimeError("build the dense cloud first")
-    progress(0.05, f"{method.upper()}: {len(pc):,} points")
-    world = chunk.to_world(pc.xyz)
-    cloud = terrio.PointCloud.from_dict({"x": world[:, 0], "y": world[:, 1], "z": world[:, 2]})
-    ignore = None
-    if noise:
-        cloud = cloud.elm(cell=max(float(cell), 1.0), threshold=1.0, classification=NOISE)
-        ignore = f"Classification[{NOISE}:{NOISE}]"
-    if method == "smrf":
-        kw = {"cell": float(cell), "slope": float(slope), "threshold": float(threshold)}
-        if window:
-            kw["window"] = float(window)
-        cloud = cloud.smrf(ignore=ignore, ground_class=GROUND, other_class=OTHER, **kw)
-    elif method == "csf":
-        cloud = cloud.csf(resolution=float(resolution), rigidness=int(rigidness), threshold=float(threshold),
-                          ignore=ignore, ground_class=GROUND, other_class=OTHER)
-    else:
-        kw = {"cell_size": float(cell), "slope": float(slope), "initial_distance": float(threshold)}
-        if window:
-            kw["max_window_size"] = float(window)
-        cloud = cloud.pmf(ignore=ignore, ground_class=GROUND, other_class=OTHER, **kw)
-    progress(0.7, "Classes")
-    codes = np.asarray(cloud.to_dict()["classification"], np.uint8)
-    if len(codes) != len(pc):
-        raise RuntimeError(f"terrio returned {len(codes)} points for {len(pc)}")
-    if vegetation:
-        progress(0.8, "Height above the ground")
-        hag = np.asarray(cloud.hag_nn(ground_class=GROUND).to_dict()["height_above_ground"], np.float64)
-        other = codes == OTHER
-        veg = np.full(len(codes), VEGETATION[-1][1], np.uint8)
-        for limit, code in reversed(VEGETATION[:-1]):
-            veg[hag < limit] = code
-        codes[other] = veg[other]
+    defaults = DEFAULTS[method]
+    slope = float(defaults.get("slope", 0.15) if slope is None else slope)
+    threshold = float(defaults.get("threshold", 0.5) if threshold is None else threshold)
     before = pc.classification.copy()
+    manual = pc.manual if pc.manual is not None else np.zeros(len(pc), bool)
+    changeable = np.isin(before, CHANGEABLE + (VEGETATION_CLASSES if vegetation else ())) & ~manual
+    used = np.nonzero(~np.isin(before, NOISE_CLASSES))[0]  # the noise found before is neither ground nor surface
+    progress(0.05, f"{method.upper()}: {len(pc):,} points")
+    codes = before.copy()
+    if len(used):
+        world = chunk.to_world(pc.xyz[used])
+        cloud = terrio.PointCloud.from_dict({"x": world[:, 0], "y": world[:, 1], "z": world[:, 2]})
+        ignore = None
+        if noise:
+            cloud = cloud.elm(cell=max(float(cell), 1.0), threshold=1.0, classification=NOISE)
+            ignore = f"Classification[{NOISE}:{NOISE}]"
+        if method == "smrf":
+            kw = {"cell": float(cell), "slope": slope, "threshold": threshold}
+            if window:
+                kw["window"] = float(window)
+            cloud = cloud.smrf(ignore=ignore, ground_class=GROUND, other_class=OTHER, **kw)
+        elif method == "csf":
+            cloud = cloud.csf(resolution=float(resolution), rigidness=int(rigidness), threshold=threshold,
+                              ignore=ignore, ground_class=GROUND, other_class=OTHER)
+        else:
+            kw = {"cell_size": float(cell), "slope": slope, "initial_distance": threshold}
+            if window:
+                kw["max_window_size"] = float(window)
+            cloud = cloud.pmf(ignore=ignore, ground_class=GROUND, other_class=OTHER, **kw)
+        progress(0.7, "Classes")
+        found = np.asarray(cloud.to_dict()["classification"], np.uint8)
+        if len(found) != len(used):
+            raise RuntimeError(f"terrio returned {len(found)} points for {len(used)}")
+        proposed = before.copy()
+        proposed[used] = found
+        codes[changeable] = proposed[changeable]
+        if vegetation:
+            progress(0.8, "Height above the ground")
+            # above the ground points of the result: those found now and those of other classes kept as ground
+            ground_cloud = terrio.PointCloud.from_dict({"x": world[:, 0], "y": world[:, 1], "z": world[:, 2],
+                                                        "classification": codes[used]})
+            hag = np.asarray(ground_cloud.hag_nn(ground_class=GROUND).to_dict()["height_above_ground"], np.float64)
+            veg = np.full(len(used), VEGETATION[-1][1], np.uint8)
+            for limit, code in reversed(VEGETATION[:-1]):
+                veg[hag < limit] = code
+            other = changeable[used] & (codes[used] == OTHER)
+            codes[used[other]] = veg[other]
     keep_manual_labels(pc, codes)
     pc.classification = codes
     chunk.point_cloud = pc
     counts = {int(c): int(n) for c, n in zip(*np.unique(codes, return_counts=True))}
+    kept = int((~changeable).sum())
     chunk.meta["terrio_ground"] = {"method": method, "cell": cell, "slope": slope, "threshold": threshold,
                                    "window": window, "resolution": resolution, "rigidness": rigidness,
-                                   "noise": noise, "vegetation": vegetation,
+                                   "noise": noise, "vegetation": vegetation, "kept": kept,
                                    "counts": {str(k): v for k, v in counts.items()}}
     progress(1.0, f"Ground: {counts.get(GROUND, 0):,} of {len(codes):,} points")
-    return {"method": method, "counts": counts, "points": int(len(codes)), "changed": int((before != codes).sum())}
+    return {"method": method, "counts": counts, "points": int(len(codes)), "changed": int((before != codes).sum()),
+            "kept": kept, "labels": dict(chunk.meta.get("classes") or {})}
 
 
 def export_cloud(chunk, path, progress=None) -> Path:

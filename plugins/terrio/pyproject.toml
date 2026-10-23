@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-terrio"
-version = "0.1.1"
+version = "0.1.2"
 description = "pyarchinit-photogrammetry plugin: point clouds (LAS, LAZ, COPC, EPT, PLY, E57), ground classification and web rasters through terrio, without GDAL or PDAL"
 readme = "README.md"
 license = "GPL-2.0-or-later"

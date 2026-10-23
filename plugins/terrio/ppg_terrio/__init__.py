@@ -22,7 +22,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from . import environment
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 
 def t(it: str, en: str) -> str:
@@ -33,6 +33,29 @@ def t(it: str, en: str) -> str:
         return en if i18n.current() == "en" else it
     except Exception:  # the program without its interface
         return it
+
+
+def num(value) -> str:
+    """A whole number as the program writes it: 1.234 in Italian, 1,234 in English."""
+    try:
+        from pyarchinit_photogrammetry.gui import i18n
+
+        return i18n.number(value)
+    except Exception:
+        return f"{value:,}"
+
+
+def class_label(code: int, labels: dict | None = None) -> str:
+    """The name of a class of points in the language of the program (the one the 3D view shows);
+    ``labels``: the names the project gives (``chunk.meta["classes"]``)."""
+    try:
+        from pyarchinit_photogrammetry.gui.scene import class_name
+
+        return class_name(int(code), labels)
+    except Exception:
+        from pyarchinit_photogrammetry.ai.classify import class_names
+
+        return class_names().get(int(code), "")
 
 
 METHOD_LABELS = [("smrf", "SMRF (Simple Morphological Filter)"), ("csf", "CSF (Cloth Simulation Filter)"),
@@ -194,14 +217,14 @@ class TerrioPlugin(Plugin):
             if target is None and activate is not None:
                 activate(chunk)
             n = (chunk.meta.get("terrio_import") or {}).get("points", 0)
-            message(window, "info", self.title, t("{0:,} punti in {1}.", "{0:,} points in {1}.").format(n, chunk.label))
+            message(window, "info", self.title, t("{0} punti in {1}.", "{0} points in {1}.").format(num(n), chunk.label))
 
         self._run(t("Importazione della nuvola", "Importing the cloud"), job, done)
 
     def ground_dialog(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog, message
 
-        from .clouds import ground
+        from .clouds import DEFAULTS, ground
 
         window = self.context.window
         chunk = self._chunk()
@@ -211,14 +234,23 @@ class TerrioPlugin(Plugin):
             message(window, "warning", self.title, t("Il chunk non ha una nuvola densa.", "The chunk has no dense cloud."))
             return
         s = self.context.settings
+        smrf, pmf = DEFAULTS["smrf"], DEFAULTS["pmf"]
         v = ParamDialog.ask(window, t("Classifica il terreno (terrio)", "Classify the ground (terrio)"), [
             Field("method", t("Filtro", "Filter"), s.get("ground_method", "smrf"), choices=METHOD_LABELS),
             Field("cell", t("Cella (m) - SMRF e PMF", "Cell (m) - SMRF and PMF"), float(s.get("ground_cell", 1.0)),
                   minimum=0.01, maximum=100.0, decimals=2),
-            Field("slope", t("Pendenza (SMRF 0,15; PMF 1,0)", "Slope (SMRF 0.15; PMF 1.0)"), float(s.get("ground_slope", 0.15)),
+            Field("slope", t("Pendenza - SMRF", "Slope - SMRF"), float(s.get("ground_slope", smrf["slope"])),
+                  minimum=0.0, maximum=10.0, decimals=3,
+                  tip=t("Il terreno piu' ripido atteso, salita su distanza (0,15 = 15 %)",
+                        "The steepest ground expected, rise over run (0.15 = 15 %)")),
+            Field("threshold", t("Soglia di quota (m) - SMRF e CSF", "Height threshold (m) - SMRF and CSF"),
+                  float(s.get("ground_threshold", smrf["threshold"])), minimum=0.001, maximum=10.0, decimals=3),
+            Field("pmf_slope", t("Pendenza - PMF", "Slope - PMF"), float(s.get("ground_pmf_slope", pmf["slope"])),
                   minimum=0.0, maximum=10.0, decimals=3),
-            Field("threshold", t("Soglia di quota (m)", "Height threshold (m)"), float(s.get("ground_threshold", 0.5)),
-                  minimum=0.001, maximum=10.0, decimals=3),
+            Field("pmf_distance", t("Distanza iniziale (m) - PMF", "Initial distance (m) - PMF"),
+                  float(s.get("ground_pmf_distance", pmf["threshold"])), minimum=0.001, maximum=10.0, decimals=3,
+                  tip=t("Il primo passo della soglia di quota, che cresce con le finestre",
+                        "The first step of the height threshold, which grows with the windows")),
             Field("window", t("Finestra massima (m; vuoto = del filtro)", "Largest window (m; empty: the filter's)"),
                   None, kind="optional_float"),
             Field("resolution", t("Risoluzione del telo (m) - CSF", "Cloth resolution (m) - CSF"),
@@ -229,21 +261,33 @@ class TerrioPlugin(Plugin):
                   bool(s.get("ground_noise", False))),
             Field("vegetation", t("Altri punti in classi 3/4/5 per altezza dal suolo (0,5 e 2 m)",
                                   "Other points as classes 3/4/5 by height above the ground (0.5 and 2 m)"),
-                  bool(s.get("ground_vegetation", False))),
-        ], intro=t("I punti del terreno prendono la classe 2 e gli altri la 1, come i filtri di PDAL; i punti "
-                   "classificati a mano restano come sono. Le classi vanno nella nuvola densa (DTM: DEM dalla classe 2).",
-                   "Ground points take class 2 and the others class 1, as PDAL's filters do; points labelled by "
-                   "hand stay as they are. The classes go into the dense cloud (DTM: a DEM from class 2)."))
+                  bool(s.get("ground_vegetation", False)),
+                  tip=t("Tutto cio' che non e' terreno e non ha gia' un'altra classe diventa vegetazione per la sua "
+                        "altezza dal suolo: anche muri in piedi, sezioni e cumuli di terra. Va bene per le piante di "
+                        "un campo: classifica prima i muri (classe 64) o correggi a mano.",
+                        "Everything that is not ground and has no other class yet becomes vegetation by its height "
+                        "above the ground: standing walls, sections and spoil heaps too. Fine for the plants of a "
+                        "field: classify the walls first (class 64) or correct by hand.")),
+        ], intro=t("Cambiano solo i punti delle classi 0, 1 e 2 (e 3, 4, 5 con la vegetazione): il terreno prende la "
+                   "classe 2 e gli altri la 1, come i filtri di PDAL. Le altre classi (edifici, muri e classi "
+                   "archeologiche, rumore, classi di un lidar importato) e i punti classificati a mano restano come "
+                   "sono. Le classi vanno nella nuvola densa (DTM: DEM dalla classe 2).",
+                   "Only the points in classes 0, 1 and 2 change (and 3, 4, 5 with the vegetation): the ground takes "
+                   "class 2 and the others class 1, as PDAL's filters do. The other classes (buildings, walls and "
+                   "the archaeological classes, noise, the classes of an imported lidar) and the points labelled "
+                   "by hand stay as they are. The classes go into the dense cloud (DTM: a DEM from class 2)."))
         if v is None:
             return
-        s.update({f"ground_{k}": v[k] for k in ("method", "cell", "slope", "threshold", "resolution", "rigidness",
-                                                  "noise", "vegetation")})
+        s.update({f"ground_{k}": v[k] for k in ("method", "cell", "slope", "threshold", "pmf_slope", "pmf_distance",
+                                                  "resolution", "rigidness", "noise", "vegetation")})
         self.context.save_settings()
+        pmf_chosen = v["method"] == "pmf"
 
         def job(progress):
-            return ground(chunk, v["method"], cell=v["cell"], slope=v["slope"], threshold=v["threshold"],
-                          window=v["window"], resolution=v["resolution"], rigidness=v["rigidness"],
-                          noise=v["noise"], vegetation=v["vegetation"], progress=progress)
+            return ground(chunk, v["method"], cell=v["cell"], slope=v["pmf_slope"] if pmf_chosen else v["slope"],
+                          threshold=v["pmf_distance"] if pmf_chosen else v["threshold"], window=v["window"],
+                          resolution=v["resolution"], rigidness=v["rigidness"], noise=v["noise"],
+                          vegetation=v["vegetation"], progress=progress)
 
         def done(report):
             message(window, "info", self.title, summary_ground(report))
@@ -303,6 +347,8 @@ class TerrioPlugin(Plugin):
         p.add_argument("source", help="LAS, LAZ, COPC, PLY, E57, ept.json, or a URL")
         p.add_argument("--chunk", help="label of the chunk whose dense cloud is replaced (kept as a version)")
         p.add_argument("--label", help="name of the new chunk")
+        p.add_argument("--activate", action="store_true",
+                       help="make the new chunk the active one (by default the active chunk stays)")
         p.add_argument("--max-points", type=int, default=0)
         p.add_argument("--classes", help="only these classes, e.g. 2,6")
         p.add_argument("--crs", help="reference system when the file has none")
@@ -311,13 +357,15 @@ class TerrioPlugin(Plugin):
         p.add_argument("--chunk", help="label of the chunk (the active one by default)")
         p.add_argument("--method", choices=list(dict(METHOD_LABELS)), default="smrf")
         p.add_argument("--cell", type=float, default=1.0)
-        p.add_argument("--slope", type=float, default=0.15)
-        p.add_argument("--threshold", type=float, default=0.5)
+        p.add_argument("--slope", type=float, help="the filter's by default: SMRF 0.15, PMF 1.0")
+        p.add_argument("--threshold", type=float, help="height threshold (PMF: initial distance); the filter's "
+                                                      "by default: SMRF and CSF 0.5, PMF 0.15")
         p.add_argument("--window", type=float)
         p.add_argument("--resolution", type=float, default=1.0, help="CSF: cloth resolution")
         p.add_argument("--rigidness", type=int, default=3, help="CSF: 1-3")
         p.add_argument("--noise", action="store_true", help="low noise (class 7) first, with ELM")
-        p.add_argument("--vegetation", action="store_true", help="other points as classes 3/4/5 by height above ground")
+        p.add_argument("--vegetation", action="store_true", help="other points as classes 3/4/5 by height above "
+                                                                    "ground (walls, sections and spoil heaps too)")
         p = sub.add_parser("reference", help="a COG or STAC raster of the web as a version of the DEM or orthomosaic")
         p.add_argument("project")
         p.add_argument("url")
@@ -357,12 +405,16 @@ class TerrioPlugin(Plugin):
 
                 classes = [int(c) for c in a.classes.split(",") if c.strip()] if a.classes else None
                 target = chunk if a.chunk else None
+                active = doc.chunk
                 new = import_cloud(doc, a.source, chunk=target, label=a.label, crs=a.crs, max_points=a.max_points or None,
                                    classes=classes, progress=print_progress)
-                if target is None:
+                if a.activate or active is None:
                     doc.chunk = new
+                elif doc.chunk is not active:  # the active chunk of the project stays as it was
+                    doc.chunk = active
                 doc.save()
-                print(f"{new.meta['terrio_import']['points']:,} points in {new.label}")
+                print(t("{0} punti in {1}", "{0} points in {1}").format(num(new.meta["terrio_import"]["points"]),
+                                                                        new.label))
             elif a.what == "ground":
                 from .clouds import ground
 
@@ -395,12 +447,12 @@ class TerrioPlugin(Plugin):
 
 
 def summary_ground(report: dict) -> str:
-    """The classes counted, in words."""
-    from pyarchinit_photogrammetry.ai.classify import class_names
-
-    names = class_names()
-    lines = [t("Filtro {0}: {1:,} punti, {2:,} cambiati", "Filter {0}: {1:,} points, {2:,} changed")
-             .format(report["method"].upper(), report["points"], report["changed"])]
+    """The classes counted, in words, in the language of the program."""
+    lines = [t("Filtro {0}: {1} punti, {2} cambiati", "Filter {0}: {1} points, {2} changed")
+             .format(report["method"].upper(), num(report["points"]), num(report["changed"]))]
+    if report.get("kept"):
+        lines.append(t("  {0} punti di altre classi o classificati a mano lasciati come erano",
+                       "  {0} points of other classes or labelled by hand left as they were").format(num(report["kept"])))
     for code, n in sorted(report["counts"].items()):
-        lines.append(f"  {code} {names.get(code, '')}: {n:,}")
+        lines.append(f"  {code} {class_label(code, report.get('labels'))}: {num(n)}")
     return "\n".join(lines)

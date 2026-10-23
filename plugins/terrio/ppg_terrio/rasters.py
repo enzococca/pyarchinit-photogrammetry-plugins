@@ -56,12 +56,21 @@ def survey_bounds(chunk) -> tuple[float, float, float, float]:
     raise RuntimeError("the chunk has no DEM, orthomosaic, dense cloud or aligned photos to take its extent from")
 
 
+def _reference_prefix() -> str:
+    """The start of the name of a reference version, in the language of the program: the name is
+    what the *Versioni* menu shows (the version is found by its id)."""
+    from . import t
+
+    return t("Riferimento: ", "Reference: ")
+
+
 def reference_raster(chunk, url: str, product: str = "dem", margin: float = 20.0, resolution: float | None = None,
                      name: str | None = None, progress=None) -> dict:
     """A raster of the web (a COG by URL, a STAC search as ``STACIT:...``) or a file, warped into
     the CRS of the chunk over the survey plus ``margin`` metres (``resolution`` in metres, else the
     source's), kept as a version of the DEM or of the orthomosaic (*Versioni* in the window; the
-    active one is not touched). Returns the file, the version and its size."""
+    active one is not touched), named ``name`` or ``Riferimento: <file>`` (``Reference: <file>`` when
+    the program speaks English). Returns the file, the version and its size."""
     from pyarchinit_photogrammetry.core import crs as crs_mod
 
     terrio = environment.load()
@@ -85,7 +94,7 @@ def reference_raster(chunk, url: str, product: str = "dem", margin: float = 20.0
     progress(0.8, f"Writing {out.name}")
     raster.write(str(out), compress="DEFLATE", tile_size=512, overviews=[2, 4, 8, 16],
                  overview_resampling="average")
-    label = name or ("Riferimento: " + (Path(str(url)).name or str(url)))[:80]
+    label = name or (_reference_prefix() + (Path(str(url)).name or str(url)))[:80]
     entry = {"id": vid, "name": label, "created": datetime.now().isoformat(timespec="seconds"),
              "params": {"source": str(url), "margin": m, "resolution": float(resolution or 0),
                         "terrio": str(terrio.__version__)},
