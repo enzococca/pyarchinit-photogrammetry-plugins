@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def t(it: str, en: str) -> str:
@@ -47,16 +47,17 @@ class GisArchivePlugin(Plugin):
 
     # ------------------------------------------------------------------ window
     def export_gpkg(self, chunk, path, progress):
-        """File > Esporta: everything into a GeoPackage, rasters included."""
+        """File > Esporta: everything into a GeoPackage, rasters included. It runs in the
+        background: the window has already stored its drawings into the chunk (store_drawings()
+        may only be called in the interface thread)."""
         from .archive import archive
 
-        self.context.store_drawings()
         return archive(self.context.app.document, str(path), chunk=chunk, progress=progress)
 
     def open_dialog(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import message
 
-        from .archive import archive
+        from .archive import ID_KEY, archive
         from .dialog import ArchiveDialog
 
         window = self.context.window
@@ -72,12 +73,18 @@ class GisArchivePlugin(Plugin):
         self.context.store_drawings()
         chunk = doc.chunk
 
-        def job(progress):
+        def job(progress):  # in the background: the project is changed in done(), in the interface thread
             return archive(doc, options["target"], what=options["what"], chunk=chunk, interval=options["interval"],
                            prefix=options["prefix"], replace=options["replace"], rasters=options["rasters"],
-                           max_side=options["max_side"], password=options["password"], progress=progress)
+                           max_side=options["max_side"], password=options["password"], progress=progress,
+                           remember=False)
 
         def done(report):
+            if report.get("project_changed"):  # the archive id of the project, kept when it is saved
+                doc.meta[ID_KEY] = dict(report["identity"])
+                dirty = getattr(window, "_dirty", None)
+                if callable(dirty):
+                    dirty(True)
             message(window, "info", self.title, summary(report))
 
         self.context.run(t("Archivio GIS", "GIS archive"), job, done)
@@ -89,7 +96,7 @@ class GisArchivePlugin(Plugin):
         import pyarchinit_photogrammetry as ppg
         from pyarchinit_photogrammetry.core.progress import print_progress
 
-        from .archive import EVERYTHING, ArchiveError, archive
+        from .archive import EVERYTHING, ArchiveError, archive, store_identity
 
         parser = argparse.ArgumentParser(prog="ppg plugin gis-archive",
                                          description="Archive the survey of a project into a GIS database.")
@@ -122,6 +129,14 @@ class GisArchivePlugin(Plugin):
             print(f"error: {exc}")
             return 1
         print(summary(report))
+        if report.get("project_changed") and doc.path is not None:
+            try:  # only the archive id goes into the project file, the rest of it is left as it is
+                store_identity(doc.path, report["identity"])
+            except (OSError, ValueError) as exc:
+                print(t(f"Nota: l'id dell'archivio non e' stato scritto nel progetto ({exc}): le righe di questo "
+                        "progetto si ritrovano comunque dal suo percorso",
+                        f"Note: the archive id was not written into the project ({exc}): the rows of this project "
+                        "are found again by its path"))
         return 0
 
 
