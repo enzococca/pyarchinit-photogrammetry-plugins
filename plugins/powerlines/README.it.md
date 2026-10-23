@@ -1,5 +1,7 @@
 # Linee elettriche
 
+**[Guida d'uso](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/powerlines/)**: il volo e la nuvola che servono al rilevamento, i parametri, come leggere conduttori e pali.
+
 Un plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
 (1.1 o successiva) che trova le **linee elettriche aeree** nella nuvola densa di un chunk: ogni
 conduttore come catenaria con lunghezza, freccia, franco dal suolo e distanza dall'ostacolo più
@@ -12,8 +14,8 @@ shapely ed ezdxf arrivano con lui.
 | *Plugin > Linee elettriche > Rileva linee elettriche...* | Il rilevamento sulla nuvola densa del chunk attivo, in background, con i parametri qui sotto. I conduttori (layer *Linee elettriche*) e i pali (layer *Pali*) vengono disegnati sulle viste dell'ortofoto e del DEM con i loro attributi; un riepilogo dà conduttori, linee, lunghezza totale, franco minimo e ostacolo più vicino. I punti dei cavi prendono la classe 14, quelli dei pali la 15 (vista 3D: colori per classe). |
 | *... > Mostra le linee elettriche* | Di nuovo i layer, per esempio dopo aver riaperto il progetto. |
 | *... > Elenco delle linee elettriche...* | Una tabella: id, linea, lunghezza, freccia, franco, ostacolo, azimut, punti; i pali con altezza e conduttori. |
-| *... > Dimentica le linee elettriche* | Toglie il risultato e le classi 14 e 15 date dal plugin (le etichette date a mano restano). |
-| *File > Esporta > Linee elettriche (GeoPackage)* | Tabelle `linee_elettriche` (LINESTRING Z, un vertice ogni metro, gli attributi della tabella) e `pali` (POINT Z a terra), nel CRS del chunk. |
+| *... > Dimentica le linee elettriche* | Toglie il risultato; i punti classificati dal plugin riprendono la classe che avevano. Le classi 14 e 15 di un lidar importato o di un altro strumento, e le etichette date a mano, restano. |
+| *File > Esporta > Linee elettriche (GeoPackage)* | Tabelle `linee_elettriche` (LINESTRING Z, un vertice ogni metro, gli attributi della tabella) e `pali` (POINT Z a terra), nel CRS del chunk. Un GeoPackage esistente tiene le sue altre tabelle; un file che esiste e non è un GeoPackage non viene mai cancellato: l'esportazione si ferma con un errore. |
 | *File > Esporta > Linee elettriche (DXF)* | Polilinee 3D sul layer `LINEE_ELETTRICHE`, i pali come linee verticali su `PALI`, etichette `L1`, `P1`... su `ETICHETTE`; metri, coordinate mondo. |
 | *File > Esporta > Linee elettriche (CSV)* | Una riga per conduttore con attributi ed estremi; i pali in `<nome>_pali.csv` accanto. |
 
@@ -77,7 +79,7 @@ l'alto: un rilievo georeferenziato o livellato).
 | Distanza massima fra punti di un cavo | 2 m | Alzarla con ricostruzioni rade. |
 | Lunghezza e punti minimi di un cavo | 5 m, 10 | Gruppi più corti o più poveri non sono cavi. |
 | Buco massimo da scavalcare | 15 m | Tratti dello stesso cavo separati da un buco della ricostruzione vengono uniti fino a questo buco. |
-| Classi 14 e 15 nella nuvola | sì | Punti dei cavi e dei pali classificati; un passaggio precedente del plugin viene prima azzerato. |
+| Classi 14 e 15 nella nuvola | sì | Punti dei cavi e dei pali classificati; i punti di un passaggio precedente del plugin riprendono prima la loro classe. Cambiano solo i punti trovati dal plugin: le classi 14 e 15 già nella nuvola (un lidar importato) restano. |
 
 Il risultato resta nel progetto (`chunk.meta["powerlines"]`): ogni cavo con la sua catenaria
 (`origin`, `u`, `a`, `s0`, `z0`, `s_min`, `s_max`), i vertici ogni metro, la lunghezza (dell'arco),
@@ -85,6 +87,17 @@ la freccia (massima distanza sotto la corda), il franco, la distanza dall'ostaco
 numero di punti; ogni palo con posizione, quota del terreno, altezza (cima dei suoi punti, o
 dell'attacco più alto), conduttori, linee e se la nuvola contiene la sua struttura. Le "linee"
 sono gruppi di conduttori paralleli affiancati sulla stessa campata.
+
+I punti classificati dal plugin vengono ricordati, con la classe che avevano, in
+`<dati del chunk>/powerlines/classified.npz` insieme a un'impronta della nuvola densa: un nuovo
+rilevamento e *Dimentica* ridanno la classe solo a loro, finché hanno ancora la classe del plugin
+e non sono stati classificati a mano. Se nel frattempo la nuvola è cambiata (ricostruita, pulita,
+ritagliata) non si possono più riconoscere e le loro classi restano, come quelle date dalla
+versione 0.1.0 (che non ricordava i suoi punti); il riepilogo lo dice.
+
+Le classi 14 e 15 non vengono tolte da sole dal DEM e dal modello (il programma toglie solo il
+rumore, 7 e 18): per un DEM o un modello senza cavi e pali, togli le classi 14 e 15 dall'elenco
+delle classi di *Costruisci DEM...* o *Costruisci modello...* (costruiti dalla nuvola densa).
 
 ## Limiti
 

@@ -1,5 +1,7 @@
 # Powerlines
 
+**[User guide](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/powerlines/)**: the flight and the cloud the detection needs, the parameters, how to read wires and poles.
+
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
 (1.1 or later) that finds the **overhead powerlines** in the dense cloud of a chunk: every
 conductor as a catenary curve with its length, sag, clearance from the ground and distance from
@@ -12,8 +14,8 @@ numpy, SciPy, shapely and ezdxf come with it.
 | *Plugin > Linee elettriche > Rileva linee elettriche...* | The detection on the dense cloud of the active chunk, in the background, with the parameters below. The conductors (layer *Linee elettriche*) and the poles (layer *Pali*) are drawn on the orthomosaic and DEM views with their attributes; a summary gives wires, lines, total length, lowest clearance and nearest obstacle. Wire points take class 14, pole points class 15 (3D view: colours by class). |
 | *... > Mostra le linee elettriche* | The layers again, for example after the project is reopened. |
 | *... > Elenco delle linee elettriche...* | A table: id, line, length, sag, clearance, obstacle, azimuth, points; the poles with their height and conductors. |
-| *... > Dimentica le linee elettriche* | Removes the result and the classes 14 and 15 given by the plugin (labels given by hand stay). |
-| *File > Esporta > Linee elettriche (GeoPackage)* | Tables `linee_elettriche` (LINESTRING Z, a vertex every metre, the attributes of the table) and `pali` (POINT Z at the ground), in the CRS of the chunk. |
+| *... > Dimentica le linee elettriche* | Removes the result; the points the plugin classified take back the class they had. The classes 14 and 15 of an imported lidar or of another tool, and the labels given by hand, stay. |
+| *File > Esporta > Linee elettriche (GeoPackage)* | Tables `linee_elettriche` (LINESTRING Z, a vertex every metre, the attributes of the table) and `pali` (POINT Z at the ground), in the CRS of the chunk. An existing GeoPackage keeps its other tables; a file that exists and is not a GeoPackage is never deleted: the export stops with an error. |
 | *File > Esporta > Linee elettriche (DXF)* | 3D polylines on the layer `LINEE_ELETTRICHE`, the poles as vertical lines on `PALI`, labels `L1`, `P1`... on `ETICHETTE`; metres, world coordinates. |
 | *File > Esporta > Linee elettriche (CSV)* | One row per conductor with its attributes and ends; the poles in `<name>_pali.csv` beside it. |
 
@@ -75,7 +77,7 @@ z up: a georeferenced or levelled survey).
 | Largest distance between points of a cable | 2 m | Raise it for sparse reconstructions. |
 | Shortest cable, fewest points | 5 m, 10 | Shorter or thinner groups are not wires. |
 | Largest gap bridged | 15 m | Pieces of one cable separated by a gap of the reconstruction are joined up to this gap. |
-| Classes 14 and 15 in the cloud | on | Wire and pole points classified; a previous run of the plugin is reset first. |
+| Classes 14 and 15 in the cloud | on | Wire and pole points classified; the points of a previous run of the plugin take back their class first. Only the points the plugin finds change: the classes 14 and 15 already in the cloud (an imported lidar) stay. |
 
 The result stays in the project (`chunk.meta["powerlines"]`): every wire with its catenary
 (`origin`, `u`, `a`, `s0`, `z0`, `s_min`, `s_max`), its vertices every metre, length (arc
@@ -83,6 +85,18 @@ length), sag (largest distance below the chord), clearance, obstacle distance, a
 number of points; every pole with its position, ground height, height (top of its points, or of
 the highest attachment), conductors, lines and whether the cloud holds its structure.
 "Lines" are groups of parallel conductors side by side over the same span.
+
+The points the plugin classifies are remembered, with the class they had, in
+`<chunk data>/powerlines/classified.npz` with a fingerprint of the dense cloud: a new detection
+and *Forget* give back their class only to them, while they still hold the plugin's class and
+were not labelled by hand. When the cloud changed in between (built again, cleaned, cropped) they
+cannot be matched and their classes stay, as do those given by version 0.1.0 (which did not
+remember its points); the summary says so.
+
+The classes 14 and 15 are not left out of the DEM and of the model by themselves (the program
+leaves out only the noise, 7 and 18): to build a DEM or a model without wires and poles, untick
+classes 14 and 15 in the list of classes of *Build DEM...* or *Build model...* (built from the
+dense cloud).
 
 ## Limits
 

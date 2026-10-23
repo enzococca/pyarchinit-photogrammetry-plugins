@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-powerlines"
-version = "0.1.0"
+version = "0.1.1"
 description = "pyarchinit-photogrammetry plugin: overhead powerlines in the dense cloud - conductors as catenaries, poles, clearance from the ground, distance from obstacles"
 readme = "README.md"
 license = "GPL-2.0-or-later"

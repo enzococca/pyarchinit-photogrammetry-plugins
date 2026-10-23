@@ -84,15 +84,19 @@ def _table_z(con, table: str, geometry_type: str, columns: dict, srs_id: int, fe
 def write_geopackage(report: dict, path, crs: str | None) -> Path:
     """Tables ``linee_elettriche`` (LINESTRING Z, one per conductor, vertices every metre) and
     ``pali`` (POINT Z at the ground) in a GeoPackage (created or, if it is one, kept with its
-    other tables), in the CRS given (a local frame: undefined cartesian)."""
+    other tables), in the CRS given (a local frame: undefined cartesian). A file that exists and
+    is not a GeoPackage is never deleted or written into: ValueError (an empty file is used)."""
     from shapely.geometry import LineString, Point
 
     from pyarchinit_photogrammetry.io import gpkg
 
     path = Path(path)
     srs = gpkg.srs_of(crs)
-    if not gpkg.is_geopackage(path) and path.exists():
-        path.unlink()
+    if path.exists() and (not path.is_file() or (path.stat().st_size and not gpkg.is_geopackage(path))):
+        raise ValueError(t("{0} esiste e non e' un GeoPackage: il plugin non lo sovrascrive. Scegli un altro file "
+                           "o un GeoPackage.",
+                           "{0} exists and is not a GeoPackage: the plugin does not overwrite it. Choose another "
+                           "file or a GeoPackage.").format(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     con = gpkg.connect(path)
     try:
@@ -186,12 +190,13 @@ def export(chunk, path, progress=None) -> Path:
 # --------------------------------------------------------------------------------------- words
 def table(report: dict) -> str:
     """The conductors and the poles in words, one line each."""
-    lines = [t("{0} conduttori in {1} linee, {2} pali ({3} con punti); terreno dai {4}; {5:,} punti di conduttore",
-               "{0} wires in {1} lines, {2} poles ({3} with points); ground from {4}; {5:,} wire points")
+    lines = [t("{0} conduttori in {1} linee, {2} pali ({3} con punti); {4}; {5:,} punti di conduttore",
+               "{0} wires in {1} lines, {2} poles ({3} with points); {4}; {5:,} wire points")
              .format(len(report["wires"]), report["lines"], len(report["poles"]),
                      sum(1 for p in report["poles"] if p["detected"]),
-                     t("punti di classe 2", "class 2 points") if report["ground"] == "classes"
-                     else t("filtro morfologico", "the morphological filter"), report["wire_points"])]
+                     t("terreno dai punti di classe 2", "ground from the class 2 points") if report["ground"] == "classes"
+                     else t("terreno dal filtro morfologico", "ground from the morphological filter"),
+                     report["wire_points"])]
     head = t("  id  linea  lunghezza  freccia  franco  ostacolo  azimut  punti", "  id  line  length  sag  clearance  obstacle  azimuth  points")
     lines.append(head)
     for w in report["wires"]:
@@ -225,9 +230,30 @@ def summary(report: dict) -> str:
         text += t("\nOstacolo piu' vicino a {0:.2f} m (L{1}).", "\nNearest obstacle at {0:.2f} m (L{1}).") \
             .format(closest["obstacle_m"], closest["id"])
     if report.get("classified"):
-        text += t("\nI punti dei conduttori hanno la classe 14, quelli dei pali la 15 (vista 3D: colori per classe).",
-                  "\nWire points have class 14, pole points class 15 (3D view: colours by class).")
+        text += t("\nI punti dei conduttori hanno la classe 14, quelli dei pali la 15 (vista 3D: colori per classe). "
+                  "DEM e modello non le tolgono da soli: per costruirli senza cavi e pali togli le classi 14 e 15 "
+                  "nella loro finestra.",
+                  "\nWire points have class 14, pole points class 15 (3D view: colours by class). The DEM and the "
+                  "model do not leave them out by themselves: to build them without wires and poles, untick "
+                  "classes 14 and 15 in their window.")
+    text += previous_classes_note(report)
     return text
+
+
+def previous_classes_note(report: dict) -> str:
+    """A line on the classes 14 and 15 the plugin gave before, when it could not take them back."""
+    state = report.get("previous_classes")
+    if state == "stale":
+        return t("\nLa nuvola densa e' cambiata dopo il rilevamento precedente: le classi 14 e 15 date allora non si "
+                 "distinguono piu' dalle altre e restano come sono.",
+                 "\nThe dense cloud changed after the previous detection: the classes 14 and 15 given then can no "
+                 "longer be told from the others and stay as they are.")
+    if state == "unknown":
+        return t("\nLe classi 14 e 15 date dalla versione 0.1.0 del plugin non si distinguono da quelle di altre "
+                 "origini e restano come sono: correggile a mano nella vista 3D se serve.",
+                 "\nThe classes 14 and 15 given by version 0.1.0 of the plugin cannot be told from those of other "
+                 "sources and stay as they are: correct them by hand in the 3D view if needed.")
+    return ""
 
 
 # ------------------------------------------------------------------------------------- window

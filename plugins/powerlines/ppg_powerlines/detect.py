@@ -23,8 +23,20 @@ z up: a georeferenced or levelled survey):
 
 The result is a plain dictionary (``chunk.meta["powerlines"]``): the wires with their
 catenary, vertices every metre, length, sag, clearance and obstacle distance, and the poles.
+
+The points the plugin puts into classes 14 and 15 are remembered, with the class they had, in
+``<chunk data>/powerlines/classified.npz`` together with a fingerprint of the dense cloud (its
+number of points and a sample of its coordinates). A new detection and *Forget* give back their
+class only to those points, and only while they still hold the class the plugin gave them and
+were not labelled by hand: the classes 14 and 15 of an imported lidar, or given by another tool,
+are never touched. When the dense cloud has changed since (built again, cleaned, cropped) the
+points cannot be matched any more and the classes stay as they are.
 """
 from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
 
 import numpy as np
 
@@ -68,6 +80,76 @@ OBSTACLE_HEIGHT = 0.5    # m above the ground: lower points are not obstacles
 OCCUPANCY_CELL = 5.0     # m: cells of the map that says where the survey has points
 BORDER_REACH = (5.0, 10.0, 15.0)  # m beyond a wire end: no points there = the survey ends, not the wire
 STEP = 1.0               # m between the vertices of a wire
+
+
+INDEX = Path("powerlines") / "classified.npz"  # in the folder of the chunk: the points the plugin classified
+
+
+# --------------------------------------------------------------------------- the points classified
+def fingerprint(xyz: np.ndarray) -> str:
+    """The number of points and a hash of a sample of their coordinates (as the 32-bit floats a
+    cloud file keeps): another cloud - built again, cleaned, cropped - has another fingerprint."""
+    xyz = np.asarray(xyz)
+    n = len(xyz)
+    digest = hashlib.sha1(str(n).encode())
+    if n:
+        sample = xyz[:: max(1, n // 4096)][:4096]
+        digest.update(np.ascontiguousarray(sample, np.float32).tobytes())
+        digest.update(np.ascontiguousarray(xyz[-1:], np.float32).tobytes())
+    return f"{n}:{digest.hexdigest()}"
+
+
+def index_path(chunk) -> Path:
+    return chunk.data_dir / INDEX
+
+
+def _write_index(chunk, index: np.ndarray, previous: np.ndarray, code: np.ndarray, print_: str) -> None:
+    path = index_path(chunk)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        np.savez_compressed(f, index=np.asarray(index, np.int64), previous=np.asarray(previous, np.uint8),
+                            code=np.asarray(code, np.uint8), fingerprint=np.array(print_))
+    os.replace(tmp, path)
+
+
+def _read_index(chunk, pc) -> dict | None:
+    """The points the plugin classified, if it remembers them: ``None`` when it does not, a
+    dictionary with ``stale`` when the dense cloud is not the one it classified."""
+    path = index_path(chunk)
+    if not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            data = {k: z[k] for k in ("index", "previous", "code", "fingerprint")}
+    except (OSError, ValueError, KeyError):
+        return {"stale": True}
+    data["stale"] = str(data["fingerprint"]) != fingerprint(pc.xyz)
+    return data
+
+
+def _give_back(pc, data: dict) -> int:
+    """The points of ``data`` that still hold the class the plugin gave them (and were not labelled
+    by hand) take back the class they had; returns how many."""
+    index, previous, code = data["index"], data["previous"], data["code"]
+    inside = (index >= 0) & (index < len(pc))
+    index, previous, code = index[inside], previous[inside], code[inside]
+    manual = pc.manual if pc.manual is not None else np.zeros(len(pc), bool)
+    still = (pc.classification[index] == code) & ~manual[index]
+    pc.classification[index[still]] = previous[still]
+    return int(still.sum())
+
+
+def _previous_classes(chunk, pc) -> tuple[str, int]:
+    """Give back their classes to the points of the previous detection: ``("restored", n)``, or
+    ``("stale", 0)`` (the cloud changed), ``("unknown", 0)`` (classified by version 0.1.0, which
+    did not remember its points), ``("none", 0)``."""
+    data = _read_index(chunk, pc)
+    if data is None:
+        return ("unknown" if (chunk.meta.get("powerlines") or {}).get("classified") else "none"), 0
+    if data["stale"]:
+        return "stale", 0
+    return "restored", _give_back(pc, data)
 
 
 # ---------------------------------------------------------------------------------------- ground
@@ -604,12 +686,18 @@ def detect(xyz: np.ndarray, classes: np.ndarray | None = None, progress=None, **
 def detect_chunk(chunk, classify: bool = True, progress=None, **params) -> dict:
     """The powerlines of the dense cloud of ``chunk``, kept in ``chunk.meta["powerlines"]``;
     with ``classify`` the points of the wires take class 14 and those of the detected poles
-    class 15 (points labelled by hand keep their class; the classes 14 and 15 of a previous run
-    are reset first). Returns the report."""
+    class 15. Points labelled by hand keep their class; the points the previous detection
+    classified take back their class first, and no other point of classes 14 and 15 is touched
+    (an imported lidar keeps its own). Returns the report; ``previous_classes`` says what became
+    of the classes of the previous detection (``restored``, ``stale``: the cloud changed since,
+    ``unknown``: classified by version 0.1.0, ``none``)."""
     pc = chunk.point_cloud
     if pc is None:
         raise RuntimeError(t("Costruisci prima la nuvola densa", "Build the dense cloud first"))
     progress = as_progress(progress)
+    previous, restored = ("none", 0)
+    if classify:  # the ground of the detection is read from the classes as they were before the plugin
+        previous, restored = _previous_classes(chunk, pc)
     xyz = chunk.to_world(pc.xyz)
     result = detect(xyz, pc.classification, progress.sub(0.0, 0.85 if classify else 1.0), **params)
     wire_index, pole_index = result.pop("wire_index"), result.pop("pole_index")
@@ -617,10 +705,12 @@ def detect_chunk(chunk, classify: bool = True, progress=None, **params) -> dict:
         progress(0.86, t("Classi 14 e 15 nella nuvola", "Classes 14 and 15 in the cloud"))
         codes = pc.classification
         manual = pc.manual if pc.manual is not None else np.zeros(len(pc), bool)
-        codes[np.isin(codes, (WIRE, TOWER)) & ~manual] = 1
-        for idx, code in ((wire_index, WIRE), (pole_index, TOWER)):
-            if len(idx):
-                codes[idx[~manual[idx]]] = code
+        given = np.zeros(len(pc), np.uint8)
+        given[wire_index] = WIRE
+        given[pole_index] = TOWER
+        index = np.nonzero((given > 0) & ~manual)[0]
+        _write_index(chunk, index, codes[index], given[index], fingerprint(pc.xyz))
+        codes[index] = given[index]
         pc.classification = codes
         chunk.point_cloud = pc
         labels = chunk.meta.setdefault("classes", {})
@@ -629,24 +719,29 @@ def detect_chunk(chunk, classify: bool = True, progress=None, **params) -> dict:
         result["classified"] = True
     else:
         result["classified"] = False
+    result["previous_classes"] = previous
+    result["restored_points"] = restored
     chunk.meta["powerlines"] = result
     progress(1.0, t("{0} conduttori, {1} pali", "{0} wires, {1} poles").format(len(result["wires"]), len(result["poles"])))
     return result
 
 
-def clear_chunk(chunk) -> bool:
-    """Forget the powerlines of ``chunk``: the report and the classes 14 and 15 given by the
-    plugin (hand labels stay). Returns whether there was something to forget."""
-    had = chunk.meta.pop("powerlines", None) is not None
+def clear_chunk(chunk, report: dict | None = None) -> bool:
+    """Forget the powerlines of ``chunk``: the report, and the classes the plugin gave - only to
+    the points it remembers classifying, which take back the class they had (hand labels, and
+    the classes 14 and 15 of an imported lidar or of another tool, stay). ``report`` gets
+    ``previous_classes`` and ``restored_points`` (see :func:`detect_chunk`). Returns whether
+    there was something to forget."""
     pc = chunk.point_cloud
-    if pc is not None and had:
-        manual = pc.manual if pc.manual is not None else np.zeros(len(pc), bool)
-        ours = np.isin(pc.classification, (WIRE, TOWER)) & ~manual
-        if ours.any():
-            pc.classification[ours] = 1
-            chunk.point_cloud = pc
+    previous, restored = _previous_classes(chunk, pc) if pc is not None else ("none", 0)
+    had = chunk.meta.pop("powerlines", None) is not None
+    if restored:
+        chunk.point_cloud = pc
+    index_path(chunk).unlink(missing_ok=True)
     labels = chunk.meta.get("classes") or {}
     for code, name in CLASS_LABELS.items():
         if labels.get(str(code)) == name:
             labels.pop(str(code))
-    return had
+    if report is not None:
+        report.update(previous_classes=previous, restored_points=restored)
+    return had or bool(restored)

@@ -21,7 +21,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 class PowerlinesPlugin(Plugin):
@@ -100,7 +100,11 @@ class PowerlinesPlugin(Plugin):
                   tip=t("Tratti dello stesso cavo separati da un buco della ricostruzione vengono uniti",
                         "Pieces of one cable separated by a gap of the reconstruction are joined")),
             Field("classify", t("Classi 14 (conduttori) e 15 (pali) nella nuvola", "Classes 14 (wires) and 15 (poles) in the cloud"),
-                  bool(s.get("classify", True))),
+                  bool(s.get("classify", True)),
+                  tip=t("Solo i punti trovati; le classi 14 e 15 gia' nella nuvola (un lidar importato) restano. DEM e "
+                        "modello non le tolgono da soli: toglile nella loro finestra.",
+                        "Only the points found; the classes 14 and 15 already in the cloud (an imported lidar) stay. "
+                        "The DEM and the model do not leave them out by themselves: untick them in their window.")),
         ], intro=t("Cerca nella nuvola densa i cavi sospesi: punti alti, allineati, con l'aria libera sotto e di fianco. "
                    "Ogni conduttore diventa una catenaria con lunghezza, freccia, franco dal suolo e distanza "
                    "dall'ostacolo piu' vicino; i pali dove i conduttori terminano insieme. Terreno dai punti di classe 2 "
@@ -159,10 +163,10 @@ class PowerlinesPlugin(Plugin):
         message(window, "info", self.title, table(report))
 
     def clear_dialog(self) -> None:
-        from pyarchinit_photogrammetry.gui.dialogs import choice
+        from pyarchinit_photogrammetry.gui.dialogs import choice, message
 
         from .detect import clear_chunk
-        from .export import draw
+        from .export import draw, previous_classes_note
 
         window = self.context.window
         chunk = self._chunk()
@@ -174,8 +178,15 @@ class PowerlinesPlugin(Plugin):
                   [t("Togli", "Remove"), t("Annulla", "Cancel")]) != 0:
             return
         draw(window, None)
-        window.run_task(t("Linee elettriche", "Powerlines"), lambda progress: clear_chunk(chunk), None, refresh=True,
-                        save=True)
+        report: dict = {}
+
+        def done(_had):
+            note = previous_classes_note(report).strip()
+            if note:
+                message(window, "info", self.title, note)
+
+        window.run_task(t("Linee elettriche", "Powerlines"), lambda progress: clear_chunk(chunk, report), done,
+                        refresh=True, save=True)
 
     # ------------------------------------------------------------------ command line
     def command(self, *args) -> int:
@@ -214,7 +225,7 @@ class PowerlinesPlugin(Plugin):
         import pyarchinit_photogrammetry as ppg
         from pyarchinit_photogrammetry.core.progress import print_progress
 
-        from .export import export, table
+        from .export import export, previous_classes_note, table
 
         doc = ppg.Document.open(a.project)
         chunk = doc.chunk if not a.chunk else next((c for c in doc.chunks if c.label == a.chunk), None)
@@ -228,7 +239,7 @@ class PowerlinesPlugin(Plugin):
                                                  gap=a.gap, min_length=a.min_length, min_points=a.min_points,
                                                  merge_gap=a.merge_gap)
                 doc.save()
-                print(table(report))
+                print(table(report) + previous_classes_note(report))
                 if a.export:
                     print(export(chunk, Path(a.export)))
             elif a.what == "list":
@@ -236,9 +247,13 @@ class PowerlinesPlugin(Plugin):
             elif a.what == "export":
                 print(export(chunk, Path(a.output)))
             else:
-                had = detect_mod.clear_chunk(chunk)
+                cleared: dict = {}
+                had = detect_mod.clear_chunk(chunk, cleared)
                 doc.save()
                 print("powerlines forgotten" if had else "no powerlines in this chunk")
+                note = previous_classes_note(cleared).strip()
+                if note:
+                    print(note)
         except (RuntimeError, ValueError) as exc:
             print(f"error: {exc}")
             return 1

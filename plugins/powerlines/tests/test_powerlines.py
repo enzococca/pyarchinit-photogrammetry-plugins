@@ -312,3 +312,100 @@ def test_command(tmp_path, capsys):
     assert plugin.command("list", str(doc.path), "--chunk", "nessuno") == 2
     assert plugin.command("clear", str(doc.path)) == 0 and "forgotten" in capsys.readouterr().out
     assert "powerlines" not in ppg.Document.open(doc.path).chunk.meta
+
+
+def test_only_the_points_the_plugin_classified_are_reset(tmp_path):
+    """Classes 14 and 15 of an imported lidar stay through a detection, a new detection and
+    Forget; the points the plugin classified take back the class they had."""
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    kinds = np.array(chunk.meta["kinds"])
+    pc = chunk.point_cloud
+    ground = np.nonzero(kinds == 0)[0]
+    cable = np.nonzero(kinds == 3)[0]
+    codes = pc.classification
+    codes[ground[:200]] = 14  # wires of a lidar elsewhere, and its towers
+    codes[ground[200:300]] = 15
+    codes[cable[:100]] = 14  # the lidar also had some points of these cables
+    codes[cable[100:150]] = 5  # and called others vegetation
+    before = codes.copy()
+    pc.classification = codes
+    chunk.point_cloud = pc
+    report = detect.detect_chunk(chunk)
+    assert report["previous_classes"] == "none" and detect.index_path(chunk).exists()
+    after = chunk.point_cloud.classification
+    assert (after[ground[:300]] == before[ground[:300]]).all(), "the classes of the lidar stay"
+    assert (after[cable] == 14).mean() > 0.9
+    again = detect.detect_chunk(chunk)  # a second run gives back the classes of the first one first
+    assert again["previous_classes"] == "restored" and again["restored_points"] > 1000
+    assert (chunk.point_cloud.classification[ground[:300]] == before[ground[:300]]).all()
+    cleared = {}
+    assert detect.clear_chunk(chunk, cleared) and cleared["previous_classes"] == "restored"
+    final = chunk.point_cloud.classification
+    assert (final[ground[:300]] == before[ground[:300]]).all(), "Forget leaves the lidar's 14 and 15"
+    assert (final[cable[:100]] == 14).all() and (final[cable[100:150]] == 5).all(), "the classes the points had"
+    assert (final[cable[150:]] == 1).mean() > 0.99 and not detect.index_path(chunk).exists()
+    assert np.array_equal(final, before), "every class back as before the plugin"
+
+
+def test_a_changed_cloud_keeps_its_classes(tmp_path):
+    """When the dense cloud changed after the detection (cleaned, cropped, built again) the
+    points cannot be matched: the classes stay as they are, and the report says so; a detection
+    of version 0.1.0 (no record of its points) is not undone either."""
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    kinds = np.array(chunk.meta["kinds"])
+    detect.detect_chunk(chunk)
+    pc = chunk.point_cloud
+    keep = np.ones(len(pc), bool)
+    keep[::50] = False  # a cleaning took away some points
+    chunk.point_cloud = pc.subset(keep)
+    wires = (chunk.point_cloud.classification == 14).sum()
+    report = detect.detect_chunk(chunk, classify=True)
+    assert report["previous_classes"] == "stale" and "e' cambiata" in export.summary(report)
+    cleared = {}
+    detect.clear_chunk(chunk, cleared)
+    assert cleared["previous_classes"] == "restored" and (chunk.point_cloud.classification[kinds[keep] == 3] == 14).sum() > 0
+    assert (chunk.point_cloud.classification == 14).sum() >= wires * 0.9, "the classes of the earlier cloud stay"
+    # version 0.1.0: a report that says classified, no record of the points
+    chunk.meta["powerlines"] = {"classified": True, "wires": [], "poles": []}
+    cleared = {}
+    detect.clear_chunk(chunk, cleared)
+    assert cleared["previous_classes"] == "unknown" and "0.1.0" in export.previous_classes_note(cleared)
+    assert (chunk.point_cloud.classification == 14).sum() > 0
+
+
+def test_geopackage_never_deletes_another_file(tmp_path, capsys):
+    """A file that is not a GeoPackage is never deleted or written into: the export stops with a
+    clear error; an empty file is used."""
+    from ppg_powerlines import PowerlinesPlugin
+
+    doc = _project(tmp_path)
+    detect.detect_chunk(doc.chunk, classify=False)
+    doc.save()
+    notes = tmp_path / "appunti.gpkg"
+    notes.write_text("le mie note")
+    with pytest.raises(ValueError, match="non e' un GeoPackage"):
+        export.export(doc.chunk, notes)
+    assert notes.read_text() == "le mie note"
+    assert PowerlinesPlugin().command("export", str(doc.path), str(notes)) == 1
+    assert "non e' un GeoPackage" in capsys.readouterr().out and notes.read_text() == "le mie note"
+    empty = tmp_path / "vuoto.gpkg"
+    empty.write_bytes(b"")
+    from pyarchinit_photogrammetry.io import gpkg
+
+    assert len(gpkg.read_table(export.export(doc.chunk, empty), "linee_elettriche")) == 10
+
+
+def test_table_in_good_italian(tmp_path):
+    """The table says where the ground comes from in a whole sentence."""
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    report = detect.detect_chunk(chunk, classify=False)
+    assert "; terreno dal filtro morfologico;" in export.table(report)
+    kinds = np.array(chunk.meta["kinds"])
+    pc = chunk.point_cloud
+    pc.classification[kinds == 0] = 2
+    chunk.point_cloud = pc
+    assert "; terreno dai punti di classe 2;" in export.table(detect.detect_chunk(chunk, classify=False))
+    assert "togli le classi 14 e 15" in export.summary({**report, "classified": True})
