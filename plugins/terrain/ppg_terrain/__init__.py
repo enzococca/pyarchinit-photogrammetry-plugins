@@ -26,7 +26,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import wbt
 from .texts import t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 LAYER = {"reticolo": "Terreno: reticolo", "bacini": "Terreno: bacini", "depressioni": "Terreno: depressioni",
          "rilievi": "Terreno: rilievi"}
 

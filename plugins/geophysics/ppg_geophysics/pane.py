@@ -6,6 +6,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSlider,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
+
 from .overlay import PALETTES
 from .texts import t
 
@@ -33,14 +35,15 @@ class GeophysicsPane(QWidget):
                          "or the pegs' coordinates, filter, overlay on the orthomosaic and DEM, export."))
         intro.setWordWrap(True)
         lay.addWidget(intro)
-        bar = QHBoxLayout()
+        # the buttons go onto more lines in a narrow dock: the pane never widens the column of the window
+        holder = QWidget()
+        bar = FlowLayout(holder)
         self.b_import = QPushButton(t("Importa griglia...", "Import grid..."))
         self.b_georef = QPushButton(t("Georeferenzia...", "Georeference..."))
         self.b_filter = QPushButton(t("Filtri...", "Filters..."))
         for b in (self.b_import, self.b_georef, self.b_filter):
             bar.addWidget(b)
-        bar.addStretch(1)
-        lay.addLayout(bar)
+        lay.addWidget(holder)
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels([t(c, {"Nome": "Name", "Tipo": "Kind", "Unità": "Units", "Cella (m)": "Cell (m)",
                                                    "Celle": "Cells", "Bande": "Bands", "Posizione": "Position",
@@ -61,6 +64,8 @@ class GeophysicsPane(QWidget):
         row2.addWidget(self.l_band)
         row2.addWidget(QLabel(t("Palette", "Palette")))
         self.c_palette = QComboBox()
+        self.c_palette.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.c_palette.setMinimumContentsLength(8)
         for name, label in (("grey", t("Grigi", "Greys")), ("grey_inverted", t("Grigi invertiti", "Greys inverted")),
                             ("diverging", t("Divergente (blu-rosso)", "Diverging (blue-red)")),
                             ("earth", t("Terra", "Earth")), ("heat", t("Calore", "Heat"))):
@@ -74,19 +79,17 @@ class GeophysicsPane(QWidget):
         self.s_opacity.setRange(10, 100)
         self.s_opacity.setValue(70)
         row3.addWidget(self.s_opacity, 1)
+        lay.addLayout(row3)
+        holder2 = QWidget()
+        bar2 = FlowLayout(holder2)
         self.b_overlay = QPushButton(t("Sovrapponi alla vista", "Overlay on the view"))
         self.b_hide = QPushButton(t("Nascondi", "Hide"))
-        row3.addWidget(self.b_overlay)
-        row3.addWidget(self.b_hide)
-        lay.addLayout(row3)
-        bar2 = QHBoxLayout()
         self.b_export = QPushButton(t("Esporta...", "Export..."))
         self.b_qgis = QPushButton(t("Apri in QGIS", "Open in QGIS"))
         self.b_remove = QPushButton(t("Rimuovi", "Remove"))
-        for b in (self.b_export, self.b_qgis, self.b_remove):
+        for b in (self.b_overlay, self.b_hide, self.b_export, self.b_qgis, self.b_remove):
             bar2.addWidget(b)
-        bar2.addStretch(1)
-        lay.addLayout(bar2)
+        lay.addWidget(holder2)
         self.status = QLabel("")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)

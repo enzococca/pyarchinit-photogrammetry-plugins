@@ -7,6 +7,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSlider,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
+
 from .overlay import CATEGORICAL, FORMS, PALETTES
 from .texts import t
 
@@ -44,7 +46,9 @@ class TerrainPane(QWidget):
         self.l_status = QLabel("")
         self.l_status.setWordWrap(True)
         lay.addWidget(self.l_status)
-        bar = QHBoxLayout()
+        # the buttons go onto more lines in a narrow dock: the pane never widens the column of the window
+        holder = QWidget()
+        bar = FlowLayout(holder)
         self.b_hydro = QPushButton(t("Idrologia...", "Hydrology..."))
         self.b_hydro.setToolTip(t("Depressioni aperte, accumulo di flusso, reticolo e bacini",
                                   "Depressions breached, flow accumulation, stream network and basins"))
@@ -55,8 +59,7 @@ class TerrainPane(QWidget):
         self.b_view = QPushButton(t("Visibilità...", "Viewshed..."))
         for b in (self.b_hydro, self.b_geomorph, self.b_depr, self.b_view):
             bar.addWidget(b)
-        bar.addStretch(1)
-        lay.addLayout(bar)
+        lay.addWidget(holder)
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels([t(c, COLS_EN[c]) for c in COLS])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -70,6 +73,8 @@ class TerrainPane(QWidget):
         row2 = QHBoxLayout()
         row2.addWidget(QLabel(t("Palette", "Palette")))
         self.c_palette = QComboBox()
+        self.c_palette.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.c_palette.setMinimumContentsLength(10)
         self.c_palette.addItem(t("Del tipo di prodotto", "The product's own"), "")
         for name, label in (("grey", t("Grigi", "Greys")), ("grey_inverted", t("Grigi invertiti", "Greys inverted")),
                             ("diverging", t("Divergente (blu-rosso)", "Diverging (blue-red)")),
@@ -85,7 +90,8 @@ class TerrainPane(QWidget):
         self.s_opacity.setValue(70)
         row2.addWidget(self.s_opacity, 1)
         lay.addLayout(row2)
-        row3 = QHBoxLayout()
+        holder3 = QWidget()
+        row3 = FlowLayout(holder3)
         self.b_overlay = QPushButton(t("Sovrapponi alla vista", "Overlay on the view"))
         self.b_hide = QPushButton(t("Nascondi", "Hide"))
         self.b_layer = QPushButton(t("Vettori nei layer", "Vectors into the layers"))
@@ -96,8 +102,7 @@ class TerrainPane(QWidget):
         self.b_remove = QPushButton(t("Rimuovi", "Remove"))
         for b in (self.b_overlay, self.b_hide, self.b_layer, self.b_export, self.b_qgis, self.b_remove):
             row3.addWidget(b)
-        row3.addStretch(1)
-        lay.addLayout(row3)
+        lay.addWidget(holder3)
         self.l_limits = QLabel("")
         lay.addWidget(self.l_limits)
         self.b_hydro.clicked.connect(self.hydrology_requested)
