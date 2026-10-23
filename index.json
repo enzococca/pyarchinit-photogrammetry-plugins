@@ -44,7 +44,7 @@
     },
     {
       "name": "gis-archive",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "title": "GIS archive",
       "description": "Spot heights, contour lines, units, sections, stones, markers, DEM and orthomosaic of a project into a GeoPackage, PostgreSQL/PostGIS or SpatiaLite database",
       "i18n": {
@@ -59,8 +59,8 @@
       "api": 1,
       "min_app": "1.1.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/gis-archive-v0.1.0/ppg_gis_archive-0.1.0-py3-none-any.whl",
-      "sha256": "ffe7cdf9c652324286c8b1383cc7493e84f401e5e62e9047c783a0fc9f753a61"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/gis-archive-v0.1.1/ppg_gis_archive-0.1.1-py3-none-any.whl",
+      "sha256": "4abd9992e96503635a98b898d2ff6bab9c41e96567401877c6da9f93529da497"
     },
     {
       "name": "powerlines",
