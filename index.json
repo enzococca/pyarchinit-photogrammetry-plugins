@@ -4,7 +4,7 @@
   "plugins": [
     {
       "name": "geoarchaeology",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "title": "Geoarchaeology",
       "description": "Boreholes, cores and trench logs on the survey: stratigraphic columns, contact surfaces and thicknesses by kriging (IDW for a few boreholes), kept under the DEM and in order; sections with the logs projected; a 3D model of the units with volumes, clipped to the US drawn; GeoPackage, GeoTIFF, DXF, PLY/OBJ, CSV, QGIS",
       "i18n": {
@@ -19,8 +19,8 @@
       "api": 1,
       "min_app": "1.2.2",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geoarchaeology-v0.1.0/ppg_geoarchaeology-0.1.0-py3-none-any.whl",
-      "sha256": "929f555e7df70a03d2db4c50b84a0ffd0606e31ff4c94627bf9fe29c06017ae7"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geoarchaeology-v0.1.1/ppg_geoarchaeology-0.1.1-py3-none-any.whl",
+      "sha256": "458194914c6d7accc05e69eb796025f31414d4957574766d72e500a7003cca79"
     },
     {
       "name": "geophysics",
