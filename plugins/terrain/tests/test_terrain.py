@@ -4,6 +4,7 @@ find the mound, the metrics have the right sign, the viewshed sees from the top;
 command line, the plugin and its pane in the program. Skipped when WhiteboxTools cannot be had."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -20,14 +21,18 @@ VALLEY_X = 50.0
 
 
 def _have_wbt(tmp_path) -> bool:
+    """WhiteboxTools for the tests: the computer's, else downloaded once into a folder the next
+    tests find too through ``PPG_WBT`` (the plugin looks only in its own folder, which the tests
+    do not configure: on CI every tool said it had no folder to install WhiteboxTools into)."""
     if wbt.binary() is not None:
         return True
+    folder = tmp_path / "wbt"
     try:
-        wbt.install(folder=tmp_path / "wbt")
-        return True
+        wbt.install(folder=folder)
     except Exception as exc:  # noqa: BLE001 - no network
         pytest.skip(f"WhiteboxTools not available: {exc}")
-        return False
+    os.environ["PPG_WBT"] = str(folder)
+    return True
 
 
 def _dem(tmp_path: Path):
