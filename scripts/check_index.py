@@ -1,7 +1,10 @@
 """Checks of index.json, run on every pull request.
 
 * always: the format (schema/index.schema.json, with jsonschema when installed), names unique,
-  versions readable;
+  versions readable; every plugin of this repository (and the template) declares in its
+  ``__version__`` the version of its pyproject.toml (the program shows the version a plugin
+  reports beside the one of the index: a plugin that reports another one looks out of date
+  forever);
 * ``--download``: each wheel is downloaded and checked - its SHA-256, a pure-Python wheel of the
   version given, declaring the plugin by its name in the entry point group, nothing outside its
   folder;
@@ -13,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -46,6 +50,62 @@ def _schema_problems(index: dict) -> list[str]:
     validator = jsonschema.Draft202012Validator(schema)
     return [f"{'/'.join(str(p) for p in e.absolute_path) or '(index)'}: {e.message}"
             for e in sorted(validator.iter_errors(index), key=lambda e: list(e.absolute_path))]
+
+
+def _toml(path: Path) -> dict:
+    """The tables of a pyproject.toml (tomllib from Python 3.11; on 3.10 the few keys needed here)."""
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10: [project] version and [tool.setuptools] packages, read by hand
+        text = path.read_text(encoding="utf-8")
+        out: dict = {"project": {}, "tool": {"setuptools": {}}}
+        section = ""
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line.startswith("["):
+                section = line.strip("[]").strip()
+            elif section == "project" and re.match(r"version\s*=", line):
+                out["project"]["version"] = line.split("=", 1)[1].strip().strip('"\'')
+            elif section == "tool.setuptools" and re.match(r"packages\s*=", line):
+                out["tool"]["setuptools"]["packages"] = re.findall(r'"([^"]+)"', line)
+        return out
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def declared_version(init: Path) -> str | None:
+    """The string given to ``__version__`` at the top level of a module (None when there is none)."""
+    tree = ast.parse(init.read_text(encoding="utf-8"), filename=str(init))
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if any(isinstance(t, ast.Name) and t.id == "__version__" for t in targets):
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return value.value
+    return None
+
+
+def version_problems(root: Path = ROOT) -> list[str]:
+    """The plugins of this repository (``plugins/*`` and ``template``) whose ``__version__``
+    differs from the version of their pyproject.toml."""
+    folders = sorted(p.parent for p in (root / "plugins").glob("*/pyproject.toml"))
+    if (root / "template" / "pyproject.toml").exists():
+        folders.append(root / "template")
+    problems = []
+    for folder in folders:
+        meta = _toml(folder / "pyproject.toml")
+        version = (meta.get("project") or {}).get("version")
+        packages = ((meta.get("tool") or {}).get("setuptools") or {}).get("packages") \
+            or sorted(p.parent.name for p in folder.glob("*/__init__.py"))
+        for package in packages:
+            init = folder / package / "__init__.py"
+            if not init.exists():
+                continue
+            found = declared_version(init)
+            if found is not None and found != version:
+                problems.append(f"{folder.relative_to(root).as_posix()}: {package}.__version__ is {found}, "
+                                f"pyproject.toml says {version}")
+    return problems
 
 
 def _download(url: str, target: Path) -> str:
@@ -136,6 +196,7 @@ def main(argv=None) -> int:
     problems += [f"{n}: listed {names.count(n)} times" for n in sorted(set(names)) if names.count(n) > 1]
     if names != sorted(names):
         problems.append("the plugins are not in the order of their names")
+    problems += version_problems()
     if not problems and (a.download or a.load):
         with tempfile.TemporaryDirectory(prefix="ppg-index-") as tmp:
             for entry in entries:

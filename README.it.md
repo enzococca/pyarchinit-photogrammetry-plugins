@@ -63,7 +63,9 @@ il plugin importa oltre a quelli del programma e non sa procurarsi da solo (terr
 wheel da PyPI, dice `[]`), `i18n` titolo e descrizione in altre lingue (per
 esempio `{"it": {"title": "Archivio GIS", "description": "..."}}`).
 
-Ogni pull request passa dal workflow `checks`: formato dell'indice, poi ogni wheel viene scaricata
+Ogni pull request passa dal workflow `checks`: formato dell'indice, il `__version__` di ogni plugin di
+questo repository confrontato con la versione del suo `pyproject.toml` (devono coincidere: il programma
+mostra la versione dichiarata dal plugin accanto a quella dell'indice), poi ogni wheel viene scaricata
 (hash, versione, entry point, nessun percorso fuori dalla sua cartella) e il plugin viene avviato
 con il programma; i plugin di questo repository eseguono i loro test, PostGIS compreso. In locale:
 

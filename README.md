@@ -83,7 +83,9 @@ An entry of the index ([schema](schema/index.schema.json)):
   downloads its own wheel from PyPI, says `[]`);
 * `i18n` title and description in other languages, shown when the interface speaks them.
 
-Each pull request is checked by the workflow `checks`: the format of the index, then each wheel is
+Each pull request is checked by the workflow `checks`: the format of the index, the `__version__` of
+every plugin of this repository against the version of its `pyproject.toml` (they must be the same:
+the program shows the version a plugin reports beside the one of the index), then each wheel is
 downloaded (hash, version, entry point, no path outside its folder) and the plugin is started with
 the program; the plugins of this repository run their tests, PostGIS included. Locally:
 
