@@ -8,6 +8,7 @@ I plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-
 
 | Plugin | Cosa fa |
 |---|---|
+| [`geoarchaeology`](plugins/geoarchaeology) - Geoarcheologia | Sondaggi, carote e sezioni di scavo (CSV di collari e intervalli) sul rilievo: colonne stratigrafiche, superfici di contatto e spessori per kriging (variogramma adattato ai minimi quadrati pesati, kriging ordinario o universale, la varianza di kriging; IDW con pochi sondaggi), sotto il DEM e in ordine; sezioni disegnate sulla vista o per i sondaggi, con i log proiettati; modello 3D delle unità con i volumi, ritagliato sulle US disegnate; GeoPackage, GeoTIFF, DXF, PLY/OBJ, CSV, nel progetto QGIS |
 | [`gis-archive`](plugins/gis-archive) - Archivio GIS | Il rilievo del progetto - quote, curve di livello, US disegnate, sezioni, pietre, marker, DEM e ortofoto - in un database GIS diverso da PyArchInit: GeoPackage, PostgreSQL/PostGIS o SpatiaLite |
 | [`powerlines`](plugins/powerlines) - Linee elettriche | Linee elettriche aeree nella nuvola densa: ogni conduttore come catenaria con lunghezza, freccia, franco dal suolo e distanza dall'ostacolo più vicino, i pali, i punti di cavi e pali classificati (14, 15); esportazioni GeoPackage, DXF e CSV |
 | [`spirula`](plugins/spirula) - Spirula | Gaussian splatting 3D delle foto allineate con [Spirula Studio](https://github.com/harry7557558/spirula-studio) (Vulkan: GPU NVIDIA, AMD, Intel e Apple): lo splat come prodotto del chunk, una mesh da esso, il visualizzatore |

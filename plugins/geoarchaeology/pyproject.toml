@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-geoarchaeology"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: boreholes, cores and trench logs on the survey - stratigraphic columns, contact surfaces and thicknesses by kriging, sections, a 3D model of the units with their volumes"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# nothing the program does not already carry (numpy, SciPy, rasterio, shapely, ezdxf, and matplotlib
+# with its interface): the packaged application has no pip. The kriging is written in NumPy.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/geoarchaeology"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+geoarchaeology = "ppg_geoarchaeology:GeoarchaeologyPlugin"
+
+[tool.setuptools]
+packages = ["ppg_geoarchaeology"]

@@ -1,0 +1,12 @@
+{
+  "title": "Geoarchaeology",
+  "description": "Boreholes, cores and trench logs on the survey: stratigraphic columns, contact surfaces and thicknesses by kriging (IDW for a few boreholes), kept under the DEM and in order; sections with the logs projected; a 3D model of the units with volumes, clipped to the US drawn; GeoPackage, GeoTIFF, DXF, PLY/OBJ, CSV, QGIS",
+  "i18n": {
+    "it": {
+      "title": "Geoarcheologia",
+      "description": "Sondaggi, carote e sezioni di scavo sul rilievo: colonne stratigrafiche, superfici di contatto e spessori per kriging (IDW con pochi sondaggi), sotto il DEM e in ordine; sezioni con i log proiettati; modello 3D delle unità con i volumi, ritagliato sulle US disegnate; GeoPackage, GeoTIFF, DXF, PLY/OBJ, CSV, QGIS"
+    }
+  },
+  "min_app": "1.2.2",
+  "requires": []
+}
