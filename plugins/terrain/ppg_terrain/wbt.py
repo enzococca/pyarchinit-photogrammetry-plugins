@@ -1,8 +1,9 @@
 """WhiteboxTools (John Lindsay, University of Guelph, MIT), run as a program: the binary of this
 computer is downloaded once into the plugin's folder (or found in the ``whitebox`` Python package,
 on the PATH, or where ``PPG_WBT`` says) and every tool is a call of ``whitebox_tools --run=Tool``
-with its parameters. The tool's output is read for its progress and for its errors: the program
-prints them and exits with 0, so the lines are what tells.
+with its parameters. The tool's output is read line by line while it runs, for its progress
+(``Filling depressions: 35%``) and for its errors: the program prints them and may exit with 0
+after a panic, so the lines are what tells.
 
 Files are given with absolute paths (the working directory of the binary is not used: with it the
 tools did not find their inputs) and must be GeoTIFFs with GeoKeys: a DEM of a local project has no
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -30,7 +32,20 @@ URLS = {
 }
 USER_AGENT = "pyarchinit-photogrammetry plugin terrain"
 _DIR: Path | None = None  # the plugin's folder (configure())
-_PROGRESS = re.compile(r"(\d{1,3})%")
+# a line of progress: "Progress: 35%", "Filling depressions: 35%", "Progress (Az=60): 35%"
+_PROGRESS = re.compile(r"^(?P<label>.*?)[:\s]*(?P<pct>\d{1,3})\s*%\s*$")
+# the phases a tool prints, each counting from 0 to 100 % (WhiteboxTools 2.4, measured): the
+# bar gives every phase its share of the tool; a tool not listed has one, and a phase more than
+# expected keeps the bar where it is until the tool ends
+PHASES = {
+    "BreachDepressionsLeastCost": 4,  # finding pits, breaching, then the filling of what is left
+    "FillDepressions": 3,  # finding pit cells, filling depressions, fixing flats
+    "D8FlowAccumulation": 4,  # flow directions, inflowing neighbours, accumulation, correcting values
+    "Basins": 2,
+    "DevFromMeanElev": 3,  # binning, integral images, analysis
+    "Viewshed": 3,  # stations, view angle, output
+}
+REPORT_EVERY = 0.1  # seconds between two reports of one phase: some tools print hundreds of lines a second
 
 
 class ToolError(RuntimeError):
@@ -161,45 +176,117 @@ def _spawn(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, close_fds=False)
 
 
-def run(tool: str, progress=None, **params) -> list[str]:
+class Phases:
+    """The percentages a tool prints, phase after phase ("Finding pit cells: 40%", then "Filling
+    depressions: 3%"), as one fraction of the tool that only grows: phase ``k`` of ``expected``
+    covers ``[k / expected, (k + 1) / expected]``; a phase beyond the expected ones never moves the
+    bar back."""
+
+    def __init__(self, expected: int = 1):
+        self.expected = max(1, int(expected))
+        self.labels: list[str] = []
+        self.value = 0.0
+
+    def update(self, label: str, percent: float) -> float:
+        if not self.labels or self.labels[-1] != label:
+            self.labels.append(label)
+        k = len(self.labels) - 1
+        fraction = (k + min(max(float(percent), 0.0), 100.0) / 100.0) / max(self.expected, k + 1)
+        self.value = max(self.value, min(fraction, 1.0))
+        return self.value
+
+
+def parse_progress(line: str) -> tuple[str, int] | None:
+    """``(phase, percent)`` of a line of progress of WhiteboxTools, else None."""
+    m = _PROGRESS.match(line.strip())
+    if not m:
+        return None
+    return m.group("label").strip() or "Progress", int(m.group("pct"))
+
+
+def _stream(args: list[str], on_line) -> tuple[int, list[str]]:
+    """Run the binary and hand every line it prints (its errors too) to ``on_line`` while it runs;
+    an exception of ``on_line`` (a cancelled step) stops the binary and goes on. Returns the exit
+    code and the lines. posix_spawn, as :func:`_spawn`: absolute path, the file descriptors
+    inherited, no working directory."""
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                            errors="replace", bufsize=1, close_fds=False)
+    lines: list[str] = []
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip()
+            lines.append(line)
+            on_line(line)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        proc.stdout.close()
+    return proc.wait(), lines
+
+
+def run(tool: str, progress=None, *, phases: int | None = None, **params) -> list[str]:
     """Run ``tool`` with ``params`` (``dem="/a/dem.tif"``, ``fix_flats=True``; booleans become
-    flags) and return its lines; the fractions it prints go to ``progress``; a failure raises
-    :class:`ToolError`."""
+    flags) and return its lines. While it runs, the percentages it prints go to ``progress`` as one
+    growing fraction, the phase in the message (``phases``: how many phases of 0-100 % the tool
+    prints, by default :data:`PHASES`); cancelling the step stops the tool. A failure raises
+    :class:`ToolError`: an exit code, a panic (WhiteboxTools may exit with 0 after one), an output
+    not written; a failed tool is run again, once or twice, on one thread."""
+    from .texts import t
+
     exe = ensure(progress)
-    args = [str(exe), f"--run={camel(tool)}", "-v"]
+    name = camel(tool)
+    args = [str(exe), f"--run={name}", "-v"]
     for k, v in params.items():
         if v is None or v is False:
             continue
         args.append(f"--{k}" if v is True else f"--{k}={v}")
     outputs = [str(v) for k, v in params.items() if k in ("output", "out_mag") and isinstance(v, str)]
-    proc = lines = None
+    code, lines = 0, []
     for attempt in range(3):
         # a tool that fails on its threads is run again, single-threaded: FillDepressions 2.4 dies
         # about once in six runs ("Error unwrapping 'output'") with many threads, never with one
         extra = ["--max_procs=1"] if attempt and "--max_procs" not in " ".join(args) else []
-        proc = _spawn(args + extra)
-        lines = ([ln.rstrip() for ln in (proc.stdout or "").splitlines()]
-                 + [ln.rstrip() for ln in (proc.stderr or "").splitlines()])
-        failed = proc.returncode != 0 or any("panicked" in ln for ln in lines) or any(not Path(o).exists() for o in outputs)
+        for o in outputs:  # an output left by an earlier run must not pass for this one's
+            try:
+                Path(o).unlink()
+            except OSError:
+                pass
+        counter = Phases(phases if phases is not None else PHASES.get(name, 1))
+        last = {"label": None, "t": 0.0}
+
+        def on_line(line: str, counter=counter, last=last) -> None:
+            if progress is None:
+                return
+            hit = parse_progress(line)
+            if hit is None:
+                return
+            label, pct = hit
+            fraction = counter.update(label, pct)
+            now = time.monotonic()
+            if label == last["label"] and pct < 100 and now - last["t"] < REPORT_EVERY:
+                return  # the fraction keeps counting, the window is not flooded
+            last["label"], last["t"] = label, now
+            progress(fraction, f"{name}: {label} {pct}%")
+
+        if attempt and progress is not None and hasattr(progress, "message"):
+            progress.message(t("{0}: di nuovo, su un solo thread", "{0}: again, on one thread").format(name))
+        code, lines = _stream(args + extra, on_line)
+        failed = code != 0 or any("panicked" in ln for ln in lines) or any(not Path(o).exists() for o in outputs)
         if not failed:
             break
-    if progress:
-        for ln in lines:
-            m = _PROGRESS.search(ln)
-            if m and ("rogress" in ln or ln.strip().endswith("%")):
-                try:
-                    progress(min(1.0, int(m.group(1)) / 100.0), f"{camel(tool)}: {ln.strip()[:60]}")
-                except Exception:  # noqa: BLE001 - a cancelled step: the tool already ran
-                    break
     bad = [ln for ln in lines if "panicked" in ln or ln.startswith("Error") or "error:" in ln.lower()]
-    if proc.returncode != 0 or bad:
-        detail = bad[0] if bad else (lines[-1] if lines else f"exit code {proc.returncode}")
+    if code != 0 or bad:
+        detail = bad[0] if bad else (lines[-1] if lines else f"exit code {code}")
         if bad and bad[0].rstrip().endswith(":") and lines.index(bad[0]) + 1 < len(lines):
             detail += " " + lines[lines.index(bad[0]) + 1]  # the panic's message is on the next line
-        raise ToolError(f"{camel(tool)}: {detail.strip()}")
+        raise ToolError(f"{name}: {detail.strip()}")
     for o in outputs:
         if not Path(o).exists():
-            raise ToolError(f"{camel(tool)} wrote no {Path(o).name}: " + " ".join(lines[-3:])[:300])
+            raise ToolError(f"{name} wrote no {Path(o).name}: " + " ".join(lines[-3:])[:300])
+    if progress is not None:
+        progress(1.0, t("{0}: fatto", "{0}: done").format(name))
     return lines
 
 

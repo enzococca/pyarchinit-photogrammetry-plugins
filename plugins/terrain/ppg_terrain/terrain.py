@@ -6,6 +6,9 @@
 WhiteboxTools reads GeoTIFFs with GeoKeys: the DEM is copied once into ``terrain/_work/`` as
 float32 with the CRS of the chunk, or a stand-in CRS (EPSG:3857) when the project is local, and
 every result comes back onto the DEM's own frame (no CRS again when local).
+
+The names of the products are stored in Italian (they are data, as the program's); the pane and
+the QGIS project show :func:`display_name`, in the language of the interface.
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from . import wbt
+from .texts import PRODUCTS, lang, t
 
 NODATA = -32767.0
 STANDIN_CRS = "EPSG:3857"  # any projected CRS does: the tools only want GeoKeys
@@ -31,11 +35,13 @@ METRICS = {
     "ruggedness": ("ruggedness_index", lambda c: {}, "Indice di rugosità (TRI)", "Ruggedness index (TRI)", "grey"),
     "profile_curvature": ("profile_curvature", lambda c: {}, "Curvatura di profilo", "Profile curvature", "diverging"),
     "plan_curvature": ("plan_curvature", lambda c: {}, "Curvatura planare", "Plan curvature", "diverging"),
-    "daylight": ("time_in_daylight", None, "Ore di luce (frazione dell'anno)", "Time in daylight (fraction of the year)", "grey"),
+    # the horizon angles of WhiteboxTools, the course of the sun computed here: see daylight()
+    "daylight": ("horizon_angle", None, "Ore di luce (frazione dell'anno)", "Time in daylight (fraction of the year)", "grey"),
 }
 SIZED = ("tpi", "dev", "geomorphons")  # the metrics with a window or a search distance
 GEOMORPHON_FORMS = {1: "flat", 2: "peak", 3: "ridge", 4: "shoulder", 5: "spur", 6: "slope", 7: "hollow",
                     8: "footslope", 9: "valley", 10: "pit"}
+DAYLIGHT = {"az_fraction": 15.0, "max_dist": 100.0, "minutes": 10.0}  # azimuth step (deg), search (m), time step (min)
 
 
 # ------------------------------------------------------------------ the DEM for the tools
@@ -85,6 +91,48 @@ def work_path(chunk, name: str) -> Path:
     work = folder(chunk) / "_work"
     work.mkdir(parents=True, exist_ok=True)
     return work / name
+
+
+# ------------------------------------------------------------------ the names of the products
+def product_id(metric: str, size_m: float = 0.0, cell_m: float | None = None) -> str:
+    """The id of a metric: ``tpi_10`` (a window of 10 m), ``ruggedness``; with ``cell_m`` (computed
+    on a coarser copy of the DEM) also the cell: ``geomorphons_30_c1``, ``plan_curvature_c0_5``."""
+    pid = f"{metric}_{size_m:g}" if metric in SIZED else metric
+    if cell_m:
+        pid += f"_c{cell_m:g}"
+    return pid.replace(".", "_").replace("-", "m")
+
+
+def name_of(pid: str, params: dict | None = None, language: str = "it") -> str | None:
+    """The name of a product in ``language`` (``it``: the name stored in the project), from its id
+    and parameters; None for an id the plugin does not know."""
+    params = params or {}
+    en = language == "en"
+    if pid in PRODUCTS:
+        return PRODUCTS[pid][1 if en else 0]
+    metric = params.get("metric")
+    if metric in METRICS:
+        _tool, _make, name_it, name_en, _kind = METRICS[metric]
+        name = name_en if en else name_it
+        if metric in SIZED:
+            name += f" {float(params.get('size_m', 0.0)):g} m"
+        if params.get("coarse"):
+            name += (", cell " if en else ", cella ") + f"{float(params['cell_m']):g} m"
+        return name
+    if pid.startswith("viewshed") and {"x", "y", "height_m"} <= set(params):
+        x, y, h = float(params["x"]), float(params["y"]), float(params["height_m"])
+        return (f"Viewshed from ({x:.1f}, {y:.1f}), eye at {h:g} m" if en
+                else f"Visibilità da ({x:.1f}, {y:.1f}), occhio a {h:g} m")
+    return None
+
+
+def display_name(entry: dict) -> str:
+    """The name of a product as the interface shows it: the stored (Italian) name in Italian,
+    the English one in English."""
+    stored = entry.get("name") or entry.get("id", "")
+    if lang() != "en":
+        return stored
+    return name_of(str(entry.get("id", "")), entry.get("params"), "en") or stored
 
 
 # ------------------------------------------------------------------ the products
@@ -164,19 +212,39 @@ def load(chunk, pid: str):
         return a, src.transform, src.crs
 
 
-def remove(chunk, pid: str) -> None:
+def sharing(chunk, pid: str) -> list[dict]:
+    """The other products that use the GeoPackage of ``pid`` (the stream links and the basins share
+    ``hydrology.gpkg``, the depth and the levels of the depressions ``depressioni.gpkg``)."""
+    e = entry(chunk, pid)
+    if e is None or not e.get("vector"):
+        return []
+    return [x for x in entries(chunk) if x.get("id") != pid and x.get("vector") == e["vector"]]
+
+
+def remove(chunk, pid: str) -> list[str]:
+    """The product out of the chunk: its raster deleted, and the GeoPackage of its lines and
+    polygons too when no other product still uses it. Returns the files deleted (relative to the
+    chunk's folder)."""
     e = entry(chunk, pid)
     if e is None:
-        return
+        return []
+    meta = chunk.meta.setdefault("terrain", {})
+    rest = [x for x in meta.get("products", []) if x.get("id") != pid]
+    meta["products"] = rest
+    used = {x.get(k) for x in rest for k in ("file", "vector") if x.get(k)}
+    gone = []
     for key in ("file", "vector"):
-        p = Path(chunk.data_dir) / e[key] if e.get(key) else None
-        if p is not None and p.exists():
+        rel = e.get(key)
+        if not rel or rel in used:
+            continue
+        p = Path(chunk.data_dir) / rel
+        if p.exists():
             try:
                 p.unlink()
+                gone.append(rel)
             except OSError:
                 pass
-    meta = chunk.meta.setdefault("terrain", {})
-    meta["products"] = [x for x in meta.get("products", []) if x.get("id") != pid]
+    return gone
 
 
 def _cells(size_m: float, cell: float, odd: bool = True, least: int = 3) -> int:
@@ -201,37 +269,42 @@ def hydrology(chunk, threshold_m2: float = 50.0, breach_m: float = 10.0, progres
     dem, info = dem_for_tools(chunk)
     cell = info["cell"]
     w = lambda n: str(work_path(chunk, n))  # noqa: E731
-    progress(0.0, "Breaching the depressions")
-    wbt.run("breach_depressions_least_cost", dem=str(dem), output=w("breached.tif"),
+    progress(0.0, t("Apertura delle depressioni", "Breaching the depressions"))
+    wbt.run("breach_depressions_least_cost", progress=progress.sub(0.0, 0.2), dem=str(dem), output=w("breached.tif"),
             dist=max(1, int(round(breach_m / cell))), fill=True)
-    progress(0.2, "Flow directions and accumulation")
-    wbt.run("d8_pointer", dem=w("breached.tif"), output=w("d8.tif"))
-    wbt.run("d8_flow_accumulation", input=w("breached.tif"), output=w("facc.tif"), out_type="cells")
+    progress(0.2, t("Direzioni e accumulo di flusso", "Flow directions and accumulation"))
+    wbt.run("d8_pointer", progress=progress.sub(0.2, 0.05), dem=w("breached.tif"), output=w("d8.tif"))
+    wbt.run("d8_flow_accumulation", progress=progress.sub(0.25, 0.2), input=w("breached.tif"), output=w("facc.tif"),
+            out_type="cells")
     threshold = max(1, int(round(threshold_m2 / (cell * cell))))
-    progress(0.45, f"Stream network: cells draining {threshold_m2:g} m² or more")
-    wbt.run("extract_streams", flow_accum=w("facc.tif"), output=w("streams.tif"), threshold=threshold, zero_background=True)
-    wbt.run("stream_link_identifier", d8_pntr=w("d8.tif"), streams=w("streams.tif"), output=w("links.tif"), zero_background=True)
-    progress(0.6, "Basins")
-    wbt.run("basins", d8_pntr=w("d8.tif"), output=w("basins.tif"))
+    progress(0.45, t("Reticolo: celle che drenano almeno {0:g} m²", "Stream network: cells draining {0:g} m² or more")
+             .format(threshold_m2))
+    wbt.run("extract_streams", progress=progress.sub(0.45, 0.05), flow_accum=w("facc.tif"), output=w("streams.tif"),
+            threshold=threshold, zero_background=True)
+    wbt.run("stream_link_identifier", progress=progress.sub(0.5, 0.1), d8_pntr=w("d8.tif"), streams=w("streams.tif"),
+            output=w("links.tif"), zero_background=True)
+    progress(0.6, t("Bacini", "Basins"))
+    wbt.run("basins", progress=progress.sub(0.6, 0.15), d8_pntr=w("d8.tif"), output=w("basins.tif"))
     facc = read_result(work_path(chunk, "facc.tif"))
     links = read_result(work_path(chunk, "links.tif"))
     basins = read_result(work_path(chunk, "basins.tif"))
     d8 = read_result(work_path(chunk, "d8.tif"))
     links = np.where(np.isfinite(links) & (links > 0), links, np.nan)
     basins = np.where(np.isfinite(basins) & (basins > 0), basins, np.nan)
-    progress(0.75, "Lines of the network and polygons of the basins")
+    progress(0.75, t("Linee del reticolo e poligoni dei bacini", "Lines of the network and polygons of the basins"))
     lines = vectors.stream_lines(links, d8, facc, info["transform"])
     polys = vectors.basin_polygons(basins, info["transform"])
     gpkg = folder(chunk) / "hydrology.gpkg"
     vectors.write_hydrology(gpkg, lines, polys, info["crs"], cell)
     rel = str(gpkg.relative_to(chunk.data_dir))
     params = {"threshold_m2": float(threshold_m2), "breach_m": float(breach_m), "threshold_cells": threshold}
-    store(chunk, np.log10(np.where(facc > 0, facc, np.nan)), "flow_accumulation", "Accumulo di flusso (log10 celle)",
+    store(chunk, np.log10(np.where(facc > 0, facc, np.nan)), "flow_accumulation", name_of("flow_accumulation"),
           "log", params, description="log10 of the cells draining into the cell")
-    store(chunk, links, "streams", "Reticolo (tratti)", "classes", params, integer=True, vector=rel,
+    store(chunk, links, "streams", name_of("streams"), "classes", params, integer=True, vector=rel,
           description="stream link id")
-    store(chunk, basins, "basins", "Bacini", "classes", params, integer=True, vector=rel, description="basin id")
-    progress(1.0, f"Hydrology: {len(lines)} stream links, {len(polys)} basins")
+    store(chunk, basins, "basins", name_of("basins"), "classes", params, integer=True, vector=rel,
+          description="basin id")
+    progress(1.0, t("Idrologia: {0} tratti, {1} bacini", "Hydrology: {0} stream links, {1} basins").format(len(lines), len(polys)))
     return {"links": len(lines), "basins": len(polys), "gpkg": str(gpkg), "threshold_cells": threshold}
 
 
@@ -240,9 +313,11 @@ def geomorphometry(chunk, metric: str = "tpi", size_m: float = 10.0, progress=No
                    cell_m: float = 0.0) -> dict:
     """One of :data:`METRICS` from the DEM, ``size_m`` the side of the window (TPI, deviation)
     or the search distance (geomorphons; ``flatness`` the angle in degrees under which the ground
-    counts as flat). ``cell_m``: the metric computed on the DEM resampled to this cell (0: the
-    DEM's own) and brought back onto the DEM's grid - the landforms of a field read at a metre, not
-    the furrows read at five centimetres. Product ``<metric>_<size>``."""
+    counts as flat). ``cell_m``: the metric computed on the DEM resampled to this cell and brought
+    back onto the DEM's grid - the landforms of a field read at a metre, not the furrows read at
+    five centimetres; any cell larger than the DEM's is used, a smaller one (or 0) leaves the DEM's
+    own cell and the entry says so (``note``). Product ``<metric>_<size>`` (``_c<cell>`` added when
+    computed on another cell, so the results of two cells stay side by side)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
@@ -250,32 +325,43 @@ def geomorphometry(chunk, metric: str = "tpi", size_m: float = 10.0, progress=No
         raise ValueError(f"unknown metric {metric!r}: " + ", ".join(METRICS))
     tool, make, name_it, _name_en, kind = METRICS[metric]
     dem, info = dem_for_tools(chunk)
-    cell = info["cell"]
-    coarse = cell_m and cell_m > 1.5 * cell
+    dem_cell = info["cell"]
+    asked = float(cell_m or 0.0)
+    coarse = asked > dem_cell * (1.0 + 1e-6)
+    cell = asked if coarse else dem_cell
+    note = ""
+    if asked > 0 and not coarse:
+        note = t("cella di calcolo di {0:g} m non più grande di quella del DEM ({1:.3g} m): calcolato sulle celle del DEM",
+                 "a cell of the computation of {0:g} m is not larger than the DEM's ({1:.3g} m): computed on the "
+                 "cells of the DEM").format(asked, dem_cell)
+        progress.message(note)
     if coarse:
-        dem = coarse_dem(chunk, dem, float(cell_m), progress.sub(0.0, 0.05))
-        cell = float(cell_m)
-    uses_size = metric in SIZED
-    pid = f"{metric}_{size_m:g}".replace(".", "_") if uses_size else metric
+        dem = coarse_dem(chunk, dem, cell, progress.sub(0.0, 0.05))
+    pid = product_id(metric, size_m, cell if coarse else None)
     out = work_path(chunk, f"{pid}.tif")
-    progress(0.05, name_it)
+    progress(0.05, name_it if lang() != "en" else _name_en)
     if metric == "daylight":
         lat, lon = _latlon(info)
-        params = {"lat": round(lat, 5), "long": round(lon, 5), "az_fraction": 15.0, "max_dist": 100.0, "utc_offset": "+00:00"}
+        params = {"lat": round(lat, 5), "long": round(lon, 5), **DAYLIGHT}
+        daylight(dem, out, lat, progress=progress.sub(0.05, 0.8), az_fraction=DAYLIGHT["az_fraction"],
+                 max_dist=DAYLIGHT["max_dist"], minutes=DAYLIGHT["minutes"])
     else:
         n = _cells(size_m, cell)
         params = make(n)
         if metric == "geomorphons":
             params["threshold"] = float(flatness)
-    wbt.run(tool, progress=progress.sub(0.05, 0.8), dem=str(dem), output=str(out), **params)
+        wbt.run(tool, progress=progress.sub(0.05, 0.8), dem=str(dem), output=str(out), **params)
     integer = metric == "geomorphons"
     values = read_result(out) if not coarse else onto_dem(out, info, nearest=integer)
     if integer:
         values = np.where(np.isfinite(values) & (values >= 1) & (values <= 10), values, np.nan)
-    entry_ = store(chunk, values, pid, f"{name_it} {size_m:g} m" if uses_size else name_it, kind,
-                   {"metric": metric, "size_m": float(size_m), "cell_m": float(cell_m or 0.0), **params}, integer=integer,
+    params = {"metric": metric, "size_m": float(size_m), "cell_m": float(cell), "dem_cell_m": float(dem_cell),
+              "coarse": bool(coarse), **({"cell_asked_m": asked} if asked and not coarse else {}), **params}
+    entry_ = store(chunk, values, pid, name_of(pid, params, "it"), kind, params, integer=integer,
                    classes=GEOMORPHON_FORMS if integer else None, description=name_it)
-    progress(1.0, f"{name_it}: done")
+    if note:
+        entry_["note"] = note
+    progress(1.0, t("{0}: fatto", "{0}: done").format(display_name(entry_)))
     return entry_
 
 
@@ -316,6 +402,85 @@ def _latlon(info: dict) -> tuple[float, float]:
     return float(lat), float(lon)
 
 
+# ------------------------------------------------------------------ time in daylight
+def solar_track(lat: float, minutes: float = 10.0) -> tuple[np.ndarray, np.ndarray]:
+    """Altitude and azimuth of the sun (degrees; azimuth clockwise from north) every ``minutes``
+    of solar time through a year (365 days), only while it is above the horizon: the declination
+    from NOAA's series of the fractional year, the hour angle from the solar time. Over whole days
+    neither the longitude nor the time zone matters; no refraction (the sun is up when its centre
+    is above the horizon)."""
+    day = np.arange(365, dtype=float)[:, None]
+    hours = (np.arange(0.0, 24.0 * 60.0, float(minutes)) / 60.0)[None, :]
+    g = 2.0 * np.pi / 365.0 * (day + (hours - 12.0) / 24.0)
+    dec = (0.006918 - 0.399912 * np.cos(g) + 0.070257 * np.sin(g) - 0.006758 * np.cos(2 * g)
+           + 0.000907 * np.sin(2 * g) - 0.002697 * np.cos(3 * g) + 0.00148 * np.sin(3 * g))
+    h = np.radians(15.0 * (hours - 12.0))
+    phi = np.radians(float(lat))
+    sin_alt = np.sin(phi) * np.sin(dec) + np.cos(phi) * np.cos(dec) * np.cos(h)
+    alt = np.degrees(np.arcsin(np.clip(sin_alt, -1.0, 1.0)))
+    az = (np.degrees(np.arctan2(np.sin(h), np.cos(h) * np.sin(phi) - np.tan(dec) * np.cos(phi))) + 180.0) % 360.0
+    up = alt > 0
+    return alt[up], az[up]
+
+
+def daylight(dem: Path, out: Path, lat: float, progress=None, az_fraction: float = 15.0, max_dist: float = 100.0,
+             minutes: float = 10.0, block_rows: int = 512) -> Path:
+    """The share of the daylight time of the year in which each cell of ``dem`` is not in the
+    shadow of the relief within ``max_dist``: open, level ground is 1.
+
+    The positions of the sun (:func:`solar_track`, every ``minutes``) are grouped by azimuth in bins
+    of ``az_fraction`` degrees; for each bin WhiteboxTools' ``HorizonAngle`` gives the angle of the
+    horizon of every cell in that direction, and the sun is hidden when it stands lower. This is
+    what WhiteboxTools' own ``TimeInDaylight`` means to do, with the course of the sun computed here:
+    version 2.4 of that tool passes the time to its solar almanac in microseconds where milliseconds
+    are expected, so its sun positions do not follow the day and open level ground stays well under
+    1 (about 0.79 at 40 degrees north)."""
+    import rasterio
+    from pyarchinit_photogrammetry.core.progress import as_progress
+    from rasterio.windows import Window
+
+    progress = as_progress(progress)
+    alt, az = solar_track(lat, minutes)
+    nbins = max(1, int(round(360.0 / float(az_fraction))))
+    step = 360.0 / nbins
+    bins = np.rint(az / step).astype(int) % nbins
+    used = np.unique(bins)
+    total = len(alt)
+    with rasterio.open(dem) as src:
+        profile = src.profile.copy()
+        height, width = src.height, src.width
+        valid = src.read_masks(1) > 0
+    count = np.uint16 if total < np.iinfo(np.uint16).max else np.uint32  # samples in shadow, per cell
+    shadow = np.zeros((height, width), count)
+    ha_path = Path(out).with_name(Path(out).stem + "_horizon.tif")
+    for k, b in enumerate(used.tolist()):
+        p = progress.sub(k / len(used), 1.0 / len(used))
+        azimuth = b * step
+        # HorizonAngle 2.4 looks south at an azimuth of exactly 0 (or 360): a hair east of north
+        wbt.run("horizon_angle", progress=p.sub(0.0, 0.9), dem=str(dem), output=str(ha_path),
+                azimuth=f"{azimuth if azimuth % 360 else 0.01:g}", max_dist=float(max_dist))
+        sorted_alt = np.sort(alt[bins == b])
+        with rasterio.open(ha_path) as src:
+            for r0 in range(0, height, block_rows):
+                n = min(block_rows, height - r0)
+                ha = src.read(1, window=Window(0, r0, width, n), masked=True).astype(np.float64)
+                valid[r0:r0 + n] &= ~np.ma.getmaskarray(ha)
+                # the positions of this bin lower than the horizon of the cell: in shadow
+                shadow[r0:r0 + n] += np.searchsorted(sorted_alt, ha.filled(-np.inf), side="left").astype(count)
+        p(1.0, t("Ore di luce: azimut {0:g}°", "Time in daylight: azimuth {0:g}°").format(azimuth))
+    try:
+        ha_path.unlink()
+    except OSError:
+        pass
+    values = np.where(valid, 1.0 - shadow / max(total, 1), np.nan).astype(np.float32)
+    profile.update(driver="GTiff", dtype="float32", count=1, nodata=float("nan"), compress="deflate")
+    for key in ("blockxsize", "blockysize", "interleave", "tiled"):
+        profile.pop(key, None)
+    with rasterio.open(out, "w", **profile) as dst:
+        dst.write(values, 1)
+    return Path(out)
+
+
 # ------------------------------------------------------------------ viewshed
 def viewshed(chunk, x: float, y: float, height_m: float = 1.7, progress=None) -> dict:
     """The cells visible from the point ``(x, y)`` of the DEM's frame with the eye ``height_m``
@@ -329,16 +494,17 @@ def viewshed(chunk, x: float, y: float, height_m: float = 1.7, progress=None) ->
     station = work_path(chunk, "station.shp")
     vectors.write_point_shapefile(station, [(float(x), float(y))], info["crs"] if info["crs"] is not None else STANDIN_CRS)
     out = work_path(chunk, "viewshed.tif")
-    progress(0.0, "Viewshed")
+    progress(0.0, t("Visibilità", "Viewshed"))
     wbt.run("viewshed", progress=progress.sub(0.05, 0.85), dem=str(dem), stations=str(station), output=str(out),
             height=float(height_m))
     values = read_result(out)
     pid = slug(f"viewshed_{x:.1f}_{y:.1f}")
     visible = float(np.nanmean(values)) if np.isfinite(values).any() else 0.0
-    e = store(chunk, np.where(np.isfinite(values), values, np.nan), pid, f"Visibilità da ({x:.1f}, {y:.1f}), occhio a {height_m:g} m",
-              "binary", {"x": float(x), "y": float(y), "height_m": float(height_m), "visible_fraction": visible},
-              description="1 visible from the point, 0 hidden")
-    progress(1.0, f"Viewshed: {visible * 100:.0f} % of the ground visible")
+    params = {"x": float(x), "y": float(y), "height_m": float(height_m), "visible_fraction": visible}
+    e = store(chunk, np.where(np.isfinite(values), values, np.nan), pid, name_of(pid, params, "it"),
+              "binary", params, description="1 visible from the point, 0 hidden")
+    progress(1.0, t("Visibilità: visibile il {0:.0f} % del terreno", "Viewshed: {0:.0f} % of the ground visible")
+             .format(visible * 100))
     return e
 
 

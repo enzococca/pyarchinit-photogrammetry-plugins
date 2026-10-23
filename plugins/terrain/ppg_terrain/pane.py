@@ -155,6 +155,10 @@ class TerrainPane(QWidget):
         self.l_limits.setText(text)
 
     def set_products(self, entries: list[dict]) -> None:
+        from pyarchinit_photogrammetry.gui.i18n import thousands_points
+
+        from .terrain import display_name
+
         self.entries = list(entries)
         current = self.current_id()
         self.table.setRowCount(0)
@@ -163,14 +167,17 @@ class TerrainPane(QWidget):
             self.table.insertRow(r)
             st = e.get("stats") or {}
             kind = KINDS.get(e.get("kind", ""), (e.get("kind", ""), e.get("kind", "")))
-            cells = [e.get("name", e.get("id")), t(*kind), f"{st.get('cells', 0):,}",
+            cells = [display_name(e), t(*kind), thousands_points(f"{st.get('cells', 0):,}"),
                      f"{st.get('min', 0):.3g}" if "min" in st else "", f"{st.get('max', 0):.3g}" if "max" in st else "",
                      e.get("made", "")]
             for c, text in enumerate(cells):
                 it = QTableWidgetItem(str(text))
                 if c == 0:
                     it.setData(Qt.ItemDataRole.UserRole, e.get("id"))
-                    it.setToolTip(str(e.get("params", "")))
+                    tip = f"{e.get('id')}: {e.get('params', '')}"
+                    if e.get("note"):
+                        tip += "\n" + str(e["note"])
+                    it.setToolTip(tip)
                 self.table.setItem(r, c, it)
             if e.get("id") == current:
                 self.table.selectRow(r)

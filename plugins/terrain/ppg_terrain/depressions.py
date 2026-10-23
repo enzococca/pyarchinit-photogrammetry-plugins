@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from . import terrain, wbt
+from .texts import t
 
 
 def find(chunk, min_area_m2: float = 1.0, min_depth: float = 0.05, interval: float = 0.0, mounds: bool = False,
@@ -33,8 +34,9 @@ def find(chunk, min_area_m2: float = 1.0, min_depth: float = 0.05, interval: flo
     dem, info = terrain.dem_for_tools(chunk, inverted=mounds)
     cell = info["cell"]
     filled_path = terrain.work_path(chunk, "filled_inverted.tif" if mounds else "filled.tif")
-    what = "Rilievi" if mounds else "Depressioni"
-    progress(0.0, f"{what}: filling the DEM")
+    what = "Rilievi" if mounds else "Depressioni"  # the identifier written in the GeoPackage
+    shown = t("Rilievi", "Mounds") if mounds else t("Depressioni", "Depressions")
+    progress(0.0, t("{0}: riempimento del DEM", "{0}: filling the DEM").format(shown))
     wbt.run("fill_depressions", progress=progress.sub(0.02, 0.2), dem=str(dem), output=str(filled_path), fix_flats=True)
     z = terrain.read_result(dem)
     f = terrain.read_result(filled_path)
@@ -43,7 +45,7 @@ def find(chunk, min_area_m2: float = 1.0, min_depth: float = 0.05, interval: flo
     depth = np.where(ok, depth, np.nan)
     structure = np.ones((3, 3), bool)
     labels, n = ndimage.label(ok & (depth > 1e-4), structure=structure)
-    progress(0.25, f"{what}: {n} sinks found, sizing them")
+    progress(0.25, t("{0}: {1} conche trovate", "{0}: {1} sinks found").format(shown, n))
     min_cells = max(1, int(round(min_area_m2 / (cell * cell))))
     kept = []
     if n:
@@ -61,7 +63,8 @@ def find(chunk, min_area_m2: float = 1.0, min_depth: float = 0.05, interval: flo
     next_id = 1
     boxes = ndimage.find_objects(labels) if n else []  # the bounding box of every sink: no pass over the whole DEM per sink
     for si, sink in enumerate(kept):
-        progress(0.3 + 0.55 * si / max(len(kept), 1), f"{what}: slicing sink {si + 1} of {len(kept)}")
+        progress(0.3 + 0.55 * si / max(len(kept), 1), t("{0}: fette della conca {1} di {2}", "{0}: slicing sink {1} of {2}")
+                 .format(shown, si + 1, len(kept)))
         box = boxes[sink - 1]
         if box is None:
             continue
@@ -121,18 +124,19 @@ def find(chunk, min_area_m2: float = 1.0, min_depth: float = 0.05, interval: flo
             parent_of_cell = new_parent
     gpkg = terrain.folder(chunk) / ("rilievi.gpkg" if mounds else "depressioni.gpkg")
     table = "rilievi" if mounds else "depressioni"
-    progress(0.9, f"{what}: writing {len(nodes)} polygons")
+    progress(0.9, t("{0}: scrittura di {1} poligoni", "{0}: writing {1} polygons").format(shown, len(nodes)))
     vectors.write_depressions(gpkg, table, nodes, info["crs"], what)
     rel = str(gpkg.relative_to(chunk.data_dir))
     params = {"min_area_m2": float(min_area_m2), "min_depth": float(min_depth), "interval": float(interval), "mounds": bool(mounds)}
     depth = np.where(depth > 1e-4, depth, np.nan)  # transparent where the ground is not in a sink
-    terrain.store(chunk, depth, "mound_height" if mounds else "depth", "Altezza dei rilievi" if mounds else "Profondità delle depressioni",
-                  "grey", params, vector=rel, description="height above the ground around" if mounds else "depth below the spill level")
-    terrain.store(chunk, np.where(level_count > 0, level_count, np.nan).astype(float), "mound_levels" if mounds else "depression_levels",
-                  "Livelli dei rilievi" if mounds else "Livelli delle depressioni", "classes", params, integer=True, vector=rel,
-                  description="nested levels holding the cell")
+    depth_id, levels_id = ("mound_height", "mound_levels") if mounds else ("depth", "depression_levels")
+    terrain.store(chunk, depth, depth_id, terrain.name_of(depth_id), "grey", params, vector=rel,
+                  description="height above the ground around" if mounds else "depth below the spill level")
+    terrain.store(chunk, np.where(level_count > 0, level_count, np.nan).astype(float), levels_id, terrain.name_of(levels_id),
+                  "classes", params, integer=True, vector=rel, description="nested levels holding the cell")
     largest = max(nodes, key=lambda nd: nd["area_m2"]) if nodes else None
-    progress(1.0, f"{what}: {len(kept)} sinks, {len(nodes)} nested polygons")
+    progress(1.0, t("{0}: {1} conche, {2} poligoni annidati", "{0}: {1} sinks, {2} nested polygons")
+             .format(shown, len(kept), len(nodes)))
     return {"sinks": len(kept), "nodes": len(nodes), "gpkg": str(gpkg), "table": table,
             "largest": {k: v for k, v in largest.items() if k != "geometry"} if largest else None}
 

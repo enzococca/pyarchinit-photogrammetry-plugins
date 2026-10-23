@@ -1,5 +1,7 @@
 # Terrain
 
+**[User guide](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/terrain/)**: the DEM to prepare, the analyses step by step, how to read the results.
+
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
 (1.2.2 or later): the terrain analyses of the DEM that
 [WhiteboxTools](https://www.whiteboxgeo.com/) makes, on the DEM of the chunk and back into the
@@ -15,7 +17,10 @@ folder at the first analysis, about 40 MB; `PPG_WBT` names a binary of your own.
 * **Geomorphometry**: relative topographic position (TPI) and deviation from the mean height on a
   window, geomorphons (the ten landforms: flat, peak, ridge, shoulder, spur, slope, hollow,
   footslope, valley, pit) with a search distance, profile and plan curvature, ruggedness index,
-  hours of daylight over the year (a georeferenced project).
+  time in daylight over the year (a georeferenced project: the horizon angles of WhiteboxTools and a
+  solar almanac of the plugin, open level ground at 1). Any metric can be computed on a coarser cell
+  than the DEM's (the landforms of a field at 1 m, not its furrows at 5 cm): the cell goes into the
+  name of the product (`geomorphons_30_c1`).
 * **Depressions and mounds**: the nested depressions of the DEM by the level-set method (Wu et al.
   2019): every sink of the filled DEM is sliced from its spill level down and, at each level, the
   connected parts under it are the depressions of that level, nested in the ones above - with
@@ -24,10 +29,12 @@ folder at the first analysis, about 40 MB; `PPG_WBT` names a binary of your own.
   in `terrain/depressioni.gpkg` / `terrain/rilievi.gpkg`. Written in NumPy and SciPy: no GDAL
   bindings needed.
 * **Viewshed** from a point of the DEM with the height of the eye.
-* The products in the *Terreno* pane of the project dock, overlaid on the orthomosaic or DEM
-  with palette and opacity (greys, diverging around zero, earth, heat, water, a colour per class),
-  the vectors as layers of the view, exports as GeoTIFF and GeoPackage (*File > Esporta*), the
-  rasters and tables in the QGIS project of the program.
+* The products in the *Terreno* (*Terrain*) pane of the project dock, named in the language of the
+  interface, overlaid on the orthomosaic or DEM with palette and opacity (greys, diverging around
+  zero, earth, heat, water, a colour per class), the vectors as layers of the view, exports as
+  GeoTIFF and GeoPackage (*File > Esporta*), the rasters and tables in the QGIS project of the
+  program. The progress bar follows every tool of WhiteboxTools while it runs; *Remove* asks
+  first and keeps a GeoPackage another product still uses.
 * `ppg plugin terrain hydrology|geomorph|depressions|viewshed|list|export|remove|install ...`.
 
 ```bash

@@ -24,11 +24,11 @@ from pathlib import Path
 from pyarchinit_photogrammetry.plugins import Plugin
 
 from . import wbt
-from .texts import t
+from .texts import layer_name, t
 
 __version__ = "0.1.1"
-LAYER = {"reticolo": "Terreno: reticolo", "bacini": "Terreno: bacini", "depressioni": "Terreno: depressioni",
-         "rilievi": "Terreno: rilievi"}
+VECTOR_LAYERS = {"hydrology.gpkg": ("reticolo", "bacini"), "depressioni.gpkg": ("depressioni",),
+                 "rilievi.gpkg": ("rilievi",)}  # the layers of the view drawn from each GeoPackage
 
 
 class TerrainPlugin(Plugin):
@@ -54,7 +54,7 @@ class TerrainPlugin(Plugin):
         context.add_action(t("Depressioni e rilievi...", "Depressions and mounds..."), self.depressions_dialog, processing=True)
         context.add_action(t("Visibilità da un punto...", "Viewshed from a point..."), self.viewshed_dialog, processing=True)
         context.add_action(t("Analisi del terreno...", "Terrain analysis..."), self.show_pane,
-                           tip=t("Il pannello Terreno del dock del progetto", "The Terreno pane of the project dock"))
+                           tip=t("Il pannello Terreno del dock del progetto", "The Terrain pane of the project dock"))
         context.add_action(t("Nascondi la sovrapposizione", "Hide the overlay"), self.hide_overlay)
         context.add_command("terrain", self.command,
                             help="terrain analyses of the DEM: hydrology, geomorph, depressions, viewshed, list, export, remove")
@@ -248,7 +248,11 @@ class TerrainPlugin(Plugin):
                       minimum=0.0, maximum=45.0, decimals=1),
                 Field("cell", t("Cella di calcolo (m, 0 = quella del DEM; 1 m per le forme di un campo)",
                                 "Cell of the computation (m, 0 = the DEM's; 1 m for the landforms of a field)"), 0.0,
-                      minimum=0.0, maximum=100.0, decimals=2)],
+                      minimum=0.0, maximum=100.0, decimals=3,
+                      tip=t("Una cella più grande di quella del DEM: la metrica viene calcolata su una copia del DEM "
+                            "ricampionata e riportata sulla griglia del DEM; il prodotto ha la cella nel nome.",
+                            "A cell larger than the DEM's: the metric is computed on a resampled copy of the DEM and "
+                            "brought back onto the grid of the DEM; the product has the cell in its name."))],
                 intro=t("La posizione topografica relativa e lo scarto dalla media usano una finestra della dimensione data; i "
                         "geomorphons una distanza di ricerca; curvature, rugosità e ore di luce non la usano. Le ore di luce "
                         "vogliono un progetto georeferenziato.",
@@ -260,7 +264,8 @@ class TerrainPlugin(Plugin):
         self.context.run(t("Geomorfometria", "Geomorphometry"),
                          lambda p: terrain.geomorphometry(chunk, metric=v["metric"], size_m=v["size"], progress=p,
                                                           flatness=v.get("flatness", 1.0), cell_m=v.get("cell", 0.0)),
-                         lambda e: self._done(t("{0} pronto", "{0} ready").format(e["name"]), e["id"]))
+                         lambda e: self._done(t("{0} pronto", "{0} ready").format(terrain.display_name(e))
+                                              + (f" ({e['note']})" if e.get("note") else ""), e["id"]))
 
     def depressions_dialog(self) -> None:
         from . import depressions
@@ -375,14 +380,8 @@ class TerrainPlugin(Plugin):
         e = terrain.entry(chunk, pid) if chunk is not None else None
         if e is None or not e.get("vector"):
             return
-        name = Path(e["vector"]).name
-        if name == "hydrology.gpkg":
-            self._add_layer("reticolo")
-            self._add_layer("bacini")
-        elif name == "rilievi.gpkg":
-            self._add_layer("rilievi")
-        else:
-            self._add_layer("depressioni")
+        for table in VECTOR_LAYERS.get(Path(e["vector"]).name, ("depressioni",)):
+            self._add_layer(table)
 
     def _add_layer(self, table: str) -> None:
         """The vector table into the raster view: lines kept across reloads, polygons of the view."""
@@ -401,7 +400,7 @@ class TerrainPlugin(Plugin):
         if not path.exists():
             return
         rows = gpkg.read_table(path, table)
-        layer = LAYER[table]
+        layer = layer_name(table)
         if layer in getattr(view, "layers", {}):
             view.remove_layer(layer)
         if table == "reticolo":
@@ -440,19 +439,47 @@ class TerrainPlugin(Plugin):
 
         return export_gpkg(chunk, path, self.context.window if self.context else None, progress)
 
-    def remove(self, pid: str) -> None:
+    def remove(self, pid: str, confirm: bool = True) -> bool:
+        """The product out of the project, after a confirmation in the window (non-native box):
+        its raster is deleted, its GeoPackage too when no other product still uses it."""
         from . import terrain
 
         chunk = self._chunk()
-        if chunk is None:
-            return
+        e = terrain.entry(chunk, pid) if chunk is not None else None
+        if e is None:
+            return False
+        window = self.context.window
+        if confirm and window is not None:
+            from pyarchinit_photogrammetry.gui import dialogs
+
+            text = t("Rimuovere «{0}» dal progetto? Il suo file viene cancellato.",
+                     "Remove «{0}» from the project? Its file is deleted.").format(terrain.display_name(e))
+            others = terrain.sharing(chunk, pid)
+            if e.get("vector") and others:
+                text += " " + t("Linee e poligoni ({0}) restano: li usa ancora «{1}».",
+                                "The lines and polygons ({0}) stay: «{1}» still uses them.").format(
+                    Path(e["vector"]).name, terrain.display_name(others[0]))
+            elif e.get("vector"):
+                text += " " + t("Anche linee e poligoni ({0}) vengono cancellati.",
+                                "The lines and polygons ({0}) are deleted too.").format(Path(e["vector"]).name)
+            if dialogs.choice(window, "question", t("Rimuovi il prodotto", "Remove the product"), text,
+                              [t("Rimuovi", "Remove")]) != 0:
+                return False
         if self.overlay is not None and self.overlay.product_id == pid:
             self.hide_overlay()
-        terrain.remove(chunk, pid)
-        window = self.context.window
-        if window is not None and hasattr(window, "_dirty"):
-            window._dirty(True)
+        gone = terrain.remove(chunk, pid)
+        if window is not None:
+            view = getattr(window, "ortho_view", None)
+            for rel in gone:  # the layers drawn from a GeoPackage that is no more
+                for table in VECTOR_LAYERS.get(Path(rel).name, ()):
+                    name = layer_name(table)
+                    getattr(window, "line_layers", {}).pop(name, None)
+                    if view is not None and name in getattr(view, "layers", {}):
+                        view.remove_layer(name)
+            if hasattr(window, "_dirty"):
+                window._dirty(True)
         self.refresh_pane()
+        return True
 
     # ------------------------------------------------------------------ command line
     @staticmethod
@@ -506,7 +533,8 @@ class TerrainPlugin(Plugin):
         p.add_argument("metric", choices=list(terrain.METRICS))
         p.add_argument("--size", type=float, default=10.0, help="window side or search distance (m)")
         p.add_argument("--flatness", type=float, default=1.0, help="geomorphons: flatness angle (degrees)")
-        p.add_argument("--cell", type=float, default=0.0, help="compute on the DEM resampled to this cell (m), 0 = the DEM's")
+        p.add_argument("--cell", type=float, default=0.0,
+                       help="compute on the DEM resampled to this cell (m), when larger than the DEM's; 0 = the DEM's")
         p = sub.add_parser("depressions", help="nested depressions (or mounds) of the DEM")
         p.add_argument("--min-area", type=float, default=1.0)
         p.add_argument("--min-depth", type=float, default=0.05)
@@ -520,7 +548,7 @@ class TerrainPlugin(Plugin):
         p = sub.add_parser("export", help="a product as GeoTIFF, or every vector table as GeoPackage (PATH ending in .gpkg)")
         p.add_argument("id", nargs="?")
         p.add_argument("path")
-        p = sub.add_parser("remove")
+        p = sub.add_parser("remove", help="a product out of the project (its GeoPackage only when no other product uses it)")
         p.add_argument("id")
         sub.add_parser("install", help="download WhiteboxTools now")
         args, project, label = self._project_args(args)
@@ -559,7 +587,10 @@ class TerrainPlugin(Plugin):
                 print(export_raster(chunk, ns.id, ns.path))
             return 0
         elif ns.what == "remove":
-            terrain.remove(chunk, ns.id)
+            if terrain.entry(chunk, ns.id) is None:
+                print(f"no product {ns.id!r}: see ppg plugin terrain list")
+                return 1
+            print(json.dumps({"removed": ns.id, "files_deleted": terrain.remove(chunk, ns.id)}))
         if doc is not None and getattr(doc, "path", None):
             doc.save()
         return 0

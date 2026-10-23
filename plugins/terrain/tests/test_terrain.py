@@ -1,10 +1,14 @@
 """The terrain plugin on a synthetic DEM: a tilted plain with a valley, a pit and a mound; the
 hydrology finds the valley, the depressions find the pit with its depth and volume, the mounds
-find the mound, the metrics have the right sign, the viewshed sees from the top; the exports, the
-command line, the plugin and its pane in the program. Skipped when WhiteboxTools cannot be had."""
+find the mound, the metrics have the right sign, the viewshed sees from the top, open ground is in
+daylight all the time; the progress of a tool while it runs (a fake WhiteboxTools), the products
+removed without losing a GeoPackage still used, the names in English, the exports, the command
+line, the plugin and its pane in the program. Skipped when WhiteboxTools cannot be had."""
 from __future__ import annotations
 
 import os
+import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -230,7 +234,7 @@ def test_command(tmp_path, capsys):
     assert [e["id"] for e in terrain.entries(ppg.Document.open(doc.path).chunk)] == ["ruggedness"]
 
 
-def test_the_pane_and_the_overlay_in_the_window(tmp_path):
+def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
     pytest.importorskip("PySide6")
     import os
 
@@ -273,6 +277,18 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path):
         assert "Terreno: depressioni" in w_.ortho_view.layers
         rasters, vecs = plugin._qgis_entries()
         assert rasters and {v["table"] for v in vecs} == {"reticolo", "bacini", "depressioni"}
+        # Remove asks first (a non-native box); a GeoPackage another product still uses stays
+        from pyarchinit_photogrammetry.gui import dialogs
+
+        asked = []
+        monkeypatch.setattr(dialogs, "choice", lambda *a, **k: asked.append(a[3]))  # the box closed: nothing
+        assert not plugin.remove("streams") and terrain.entry(ch, "streams") is not None
+        assert "hydrology.gpkg" in asked[0] and "«Bacini»" in asked[0]
+        monkeypatch.setattr(dialogs, "choice", lambda *a, **k: 0)  # Rimuovi
+        assert plugin.remove("streams") and terrain.entry(ch, "streams") is None
+        assert (ch.data_dir / "terrain" / "hydrology.gpkg").exists() and "Terreno: bacini" in w_.ortho_view.layers
+        assert plugin.remove("basins") and not (ch.data_dir / "terrain" / "hydrology.gpkg").exists()
+        assert "Terreno: bacini" not in w_.ortho_view.layers and "Terreno: reticolo" not in w_.line_layers
         plugin.hide_overlay()
         assert plugin.overlay.item is None
         plugin.deactivate()
@@ -280,3 +296,175 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path):
     finally:
         w_.setWindowModified(False)
         w_.close()
+
+
+# ------------------------------------------------------------------ removing, cells, names
+def test_remove_keeps_a_geopackage_another_product_uses(tmp_path):
+    _have_wbt(tmp_path)
+    doc, ch, tr = _dem(tmp_path)
+    terrain.hydrology(ch, threshold_m2=20.0)
+    gpkg = ch.data_dir / "terrain" / "hydrology.gpkg"
+    assert [x["id"] for x in terrain.sharing(ch, "streams")] == ["basins"]
+    gone = terrain.remove(ch, "streams")
+    assert [Path(g).name for g in gone] == ["streams.tif"] and gpkg.exists()  # the basins still use it
+    assert {table for _p, table, *_ in export.vector_files(ch)} == {"reticolo", "bacini"}
+    gone = terrain.remove(ch, "basins")
+    assert {Path(g).name for g in gone} == {"basins.tif", "hydrology.gpkg"} and not gpkg.exists()
+    assert terrain.entry(ch, "flow_accumulation") is not None and (ch.data_dir / "terrain" / "flow_accumulation.tif").exists()
+    depressions.find(ch, min_area_m2=2.0, min_depth=0.2)
+    terrain.remove(ch, "depression_levels")
+    assert (ch.data_dir / "terrain" / "depressioni.gpkg").exists() and depressions.read_nodes(ch)
+    terrain.remove(ch, "depth")
+    assert not (ch.data_dir / "terrain" / "depressioni.gpkg").exists()
+    assert terrain.remove(ch, "nothing") == []
+
+
+def test_the_cell_of_the_computation(tmp_path):
+    _have_wbt(tmp_path)
+    doc, ch, tr = _dem(tmp_path)  # cells of 0.5 m
+    a = terrain.geomorphometry(ch, "ruggedness", cell_m=0.75)  # larger than the DEM's cell, though not 1.5 times
+    assert a["id"] == "ruggedness_c0_75" and a["params"]["coarse"] and a["params"]["cell_m"] == 0.75
+    b = terrain.geomorphometry(ch, "ruggedness", cell_m=1.0)
+    assert b["id"] == "ruggedness_c1" and b["name"] == "Indice di rugosità (TRI), cella 1 m"
+    assert terrain.entry(ch, "ruggedness_c0_75") is not None  # the two cells side by side
+    values, _t, _c = terrain.load(ch, "ruggedness_c1")
+    assert values.shape == (240, 200)  # back on the grid of the DEM
+    c = terrain.geomorphometry(ch, "ruggedness", cell_m=0.25)  # finer than the DEM: its own cell, and said so
+    assert c["id"] == "ruggedness" and not c["params"]["coarse"] and c["params"]["cell_m"] == 0.5
+    assert c["params"]["cell_asked_m"] == 0.25 and "0.25 m" in c["note"] and "0.5 m" in c["note"]
+    g = terrain.geomorphometry(ch, "geomorphons", size_m=10.0)
+    g1 = terrain.geomorphometry(ch, "geomorphons", size_m=10.0, cell_m=1.0)
+    assert (g["id"], g1["id"]) == ("geomorphons_10", "geomorphons_10_c1") and terrain.entry(ch, "geomorphons_10")
+    assert g1["name"] == "Geomorphons (forme del terreno) 10 m, cella 1 m"
+
+
+def test_names_in_the_language_of_the_interface(tmp_path):
+    from pyarchinit_photogrammetry.gui import i18n
+
+    from ppg_terrain.texts import layer_name
+
+    _have_wbt(tmp_path)
+    doc, ch, tr = _dem(tmp_path)
+    terrain.hydrology(ch, threshold_m2=20.0)
+    e = terrain.geomorphometry(ch, "tpi", size_m=10.0, cell_m=1.0)
+    v = terrain.viewshed(ch, *_world(tr, *MOUND[:2]), height_m=1.7)
+    before = i18n.current()
+    try:
+        i18n.set_current("en")
+        assert terrain.display_name(e) == "Relative topographic position (TPI) 10 m, cell 1 m"
+        assert terrain.display_name(terrain.entry(ch, "streams")) == "Stream network (links)"
+        assert terrain.display_name(v).startswith("Viewshed from (") and v["name"].startswith("Visibilità da (")
+        rasters, vecs = export.qgis_entries(ch)
+        names = {r["name"] for r in rasters} | {x["name"] for x in vecs}
+        assert {"Terrain: Flow accumulation (log10 cells)", "Terrain: Stream network", "Terrain: Basins"} <= names
+        assert layer_name("reticolo") == "Terrain: streams"
+        assert export.limits_text(e, -1, 1).startswith("Relative topographic position")
+    finally:
+        i18n.set_current(before)
+    # stored in Italian, as data: the project reads the same in both languages
+    assert e["name"] == "Posizione topografica relativa (TPI) 10 m, cella 1 m" and terrain.display_name(e) == e["name"]
+    assert layer_name("reticolo") == "Terreno: reticolo"
+
+
+# ------------------------------------------------------------------ time in daylight
+def test_daylight_is_one_on_open_ground(tmp_path):
+    alt, az = terrain.solar_track(40.6)
+    assert alt.max() == pytest.approx(90.0 - 40.6 + 23.44, abs=0.2)  # noon of the summer solstice
+    assert 0.49 < len(alt) / (365 * 24 * 6) < 0.52  # the sun is up about half the year
+    assert 55.0 < az.min() < 62.0 and 298.0 < az.max() < 305.0  # never in the north, at 40 degrees
+    _have_wbt(tmp_path)
+    import rasterio
+    from rasterio.transform import from_origin
+
+    flat = tmp_path / "flat.tif"
+    with rasterio.open(flat, "w", driver="GTiff", height=60, width=60, count=1, dtype="float32", crs=CRS,
+                       transform=from_origin(500000.0, 4500000.0, CELL, CELL), nodata=-32767.0) as dst:
+        dst.write(np.full((60, 60), 100.0, np.float32), 1)
+    lit = terrain.read_result(terrain.daylight(flat, tmp_path / "day.tif", 40.6))
+    assert np.nanmin(lit) == 1.0  # WhiteboxTools' own TimeInDaylight 2.4 gave 0.79 here
+    doc, ch, tr = _dem(tmp_path)
+    e = terrain.geomorphometry(ch, "daylight")
+    assert e["params"]["lat"] == pytest.approx(40.65, abs=0.01) and e["params"]["az_fraction"] == 15.0
+    day, t, _c = terrain.load(ch, e["id"])
+
+    def at(xm, ym):
+        r, c = rasterio.transform.rowcol(t, *_world(tr, xm, ym))
+        return day[r, c]
+
+    mx, my, mr, _mh = MOUND
+    assert at(10.0, 100.0) > 0.98 and at(90.0, 20.0) > 0.98  # the open plain
+    assert at(PIT[0], PIT[1]) < 0.7  # the bottom of the pit sees the sun only when it is high
+    assert at(mx, my - 0.7 * mr) < at(mx, my + 0.7 * mr) - 0.1  # the north side of the mound is in its shadow
+
+
+# ------------------------------------------------------------------ WhiteboxTools while it runs
+FAKE_WBT = """#!{python}
+import pathlib, sys, time
+args = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
+tool = args.get("run")
+print("* Welcome to " + str(tool) + " *", flush=True)
+if tool == "Slow":
+    for phase in ("First phase", "Second phase"):
+        for pct in range(0, 101, 20):
+            print(f"{{phase}}: {{pct}}%", flush=True)
+            time.sleep(0.06)
+elif tool == "Panic" and "--max_procs=1" not in sys.argv:
+    print("thread 'main' panicked at src/tools/fill.rs:657:27:", flush=True)
+    print("Error unwrapping 'output'", flush=True)
+    sys.exit(0)
+elif tool == "AlwaysPanic":
+    pathlib.Path(args["output"]).write_text("x")
+    print("thread 'main' panicked at src/tools/fill.rs:657:27:", flush=True)
+    print("Error unwrapping 'output'", flush=True)
+    sys.exit(0)
+elif tool == "Sleepy":
+    print("Progress: 1%", flush=True)
+    time.sleep(30)
+pathlib.Path(args["output"]).write_text("x")
+print("Output file written", flush=True)
+"""
+
+
+def _fake_wbt(tmp_path: Path) -> Path:
+    exe = tmp_path / "fake_wbt" / "whitebox_tools"
+    exe.parent.mkdir()
+    exe.write_text(FAKE_WBT.format(python=sys.executable))
+    exe.chmod(0o755)
+    return exe
+
+
+def test_progress_comes_while_the_tool_runs(tmp_path, monkeypatch):
+    from pyarchinit_photogrammetry.core.progress import Cancelled
+
+    monkeypatch.setenv("PPG_WBT", str(_fake_wbt(tmp_path)))
+    seen = []
+    out = tmp_path / "out.tif"
+    lines = wbt.run("Slow", progress=lambda f, m: seen.append((time.monotonic(), f, m)), phases=2, output=str(out))
+    end = time.monotonic()
+    assert out.exists() and "Second phase: 100%" in lines
+    reports = [s for s in seen if "phase" in s[2]]
+    assert reports and reports[0][0] < end - 0.3  # read while the tool was still running, not after
+    fractions = [f for _t, f, _m in seen]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0  # one bar that only grows
+    assert any(f == pytest.approx(0.5) and m == "Slow: First phase 100%" for _t, f, m in seen)  # a phase of two
+    # a tool that panics (exit code 0) runs again on one thread; an output left over never passes
+    out2 = tmp_path / "out2.tif"
+    wbt.run("Panic", output=str(out2))
+    assert out2.exists()
+    with pytest.raises(wbt.ToolError, match="Error unwrapping"):
+        wbt.run("AlwaysPanic", output=str(tmp_path / "out3.tif"))
+    # cancelled while it runs: the tool is stopped, not waited for
+
+    def cancel(_f, m):
+        if "Progress 1%" in m:
+            raise Cancelled("stop")
+
+    t0 = time.monotonic()
+    with pytest.raises(Cancelled):
+        wbt.run("Sleepy", progress=cancel, output=str(tmp_path / "out4.tif"))
+    assert time.monotonic() - t0 < 10.0
+    phases = wbt.Phases(3)
+    assert [round(phases.update(lbl, p), 3) for lbl, p in (("a", 50), ("b", 0), ("b", 100), ("c", 100), ("d", 10))] == [
+        0.167, 0.333, 0.667, 1.0, 1.0]
+    assert wbt.parse_progress("Progress (Az=60): 35%") == ("Progress (Az=60)", 35)
+    assert wbt.parse_progress("Flats increment value: 0.000001") is None
