@@ -207,7 +207,8 @@ def test_the_plugin_in_the_program(tmp_path):
     info = manager.get("geophysics")
     assert info is not None and info.active, info and info.error
     assert [a.title for a in manager.actions if a.plugin == "geophysics"] == [
-        "Importa griglia geofisica...", "Griglie geofisiche...", "Sovrapponi la griglia alla vista", "Nascondi la griglia"]
+        "Importa griglia geofisica...", "Griglie geofisiche...", "Sovrapponi la griglia alla vista", "Nascondi la griglia",
+        "Disegna un'anomalia"]
     assert "geophysics" in manager.commands
     assert [e.suffix for e in manager.exporters if e.plugin == "geophysics"] == [".gpkg"]
 
@@ -280,7 +281,10 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path):
         qapp.processEvents()
         plugin.show_overlay(e["id"], 0, "grey", 0.6)
         assert plugin.overlay is not None and plugin.overlay.item is not None and plugin.overlay.item.opacity() == pytest.approx(0.6)
-        assert plugin.overlay.item in w.ortho_view.overlays
+        # not one of the view's drawings: it stays when the program draws its layers again
+        assert plugin.overlay.shown() and plugin.overlay.item not in w.ortho_view.overlays
+        w._redraw_overlays()
+        assert plugin.overlay.shown()
         rasters, vectors = plugin._qgis_entries()
         assert len(rasters) == 1 and any(p == plugin._qgis_entries for p in w.qgis_providers)
         plugin.hide_overlay()
@@ -290,3 +294,301 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path):
     finally:
         w.setWindowModified(False)
         w.close()
+
+
+# ------------------------------------------------------------------ XYZ tables
+def _traverses(path: Path, sep: str = " ", comma: bool = False, skip=(), extra: list[str] | None = None) -> Path:
+    """A magnetometry table as a survey writes it: readings every 0.125 m along x on traverses 0.5 m
+    apart, centred in their cells (x from 0.0625, y from 0.25: a survey of 30 x 6 m); the value a plane
+    0.5 x + 2 y, which linear interpolation between the traverses gives back exactly."""
+    lines = [sep.join(("x", "y", "nT"))]
+    for j in range(12):
+        for i in range(240):
+            if (j, i) in skip:
+                continue
+            x, y = 0.0625 + 0.125 * i, 0.25 + 0.5 * j
+            row = sep.join(f"{v:.4f}" for v in (x, y, 0.5 * x + 2.0 * y))
+            lines.append(row.replace(".", ",") if comma else row)
+    path.write_text("\n".join(lines + (extra or [])) + "\n")
+    return path
+
+
+def _centres(g) -> tuple[np.ndarray, np.ndarray]:
+    t = g.transform()
+    rows, cols = np.mgrid[0:g.shape[0], 0:g.shape[1]] + 0.5
+    return t.a * cols + t.b * rows + t.c, t.d * cols + t.e * rows + t.f
+
+
+def test_xyz_traverses_are_interpolated_between_them(tmp_path):
+    g = grids.read_xyz(_traverses(tmp_path / "survey.xyz"))
+    assert g.cell == pytest.approx(0.125) and g.shape == (45, 240)  # fine cell; from the first to the last traverse
+    assert g.notes["interpolated"] == "rows" and g.notes["traverse_spacing"] == pytest.approx(0.5)
+    x, y = _centres(g)
+    assert x[0, 0] == pytest.approx(0.0625) and y[0, 0] == pytest.approx(5.75) and y[-1, 0] == pytest.approx(0.25)
+    assert np.isfinite(g.values).all() and np.allclose(g.values[0], 0.5 * x + 2.0 * y, atol=2e-3)
+    # a reading missing: the lines around it stay empty, nothing is made up across it
+    holed = grids.read_xyz(_traverses(tmp_path / "holed.xyz", skip={(5, 10)}))
+    assert np.isnan(holed.values[0, :, 10]).sum() == 7 and np.isfinite(holed.values[0, :, 11]).all()
+    # the cell of the traverses: the readings of a cell averaged, the cells on the survey (60 x 12 of 0.5 m)
+    c = grids.read_xyz(tmp_path / "survey.xyz", cell=0.5)
+    assert c.shape == (12, 60) and c.origin == pytest.approx((0.0, 6.0)) and c.notes.get("averaged")
+    x, y = _centres(c)
+    assert np.allclose(c.values[0], 0.5 * x + 2.0 * y, atol=2e-3)  # each centre the mean of its four readings
+
+
+def test_xyz_decimal_commas_and_dummies(tmp_path):
+    plain = grids.read_xyz(_traverses(tmp_path / "a.xyz"))
+    for name, sep in (("semi.csv", ";"), ("tabs.txt", "\t"), ("spaces.dat", " ")):
+        g = grids.read_xyz(_traverses(tmp_path / name, sep=sep, comma=True))
+        assert g.shape == plain.shape and np.allclose(g.values, plain.values) and g.notes.get("decimal_comma"), name
+    spaced = tmp_path / "commas.csv"  # "x, y, v": commas between the columns, decimal points
+    spaced.write_text("x, y, v\n" + "\n".join(f"{x}, {y}, {x + y}" for y in (0.5, 1.0) for x in (0.5, 1.0, 1.5)) + "\n")
+    g = grids.read_xyz(spaced)
+    assert g.shape == (2, 3) and not g.notes.get("decimal_comma") and g.values[0, 0, 0] == pytest.approx(1.5)
+    # dummy readings are no readings: Geoscan's, the usual no-data numbers, Surfer's blank, one of yours
+    rows = ["x y v"]
+    dummies = {(0, 0): 2047.5, (1, 1): -9999, (2, 2): 1.70141e38, (3, 3): 32767, (4, 4): -32768, (5, 5): -1.5}
+    for r in range(8):
+        for col in range(10):
+            rows.append(f"{0.25 + 0.5 * col} {0.25 + 0.5 * r} {dummies.get((r, col), r + col * 0.1)}")
+    p = tmp_path / "dummies.xyz"
+    p.write_text("\n".join(rows) + "\n")
+    g = grids.read_xyz(p, dummy=-1.5)
+    assert g.shape == (8, 10) and g.notes["dummies"] == 6
+    v = g.values[0][::-1]  # rows from the bottom, as written
+    assert all(np.isnan(v[r, col]) for r, col in dummies) and np.isfinite(v).sum() == 80 - 6
+    assert np.isfinite(grids.read_xyz(p).values[0][::-1][5, 5])  # -1.5 is a reading unless said otherwise
+
+
+# ------------------------------------------------------------------ georeferencing again, GRD, slices
+def test_placing_again_is_the_same_as_placing_once(tmp_path):
+    g, _, _ = synthetic(rows=40, cols=60, cell=0.5)
+    georef.local_to_corner_frame(g)
+    corners = georef.corners_local(g)
+    a = np.radians(35.0)
+    R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    t = np.array([500100.0, 4500800.0])
+    world = {k: R @ np.array(v) + t for k, v in corners.items()}
+    names = ("lower-left", "lower-right", "upper-left")
+    fit = georef.similarity([corners[k] for k in names], [world[k] for k in names])
+    once = georef.place(grids.Grid("x", g.values, g.cell, g.origin, "LOCAL"), fit, CRS).corners()
+    placed = georef.place(georef.place(grids.Grid("y", g.values, g.cell, g.origin, "LOCAL"), fit, CRS), fit, CRS)
+    assert np.allclose(placed.corners(), once, atol=1e-6)  # was thrown kilometres away
+    # placed again with other pegs: where those pegs say
+    moved = georef.similarity([corners[k] for k in names], [world[k] + (10.0, -5.0) for k in names])
+    assert np.allclose(georef.place(placed, moved, CRS).corners()[3], world["lower-left"] + (10.0, -5.0), atol=1e-6)
+    # a free scale applied twice does not grow the grid twice; the local frame stays the survey's
+    scaled = {k: 1.02 * (R @ np.array(v)) + t for k, v in corners.items()}
+    fit_s = georef.similarity(list(corners.values()), [scaled[k] for k in corners], fix_scale=False)
+    s1 = georef.place(grids.Grid("z", g.values, g.cell, g.origin, "LOCAL"), fit_s, CRS)
+    c1, cell1 = s1.corners().copy(), s1.cell
+    s2 = georef.place(s1, fit_s, CRS)
+    assert cell1 == pytest.approx(0.51) and s2.cell == pytest.approx(cell1) and np.allclose(s2.corners(), c1, atol=1e-6)
+    assert georef.corners_local(s2)["upper-right"] == (30.0, 20.0)
+    by_origin = georef.place_by_origin(s2, *world["lower-left"], 55.0, CRS)  # the survey's own size again
+    assert by_origin.cell == pytest.approx(0.5) and np.allclose(by_origin.corners(), once, atol=1e-6)
+    # the survey cell goes into the project with the grid, and comes back
+    doc, ch = _project(tmp_path)
+    e = grids.save_grid(ch, georef.place(grids.Grid("w", g.values, g.cell, g.origin, "LOCAL"), fit_s, CRS))
+    back = grids.load_grid(ch, e["id"])
+    assert back.local_cell == pytest.approx(0.5) and np.allclose(georef.place(back, fit_s, CRS).corners(), c1, atol=1e-6)
+    # a grid of 0.1.0 has no survey cell: the cell, divided by the scale of its last placement
+    assert grids._survey_cell_of({"cell": 0.51, "filters": [{"name": "georef", "scale": 1.02}]}) == pytest.approx(0.5)
+
+
+def test_a_turned_grid_is_written_north_up_in_surfer(tmp_path):
+    from ppg_geophysics import overlay as overlay_mod
+
+    g, _, _ = synthetic(rows=40, cols=60, cell=0.5)
+    georef.local_to_corner_frame(g)
+    georef.place_by_origin(g, 500100.0, 4500800.0, 60.0, CRS)  # the rows 30 degrees north of east
+    back = grids.read_grd(grids.write_grd(g, tmp_path / "turned.grd"))
+    x0, y0, x1, y1 = g.bounds()
+    assert back.cell == pytest.approx(0.5) and back.origin == pytest.approx((x0, y1))
+    assert back.shape == (int(np.ceil((y1 - y0) / 0.5 - 1e-6)), int(np.ceil((x1 - x0) / 0.5 - 1e-6)))
+    v = back.values[0]
+    assert np.isnan(v[0, 0]) and np.isnan(v[-1, -1])  # the corners of the box: outside the turned grid, blank
+    ref = overlay_mod.resample_to(g, 0, back.transform(), back.shape)  # the grid on the same north-up cells
+    both = np.isfinite(ref) & np.isfinite(v)
+    assert both.sum() > 0.4 * v.size and np.allclose(v[both], ref[both], atol=1e-3)
+    assert grids.north_up(grids.Grid("n", g.values, 0.5, (0.0, 20.0))).rotation == 0.0  # north up: as it is
+
+
+def test_slices_in_the_natural_order_of_their_names(tmp_path):
+    g, _, _ = synthetic(rows=10, cols=12)
+    folder = tmp_path / "gpr"
+    folder.mkdir()
+    for k in (10, 2, 1):
+        grids.write_geotiff(grids.Grid(f"s{k}", np.full((1, 10, 12), float(k), np.float32), g.cell, g.origin, CRS),
+                            folder / f"slice_{k}.tif", CRS)
+    s = grids.read_slices(folder)
+    assert s.slices == ["slice_1", "slice_2", "slice_10"] and [float(b[0, 0]) for b in s.values] == [1.0, 2.0, 10.0]
+
+
+def test_the_defaults_of_the_filters_and_their_window():
+    assert filters.FILTERS["lowpass"][1]["sigma"] == 1.0 and filters.FILTERS["highpass"][1]["sigma"] == 10.0
+    assert filters.from_window("clip", {"low": 2.0, "high": 98.0, "sigma_low": 1.0, "copy": True}) == {
+        "low": 2.0, "high": 98.0, "absolute": False}
+    assert filters.from_window("highpass", {"sigma_low": 1.0, "sigma_high": 12.0}) == {"sigma": 12.0}
+    assert filters.from_window("lowpass", {"sigma_low": 2.0, "sigma_high": 12.0}) == {"sigma": 2.0}
+
+
+def test_the_summary_in_the_language_of_the_interface(tmp_path):
+    from pyarchinit_photogrammetry.gui import i18n
+
+    from ppg_geophysics import anomalies
+
+    doc, ch = _project(tmp_path)
+    g = grids.read_any(_traverses(tmp_path / "survey.xyz"), kind="magnetometry")
+    georef.local_to_corner_frame(g)
+    grids.save_grid(ch, g)
+    anomalies.add(ch, [(0, 0), (1, 0), (1, 1)], grids.entries(ch)[0], "1", "un muro")
+    text = export.summary(ch)
+    assert "magnetometria nT, 240 x 45 celle di 0.125 m" in text and "righe interpolate fra traverse a 0.5 m" in text
+    assert "Anomalie disegnate: 1" in text
+    before = i18n.current()
+    try:
+        i18n.set_current("en")
+        text = export.summary(ch)
+        assert "magnetometry nT, 240 x 45 cells of 0.125 m, 1 band, local" in text and "celle" not in text
+        assert "rows interpolated between traverses 0.5 m apart (readings every 0.125 m)" in text
+        assert "Anomalies drawn: 1" in text
+    finally:
+        i18n.set_current(before)
+
+
+# ------------------------------------------------------------------ in the window
+@pytest.fixture
+def window(tmp_path, monkeypatch):
+    """The program's window on a project with a georeferenced grid and no orthomosaic nor DEM."""
+    pytest.importorskip("PySide6")
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("PPG_RENDERER", "software")
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_geophysics import GeophysicsPlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import main_window as mwmod
+    from pyarchinit_photogrammetry.plugins import Context
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
+    qapp = QApplication.instance() or QApplication([])
+    doc, ch = _project(tmp_path)
+    g, _, _ = synthetic()  # 30 x 40 m of 0.5 m cells
+    georef.local_to_corner_frame(g)
+    georef.place_by_origin(g, 500100.0, 4500800.0, 90.0, CRS)
+    e = grids.save_grid(ch, g)
+    doc.save()
+    app.document = doc
+    w = mwmod.MainWindow(doc, autoconnect=False)
+    w.runner.show_dialog = False
+    errors = []
+    monkeypatch.setattr(w, "_error", lambda *a, **k: errors.append(a))  # a modal error box would stop the test
+    w.resize(1200, 800)
+    w.show()
+    qapp.processEvents()
+    plugin = GeophysicsPlugin()
+    plugin.activate(Context("geophysics", tmp_path / "plugin", window=w))
+    try:
+        yield w, plugin, ch, e, qapp, errors
+    finally:
+        plugin.deactivate()
+        w.setWindowModified(False)
+        w.close()
+
+
+def test_clip_from_the_filters_window(window, monkeypatch):
+    from pyarchinit_photogrammetry.gui import dialogs
+
+    w, plugin, ch, e, qapp, errors = window
+    seen = {}
+
+    def ask(parent, title, fields, intro=""):  # the real window, accepted with Clip chosen
+        seen.update({f.name: f.default for f in fields})
+        values = dialogs.ParamDialog(title, fields, parent, intro).values()
+        values["filter"] = "clip"
+        return values
+
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", ask)
+    plugin.filter_dialog(e["id"])
+    w.runner.wait()
+    qapp.processEvents()
+    assert not errors and [x["name"] for x in grids.entries(ch)] == ["Area 1", "Area 1 clip"]
+    src, clipped = grids.load_grid(ch, "Area 1"), grids.load_grid(ch, "Area 1 clip")
+    lo, hi = np.nanpercentile(src.values[0], [1, 99])
+    assert np.nanmax(clipped.values) == pytest.approx(hi, abs=1e-3) and np.nanmin(clipped.values) == pytest.approx(lo, abs=1e-3)
+    assert clipped.filters[-1] == {"name": "clip", "low": 1.0, "high": 99.0, "absolute": False}
+    assert seen["sigma_low"] == filters.FILTERS["lowpass"][1]["sigma"]  # the window has the defaults of the command line
+    assert seen["sigma_high"] == filters.FILTERS["highpass"][1]["sigma"]
+
+
+def test_the_grid_shows_on_an_empty_view(window):
+    w, plugin, ch, e, qapp, errors = window
+    v = w.ortho_view
+    assert v.tr is None  # no orthomosaic, no DEM
+    plugin.show_overlay(e["id"], 0, "grey", 0.7)
+    assert v.tr is not None and plugin.overlay.shown()
+    x0, y0, x1, y1 = grids.load_grid(ch, e["id"]).bounds()
+    (fx0, fy1), (fx1, fy0) = v.world(v.sceneRect().topLeft()), v.world(v.sceneRect().bottomRight())
+    assert fx0 < x0 < x1 < fx1 and fy0 < y0 < y1 < fy1  # the frame holds the grid
+    img = plugin.overlay.item.pixmap().toImage()
+    assert img.pixelColor(img.width() // 2, img.height() // 2).alpha() == 255  # drawn in the middle
+
+
+def test_draw_an_anomaly(window, monkeypatch, tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from ppg_geophysics import anomalies
+    from pyarchinit_photogrammetry.engine.dem import write_geotiff
+    from pyarchinit_photogrammetry.gui import dialogs
+    from pyarchinit_photogrammetry.io import gpkg
+
+    w, plugin, ch, e, qapp, errors = window
+    v = w.ortho_view
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", lambda parent, title, fields, intro="": {"label": "A1", "note": "fossa?"})
+
+    def click(x, y):
+        QTest.mouseClick(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(x, y)))
+
+    plugin.pane.table.selectRow(0)
+    plugin.draw_anomaly()  # the view is empty: the grid is shown first, on a frame of its own
+    assert v.tr is not None and v.mode == "geophysics_anomaly" and plugin._tool.active
+    for x, y in ((500110.0, 4500810.0), (500114.0, 4500810.0), (500114.0, 4500814.0), (500110.0, 4500814.0)):
+        click(x, y)
+    QTest.keyClick(v, Qt.Key.Key_Return)
+    assert not plugin._tool.active and v.mode == "pan"
+    (a,) = anomalies.entries(ch)
+    assert (a["etichetta"], a["griglia"], a["banda"], a["note"]) == ("A1", "Area 1", "1", "fossa?")
+    assert a["area_m2"] == pytest.approx(16.0, rel=0.03)
+    assert len(v.features(anomalies.LAYER)) == 1 and v.features(anomalies.LAYER)[0]["note"] == "fossa?"
+    # Esc cancels; another tool of the program ends the drawing
+    plugin.draw_anomaly()
+    click(500120.0, 4500820.0)
+    QTest.keyClick(v, Qt.Key.Key_Escape)
+    assert not plugin._tool.active and len(anomalies.entries(ch)) == 1
+    plugin.draw_anomaly()
+    w.set_draw_mode("polygon")
+    QTest.mouseMove(v.viewport(), v.mapFromScene(v.scene_pt(500120.0, 4500820.0)))
+    assert not plugin._tool.active and v.mode == "polygon"
+    w.set_draw_mode("pan")
+    # in the GeoPackage of File > Export, from the project
+    rows = gpkg.read_table(export.export_gpkg(ch, tmp_path / "geo.gpkg"), "anomalie")
+    assert len(rows) == 1 and rows[0][1]["note"] == "fossa?" and rows[0][0].area == pytest.approx(16.0, rel=0.03)
+    # another raster in the view: the layer is drawn again on it
+    dem = write_geotiff(ch.data_dir / "dem.tif", np.full((200, 200), 100.0, np.float32), (500090.0, 4500850.0), 0.25, CRS)
+    ch._set_product("dem", dem)
+    w._load_raster("dem")
+    for _ in range(3):
+        qapp.processEvents()
+    assert v.kind == "dem" and len(v.features(anomalies.LAYER)) == 1
+    # deleted in the view with the program's Select tool: out of the project too
+    v.select_items([v.layers[anomalies.LAYER]["features"][0][0]])
+    w.delete_selected(confirm=False)
+    for _ in range(3):
+        qapp.processEvents()
+    assert anomalies.entries(ch) == [] and not errors

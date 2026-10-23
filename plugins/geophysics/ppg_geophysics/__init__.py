@@ -6,15 +6,17 @@ same ground.
   GeoTIFF and any raster, a folder of GPR slices), georeferencing (the corners of the survey
   grid as markers placed on the orthomosaic, or typed in, or an origin and an azimuth), the
   filters (despike, destripe, clip, low-pass, high-pass, fill, resample), the overlay on the
-  orthomosaic or DEM with band, palette and opacity, the exports (GeoTIFF, Surfer GRD,
-  GeoPackage of the outlines and the anomalies drawn), the QGIS project;
+  orthomosaic or DEM (or on an empty view, framed on the grid) with band, palette and opacity,
+  the anomalies drawn on the view, the exports (GeoTIFF, Surfer GRD, GeoPackage of the outlines
+  and the anomalies), the QGIS project;
 * *Plugin > Geofisica* menu actions for the same; *File > Esporta > Griglie e anomalie geofisiche
   (GeoPackage)*;
 * ``ppg plugin geophysics import|list|georef|filter|export ...`` from the command line.
 
 The grids live in ``<chunk data>/geophysics/<id>.tif`` and in ``chunk.meta["geophysics"]``; the
-anomalies are polygons drawn in the layer *Anomalie geofisiche* of the raster view (the polygon
-tool of the program, layer chosen in the Layer pane).
+anomalies are polygons drawn with the plugin's own tool (*Disegna anomalia*), kept in
+``chunk.meta["geophysics"]["anomalies"]`` and shown in the layer *Anomalie geofisiche* of the
+raster view.
 """
 from __future__ import annotations
 
@@ -42,6 +44,8 @@ class GeophysicsPlugin(Plugin):
         self.context = None
         self.pane = None
         self.overlay = None
+        self._tool = None  # the polygon tool of an anomaly being drawn
+        self._sync = None  # the layer of the anomalies kept in step with the project
 
     def activate(self, context) -> None:
         self.context = context
@@ -52,6 +56,9 @@ class GeophysicsPlugin(Plugin):
                            tip=t("Il pannello Geofisica del dock del progetto", "The Geofisica pane of the project dock"))
         context.add_action(t("Sovrapponi la griglia alla vista", "Overlay the grid on the view"), self.overlay_current)
         context.add_action(t("Nascondi la griglia", "Hide the grid"), self.hide_overlay)
+        context.add_action(t("Disegna un'anomalia", "Draw an anomaly"), self.draw_anomaly,
+                           tip=t("Un poligono nel layer Anomalie geofisiche, con la griglia, la banda e una nota",
+                                 "A polygon in the layer Anomalie geofisiche, with the grid, the band and a note"))
         context.add_command("geophysics", self.command,
                             help="geophysical grids: import, list, georef, filter, export")
         context.add_exporter(t("Griglie e anomalie geofisiche (GeoPackage)", "Geophysical grids and anomalies (GeoPackage)"),
@@ -62,7 +69,17 @@ class GeophysicsPlugin(Plugin):
 
     def deactivate(self) -> None:
         self.hide_overlay()
+        if self._tool is not None:
+            self._tool.cancel()
         window = self.context.window if self.context else None
+        if self._sync is not None:
+            self._sync.detach()
+            self._sync = None
+            view = getattr(window, "ortho_view", None) if window is not None else None
+            from .anomalies import LAYER
+
+            if view is not None and LAYER in getattr(view, "layers", {}):
+                view.remove_layer(LAYER)  # the anomalies stay in the project
         if window is not None and self.pane is not None:
             tabs = getattr(window, "left_tabs", None)
             if tabs is not None:
@@ -93,10 +110,18 @@ class GeophysicsPlugin(Plugin):
         self.pane.overlay_requested.connect(self.show_overlay)
         self.pane.opacity_changed.connect(lambda v: self.overlay.set_opacity(v) if self.overlay else None)
         self.pane.hide_requested.connect(self.hide_overlay)
+        self.pane.anomaly_requested.connect(self.draw_anomaly)
         self.pane.export_requested.connect(self.export_dialog)
         self.pane.remove_requested.connect(self.remove_dialog)
         self.pane.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
+        view = getattr(window, "ortho_view", None)
+        if view is not None and hasattr(view, "layers_changed"):
+            from .anomaly_view import ViewSync
+
+            self._sync = ViewSync(view, self._chunk)
+            self._sync.changed.connect(self._anomalies_changed)
+            self._sync.check()
         self.refresh_pane()
         # the pane follows the project: after every refresh of the window
         original = getattr(window, "refresh_all", None)
@@ -150,6 +175,11 @@ class GeophysicsPlugin(Plugin):
         if window is not None and hasattr(window, "_dirty"):
             window._dirty(True)
 
+    def _anomalies_changed(self) -> None:
+        """Anomalies deleted in the view: the project changed."""
+        self._dirty()
+        self.refresh_pane()
+
     # ------------------------------------------------------------------ import
     def import_dialog(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
@@ -171,7 +201,19 @@ class GeophysicsPlugin(Plugin):
                            ("susceptibility", t("Suscettività", "Susceptibility")), ("other", t("Altro", "Other"))]),
             Field("units", t("Unità (vuote = quelle del tipo)", "Units (empty = the kind's)"), "", kind="text"),
             Field("cell", t("Cella per XYZ (m, vuota = dai dati)", "Cell for XYZ (m, empty = from the data)"), None,
-                  kind="optional_float"),
+                  kind="optional_float",
+                  tip=t("Vuota: la distanza fra le letture; se le letture lungo le traverse sono più fitte delle traverse, "
+                        "le righe fra due traverse vengono interpolate. Una cella (la distanza fra le traverse): le "
+                        "letture di ogni cella vengono mediate.",
+                        "Empty: the spacing of the readings; when the readings along the traverses are closer than the "
+                        "traverses, the rows between two traverses are interpolated. A cell (the spacing of the "
+                        "traverses): the readings of each cell are averaged.")),
+            Field("dummy", t("Valore fittizio per XYZ (vuoto = i soliti)", "Dummy value for XYZ (empty = the usual ones)"),
+                  None, kind="optional_float",
+                  tip=t("Sono sempre assenza di lettura 2047.5 (Geoscan), -9999, 32767, -32768 e il vuoto di Surfer; "
+                        "qui un altro valore usato dal tuo programma.",
+                        "2047.5 (Geoscan), -9999, 32767, -32768 and Surfer's blank are always no reading; here another "
+                        "value your software writes.")),
         ], intro=t("La griglia entra nel progetto come GeoTIFF a virgola mobile; se il file non ha coordinate "
                    "del progetto (Surfer, XYZ in metri locali) va poi georeferenziata.",
                    "The grid enters the project as a floating-point GeoTIFF; a file without the project's "
@@ -182,7 +224,7 @@ class GeophysicsPlugin(Plugin):
 
         def job(progress):
             progress(0.1, t("Lettura della griglia", "Reading the grid"))
-            g = grids_mod.read_any(source, kind=v["kind"], cell=v["cell"])
+            g = grids_mod.read_any(source, kind=v["kind"], cell=v["cell"], dummy=v.get("dummy"))
             if v["name"].strip():
                 g.name = v["name"].strip()
             if v["units"].strip():
@@ -195,13 +237,17 @@ class GeophysicsPlugin(Plugin):
             return grids_mod.save_grid(chunk, g)
 
         def done(entry):
+            from .export import notes_text
+
             self._dirty()
             self.refresh_pane()
             st = entry.get("stats") or {}
-            self._message("info", t("Griglia {0}: {1} x {2} celle di {3} m, {4} banda/e, valori {5:.3g} .. {6:.3g} {7}{8}",
-                                    "Grid {0}: {1} x {2} cells of {3} m, {4} band(s), values {5:.3g} .. {6:.3g} {7}{8}")
+            notes = notes_text(entry)
+            self._message("info", t("Griglia {0}: {1} x {2} celle di {3} m, {4} banda/e, valori {5:.3g} .. {6:.3g} {7}{8}{9}",
+                                    "Grid {0}: {1} x {2} cells of {3} m, {4} band(s), values {5:.3g} .. {6:.3g} {7}{8}{9}")
                           .format(entry["name"], entry["cols"], entry["rows"], f"{entry['cell']:g}", entry["bands"],
                                   st.get("min", float("nan")), st.get("max", float("nan")), entry.get("units", ""),
+                                  f"; {notes}" if notes else "",
                                   t("; in metri locali: georeferenziala", "; in local metres: georeference it")
                                   if entry.get("crs", "LOCAL") == "LOCAL" else ""))
 
@@ -258,11 +304,13 @@ class GeophysicsPlugin(Plugin):
         v = ParamDialog.ask(window, t("Georeferenzia la griglia", "Georeference the grid"), fields,
                             intro=t("La griglia è in metri locali con l'origine nell'angolo in basso a sinistra "
                                     "({0:g} x {1:g} m). Scegli i marker posati sugli angoli, oppure l'origine e "
-                                    "l'azimut, oppure digita le coppie locale-mondo.",
+                                    "l'azimut, oppure digita le coppie locale-mondo. Una griglia già posata viene "
+                                    "posata di nuovo dai suoi metri locali: la nuova posa sostituisce la vecchia.",
                                     "The grid is in local metres with the origin at the lower-left corner "
                                     "({0:g} x {1:g} m). Choose the markers placed on the corners, or the origin and "
-                                    "the azimuth, or type the local-world pairs.").format(corners["lower-right"][0],
-                                                                                           corners["upper-left"][1]))
+                                    "the azimuth, or type the local-world pairs. A grid already placed is placed "
+                                    "again from its local metres: the new placement replaces the old one.").format(
+                                corners["lower-right"][0], corners["upper-left"][1]))
         if not v:
             return
         try:
@@ -314,6 +362,7 @@ class GeophysicsPlugin(Plugin):
         if not grid_id:
             return
         e = grids_mod.entry_of(chunk, grid_id)
+        d = {name: params for name, (_text, params) in filters_mod.FILTERS.items()}  # the defaults, as on the command line
         v = ParamDialog.ask(window, t("Filtri della griglia", "Filters of the grid"), [
             Field("filter", t("Filtro", "Filter"), "destripe",
                   choices=[("despike", t("Despike (spike sostituiti dalla mediana locale)", "Despike (spikes replaced by the local median)")),
@@ -323,16 +372,24 @@ class GeophysicsPlugin(Plugin):
                            ("highpass", t("Passa-alto (residuo dal gaussiano)", "High-pass (residual of the Gaussian)")),
                            ("fill", t("Riempi i vuoti", "Fill the gaps")),
                            ("resample", t("Ricampiona", "Resample"))]),
-            Field("size", t("Despike: lato della finestra (celle)", "Despike: window side (cells)"), 3, minimum=3, maximum=15),
-            Field("k", t("Despike: soglia (volte il rumore)", "Despike: threshold (times the noise)"), 4.0, minimum=1.0, maximum=20.0, decimals=1),
+            Field("size", t("Despike: lato della finestra (celle)", "Despike: window side (cells)"), int(d["despike"]["size"]),
+                  minimum=3, maximum=15),
+            Field("k", t("Despike: soglia (volte il rumore)", "Despike: threshold (times the noise)"), float(d["despike"]["k"]),
+                  minimum=1.0, maximum=20.0, decimals=1),
             Field("axis", t("Destripe: traverse lungo", "Destripe: traverses along"), "rows",
                   choices=[("rows", t("le righe (x)", "the rows (x)")), ("cols", t("le colonne (y)", "the columns (y)"))]),
             Field("stat", t("Destripe: statistica", "Destripe: statistic"), "median",
                   choices=[("median", t("mediana", "median")), ("mean", t("media", "mean"))]),
-            Field("low", t("Clip: percentile basso", "Clip: low percentile"), 1.0, minimum=0.0, maximum=50.0, decimals=1),
-            Field("high", t("Clip: percentile alto", "Clip: high percentile"), 99.0, minimum=50.0, maximum=100.0, decimals=1),
-            Field("sigma", t("Passa-basso/alto: sigma (celle)", "Low/high-pass: sigma (cells)"), 3.0, minimum=0.5, maximum=100.0, decimals=1),
-            Field("distance", t("Riempi: distanza massima (celle)", "Fill: largest distance (cells)"), 3, minimum=1, maximum=100),
+            Field("low", t("Clip: percentile basso", "Clip: low percentile"), float(d["clip"]["low"]), minimum=0.0,
+                  maximum=50.0, decimals=1),
+            Field("high", t("Clip: percentile alto", "Clip: high percentile"), float(d["clip"]["high"]), minimum=50.0,
+                  maximum=100.0, decimals=1),
+            Field("sigma_low", t("Passa-basso: sigma (celle)", "Low-pass: sigma (cells)"), float(d["lowpass"]["sigma"]),
+                  minimum=0.5, maximum=100.0, decimals=1),
+            Field("sigma_high", t("Passa-alto: sigma (celle)", "High-pass: sigma (cells)"), float(d["highpass"]["sigma"]),
+                  minimum=0.5, maximum=100.0, decimals=1),
+            Field("distance", t("Riempi: distanza massima (celle)", "Fill: largest distance (cells)"), int(d["fill"]["distance"]),
+                  minimum=1, maximum=100),
             Field("cell", t("Ricampiona: cella (m)", "Resample: cell (m)"), float(e["cell"]), minimum=0.01, maximum=100.0, decimals=3),
             Field("copy", t("In una copia (la griglia originale resta)", "Into a copy (the original grid stays)"), True),
         ], intro=t("Il filtro scelto si applica a tutte le bande; i parametri degli altri filtri non contano.",
@@ -340,9 +397,7 @@ class GeophysicsPlugin(Plugin):
         if not v:
             return
         name = v["filter"]
-        params = {k: v[k] for k in filters_mod.FILTERS[name][1]}
-        if name == "clip":
-            params["absolute"] = False
+        params = filters_mod.from_window(name, v)
 
         def job(progress):
             progress(0.2, t("Filtro {0}", "Filter {0}").format(name))
@@ -356,7 +411,7 @@ class GeophysicsPlugin(Plugin):
         def done(entry):
             self._dirty()
             self.refresh_pane()
-            if self.overlay is not None and self.overlay.grid_id == entry["id"]:
+            if self.overlay is not None and self.overlay.grid_id == entry["id"] and self.overlay.shown():
                 self.show_overlay(entry["id"], self.pane.band() if self.pane else 0,
                                   str(self.pane.c_palette.currentData()) if self.pane else None,
                                   self.pane.s_opacity.value() / 100.0 if self.pane else 0.7)
@@ -365,8 +420,10 @@ class GeophysicsPlugin(Plugin):
 
     # ------------------------------------------------------------------ overlay
     def show_overlay(self, grid_id: str, band: int = 0, palette: str | None = None, opacity: float = 0.7) -> None:
+        """The grid over the raster view; with nothing shown in the view, over the orthomosaic or the
+        DEM of the chunk, else on an empty frame the size of the grid."""
         from .grids import load_grid
-        from .overlay import Overlay
+        from .overlay import Overlay, blank_frame
 
         window = self.context.window
         chunk = self._chunk()
@@ -380,6 +437,13 @@ class GeophysicsPlugin(Plugin):
             self._message("warning", t("La griglia è in metri locali: georeferenziala prima.",
                                        "The grid is in local metres: georeference it first."))
             return
+        if view.tr is None:  # an empty view: the products of the chunk, else a frame for the grid alone
+            for kind, path in (("ortho", getattr(chunk, "orthomosaic_path", None)), ("dem", getattr(chunk, "dem_path", None))):
+                if path is not None and Path(path).exists() and hasattr(window, "_show_raster"):
+                    window._show_raster(kind)
+                    break
+            if view.tr is None:
+                blank_frame(view, g)
         if self.overlay is None or self.overlay.view is not view:
             self.overlay = Overlay(view)
         try:
@@ -388,8 +452,9 @@ class GeophysicsPlugin(Plugin):
             self._message("warning", str(exc))
             return
         if self.pane is not None:
+            b = min(band, g.bands - 1)
             self.pane.status.setText(t("{0}: banda {1}, colori da {2:.3g} a {3:.3g} {4}", "{0}: band {1}, colours from {2:.3g} to {3:.3g} {4}")
-                                     .format(g.name, band + 1, lo, hi, g.units))
+                                     .format(g.name, g.slices[b] if b < len(g.slices) else b + 1, lo, hi, g.units))
         if hasattr(window, "show_view"):
             window.show_view(view)
 
@@ -403,6 +468,83 @@ class GeophysicsPlugin(Plugin):
     def hide_overlay(self) -> None:
         if self.overlay is not None:
             self.overlay.remove()
+
+    # ------------------------------------------------------------------ anomalies
+    def draw_anomaly(self, grid_id: str | None = None) -> None:
+        """Draw an anomaly read on the grid (the one selected in the pane) as a polygon on the view:
+        click the vertices, double click or Enter to close, Backspace takes the last vertex back,
+        Esc or a right click cancel. The polygon, with the grid, the band shown and a note, goes into
+        the project and into the layer *Anomalie geofisiche*. An empty view shows the grid first."""
+        from .anomaly_view import PolygonTool
+        from .grids import entry_of
+
+        window = self.context.window
+        chunk = self._chunk()
+        if window is None or chunk is None:
+            return
+        view = getattr(window, "ortho_view", None)
+        if view is None:
+            return
+        grid_id = grid_id or (self.pane.selected_id() if self.pane else None)
+        try:
+            entry = entry_of(chunk, grid_id) if grid_id else None
+        except KeyError:
+            entry = None
+        if view.tr is None and entry is not None and entry.get("crs", "LOCAL") != "LOCAL":
+            self.show_overlay(entry["id"], self.pane.band() if self.pane else 0,
+                              str(self.pane.c_palette.currentData()) if self.pane else None,
+                              self.pane.s_opacity.value() / 100.0 if self.pane else 0.7)
+        if view.tr is None:
+            self._message("warning", t("Niente su cui disegnare: mostra l'ortofoto, il DEM o una griglia georeferenziata.",
+                                       "Nothing to draw on: show the orthomosaic, the DEM or a georeferenced grid."))
+            return
+        if hasattr(window, "set_draw_mode"):
+            window.set_draw_mode("pan")  # the program's tool in use stops (and Sposta is the one checked)
+        if hasattr(window, "show_view"):
+            window.show_view(view)
+        if self._tool is not None:
+            self._tool.cancel()
+        band = ""
+        if entry is not None:
+            band = self.pane.band_label() if self.pane is not None and self.pane.selected_id() == entry["id"] else "1"
+        self._tool = PolygonTool(view, lambda xy: self._anomaly_drawn(xy, entry, band), self._anomaly_cancelled)
+        self._tool.start()
+        if hasattr(window, "statusBar"):
+            window.statusBar().showMessage(t("Anomalia: clic per i vertici, doppio clic o Invio per chiudere, Backspace "
+                                             "toglie l'ultimo vertice, Esc o tasto destro annulla",
+                                             "Anomaly: click the vertices, double click or Enter to close, Backspace "
+                                             "takes the last vertex back, Esc or right click cancels"), 60000)
+
+    def _anomaly_cancelled(self) -> None:
+        window = self.context.window
+        if window is not None and hasattr(window, "statusBar"):
+            window.statusBar().showMessage(t("Anomalia annullata", "Anomaly cancelled"), 5000)
+
+    def _anomaly_drawn(self, xy, entry: dict | None, band: str) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
+
+        from . import anomalies
+
+        window = self.context.window
+        chunk = self._chunk()
+        if chunk is None:
+            return
+        v = ParamDialog.ask(window, t("Anomalia geofisica", "Geophysical anomaly"), [
+            Field("label", t("Etichetta", "Label"), anomalies.next_label(chunk), kind="text"),
+            Field("note", t("Nota (interpretazione)", "Note (interpretation)"), "", kind="text")],
+            intro=t("Griglia {0}, banda {1}; area {2:.2f} m². Il poligono va nel progetto e nel layer «{3}».",
+                    "Grid {0}, band {1}; area {2:.2f} m². The polygon goes into the project and into the layer «{3}».")
+            .format(entry["name"] if entry else "-", band or "-", anomalies.area(xy), anomalies.LAYER))
+        if not v:
+            return
+        a = anomalies.add(chunk, xy, entry, band, str(v.get("note", "")), str(v.get("label", "")).strip())
+        if self._sync is not None:
+            self._sync.redraw()
+        self._dirty()
+        self.refresh_pane()
+        if window is not None and hasattr(window, "statusBar"):
+            window.statusBar().showMessage(t("Anomalia {0}: {1:.2f} m²", "Anomaly {0}: {1:.2f} m²")
+                                           .format(a["etichetta"], a["area_m2"]), 10000)
 
     # ------------------------------------------------------------------ export, remove
     def export_dialog(self, grid_id: str | None = None) -> None:
@@ -424,8 +566,18 @@ class GeophysicsPlugin(Plugin):
                                                "GeoTIFF (*.tif);;Surfer GRD (*.grd)")
         if not path:
             return
-        out = export_grid(chunk, grid_id, path)
-        self._message("info", t("Scritto {0}", "Written {0}").format(out))
+        shown = self.pane is not None and self.pane.selected_id() == e["id"]
+        band = self.pane.band() if shown else 0
+        out = export_grid(chunk, grid_id, path, band)
+        text = t("Scritto {0}", "Written {0}").format(out)
+        if out.suffix.lower() == ".grd":
+            label = self.pane.band_label() if shown else str(band + 1)
+            text += t(" (la banda {0}", " (the band {0}").format(label)
+            if abs((float(e.get("rotation", 0.0)) + 180.0) % 360.0 - 180.0) > 1e-9:
+                text += t("; la griglia ruotata è stata ricampionata con il nord in alto, perché una griglia Surfer non "
+                          "ruota", "; the turned grid was resampled north up, because a Surfer grid has no rotation")
+            text += ")"
+        self._message("info", text)
 
     def export_gpkg(self, chunk, path, progress):
         from .export import export_gpkg
@@ -445,8 +597,9 @@ class GeophysicsPlugin(Plugin):
         if not grid_id:
             return
         e = entry_of(chunk, grid_id)
-        k = choice(window, "question", self.title, t("Rimuovere la griglia {0} dal progetto?", "Remove the grid {0} from the project?").format(e["name"]),
-                   [t("Rimuovi", "Remove"), t("Annulla", "Cancel")], default=1)
+        k = choice(window, "question", self.title, t("Rimuovere la griglia {0} dal progetto?",
+                                                     "Remove the grid {0} from the project?").format(e["name"]),
+                   [t("Rimuovi", "Remove")])
         if k != 0:
             return
         if self.overlay is not None and self.overlay.grid_id == e["id"]:
@@ -512,7 +665,10 @@ class GeophysicsPlugin(Plugin):
         p_imp.add_argument("--kind", default="magnetometry", choices=grids_mod.KINDS)
         p_imp.add_argument("--name", default="")
         p_imp.add_argument("--units", default="")
-        p_imp.add_argument("--cell", type=float, default=None)
+        p_imp.add_argument("--cell", type=float, default=None,
+                           help="XYZ: the cell (m); the readings in a cell averaged. Default: the spacing of the readings")
+        p_imp.add_argument("--dummy", type=float, action="append", default=None,
+                           help="XYZ: a dummy value besides 2047.5, -9999, 32767, -32768 and Surfer's blank (repeatable)")
         sub.add_parser("list")
         p_geo = sub.add_parser("georef")
         p_geo.add_argument("grid")
@@ -537,7 +693,7 @@ class GeophysicsPlugin(Plugin):
                   "no chunk: give the project, ppg plugin geophysics " + ns.what + " PROJECT.ppg ...")
             return 1
         if ns.what == "import":
-            g = grids_mod.read_any(ns.source, kind=ns.kind, cell=ns.cell)
+            g = grids_mod.read_any(ns.source, kind=ns.kind, cell=ns.cell, dummy=ns.dummy)
             if ns.name:
                 g.name = ns.name
             if ns.units:
@@ -545,7 +701,7 @@ class GeophysicsPlugin(Plugin):
             if g.crs == "LOCAL":
                 georef_mod.local_to_corner_frame(g)
             e = grids_mod.save_grid(chunk, g)
-            print(json.dumps({k: e[k] for k in ("id", "name", "kind", "cell", "rows", "cols", "bands", "crs")}))
+            print(json.dumps({k: e[k] for k in ("id", "name", "kind", "cell", "rows", "cols", "bands", "crs", "notes")}))
         elif ns.what == "list":
             print(summary(chunk))
         elif ns.what == "georef":

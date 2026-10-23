@@ -2,12 +2,16 @@
 traverses taken off (zero-mean or zero-median traverse), values clipped, a low-pass and a high-pass
 (the residual after a Gaussian smoothing, which brings out the small anomalies over the geology),
 the gaps filled, the grid resampled. Every filter returns a new array; :func:`apply` runs one by
-its name with its parameters and records it in the grid."""
+its name with its parameters and records it in the grid.
+
+The defaults of :data:`FILTERS` are the same in the window, on the command line and here: a
+low-pass of sigma 1 cell (the noise of the readings, the anomalies untouched) and a high-pass of
+sigma 10 cells (5 m on cells of 0.5 m: the geology goes, walls and pits stay whole)."""
 from __future__ import annotations
 
 import numpy as np
 
-from .grids import Grid
+from .grids import Grid, like
 
 FILTERS = {  # name: (description, parameters with defaults)
     "despike": ("Spikes replaced by the local median (readings farther than k times the local noise)",
@@ -15,7 +19,7 @@ FILTERS = {  # name: (description, parameters with defaults)
     "destripe": ("The median (or mean) of every traverse taken off: zero-mean traverse", {"axis": "rows", "stat": "median"}),
     "clip": ("Values clipped to the percentiles (or to absolute limits)", {"low": 1.0, "high": 99.0, "absolute": False}),
     "lowpass": ("Gaussian smoothing", {"sigma": 1.0}),
-    "highpass": ("The residual after a Gaussian smoothing: the small anomalies", {"sigma": 5.0}),
+    "highpass": ("The residual after a Gaussian smoothing: the small anomalies", {"sigma": 10.0}),
     "fill": ("Gaps filled from the readings around (up to a distance in cells)", {"distance": 3}),
     "resample": ("Cells of another size", {"cell": 0.25}),
 }
@@ -77,10 +81,11 @@ def clip(a: np.ndarray, low: float = 1.0, high: float = 99.0, absolute: bool = F
 
 
 def lowpass(a: np.ndarray, sigma: float = 1.0) -> np.ndarray:
+    """A Gaussian smoothing of ``sigma`` cells that skips the empty cells."""
     return _nan_gaussian(a, float(sigma))
 
 
-def highpass(a: np.ndarray, sigma: float = 5.0) -> np.ndarray:
+def highpass(a: np.ndarray, sigma: float = 10.0) -> np.ndarray:
     """The residual after a Gaussian smoothing of ``sigma`` cells: the regional trend goes."""
     return a - _nan_gaussian(a, float(sigma))
 
@@ -114,9 +119,8 @@ def resample_grid(grid: Grid, cell: float) -> Grid:
         m = cv2.resize(ok, (new_w, new_h), interpolation=interp)
         with np.errstate(invalid="ignore", divide="ignore"):
             bands.append(np.where(m > 0.5, v / m, np.nan).astype(np.float32))
-    out = Grid(grid.name, np.stack(bands), float(cell), grid.origin, grid.crs, grid.rotation, grid.kind, grid.units,
-               list(grid.slices), grid.source, list(grid.filters), grid.id)
-    return out
+    # the survey cell follows: a placed grid stays where it is, and placed again it keeps its new cell
+    return like(grid, np.stack(bands), cell=float(cell), local_cell=grid.survey_cell() * float(cell) / grid.cell)
 
 
 def apply(grid: Grid, name: str, **params) -> Grid:
@@ -130,8 +134,23 @@ def apply(grid: Grid, name: str, **params) -> Grid:
         fn = {"despike": despike, "destripe": destripe, "clip": clip, "lowpass": lowpass, "highpass": highpass,
               "fill": fill}[name]
         bands = [fn(b.astype(np.float64), **p).astype(np.float32) for b in grid.values]
-        out = Grid(grid.name, np.stack(bands), grid.cell, grid.origin, grid.crs, grid.rotation, grid.kind, grid.units,
-                   list(grid.slices), grid.source, list(grid.filters), grid.id)
+        out = like(grid, np.stack(bands))
     out.filters.append({"name": name, **{k: (float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
                                          for k, v in p.items()}})
     return out
+
+
+def from_window(name: str, values: dict) -> dict:
+    """The parameters of the filter ``name`` from the values of the *Filters* window: the fields of
+    that filter only (the window has one sigma for the low-pass and one for the high-pass; its clip
+    is on percentiles - absolute limits are given on the command line, ``absolute=1``)."""
+    if name not in FILTERS:
+        raise ValueError(f"unknown filter {name!r}: {', '.join(FILTERS)}")
+    if name == "lowpass":
+        return {"sigma": float(values.get("sigma_low", FILTERS["lowpass"][1]["sigma"]))}
+    if name == "highpass":
+        return {"sigma": float(values.get("sigma_high", FILTERS["highpass"][1]["sigma"]))}
+    params = {k: values[k] for k in FILTERS[name][1] if k in values}
+    if name == "clip":
+        params["absolute"] = False
+    return params

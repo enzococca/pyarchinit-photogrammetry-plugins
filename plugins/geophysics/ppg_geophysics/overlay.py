@@ -1,12 +1,14 @@
 """The grids shown: colours for the values (grey for magnetometry, a diverging ramp for the
 anomalies around zero, a colour ramp for resistivity), the limits of the ramp from the readings,
 and the overlay of a grid on the orthomosaic or DEM of the raster view of the program, with its
-opacity, in the frame of what the view shows."""
+opacity, in the frame of what the view shows - or, when the view shows nothing, on an empty frame
+the size of the grid (:func:`blank_frame`)."""
 from __future__ import annotations
 
 import numpy as np
 
 from .grids import Grid
+from .texts import t
 
 PALETTES = {
     "grey": [(0.0, (0, 0, 0)), (1.0, (255, 255, 255))],
@@ -66,9 +68,45 @@ def resample_to(grid: Grid, band: int, transform, shape: tuple[int, int]) -> np.
     return dst
 
 
+def blank_frame(view, grid: Grid, max_side: int = 2000) -> None:
+    """An empty raster view (neither orthomosaic nor DEM shown) set to the extent of ``grid``, north
+    up, with a margin of 5 %, about ``max_side`` pixels on its longer side: the grid shows on it, and
+    the drawing tools of the program work on it. The view keeps no raster (``path`` None): the next
+    orthomosaic or DEM shown replaces the frame.
+
+    The program has no call for an empty frame: this sets the attributes ``RasterView.load`` sets
+    (``tr``, ``_base_size``, ``_src_size``, the scene rectangle) and nothing else."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtWidgets import QGraphicsTextItem
+    from rasterio.transform import Affine
+
+    from .anomaly_view import drop_stale_layers
+
+    x0, y0, x1, y1 = grid.bounds()
+    m = 0.05 * max(x1 - x0, y1 - y0, grid.cell)
+    x0, y0, x1, y1 = x0 - m, y0 - m, x1 + m, y1 + m
+    res = max(x1 - x0, y1 - y0) / float(max_side)
+    w, h = max(1, int(np.ceil((x1 - x0) / res))), max(1, int(np.ceil((y1 - y0) / res)))
+    scene = view.scene()
+    for it in list(scene.items()):  # the hint the program writes in an empty view
+        if isinstance(it, QGraphicsTextItem):
+            scene.removeItem(it)
+    drop_stale_layers(view)
+    view.tr = Affine(res, 0.0, x0, 0.0, -res, y1)
+    view.path, view.kind, view.z = None, None, None
+    view._base_size = view._src_size = (w, h)
+    if hasattr(view, "_dem_lookup"):
+        view._dem_lookup = None  # no elevations of another raster under the cursor
+    view.setSceneRect(QRectF(0, 0, w, h))
+    view.fit()
+    view.layers_changed.emit()  # the Layers pane, and the layers of the plugin drawn on the new frame
+
+
 class Overlay:
     """A grid over the raster view of the program (``window.ortho_view``), as a pixmap item in
-    the scene with an opacity; one at a time."""
+    the scene with an opacity; one at a time. The item is not one of the view's drawings
+    (``view.overlays``): it stays when the program draws its layers again (a feature deleted, an
+    undo), and goes with the raster when another one is shown."""
 
     def __init__(self, view):
         self.view = view
@@ -83,18 +121,22 @@ class Overlay:
 
         view = self.view
         if view.tr is None or getattr(view, "_base_size", None) is None:
-            raise RuntimeError("nothing in the raster view to overlay on: show the orthomosaic or the DEM first")
+            raise RuntimeError(t("Niente nella vista raster su cui sovrapporre la griglia: mostra l'ortofoto o il DEM.",
+                                 "Nothing in the raster view to overlay the grid on: show the orthomosaic or the DEM."))
         self.remove()
         w, h = view._base_size
         values = resample_to(grid, band, view.tr, (h, w))
+        if not np.isfinite(values).any():
+            raise RuntimeError(t("La griglia sta fuori dal raster mostrato nella vista: controlla la sua posizione "
+                                 "(Georeferenzia...) o mostra un altro raster.",
+                                 "The grid lies outside the raster shown in the view: check its position "
+                                 "(Georeference...) or show another raster."))
         lo, hi = lims or limits(values, grid.kind)
         rgba = render(values, lo, hi, palette or DEFAULT_PALETTE.get(grid.kind, "grey"))
         item = view.scene().addPixmap(QPixmap.fromImage(to_qimage(rgba)))
         item.setZValue(-0.5)  # over the raster (-2) and its detail (-1), under the drawings (0 and above)
         item.setOpacity(float(opacity))
         self.item, self.grid_id = item, grid.id
-        if hasattr(view, "overlays"):
-            view.overlays.append(item)
         return lo, hi
 
     def set_opacity(self, opacity: float) -> None:
@@ -109,7 +151,15 @@ class Overlay:
             try:
                 if hasattr(self.view, "overlays") and self.item in self.view.overlays:
                     self.view.overlays.remove(self.item)
-                self.view.scene().removeItem(self.item)
-            except RuntimeError:
+                if self.item.scene() is self.view.scene():
+                    self.view.scene().removeItem(self.item)
+            except RuntimeError:  # the scene was cleared (another raster): the item is gone already
                 pass
         self.item, self.grid_id = None, None
+
+    def shown(self) -> bool:
+        """Whether the grid is still in the view (another raster shown clears it)."""
+        try:
+            return self.item is not None and self.item.scene() is self.view.scene()
+        except RuntimeError:
+            return False

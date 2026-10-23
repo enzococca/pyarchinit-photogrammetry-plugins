@@ -1,5 +1,6 @@
 """The Geofisica pane: the grids of the chunk in a table, the buttons of the plugin, the overlay
-on the raster view with its band (the slices of a GPR survey), palette and opacity."""
+on the raster view with its band (the slices of a GPR survey), palette and opacity, the anomalies
+drawn on the view; under the buttons, a line on the selected grid."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
@@ -21,6 +22,7 @@ class GeophysicsPane(QWidget):
     overlay_requested = Signal(str, int, str, float)  # grid id, band, palette, opacity
     opacity_changed = Signal(float)
     hide_requested = Signal()
+    anomaly_requested = Signal(str)  # grid id: draw an anomaly read on it
     export_requested = Signal(str)
     remove_requested = Signal(str)
     qgis_requested = Signal()
@@ -84,10 +86,17 @@ class GeophysicsPane(QWidget):
         bar2 = FlowLayout(holder2)
         self.b_overlay = QPushButton(t("Sovrapponi alla vista", "Overlay on the view"))
         self.b_hide = QPushButton(t("Nascondi", "Hide"))
+        self.b_anomaly = QPushButton(t("Disegna anomalia", "Draw anomaly"))
+        self.b_anomaly.setToolTip(t("Un poligono sulla vista nel layer Anomalie geofisiche, con griglia, banda e nota: "
+                                    "clic per i vertici, doppio clic o Invio per chiudere, Esc per annullare",
+                                    "A polygon on the view in the layer Anomalie geofisiche, with grid, band and note: "
+                                    "click the vertices, double click or Enter to close, Esc to cancel"))
         self.b_export = QPushButton(t("Esporta...", "Export..."))
+        self.b_export.setToolTip(t("GeoTIFF con tutte le bande, oppure Surfer GRD della banda mostrata",
+                                   "GeoTIFF with all the bands, or Surfer GRD of the band shown"))
         self.b_qgis = QPushButton(t("Apri in QGIS", "Open in QGIS"))
         self.b_remove = QPushButton(t("Rimuovi", "Remove"))
-        for b in (self.b_overlay, self.b_hide, self.b_export, self.b_qgis, self.b_remove):
+        for b in (self.b_overlay, self.b_hide, self.b_anomaly, self.b_export, self.b_qgis, self.b_remove):
             bar2.addWidget(b)
         lay.addWidget(holder2)
         self.status = QLabel("")
@@ -102,6 +111,7 @@ class GeophysicsPane(QWidget):
         self.b_qgis.clicked.connect(self.qgis_requested)
         self.b_hide.clicked.connect(self.hide_requested)
         self.b_overlay.clicked.connect(self._overlay)
+        self.b_anomaly.clicked.connect(lambda: self._emit(self.anomaly_requested))
         self.s_band.valueChanged.connect(self._band_changed)
         self.s_opacity.valueChanged.connect(lambda v: self.opacity_changed.emit(v / 100.0))
         self.table.itemSelectionChanged.connect(self._selection_changed)
@@ -124,11 +134,15 @@ class GeophysicsPane(QWidget):
             signal.emit(gid)
 
     def _selection_changed(self) -> None:
+        from .export import summary_line
+
         e = self.selected_entry()
         bands = int(e.get("bands", 1)) if e else 1
         self.s_band.setRange(0, max(bands - 1, 0))
         self.s_band.setEnabled(bands > 1)
         self._band_changed(self.s_band.value())
+        if e:
+            self.status.setText(summary_line(e))
         if e:
             k = self.c_palette.findData({"magnetometry": "grey", "gpr": "grey", "resistivity": "earth", "em": "earth",
                                          "susceptibility": "heat"}.get(e.get("kind"), "grey"))
@@ -151,25 +165,36 @@ class GeophysicsPane(QWidget):
     def band(self) -> int:
         return int(self.s_band.value())
 
+    def band_label(self) -> str:
+        """The band shown: the label of its slice, else its number from 1."""
+        return self.l_band.text()
+
     # --------------------------------------------------------------- state
     def set_grids(self, entries: list[dict]) -> None:
+        from .export import KIND_NAMES, notes_text
+
+        keep = self.selected_id()  # the grid selected before, found again by its id
         self.entries = list(entries)
-        keep = self.selected_id()
         self.table.setRowCount(len(entries))
         for r, e in enumerate(entries):
             where = e.get("crs", "LOCAL")
-            vals = [e["name"], e.get("kind", ""), e.get("units", ""), f"{e['cell']:g}", f"{e['cols']} x {e['rows']}",
-                    str(e.get("bands", 1)), t("locale", "local") if where == "LOCAL" else where,
+            kind = e.get("kind", "")
+            vals = [e["name"], t(*KIND_NAMES.get(kind, (kind, kind))), e.get("units", ""), f"{e['cell']:g}",
+                    f"{e['cols']} x {e['rows']}", str(e.get("bands", 1)), t("locale", "local") if where == "LOCAL" else where,
                     ", ".join(f["name"] for f in e.get("filters", []))]
             for c, v in enumerate(vals):
-                self.table.setItem(r, c, QTableWidgetItem(v))
+                item = QTableWidgetItem(v)
+                if c == 0 and notes_text(e):
+                    item.setToolTip(notes_text(e))
+                self.table.setItem(r, c, item)
         has = bool(entries)
-        for b in (self.b_georef, self.b_filter, self.b_export, self.b_remove, self.b_overlay, self.b_hide, self.b_qgis):
+        for b in (self.b_georef, self.b_filter, self.b_export, self.b_remove, self.b_overlay, self.b_hide, self.b_qgis,
+                  self.b_anomaly):
             b.setEnabled(has)
         if has:
             row = next((i for i, e in enumerate(entries) if e["id"] == keep), 0)
             self.table.selectRow(row)
+        else:
+            self.status.setText(t("Nessuna griglia: importa un file Surfer GRD, XYZ/CSV, GeoTIFF o una cartella di slice GPR.",
+                                  "No grid: import a Surfer GRD, XYZ/CSV, GeoTIFF file or a folder of GPR slices."))
         self._selection_changed()
-        self.status.setText(t("{0} griglie", "{0} grids").format(len(entries)) if has else
-                            t("Nessuna griglia: importa un file Surfer GRD, XYZ/CSV, GeoTIFF o una cartella di slice GPR.",
-                              "No grid: import a Surfer GRD, XYZ/CSV, GeoTIFF file or a folder of GPR slices."))

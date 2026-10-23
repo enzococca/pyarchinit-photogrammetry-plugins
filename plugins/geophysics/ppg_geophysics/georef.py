@@ -2,7 +2,11 @@
 points of it) in the coordinate system of the project - typed in from the GPS survey of the grid
 pegs, or taken from the markers placed on the orthomosaic - a similarity (shift, rotation and,
 when asked, scale) is estimated by least squares; or the grid is placed by its origin and the
-azimuth of its x axis."""
+azimuth of its x axis.
+
+Every placement starts from the grid's own frame - the survey metres, lower-left corner at 0, 0,
+the cell of the survey (:meth:`Grid.survey_cell`) - never from where an earlier placement put it:
+placing a grid again replaces the placement, it does not add to it."""
 from __future__ import annotations
 
 import numpy as np
@@ -36,16 +40,21 @@ def similarity(local: np.ndarray, world: np.ndarray, fix_scale: bool = True) -> 
 
 
 def place(grid: Grid, fit: dict, crs: str) -> Grid:
-    """The grid placed in ``crs`` by a similarity (its origin the top-left corner moved, its x
-    axis turned, its cell scaled)."""
+    """The grid placed in ``crs`` by a similarity of its local frame (:func:`similarity` from the
+    local metres of :func:`corners_local`): its top-left corner moved, its x axis turned, its cell
+    scaled - from the survey frame every time, so placing a placed grid again gives the same result
+    as placing it the first time."""
     s, rot = float(fit["scale"]), float(fit["rotation"])
     t = np.asarray(fit["translation"], float)
     a = np.radians(rot)
     r = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
-    o = s * (r @ np.asarray(grid.origin, float)) + t
+    cell0 = grid.survey_cell()
+    h, _w = grid.shape
+    o = s * (r @ np.array([0.0, h * cell0])) + t  # the top-left corner: (0, H) of the survey frame
     grid.origin = (float(o[0]), float(o[1]))
-    grid.rotation = (grid.rotation + rot) % 360.0
-    grid.cell = grid.cell * s
+    grid.rotation = rot % 360.0
+    grid.local_cell = cell0
+    grid.cell = cell0 * s
     grid.crs = crs
     return grid
 
@@ -53,17 +62,20 @@ def place(grid: Grid, fit: dict, crs: str) -> Grid:
 def place_by_origin(grid: Grid, x: float, y: float, azimuth: float, crs: str, corner: str = "lower-left") -> Grid:
     """The grid placed by the world position of one corner (``lower-left`` of the survey: the
     origin of the local metres, or ``top-left``) and the azimuth of its x axis (degrees clockwise
-    from the north, as a compass: 90 = the rows run east)."""
+    from the north, as a compass: 90 = the rows run east); the cell is the survey's (scale 1)."""
     rot = (90.0 - azimuth) % 360.0  # counter-clockwise from the east
     a = np.radians(rot)
+    cell0 = grid.survey_cell()
     h, w = grid.shape
     if corner == "lower-left":  # the top-left corner is one grid height up along the y axis of the grid
-        up = np.array([-np.sin(a), np.cos(a)]) * grid.cell * h
+        up = np.array([-np.sin(a), np.cos(a)]) * cell0 * h
         origin = np.array([x, y]) + up
     else:
         origin = np.array([x, y], float)
     grid.origin = (float(origin[0]), float(origin[1]))
     grid.rotation = rot
+    grid.local_cell = cell0
+    grid.cell = cell0
     grid.crs = crs
     return grid
 
@@ -71,7 +83,8 @@ def place_by_origin(grid: Grid, x: float, y: float, azimuth: float, crs: str, co
 def corners_local(grid: Grid) -> dict[str, tuple[float, float]]:
     """The local coordinates of the four corners of a grid in survey metres (origin lower-left)."""
     h, w = grid.shape
-    L, H = w * grid.cell, h * grid.cell
+    cell0 = grid.survey_cell()
+    L, H = w * cell0, h * cell0
     return {"lower-left": (0.0, 0.0), "lower-right": (L, 0.0), "upper-right": (L, H), "upper-left": (0.0, H)}
 
 
@@ -79,6 +92,7 @@ def local_to_corner_frame(grid: Grid) -> Grid:
     """A grid read from a file with its own local coordinates (Surfer's x/y) brought to survey
     metres with the lower-left corner at (0, 0): what the pegs of a survey grid measure."""
     h, w = grid.shape
+    grid.local_cell = grid.cell
     grid.origin = (0.0, h * grid.cell)
     grid.rotation = 0.0
     grid.crs = "LOCAL"
