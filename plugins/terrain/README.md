@@ -36,7 +36,7 @@ ppg plugin terrain hydrology scavo.ppg --threshold 20
 ppg plugin terrain geomorph scavo.ppg tpi --size 15
 ppg plugin terrain depressions scavo.ppg --min-area 0.5 --min-depth 0.1
 ppg plugin terrain depressions scavo.ppg --mounds
-ppg plugin terrain viewshed scavo.ppg 438120.5 4553812.0 --height 1.7
+ppg plugin terrain viewshed scavo.ppg 500120.5 4500812.0 --height 1.7
 ppg plugin terrain export scavo.ppg terreno.gpkg
 ```
 

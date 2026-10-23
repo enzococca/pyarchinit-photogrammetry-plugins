@@ -24,7 +24,7 @@ electromagnetic - beside the photogrammetric products of the same ground.
 ```bash
 pip install "ppg-geophysics @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/geophysics"
 ppg plugin geophysics import survey.ppg survey.grd --kind magnetometry --name "Area 1"
-ppg plugin geophysics georef survey.ppg "Area 1" --origin 438100.0,4553800.0 --azimuth 95
+ppg plugin geophysics georef survey.ppg "Area 1" --origin 500100.0,4500800.0 --azimuth 95
 ppg plugin geophysics filter survey.ppg "Area 1" destripe --copy
 ppg plugin geophysics export survey.ppg "Area 1 destripe" area1.tif
 ```

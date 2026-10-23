@@ -121,7 +121,7 @@ def test_georeferencing_by_pairs_origin_and_markers():
     # the pegs measured by GPS: the grid turned by 35 degrees and moved
     a = np.radians(35.0)
     R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
-    t = np.array([438100.0, 4553800.0])
+    t = np.array([500100.0, 4500800.0])
     world = {k: tuple(R @ np.array(v) + t) for k, v in corners.items()}
     fit = georef.similarity([corners[k] for k in ("lower-left", "lower-right", "upper-left")],
                             [world[k] for k in ("lower-left", "lower-right", "upper-left")])
@@ -176,7 +176,7 @@ def test_grids_in_the_project_and_exports(tmp_path):
     assert e["crs"] == "LOCAL" and (ch.data_dir / e["file"]).exists() and grids.entries(ch)[0]["id"] == e["id"]
     back = grids.load_grid(ch, e["id"])
     assert back.name == "Area 1" and back.kind == "magnetometry" and back.shape == g.shape
-    georef.place_by_origin(back, 438100.0, 4553800.0, 95.0, CRS)
+    georef.place_by_origin(back, 500100.0, 4500800.0, 95.0, CRS)
     grids.save_grid(ch, back)
     assert len(grids.entries(ch)) == 1 and grids.entries(ch)[0]["crs"] == CRS
     filtered = filters.apply(back, "destripe")
@@ -224,7 +224,7 @@ def test_command(tmp_path, capsys):
     plugin = GeophysicsPlugin()
     plugin.activate(Context("geophysics", tmp_path / "plugin"))
     assert plugin.command("import", str(tmp_path / "a.grd"), "--kind", "magnetometry", "--name", "A") == 0
-    assert plugin.command("georef", "A", "--origin", "438100,4553800", "--azimuth", "90") == 0
+    assert plugin.command("georef", "A", "--origin", "500100,4500800", "--azimuth", "90") == 0
     assert plugin.command("filter", "A", "destripe", "--copy") == 0
     assert plugin.command("list") == 0
     out = capsys.readouterr().out
@@ -261,11 +261,11 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path):
     from pyarchinit_photogrammetry.engine.dem import write_geotiff
 
     z = np.zeros((120, 160), np.float32) + 100.0
-    dem = write_geotiff(ch.data_dir / "dem.tif", z, (438090.0, 4553845.0), 0.25, CRS)
+    dem = write_geotiff(ch.data_dir / "dem.tif", z, (500090.0, 4500845.0), 0.25, CRS)
     ch._set_product("dem", dem)
     g, _, _ = synthetic()
     georef.local_to_corner_frame(g)
-    georef.place_by_origin(g, 438100.0, 4553800.0, 90.0, CRS)
+    georef.place_by_origin(g, 500100.0, 4500800.0, 90.0, CRS)
     e = grids.save_grid(ch, g)
     doc.save()
     app.document = doc

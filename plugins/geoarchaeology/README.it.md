@@ -2,6 +2,8 @@
 
 *[English](README.md)*
 
+**[Guida d'uso](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/geoarchaeology/)**: i dati da raccogliere, come compilare le tabelle CSV, i passi nel programma, come leggere i risultati.
+
 Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
 (1.2.2 o successiva): i log di trivellate manuali, carotaggi meccanici e sezioni di scavo
 trasformati in superfici e in un modello 3D dei depositi, sullo stesso terreno del rilievo
@@ -79,7 +81,7 @@ ppg plugin geoarchaeology import scavo.ppg collari.csv intervalli.csv
 ppg plugin geoarchaeology surfaces scavo.ppg --model auto --trend auto --mode auto
 ppg plugin geoarchaeology surfaces scavo.ppg --mode "auto,US2=depth,US5=elevation"
 ppg plugin geoarchaeology section scavo.ppg --through S1,S4,S7 --exaggeration 5
-ppg plugin geoarchaeology section scavo.ppg --coords "438100,4553800;438180,4553860"
+ppg plugin geoarchaeology section scavo.ppg --coords "500100,4500800;500180,4500860"
 ppg plugin geoarchaeology logs scavo.ppg S1 S2 S3 S4
 ppg plugin geoarchaeology model scavo.ppg
 ppg plugin geoarchaeology export scavo.ppg geoarcheologia.gpkg
@@ -89,8 +91,8 @@ Una tabella dei collari e una degli intervalli:
 
 ```text
 sondaggio;x;y;quota;profondita
-S1;438102,5;4553803,1;101,25;4,2
-S2;438130,0;4553811,7;;3,6
+S1;500102,5;4500803,1;101,25;4,2
+S2;500130,0;4500811,7;;3,6
 
 sondaggio;da;a;us;descrizione;colore
 S1;0;0,3;1;humus;10YR 3/2
