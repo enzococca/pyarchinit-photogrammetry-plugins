@@ -84,7 +84,7 @@
     },
     {
       "name": "spirula",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "title": "Spirula",
       "description": "3D Gaussian splatting of the aligned photos with Spirula Studio (Vulkan: NVIDIA, AMD, Intel and Apple GPUs): the splat as a product of the chunk, a mesh from it, the viewer, the installation of Spirula Studio",
       "i18n": {
@@ -99,8 +99,8 @@
       "api": 1,
       "min_app": "1.1.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/spirula-v0.1.1/ppg_spirula-0.1.1-py3-none-any.whl",
-      "sha256": "dba43cd5b1d4c672a72b143f1776e3c08c2ba2ebf5d6137ae18949d1f7ed60ed"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/spirula-v0.1.2/ppg_spirula-0.1.2-py3-none-any.whl",
+      "sha256": "c397128c93223b6a01901640d42d6ff1bfe18c0bee8fb878b5e525ede024e336"
     },
     {
       "name": "terrain",
