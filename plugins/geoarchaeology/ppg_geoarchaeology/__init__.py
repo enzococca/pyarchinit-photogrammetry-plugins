@@ -21,9 +21,9 @@ from pathlib import Path
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-from .texts import t
+from .texts import num, signed, t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 SECTION_COLOUR = "#ff7f0e"
 
 
@@ -171,9 +171,9 @@ class GeoarchaeologyPlugin(Plugin):
                 len(holes), len(codes), ", ".join(codes[:12]) + ("..." if len(codes) > 12 else ""))
             if reg:
                 g = reg["grid"]
-                status += " " + t("Superfici del {0} su {1} x {2} celle di {3:g} m.",
-                                  "Surfaces of {0} on {1} x {2} cells of {3:g} m.").format(reg["made"], g["width"],
-                                                                                         g["height"], g["cell"])
+                status += " " + t("Superfici del {0} su {1} x {2} celle di {3} m.",
+                                  "Surfaces of {0} on {1} x {2} cells of {3} m.").format(reg["made"], g["width"],
+                                                                                       g["height"], num(g["cell"], 2))
                 if reg.get("stale"):
                     status += " " + t("I sondaggi o l'ordine sono cambiati: ricostruiscile.",
                                       "The boreholes or the order changed: build them again.")
@@ -301,9 +301,9 @@ class GeoarchaeologyPlugin(Plugin):
                            "the DEM): {0}").format(", ".join(report["no_z"])))
         chk = report.get("dem_check")
         if chk:
-            lines.append(t("Quota dei collari meno DEM: mediana {0:+.3f} m, massimo {1:+.3f} m ({2})",
-                           "Collar elevation minus DEM: median {0:+.3f} m, largest {1:+.3f} m ({2})")
-                         .format(chk["median_m"], chk["max_m"], chk["worst"]))
+            lines.append(t("Quota dei collari meno DEM: mediana {0} m, massimo {1} m ({2})",
+                           "Collar elevation minus DEM: median {0} m, largest {1} m ({2})")
+                         .format(signed(chk["median_m"], 3), signed(chk["max_m"], 3), chk["worst"]))
         warnings = report.get("warnings") or []
         if warnings:
             lines.append(t("Avvisi ({0}):", "Warnings ({0}):").format(len(warnings)))
@@ -345,22 +345,27 @@ class GeoarchaeologyPlugin(Plugin):
         window = self.context.window
         if chunk is None:
             return
-        v = {"model": "auto", "trend": "auto", "mode": "elevation", "cell": None, "nugget": None, "buffer": None,
-             "min_points": 5}
+        v = {"model": "auto", "trend": "auto", "mode": "auto", "modes": "", "cell": None, "nugget": None,
+             "buffer": None, "min_points": 5}
         if window is not None:
             v = ParamDialog.ask(window, t("Superfici di contatto", "Contact surfaces"), [
                 Field("model", t("Modello del variogramma", "Variogram model"), "auto", choices=[
-                    ("auto", t("il migliore (errore leave-one-out)", "the best (leave-one-out error)")),
+                    ("auto", t("scelto dai dati (il più stabile entro il 5 % del migliore leave-one-out)",
+                               "chosen by the data (the steadiest within 5 % of the best leave-one-out)")),
                     ("spherical", t("sferico", "spherical")), ("exponential", t("esponenziale", "exponential")),
                     ("gaussian", t("gaussiano", "Gaussian"))]),
                 Field("trend", t("Andamento", "Trend"), "auto", choices=[
                     ("auto", t("scelto dai dati", "chosen by the data")), ("none", t("nessuno (kriging ordinario)",
                                                                                     "none (ordinary kriging)")),
                     ("linear", t("piano inclinato (kriging universale)", "tilted plane (universal kriging)"))]),
-                Field("mode", t("Interpola", "Interpolate"), "elevation", choices=[
-                    ("elevation", t("le quote dei contatti", "the elevations of the contacts")),
-                    ("depth", t("le profondità dal terreno (seguono il DEM)", "the depths below the ground (they follow "
-                                                                              "the DEM)"))]),
+                Field("mode", t("Interpola", "Interpolate"), "auto", choices=[
+                    ("auto", t("per contatto: le profondità se il contatto segue il terreno, altrimenti le quote",
+                               "per contact: the depths when the contact follows the ground, the elevations otherwise")),
+                    ("elevation", t("le quote di tutti i contatti", "the elevations of every contact")),
+                    ("depth", t("le profondità dal terreno di tutti i contatti (seguono il DEM)",
+                                "the depths below the ground of every contact (they follow the DEM)"))]),
+                Field("modes", t("Per unità (es.: US 2=profondità, US 5=quota)", "By unit (e.g. US 2=depth, US 5=elevation)"),
+                      "", kind="text"),
                 Field("cell", t("Cella (m, vuota = quella del DEM)", "Cell (m, empty = the DEM's)"), None,
                       kind="optional_float"),
                 Field("nugget", t("Pepita (m², vuota = stimata)", "Nugget (m², empty = fitted)"), None,
@@ -370,14 +375,16 @@ class GeoarchaeologyPlugin(Plugin):
                       kind="optional_float"),
                 Field("min_points", t("Sondaggi minimi per il kriging (sotto: IDW)", "Least boreholes for kriging (below: "
                                                                                      "IDW)"), 5, minimum=3, maximum=50),
-            ], intro=t("Il tetto di ogni unità viene interpolato dai sondaggi: dove un'unità manca il suo tetto è il "
-                       "contatto fra le unità sopra e sotto. Nessuna superficie sale sopra il terreno o sopra quella "
-                       "dell'unità superiore (le correzioni sono contate e restano nella terza banda). Banda 2: la "
-                       "varianza di kriging.",
-                       "The top of every unit is interpolated from the boreholes: where a unit is missing its top is "
-                       "the contact between the units above and below. No surface rises above the ground or above that "
-                       "of the unit over it (the corrections are counted and kept in the third band). Band 2: the "
-                       "kriging variance."))
+            ], intro=t("Il tetto di ogni unità viene interpolato dai sondaggi, per quota oppure per profondità dal "
+                       "terreno (i contatti che seguono il terreno, come la base dell'humus). Dove un'unità manca dai "
+                       "sondaggi manca anche intorno: il suo tetto e la sua base coincidono. Dove due contatti si "
+                       "incrociano cede quello con la varianza di kriging maggiore, e nessuno sale sopra il terreno "
+                       "(le correzioni restano nella terza banda). Banda 2: la varianza di kriging.",
+                       "The top of every unit is interpolated from the boreholes, by elevation or by depth below the "
+                       "ground (the contacts that follow the ground, as the base of the topsoil). Where a unit is "
+                       "missing from the boreholes it is missing around them too: its top and its base are one. Where "
+                       "two contacts cross the one with the larger kriging variance yields, and none rises above the "
+                       "ground (the corrections are kept in the third band). Band 2: the kriging variance."))
             if not v:
                 return
 
@@ -386,37 +393,79 @@ class GeoarchaeologyPlugin(Plugin):
             if window is not None:
                 self._message("info", self.surfaces_text(reg))
 
+        mode = v["mode"] + ("," + v["modes"] if str(v.get("modes") or "").strip() else "")
         self._run(t("Superfici di contatto", "Contact surfaces"),
-                  lambda p: sf.build(chunk, model=v["model"], cell=v["cell"], nugget=v["nugget"], mode=v["mode"],
+                  lambda p: sf.build(chunk, model=v["model"], cell=v["cell"], nugget=v["nugget"], mode=mode,
                                      trend=v["trend"], buffer=v["buffer"], min_points=int(v["min_points"]), progress=p),
                   done)
 
     @staticmethod
+    def mode_text(e: dict) -> str:
+        """How a contact was interpolated, and why, in a few words."""
+        mode, why = e.get("mode"), (e.get("mode_reason") or {})
+        if mode not in ("elevation", "depth"):
+            return ""
+        text = t("per quota", "by elevation") if mode == "elevation" else t("per profondità", "by depth")
+        rule = why.get("rule")
+        if rule == "given":
+            return text + t(" (scelto)", " (as asked)")
+        if rule in ("follows_ground", "own_shape"):
+            reason = t("segue il terreno", "it follows the ground") if rule == "follows_ground" else \
+                t("ha una forma sua", "it has a shape of its own")
+            return text + t(" ({0}: profondità variabili per {1} m, quote per {2} m)",
+                            " ({0}: depths varying by {1} m, elevations by {2} m)").format(
+                reason, num(why.get("scatter_depth_m", 0.0), 2), num(why.get("scatter_elevation_m", 0.0), 2))
+        return text + {"no_ground": t(" (senza terreno)", " (no ground)"),
+                       "no_elevations": t(" (sondaggi senza quota)", " (boreholes without elevation)"),
+                       "few_boreholes": t(" (pochi sondaggi)", " (few boreholes)")}.get(rule, "")
+
+    @staticmethod
     def surfaces_text(reg: dict) -> str:
         g = reg["grid"]
-        lines = [t("{0} x {1} celle di {2:g} m", "{0} x {1} cells of {2:g} m").format(g["width"], g["height"], g["cell"])]
+        model_names = {"spherical": t("sferico", "spherical"), "exponential": t("esponenziale", "exponential"),
+                       "gaussian": t("gaussiano", "Gaussian")}
+        lines = [t("{0} x {1} celle di {2} m", "{0} x {1} cells of {2} m").format(g["width"], g["height"], num(g["cell"], 2))]
         for e in reg.get("contacts", []):
             how = {"ground": t("il terreno", "the ground"), "idw": "IDW", "none": t("nessun dato", "no data"),
                    "constant": t("costante", "constant")}.get(e.get("method"), e.get("method", ""))
             if e.get("method") == "kriging":
-                how = t("kriging {0}{1}, errore leave-one-out {2:.3f} m", "kriging {0}{1}, leave-one-out error {2:.3f} m") \
-                    .format(e["variogram"]["model"], t(" con piano", " with a plane") if e.get("trend") == "linear" else "",
-                            e.get("loocv_rmse", 0.0))
+                model = e["variogram"]["model"]
+                how = t("kriging {0}{1}, errore leave-one-out {2} m", "kriging {0}{1}, leave-one-out error {2} m") \
+                    .format(model_names.get(model, model), t(" con piano", " with a plane") if e.get("trend") == "linear"
+                            else "", num(e.get("loocv_rmse", 0.0), 3))
+                least = e.get("least_error") or {}
+                if least and (least.get("model"), least.get("trend")) != (model, e.get("trend")):
+                    how += t(" (il {0} dava {1} m: meno del 5 % di differenza)", " ({0} gave {1} m: less than 5 % apart)") \
+                        .format(model_names.get(least["model"], least["model"]), num(least["loocv_rmse"], 3))
+            mode = GeoarchaeologyPlugin.mode_text(e)
+            if mode:
+                how += ", " + mode
             cl = e.get("clamped") or {}
             extra = ""
             if cl.get("cells"):
-                extra = t("; abbassata su {0:.1f} m² (max {1:.3f} m: {2} celle dal terreno, {3} dall'unità sopra)",
-                          "; lowered on {0:.1f} m² (max {1:.3f} m: {2} cells by the ground, {3} by the unit above)") \
-                    .format(cl["area_m2"], cl["max_m"], cl["by_ground"], cl["by_upper"])
+                extra = t("; corretta dalla pila su {0} m² (abbassata fino a {1} m, alzata fino a {2} m)",
+                          "; moved by the stack on {0} m² (lowered up to {1} m, raised up to {2} m)") \
+                    .format(num(cl["area_m2"], 0), num(cl.get("lowered_max_m", cl.get("max_m", 0.0)), 2),
+                            num(cl.get("raised_max_m", 0.0), 2))
             if e.get("bottoms_used"):
                 extra += t("; {0} fondi di sondaggi usati come vincolo", "; {0} borehole bottoms used as a bound") \
                     .format(e["bottoms_used"])
             lines.append(f"{e['name']}: {how}{extra}")
         for e in reg.get("thickness", []):
             st = e.get("stats") or {}
-            lines.append(t("{0}: media {1:.2f} m, massimo {2:.2f} m, {3:.1f} m³",
-                           "{0}: mean {1:.2f} m, largest {2:.2f} m, {3:.1f} m³").format(
-                e["name"], st.get("mean", 0.0), st.get("max", 0.0), e.get("volume_m3", 0.0)))
+            line = t("{0}: media {1} m, massimo {2} m, {3} m³", "{0}: mean {1} m, largest {2} m, {3} m³").format(
+                e["name"], num(st.get("mean", 0.0), 2), num(st.get("max", 0.0), 2), num(e.get("volume_m3", 0.0), 0))
+            if e.get("outside_dem"):
+                line += t(" (+ {0} m³ dove manca il DEM)", " (+ {0} m³ where there is no DEM)").format(
+                    num(e["outside_dem"]["volume_m3"], 0))
+            if e.get("absent"):
+                line += t("; assente su {0} m² (sondaggi senza: {1})", "; missing on {0} m² (boreholes without it: {1})") \
+                    .format(num(e["absent"]["area_m2"], 0), ", ".join(e["absent"].get("boreholes_without", [])[:12]))
+            lines.append(line)
+        if reg.get("without_dem"):
+            lines.append(t("{0} m² senza DEM: lì il terreno è la superficie dei collari, i volumi sono a parte",
+                           "{0} m² without a DEM: the ground there is the surface of the collars, the volumes apart")
+                         .format(num(reg["without_dem"]["area_m2"], 0)))
         if reg.get("notes"):
             lines.append(t("Sondaggi fuori ordine:", "Boreholes out of order:") + " " + "; ".join(reg["notes"][:5]))
         return "\n".join(lines)
@@ -441,8 +490,10 @@ class GeoarchaeologyPlugin(Plugin):
                 Field("clip", t("Ritaglia le unità sulle US disegnate con lo stesso numero",
                                 "Clip the units to the US drawn with the same number"), True),
                 Field("last", t("Anche l'ultima unità, fino al fondo", "The last unit too, down to the floor"), True),
-                Field("floor", t("Quota del fondo (m, vuota = il fondo più basso dei sondaggi)",
-                                 "Elevation of the floor (m, empty = the lowest bottom of the boreholes)"), None,
+                Field("floor", t("Quota del fondo (m, vuota = il fondo più basso dei sondaggi, tenuto sotto il tetto "
+                                 "più basso dell'ultima unità)",
+                                 "Elevation of the floor (m, empty = the lowest bottom of the boreholes, kept below the "
+                                 "lowest top of the last unit)"), None,
                       kind="optional_float"),
             ], intro=t("Un solido chiuso per unità fra il suo tetto e quello dell'unità sotto (PLY con il colore "
                        "dell'unità, un OBJ con un oggetto per unità), i volumi in un CSV.",
@@ -455,15 +506,29 @@ class GeoarchaeologyPlugin(Plugin):
         def done(reg):
             self._after(t("Modello pronto", "Model ready"))
             if window is not None:
-                rows = [t("{0}: {1:.2f} m³ su {2:.1f} m²{3}", "{0}: {1:.2f} m³ on {2:.1f} m²{3}").format(
-                    r["unit"], r["volume_m3"], r.get("area_m2", 0.0),
-                    t(" (ritagliata sulle US)", " (clipped to the US)") if r.get("clipped") else "") for r in reg["units"]]
-                self._message("info", t("Modello in {0}", "Model in {0}").format(
-                    model_mod.folder(chunk)) + "\n" + "\n".join(rows))
+                self._message("info", self.model_text(reg, model_mod.folder(chunk)))
 
         self._run(t("Modello 3D delle unità", "3D model of the units"),
                   lambda p: model_mod.build(chunk, cell=v["cell"], clip=bool(v["clip"]), floor=v["floor"],
                                             last=bool(v["last"]), progress=p), done)
+
+    @staticmethod
+    def model_text(reg: dict, folder=None) -> str:
+        """The volumes of the model, in the language of the interface."""
+        rows = []
+        for r in reg["units"]:
+            line = t("{0}: {1} m³ su {2} m²", "{0}: {1} m³ on {2} m²").format(
+                r["unit"], num(r["volume_m3"], 0), num(r.get("area_m2", 0.0), 0))
+            if r.get("outside_dem"):
+                line += t(" (+ {0} m³ dove manca il DEM)", " (+ {0} m³ where there is no DEM)").format(
+                    num(r["outside_dem"]["volume_m3"], 0))
+            if r.get("to_floor"):
+                line += t(" (fino al fondo, {0} m)", " (down to the floor, {0} m)").format(num(reg.get("floor") or 0.0, 2))
+            if r.get("clipped"):
+                line += t(" (ritagliata sulle US)", " (clipped to the US)")
+            rows.append(line)
+        head = [t("Modello in {0}", "Model in {0}").format(folder)] if folder is not None else []
+        return "\n".join(head + rows)
 
     # ------------------------------------------------------------------ sections
     def draw_section(self) -> None:
@@ -704,7 +769,8 @@ class GeoarchaeologyPlugin(Plugin):
         what = {1: t("quota", "elevation"), 2: t("varianza (m²)", "variance (m²)"),
                 3: t("correzione (m)", "correction (m)")}[band] if kind == "surface" else t("spessore (m)", "thickness (m)")
         if self.pane is not None:
-            self.pane.set_limits(f"{e['name']}, {what}: {lo:.3f} - {hi:.3f}")
+            digits = 3 if kind == "surface" and band == 2 else 2
+            self.pane.set_limits(f"{e['name']}, {what}: {num(lo, digits)} - {num(hi, digits)}")
         if hasattr(window, "show_view"):
             window.show_view(view)
 
@@ -810,7 +876,9 @@ class GeoarchaeologyPlugin(Plugin):
         p.add_argument("project")
         p.add_argument("--model", default="auto", choices=["auto", "spherical", "exponential", "gaussian"])
         p.add_argument("--trend", default="auto", choices=["auto", "none", "linear"])
-        p.add_argument("--mode", default="elevation", choices=["elevation", "depth"])
+        p.add_argument("--mode", default="auto",
+                       help="auto (by depth the contacts that follow the ground, by elevation the others), elevation, "
+                            "depth, and the units named: 'auto,US2=depth,US5=elevation' (default: auto)")
         p.add_argument("--cell", type=float, default=None, help="m (default: the DEM's)")
         p.add_argument("--nugget", type=float, default=None, help="m2 (default: fitted)")
         p.add_argument("--buffer", type=float, default=None, help="m around the boreholes (default: their spacing)")
@@ -905,6 +973,8 @@ class GeoarchaeologyPlugin(Plugin):
                                       offset=offset, progress=print_progress)
                 for r in reg["units"]:
                     print(f"{r['unit']}: {r['volume_m3']:.3f} m3 on {r.get('area_m2', 0.0):.2f} m2"
+                          + (f" (+ {r['outside_dem']['volume_m3']:.3f} m3 where there is no DEM)"
+                             if r.get("outside_dem") else "")
                           + (" (clipped to the US drawn)" if r.get("clipped") else ""))
                 print(model_mod.folder(chunk))
             elif a.what == "logs":

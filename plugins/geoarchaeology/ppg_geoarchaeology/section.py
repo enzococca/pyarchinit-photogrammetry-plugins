@@ -19,7 +19,7 @@ import numpy as np
 
 from . import boreholes as bh
 from . import surfaces as sf
-from .texts import t
+from .texts import signed, t
 
 EXAGGERATIONS = (1, 2, 5, 10, 20, 50, 100)
 MAX_MM = 5000.0  # widest drawing (a scale given that makes it wider is reduced)
@@ -280,7 +280,7 @@ def figure(chunk, prof: dict, holes: list[dict], name: str, svg: Path | None, pn
                                    edgecolor="black", linewidth=0.4, hatch=bh.hatch_of(iv.lithology, iv.description) or None,
                                    zorder=5))
         ax.plot([s - width_m, s + width_m], [b.z - b.bottom] * 2, color="black", linewidth=0.8, zorder=6)
-        ax.annotate(f"{b.id}\n{h['offset']:+.1f} m", (s, b.z), xytext=(0, 4), textcoords="offset points",
+        ax.annotate(f"{b.id}\n{signed(h['offset'], 1)} m", (s, b.z), xytext=(0, 4), textcoords="offset points",
                     ha="center", va="bottom", fontsize=6, zorder=7)
     ax.set_xlabel(t("Distanza lungo la traccia (m)", "Distance along the trace (m)"), fontsize=7)
     ax.set_ylabel(t("Quota (m)", "Elevation (m)"), fontsize=7)

@@ -1,25 +1,42 @@
 """The contact surfaces of the units and their thicknesses.
 
-The top of every unit is interpolated from its elevations at the boreholes (or from its depths
-below the ground, in ``mode="depth"``, then taken from the ground surface) on a grid aligned
-with the DEM of the chunk - the DEM's own cells, or coarser ones for a large DEM, or a cell size
-given - over the boreholes and a margin. Kriging (:mod:`.kriging`), inverse distance weighting
-below ``min_points`` boreholes. Where a borehole ends above a contact, the contact is kept below
-its bottom (the bottom becomes a datum when the first estimate passes above it).
+The top of every unit is interpolated on a grid aligned with the DEM of the chunk - the DEM's
+own cells, or coarser ones for a large DEM, or a cell size given - over the boreholes and a
+margin: kriging (:mod:`.kriging`), inverse distance weighting below ``min_points`` boreholes.
+Each contact is interpolated in one of two ways:
 
-Then the stack is made consistent: no contact above the ground (the DEM, filled with the
-surface of the collars where the DEM has no cells) and none above the contact of the unit over
-it; every correction is counted and kept as the third band of the surface. The top of a unit
-crossed at the collar of every borehole is the ground itself.
+* by elevation: its elevations at the boreholes - a contact with a shape of its own (the
+  natural soil under a tell, a buried floor, a channel);
+* by depth: its depths below the ground, then hung from the ground - a contact that follows
+  the ground (the base of the topsoil, the layers draped over a mound).
+
+``mode="auto"`` chooses for every contact (:func:`choose_mode`): by depth when its depths vary
+across the boreholes much less than its elevations (the scatter of each about a plane, less
+than :data:`FOLLOWS_GROUND` times), by elevation otherwise; ``modes`` (or ``"US2=depth"`` in
+``mode``) sets it for the units named. The registry tells the mode of every contact and why.
+Where a borehole ends above a contact, the contact is kept below its bottom (the bottom becomes
+a datum when the first estimate passes above it).
+
+Then the stack is made consistent (:func:`clamp_stack`): where two contacts cross, the one with
+the larger kriging variance yields - in every column the variance-weighted regression that
+keeps the contacts in order, so a well determined natural is not pushed down by an uncertain
+contact above it - and none rises above the ground (the DEM, filled with the surface of the
+collars where the DEM has no cells). A unit missing from a log is missing around it too: the
+boreholes vote for the presence of every unit (inverse distance), and where those without it
+win its top and its base are one surface. Every correction is counted and kept as the third
+band. The top of a unit crossed at the collar of every borehole is the ground itself.
 
 Every surface is ``<chunk data>/geoarchaeology/surfaces/top_<k>_<unit>.tif``: float32, band 1
-the elevation, band 2 the kriging variance (m², NaN for inverse distance), band 3 how much the
-estimate was lowered by the clamping (m), NaN outside the hull of its boreholes plus a buffer.
-The thickness of a unit (isopach) is the difference of its top and the top of the unit below:
-``thickness_<unit>.tif``. Both are registered in ``chunk.meta["geoarchaeology"]["surfaces"]``.
+the elevation, band 2 the kriging variance (m², NaN for inverse distance), band 3 the
+correction made by the stack (m: positive where the estimate was lowered, negative where it was
+raised), NaN outside the hull of its boreholes plus a buffer. The thickness of a unit (isopach)
+is the difference of its top and the top of the unit below: ``thickness_<unit>.tif``; its volume
+is summed over the cells with a DEM, the cells whose ground is the surface of the collars are
+reported apart. Both are registered in ``chunk.meta["geoarchaeology"]["surfaces"]``.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,11 +45,20 @@ import numpy as np
 
 from . import boreholes as bh
 from . import kriging
-from .texts import t
+from .texts import num, t
 
 MAX_CELLS = 1_000_000  # cells of a grid made from the DEM's when no cell size is given
 NICE = (0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0)
 STANDIN_CRS = "EPSG:3857"  # resampling between grids of one frame: any projected CRS does
+MODES = ("elevation", "depth")
+FOLLOWS_GROUND = 0.5  # by depth when the scatter of the depths is under this share of that of the elevations
+PRESENT = 0.5  # a unit is there where the boreholes that have it outweigh (inverse distance) those that do not
+SNAP_SIGMAS = 2.0  # where it is not, a thickness under this many standard deviations of its contacts is none
+SNAP_FLOOR = 0.01  # m: and always one under a centimetre
+EXACT_VARIANCE = 1e-6  # m²: the variance given to an exact contact (the ground, a constant one) in the stack
+_MODE_WORDS = {"auto": "auto", "elevation": "elevation", "elevations": "elevation", "elev": "elevation",
+               "quota": "elevation", "quote": "elevation", "q": "elevation", "z": "elevation", "depth": "depth",
+               "depths": "depth", "profondita": "depth", "prof": "depth", "p": "depth", "d": "depth"}
 
 
 @dataclass
@@ -167,12 +193,99 @@ def default_buffer(xy: np.ndarray, cell: float = 0.0) -> float:
     return float(max(np.median(d[:, 1]), 2 * cell, 1e-3))
 
 
-def clamp_stack(ground: np.ndarray | None, raws: list[np.ndarray], is_ground: list[bool] | None = None
-                ) -> tuple[list, list, list]:
-    """Every contact brought down to the ground and to the contacts above it, from the top: returns
-    the contacts, the corrections (raw minus kept) and, per contact, the counts of the cells
-    lowered by the ground and by an upper contact (a contact that is the ground itself,
-    ``is_ground``, counts as the ground)."""
+def clamp_stack(ground: np.ndarray | None, raws: list[np.ndarray], is_ground: list[bool] | None = None,
+                variances: list | None = None, ties: list | None = None) -> tuple[list, list, list]:
+    """The contacts (from the top down) made a consistent stack: none above the ground, none
+    above the contact of the unit over it. Returns the contacts, the corrections (raw minus kept:
+    positive lowered, negative raised) and, per contact, the cells ``(lowered to the ground,
+    lowered by a contact above, raised by a contact below)``. A contact that is the ground itself
+    (``is_ground``) is exact.
+
+    With ``variances`` (the kriging variance of each contact, NaN where unknown) the contacts that
+    cross meet at their variance-weighted mean, so the one with the larger variance yields: in
+    every column the weighted regression that keeps the contacts in order (pool adjacent
+    violators), then capped by the ground. ``ties`` (for unit k, the cells where it is missing,
+    or None) make the top of unit k and the top of unit k + 1 one surface there. Without either:
+    every contact brought down to the ground and to the contacts above it, from the top."""
+    if variances is None and ties is None:
+        return _top_down(ground, raws, is_ground)
+    return _weighted_stack(ground, raws, is_ground, variances, ties)
+
+
+def _weighted_stack(ground, raws, is_ground, variances, ties) -> tuple[list, list, list]:
+    n = len(raws)
+    if n == 0:
+        return [], [], []
+    is_ground = list(is_ground or [False] * n)
+    C = np.stack([np.asarray(r, np.float64) for r in raws])
+    shape = C.shape[1:]
+    ok = np.isfinite(C)
+    if variances is None:
+        V = np.ones_like(C)
+    else:
+        V = np.stack([np.full(shape, np.nan) if v is None else np.asarray(v, np.float64) for v in variances])
+    known = ok & np.isfinite(V)
+    fallback = max(float(np.median(V[known])), EXACT_VARIANCE) if known.any() else 1.0  # inverse distance: unknown
+    V = np.where(np.isfinite(V), np.maximum(V, EXACT_VARIANCE), fallback)
+    for k in range(n):
+        if is_ground[k]:
+            V[k] = EXACT_VARIANCE
+    W = np.where(ok, 1.0 / V, 0.0).reshape(n, -1)
+    X = np.where(ok, C, 0.0).reshape(n, -1)
+    tie = np.zeros((max(n - 1, 0), W.shape[1]), bool)
+    for k, tk in enumerate((ties or [])[:n - 1]):
+        if tk is not None:
+            tie[k] = np.asarray(tk, bool).ravel()
+    out = np.full(W.shape, np.nan)
+    step = 1 << 18
+    for s in range(0, W.shape[1], step):
+        w, x, tt = W[:, s:s + step], X[:, s:s + step], tie[:, s:s + step]
+        m = w.shape[1]
+        start = np.ones((n, m), bool)  # a contact tied to the one above (its unit missing) is not a start
+        end = np.ones((n, m), bool)  # nor, tied to the one below, an end
+        if n > 1:
+            start[1:] = ~tt
+            end[:-1] = ~tt
+        mean = {}
+        for i in range(n):
+            sw, sx = np.zeros(m), np.zeros(m)
+            for j in range(i, n):
+                sw += w[j]
+                sx += w[j] * x[j]
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    mean[i, j] = np.where(sw > 0, sx / sw, np.nan)
+        # the antitonic regression: t_k = min over the starts i <= k of max over the ends j >= k of mean(i..j)
+        for k in range(n):
+            low = np.full(m, np.inf)
+            for i in range(k + 1):
+                high = np.full(m, -np.inf)
+                for j in range(k, n):
+                    high = np.fmax(high, np.where(end[j], mean[i, j], -np.inf))
+                low = np.fmin(low, np.where(start[i], high, np.inf))
+            out[k, s:s + step] = low
+    out = out.reshape(C.shape)
+    out[~ok] = np.nan
+    G = None if ground is None else np.asarray(ground, np.float64)
+    if G is not None:
+        cap = np.isfinite(G)
+        out = np.where(cap & ok, np.minimum(out, np.where(cap, G, np.inf)), out)
+    corr = np.where(ok, C - out, np.nan)
+    counts = []
+    for k in range(n):
+        d = corr[k]
+        lowered = np.isfinite(d) & (d > 1e-6)
+        raised = np.isfinite(d) & (d < -1e-6)
+        if G is not None:
+            at_ground = lowered & np.isfinite(G) & (np.abs(out[k] - np.where(np.isfinite(G), G, np.nan)) < 1e-6)
+        else:
+            at_ground = np.zeros_like(lowered)
+        counts.append((int(at_ground.sum()), int((lowered & ~at_ground).sum()), int(raised.sum())))
+    return [out[k] for k in range(n)], [corr[k] for k in range(n)], counts
+
+
+def _top_down(ground, raws, is_ground) -> tuple[list, list, list]:
+    """The rule without variances: every contact brought down to the ground and to the contacts
+    above it, from the top (a contact that is the ground itself counts as the ground)."""
     is_ground = list(is_ground or [False] * len(raws))
     ceiling = None if ground is None else ground.astype(np.float64).copy()
     source = None if ground is None else np.where(np.isfinite(ground), 0, -1)
@@ -187,7 +300,7 @@ def clamp_stack(ground: np.ndarray | None, raws: list[np.ndarray], is_ground: li
             c[over] = ceiling[over]
         out.append(c)
         corr.append(np.where(np.isfinite(raw), raw - c, np.nan))
-        counts.append((n_ground, n_upper))
+        counts.append((n_ground, n_upper, 0))
         tag = 0 if is_ground[k] else k + 1
         if ceiling is None:
             ceiling = c.copy()
@@ -244,24 +357,112 @@ def slug(text: str) -> str:
     return s.strip("_")[:40] or "u"
 
 
+# ------------------------------------------------------------------ the mode of every contact
+def mode_word(text: str) -> str:
+    """"auto", "elevation" or "depth" for a word of the user (English or Italian: quota, profondità)."""
+    word = bh.normalise(text)
+    if word not in _MODE_WORDS:
+        raise ValueError(t("Modo sconosciuto: {0} (auto, quota/elevation, profondità/depth)",
+                           "Unknown mode: {0} (auto, elevation/quota, depth/profondità)").format(text))
+    return _MODE_WORDS[word]
+
+
+def parse_modes(text) -> tuple[str, dict]:
+    """``(mode of the contacts not named, {unit: mode})`` of a text such as ``"auto"``,
+    ``"depth"``, ``"US2=depth, US5=elevation"`` or ``"auto; US 2=profondità"``."""
+    default, given = "auto", {}
+    for part in re.split(r"[;,]", str(text or "")):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            unit, word = part.split("=", 1)
+            if not unit.strip():
+                raise ValueError(t("Modo senza unità: {0}", "A mode without its unit: {0}").format(part))
+            given[unit.strip()] = mode_word(word)
+        else:
+            default = mode_word(part)
+    return default, given
+
+
+def unit_of(name: str, codes: list[str]) -> str:
+    """The unit of ``codes`` that ``name`` means: the same letters and digits ("US2" is "US 2"),
+    or the same number when ``name`` gives no kind and one unit only has it ("2" is "US 2")."""
+    from .model import unit_key
+
+    def plain(s):
+        return re.sub(r"[^0-9a-z]", "", bh.normalise(s))
+
+    same = [c for c in codes if plain(c) == plain(name)]
+    if len(same) == 1:
+        return same[0]
+    kind, number = unit_key(name)
+    if kind is None:
+        same = [c for c in codes if unit_key(c)[1] == number]
+        if len(same) == 1:
+            return same[0]
+    raise ValueError(t("Unità sconosciuta: {0} (le unità: {1})", "Unknown unit: {0} (the units: {1})")
+                     .format(name, ", ".join(codes)))
+
+
+def scatter(xy, values) -> float:
+    """How much ``values`` vary across the boreholes at ``xy``: the root mean square about their
+    plane (four boreholes or more, not in a line), their standard deviation otherwise."""
+    xy = np.asarray(xy, float).reshape(-1, 2)
+    values = np.asarray(values, float)
+    if len(values) < 2:
+        return 0.0
+    if len(values) >= 4 and kriging.spans_a_plane(xy):
+        c = xy.mean(0)
+        s = max(float(np.ptp(xy, axis=0).max()), 1.0)
+        coef = kriging.plane((xy - c) / s, values)
+        res = values - kriging._drift((xy - c) / s, 1) @ coef
+        return float(np.sqrt(np.mean(res ** 2)))
+    return float(np.std(values))
+
+
+def choose_mode(cd, has_ground: bool) -> tuple[str, dict]:
+    """``(mode, why)`` of a contact under ``mode="auto"``: by depth when the scatter of its depths
+    at the boreholes is less than :data:`FOLLOWS_GROUND` times that of its elevations (it follows
+    the ground), by elevation otherwise (a shape of its own: the depths vary as much as the ground).
+    ``why["rule"]``: ``follows_ground``, ``own_shape``, ``no_ground``, ``no_elevations`` or
+    ``few_boreholes``, with the two scatters."""
+    if not has_ground:
+        return "elevation", {"rule": "no_ground"}
+    if not np.isfinite(cd.z).any():
+        return "depth", {"rule": "no_elevations"}
+    ok = np.isfinite(cd.z) & np.isfinite(cd.depth)
+    if ok.sum() < 3:
+        return "elevation", {"rule": "few_boreholes", "boreholes": int(ok.sum())}
+    sz = scatter(cd.xy[ok], cd.z[ok])
+    sd = scatter(cd.xy[ok], cd.depth[ok])
+    why = {"scatter_depth_m": sd, "scatter_elevation_m": sz, "threshold": FOLLOWS_GROUND, "boreholes": int(ok.sum())}
+    if sz > 1e-6 and sd < FOLLOWS_GROUND * sz:
+        return "depth", {"rule": "follows_ground", **why}
+    return "elevation", {"rule": "own_shape", **why}
+
+
 # ------------------------------------------------------------------ building
 def build(chunk, model: str = "auto", cell: float | None = None, nugget: float | None = None,
-          mode: str = "elevation", trend: str = "auto", buffer: float | None = None, min_points: int = 5,
-          codes: list[str] | None = None, progress=None) -> dict:
+          mode: str = "auto", trend: str = "auto", buffer: float | None = None, min_points: int = 5,
+          codes: list[str] | None = None, progress=None, modes: dict | None = None) -> dict:
     """The tops of the units (in their order, or ``codes``) and their thicknesses on a grid: see
-    the module. ``model``: "auto" (the variogram model with the least leave-one-out error),
-    "spherical", "exponential" or "gaussian"; ``trend``: "auto", "none" or "linear" (universal
-    kriging with a plane); ``mode``: "elevation" (the elevations of the contacts) or "depth" (their
-    depths below the ground, then hung from it). Returns the registry of the products."""
+    the module. ``model``: "auto" (the steadiest variogram model among those within a few per cent
+    of the least leave-one-out error), "spherical", "exponential" or "gaussian"; ``trend``: "auto",
+    "none" or "linear" (universal kriging with a plane); ``mode``: "auto" (by depth the contacts
+    that follow the ground, by elevation the others: :func:`choose_mode`), "elevation", "depth",
+    or a text with the units named (``"auto, US2=depth"``); ``modes``: ``{unit: mode}`` for some
+    units. Returns the registry of the products."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
-    if mode not in ("elevation", "depth"):
-        raise ValueError(f"mode {mode!r}: elevation or depth")
+    default, given = parse_modes(mode)
+    for unit, m in (modes or {}).items():
+        given[unit] = mode_word(m)
     holes = bh.load(chunk)
     if not holes:
         raise RuntimeError(t("Nessun sondaggio nel chunk: importali prima", "No borehole in the chunk: import them first"))
-    if mode == "elevation" and all(b.z is None for b in holes):
+    if all(b.z is None for b in holes) and (default == "elevation" or bh.dem_path(chunk) is None):
         raise RuntimeError(t("Nessun sondaggio ha una quota (né il chunk un DEM sotto di essi): le superfici vogliono "
                              "le quote, oppure il modo per profondità con un DEM",
                              "No borehole has an elevation (nor a DEM under it): the surfaces need elevations, or the "
@@ -269,6 +470,7 @@ def build(chunk, model: str = "auto", cell: float | None = None, nugget: float |
     if codes:
         bh.set_order(chunk, codes)
     codes = bh.order(chunk)
+    given = {unit_of(u, codes): m for u, m in given.items()}
     data, notes = bh.contact_data(holes, codes)
     positioned = np.array([[b.x, b.y] for b in holes], float)
     progress(0.02, "Grid")
@@ -301,14 +503,26 @@ def build(chunk, model: str = "auto", cell: float | None = None, nugget: float |
         ground = collar_surface
     raws, variances, reports = [], [], []
     for k, cd in enumerate(data):
-        p = progress.sub(0.08 + 0.75 * k / max(len(data), 1), 0.75 / max(len(data), 1))
+        p = progress.sub(0.08 + 0.72 * k / max(len(data), 1), 0.72 / max(len(data), 1))
         p(0.0, f"Top of {cd.unit}: {len(cd.ids)} boreholes")
-        raw, var, rep = _contact(grid, cd, ground, mode, buffer, opts, p)
+        if cd.at_surface and ground is not None:
+            m, why = "ground", {"rule": "ground"}
+        else:
+            m = given.get(cd.unit, default)
+            why = {"rule": "given"}
+            if m == "auto":
+                m, why = choose_mode(cd, ground is not None)
+        raw, var, rep = _contact(grid, cd, ground, "elevation" if m == "ground" else m, buffer, opts, p)
+        rep["mode"] = "ground" if rep.get("method") == "ground" else m
+        rep["mode_reason"] = why
         raws.append(raw)
         variances.append(var)
         reports.append(rep)
-    progress(0.85, "Clamping the stack")
-    tops, corrections, counts = clamp_stack(ground, raws, [r.get("method") == "ground" for r in reports])
+    progress(0.82, "Units missing from the logs")
+    ties, absent = _missing_units(bh.presence(holes, codes), raws, variances, grid)
+    progress(0.86, "The stack")
+    tops, corrections, counts = clamp_stack(ground, raws, [r.get("method") == "ground" for r in reports],
+                                            variances=variances, ties=ties)
     out_dir = folder(chunk)
     if out_dir.exists():
         for old in [*out_dir.glob("*.tif"), *out_dir.glob("variogram_*.png")]:
@@ -320,32 +534,46 @@ def build(chunk, model: str = "auto", cell: float | None = None, nugget: float |
         rep = reports[k]
         name = f"top_{k}_{slug(cd.unit)}"
         path = write_tif(out_dir / f"{name}.tif", [tops[k], variances[k], corrections[k]], grid,
-                         [f"top of {cd.unit} (m)", "kriging variance (m2)", "lowered by the clamping (m)"])
-        lowered = np.isfinite(corrections[k]) & (corrections[k] > 1e-6)
-        rep["clamped"] = {"cells": int(lowered.sum()), "area_m2": float(lowered.sum() * cell_area),
-                          "max_m": float(np.nanmax(corrections[k][lowered])) if lowered.any() else 0.0,
-                          "by_ground": counts[k][0], "by_upper": counts[k][1]}
+                         [f"top of {cd.unit} (m)", "kriging variance (m2)",
+                          "correction by the stack (m, + lowered, - raised)"])
+        d = corrections[k]
+        lowered = np.isfinite(d) & (d > 1e-6)
+        raised = np.isfinite(d) & (d < -1e-6)
+        moved = lowered | raised
+        rep["clamped"] = {"cells": int(moved.sum()), "area_m2": float(moved.sum() * cell_area),
+                          "max_m": float(np.nanmax(np.abs(d[moved]))) if moved.any() else 0.0,
+                          "lowered_max_m": float(d[lowered].max()) if lowered.any() else 0.0,
+                          "raised_max_m": float(-d[raised].min()) if raised.any() else 0.0,
+                          "by_ground": counts[k][0], "by_upper": counts[k][1], "by_lower": counts[k][2]}
         entries.append({"id": name, "kind": "surface", "unit": cd.unit, "k": k, "colour": colours.get(cd.unit),
                         "name": t("Tetto di {0}", "Top of {0}").format(cd.unit),
                         "file": str(path.relative_to(chunk.data_dir)), "stats": _stats(tops[k]),
                         "variance": _stats(variances[k]), **rep})
     progress(0.92, "Thicknesses")
+    has_dem = np.isfinite(ground_dem) if ground_dem is not None else None
     for k in range(len(data) - 1):
         top, base = tops[k], tops[k + 1]
         th = np.where(np.isfinite(top) & np.isfinite(base), np.maximum(top - base, 0.0), np.nan)
         unit = data[k].unit
         name = f"thickness_{slug(unit)}"
         path = write_tif(out_dir / f"{name}.tif", [th], grid, [f"thickness of {unit} (m)"])
-        st = _stats(th)
-        thick.append({"id": name, "kind": "thickness", "unit": unit, "k": k, "colour": colours.get(unit),
-                      "name": t("Spessore di {0}", "Thickness of {0}").format(unit),
-                      "file": str(path.relative_to(chunk.data_dir)), "stats": st,
-                      "volume_m3": float(np.nansum(th) * cell_area), "area_m2": float((th > 1e-6).sum() * cell_area)})
+        e = {"id": name, "kind": "thickness", "unit": unit, "k": k, "colour": colours.get(unit),
+             "name": t("Spessore di {0}", "Thickness of {0}").format(unit),
+             "file": str(path.relative_to(chunk.data_dir)), "stats": _stats(th)}
+        e.update(volumes(th, has_dem, cell_area))
+        if absent[k] is not None:
+            e["absent"] = absent[k] | {"area_m2": absent[k]["cells"] * cell_area}
+        thick.append(e)
     registry = {"grid": grid.to_dict(), "made": time.strftime("%Y-%m-%d %H:%M"), "stale": False,
-                "params": {"model": model, "cell": cell, "nugget": nugget, "mode": mode, "trend": trend,
-                           "buffer": buffer, "min_points": min_points},
+                "params": {"model": model, "cell": cell, "nugget": nugget, "mode": default, "modes": given,
+                           "trend": trend, "buffer": buffer, "min_points": min_points},
+                "modes": {e["unit"]: e["mode"] for e in entries},
                 "order": codes, "notes": notes, "contacts": entries, "thickness": thick,
                 "ground": "dem" if ground_dem is not None else ("collars" if collar_surface is not None else "none")}
+    if has_dem is not None and ground is not None:
+        filled = np.isfinite(ground) & ~has_dem
+        if filled.any():  # the cells whose ground is the surface of the collars
+            registry["without_dem"] = {"cells": int(filled.sum()), "area_m2": float(filled.sum() * cell_area)}
     if collar_report is not None:
         registry["collars"] = {k: v for k, v in collar_report.items() if k != "candidates"}
     bh.meta(chunk)["surfaces"] = registry
@@ -355,6 +583,57 @@ def build(chunk, model: str = "auto", cell: float | None = None, nugget: float |
         pass
     progress(1.0, f"{len(entries)} contacts, {len(thick)} thicknesses on {grid.width} x {grid.height} cells of {grid.cell:g} m")
     return registry
+
+
+def volumes(th: np.ndarray, has_dem: np.ndarray | None, cell_area: float) -> dict:
+    """The volume and the area of a thickness raster over the cells with a DEM (``has_dem``; all
+    the cells without a DEM at all), the cells without one apart (``outside_dem``)."""
+    finite = np.isfinite(th)
+    on = finite if has_dem is None else finite & has_dem
+    out = {"volume_m3": float(th[on].sum() * cell_area), "area_m2": float((on & (th > 1e-6)).sum() * cell_area)}
+    if has_dem is not None:
+        off = finite & ~has_dem
+        if off.any():
+            out["outside_dem"] = {"cells": int(off.sum()), "area_m2": float(off.sum() * cell_area),
+                                  "volume_m3": float(th[off].sum() * cell_area)}
+    return out
+
+
+def _missing_units(pres: list, raws: list[np.ndarray], variances: list[np.ndarray], grid: Grid) -> tuple[list, list]:
+    """For every unit but the last, the cells where it is missing (its top and the top of the unit
+    below tied in the stack) and a report. The boreholes vote for its presence by inverse distance
+    (:data:`PRESENT`; those that end above its place in the sequence do not vote); where those
+    without it win, the unit is missing unless the two contacts tell a thickness the kriging can
+    tell from none (more than :data:`SNAP_SIGMAS` times their combined standard deviation, and
+    than :data:`SNAP_FLOOR`): a thin unit well known stays, a spurious one goes."""
+    ties, absent = [], []
+    for k in range(len(raws) - 1):
+        pr = pres[k] if k < len(pres) else None
+        both = np.isfinite(raws[k]) & np.isfinite(raws[k + 1])
+        if pr is None or len(pr.ids) == 0 or pr.everywhere or not both.any():
+            ties.append(None)
+            absent.append(None)
+            continue
+        cells = np.zeros(both.shape, bool)
+        if pr.present.any():
+            vote = kriging.idw(pr.xy, pr.present.astype(float), grid.centres(both))
+            cells[both] = vote < PRESENT
+        else:
+            cells = both.copy()
+        spread = np.sqrt(_variance_or_typical(variances[k]) + _variance_or_typical(variances[k + 1]))
+        thick = raws[k] - raws[k + 1]
+        cells &= np.where(both, thick <= np.maximum(SNAP_FLOOR, SNAP_SIGMAS * spread), False)
+        ties.append(cells)
+        absent.append({"cells": int(cells.sum()),
+                       "boreholes_without": [i for i, p in zip(pr.ids, pr.present) if not p]})
+    return ties, absent
+
+
+def _variance_or_typical(v: np.ndarray) -> np.ndarray:
+    """The kriging variance, its median where it is unknown (inverse distance), 0 without any."""
+    v = np.asarray(v, float)
+    ok = np.isfinite(v)
+    return np.where(ok, np.maximum(v, 0.0), float(np.median(v[ok])) if ok.any() else 0.0)
 
 
 def _contact(grid: Grid, cd, ground, mode: str, buffer: float, opts: dict, progress) -> tuple:
@@ -480,10 +759,11 @@ def variogram_figures(chunk) -> list[Path]:
         ax.scatter(lags, gam, s=12 + 40 * pairs / max(pairs.max(), 1), color="#7d5a3c", zorder=3,
                    label=t("sperimentale", "experimental"))
         h = np.linspace(0, max(lags.max(), v.range) * 1.1, 200)
-        ax.plot(h[1:], v(h[1:]), color="#1f4e79", label=f"{v.model}, {t('portata', 'range')} {v.range:.3g} m")
+        ax.plot(h[1:], v(h[1:]), color="#1f4e79", label=f"{v.model}, {t('portata', 'range')} {num(v.range, 1)} m")
         ax.set_xlabel(t("distanza (m)", "distance (m)"))
         ax.set_ylabel(t("semivarianza (m²)", "semivariance (m²)"))
-        ax.set_title(f"{e['name']} - LOO {e.get('loocv_rmse', float('nan')):.3f} m", fontsize=9)
+        what = t("profondità", "depths") if mode == "depth" else t("quote", "elevations")
+        ax.set_title(f"{e['name']} ({what}) - LOO {num(e.get('loocv_rmse', float('nan')), 3)} m", fontsize=9)
         ax.legend(fontsize=7)
         ax.grid(alpha=0.3)
         fig.tight_layout()

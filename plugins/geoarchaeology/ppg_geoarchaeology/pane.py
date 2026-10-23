@@ -13,10 +13,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHeaderView, QLabel
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
 
 from .overlay import PALETTES
-from .texts import t
+from .texts import num, t
 
 BANDS = ((1, ("Quota", "Elevation")), (2, ("Varianza di kriging", "Kriging variance")),
-         (3, ("Correzione (clamping)", "Correction (clamping)")))
+         (3, ("Correzione della pila", "Correction by the stack")))
 MODEL_NAMES = {"spherical": ("sferico", "spherical"), "exponential": ("esponenziale", "exponential"),
                "gaussian": ("gaussiano", "Gaussian")}
 METHOD_NAMES = {"ground": ("terreno", "ground"), "idw": ("IDW", "IDW"), "constant": ("costante", "constant"),
@@ -235,6 +235,32 @@ class GeoarchaeologyPane(QWidget):
     def set_limits(self, text: str) -> None:
         self.l_limits.setText(text)
 
+    @staticmethod
+    def _tooltip(e: dict) -> list[str]:
+        """The lines of the tooltip of a product: its id, how it was made, what the stack did."""
+        from . import GeoarchaeologyPlugin
+
+        tip = [e["id"]]
+        if e.get("loocv_rmse") is not None:
+            tip.append(t("errore leave-one-out {0} m", "leave-one-out error {0} m").format(num(e["loocv_rmse"], 3)))
+        mode = GeoarchaeologyPlugin.mode_text(e)
+        if mode:
+            tip.append(mode)
+        cl = e.get("clamped") or {}
+        if cl.get("cells"):
+            tip.append(t("corretta dalla pila su {0} celle (abbassata fino a {1} m, alzata fino a {2} m)",
+                         "moved by the stack on {0} cells (lowered up to {1} m, raised up to {2} m)")
+                       .format(cl["cells"], num(cl.get("lowered_max_m", cl.get("max_m", 0.0)), 2),
+                               num(cl.get("raised_max_m", 0.0), 2)))
+        if e.get("kind") == "thickness":
+            tip.append(t("volume {0} m³", "volume {0} m³").format(num(e.get("volume_m3", 0.0), 0)))
+            if e.get("outside_dem"):
+                tip.append(t("più {0} m³ dove manca il DEM", "plus {0} m³ where there is no DEM")
+                           .format(num(e["outside_dem"]["volume_m3"], 0)))
+            if e.get("absent"):
+                tip.append(t("assente su {0} m²", "missing on {0} m²").format(num(e["absent"]["area_m2"], 0)))
+        return tip
+
     def set_state(self, holes: list, products: list[dict], sections: list[dict], status: str) -> None:
         """Fill the tables: ``holes`` (``Borehole``), ``products`` (surfaces and thicknesses),
         ``sections``; keep the selections when the rows are still there."""
@@ -242,8 +268,8 @@ class GeoarchaeologyPane(QWidget):
         keep_product, keep_section = self.current_product(), self.current_section()
         self.t_holes.setRowCount(len(holes))
         for r, b in enumerate(holes):
-            vals = [b.id, "" if b.z is None else f"{b.z:.2f}" + (" *" if b.z_source == "dem" else ""),
-                    f"{b.bottom:.2f}", " / ".join(b.units)]
+            vals = [b.id, "" if b.z is None else num(b.z, 2) + (" *" if b.z_source == "dem" else ""),
+                    num(b.bottom, 2), " / ".join(b.units)]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
                 if c == 1 and b.z_source == "dem":
@@ -265,19 +291,14 @@ class GeoarchaeologyPane(QWidget):
                     method += t(" + piano", " + plane")
             else:
                 method = t(*METHOD_NAMES.get(e.get("method", ""), (e.get("method", ""),) * 2))
-            vals = [e.get("name", e["id"]), method, f"{st['min']:.2f}" if "min" in st else "",
-                    f"{st['max']:.2f}" if "max" in st else ""]
+            if e.get("kind") == "surface" and e.get("mode") in ("elevation", "depth"):
+                method += ", " + (t("quota", "elevation") if e["mode"] == "elevation" else t("profondità", "depth"))
+            vals = [e.get("name", e["id"]), method, num(st["min"], 2) if "min" in st else "",
+                    num(st["max"], 2) if "max" in st else ""]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
-                if c == 0:
-                    cl = e.get("clamped") or {}
-                    tip = [e["id"]]
-                    if e.get("loocv_rmse") is not None:
-                        tip.append(t("errore leave-one-out {0:.3f} m", "leave-one-out error {0:.3f} m").format(e["loocv_rmse"]))
-                    if cl.get("cells"):
-                        tip.append(t("abbassata su {0} celle (max {1:.3f} m)", "lowered on {0} cells (max {1:.3f} m)")
-                                   .format(cl["cells"], cl.get("max_m", 0.0)))
-                    it.setToolTip("\n".join(tip))
+                if c in (0, 1):
+                    it.setToolTip("\n".join(self._tooltip(e)))
                 self.t_products.setItem(r, c, it)
             if e["id"] == keep_product:
                 self.t_products.selectRow(r)
@@ -286,7 +307,7 @@ class GeoarchaeologyPane(QWidget):
         self.sections = list(sections)
         self.t_sections.setRowCount(len(self.sections))
         for r, s in enumerate(self.sections):
-            vals = [s["name"], f"{s['length']:.1f} m", ", ".join(h["id"] for h in s.get("boreholes", []))]
+            vals = [s["name"], num(s["length"], 1) + " m", ", ".join(h["id"] for h in s.get("boreholes", []))]
             for c, v in enumerate(vals):
                 self.t_sections.setItem(r, c, QTableWidgetItem(v))
             if s["id"] == keep_section:

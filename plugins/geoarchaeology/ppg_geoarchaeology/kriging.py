@@ -14,6 +14,13 @@
 * :func:`interpolate` - all of it: the model and the drift chosen by the leave-one-out error
   when asked (``"auto"``), the estimate and the variance at the targets, a report.
 
+When asked to choose (``"auto"``), the least leave-one-out error does not win by itself: a
+handful of boreholes cannot tell the models apart by a few per cent, and the Gaussian model
+that wins such a close race overshoots between and around the boreholes. Among the models
+within :data:`CLEAR_MARGIN` of the least error the steadiest is taken (:data:`PREFERENCE`:
+spherical, exponential, without a drift before with one, Gaussian last); every model tried is
+reported with its error.
+
 The models use the practical range: the spherical model reaches its sill at ``range``, the
 exponential and Gaussian ones 95 % of it.
 """
@@ -27,6 +34,10 @@ MODELS = ("spherical", "exponential", "gaussian")
 MAX_GLOBAL = 400  # data points of one kriging system; more: a moving neighbourhood
 NEIGHBOURS = 32
 BLOCK = 4_000_000  # numbers of the right-hand sides solved at once (memory bound)
+CLEAR_MARGIN = 0.05  # another model or a drift is taken only when its leave-one-out error is smaller by this much
+# the order of preference among the candidates within the margin: (model, drift)
+PREFERENCE = (("spherical", 0), ("exponential", 0), ("spherical", 1), ("exponential", 1), ("gaussian", 0),
+              ("gaussian", 1))
 
 
 def semivariance(model: str, h, nugget: float, sill: float, rng: float) -> np.ndarray:
@@ -301,12 +312,30 @@ def _merge_duplicates(xy: np.ndarray, z: np.ndarray, tol: float) -> tuple[np.nda
     return np.column_stack([mx, my]), mz, int(n - len(counts))
 
 
+def preferred(candidates: list[dict], margin: float = CLEAR_MARGIN) -> dict | None:
+    """The candidate to use among those tried (``{"model", "trend", "loocv_rmse"}``): the ones
+    within ``margin`` of the least leave-one-out error are as good as it, and among them the
+    first in :data:`PREFERENCE` is taken."""
+    if not candidates:
+        return None
+    best = min(float(c["loocv_rmse"]) for c in candidates)
+    eligible = [c for c in candidates if float(c["loocv_rmse"]) <= best * (1.0 + margin) + 1e-9]
+
+    def rank(c):
+        key = (c["model"], 1 if c["trend"] == "linear" else 0)
+        return PREFERENCE.index(key) if key in PREFERENCE else len(PREFERENCE)
+
+    return min(eligible, key=lambda c: (rank(c), float(c["loocv_rmse"])))
+
+
 def choose(xy, z, model: str = "auto", nugget: float | None = None, trend: str = "auto",
            rng: np.random.Generator | None = None) -> tuple[Variogram, int, list[dict], np.ndarray]:
-    """The variogram model and the drift (0 none, 1 linear) with the smallest leave-one-out
-    error among those asked (``model`` one of :data:`MODELS` or "auto", ``trend`` "none",
-    "linear" or "auto"); with more than :data:`MAX_GLOBAL` points on a random subset of them.
-    Returns the variogram, the drift, the candidates tried and the leave-one-out errors."""
+    """The variogram model and the drift (0 none, 1 linear) among those asked (``model`` one of
+    :data:`MODELS` or "auto", ``trend`` "none", "linear" or "auto"): the steadiest of those within
+    :data:`CLEAR_MARGIN` of the least leave-one-out error (:func:`preferred`); with more than
+    :data:`MAX_GLOBAL` points on a random subset of them. Returns the variogram, the drift, the
+    candidates tried (each with its error, the one taken marked ``chosen``) and the
+    leave-one-out errors of the one taken."""
     xy = np.asarray(xy, float)
     z = np.asarray(z, float)
     if len(z) > MAX_GLOBAL:
@@ -322,7 +351,7 @@ def choose(xy, z, model: str = "auto", nugget: float | None = None, trend: str =
         drifts = (0, 1) if len(z) >= 6 and spans_a_plane(xy) else (0,)
     centre = xy.mean(0)
     scale = max(float(np.ptp(xy, axis=0).max()), 1.0)
-    tried, best = [], None
+    tried, fitted = [], {}
     for drift in drifts:
         if drift:
             coef = plane((xy - centre) / scale, z)
@@ -346,12 +375,17 @@ def choose(xy, z, model: str = "auto", nugget: float | None = None, trend: str =
             if not np.all(np.isfinite(errors)):
                 continue
             rmse = float(np.sqrt(np.mean(errors ** 2)))
-            tried.append({"model": m, "trend": "linear" if drift else "none", "loocv_rmse": rmse, **v.to_dict()})
-            if best is None or rmse < best[0] - 1e-12:
-                best = (rmse, v, drift, errors)
-    if best is None:
+            tried.append({"model": m, "trend": "linear" if drift else "none", "loocv_rmse": rmse, **v.to_dict(),
+                          "exact": bool(exact)})
+            fitted[(m, drift)] = (v, errors)
+    if not tried:
         raise ValueError("no variogram model could be fitted to these points")
-    return best[1], best[2], tried, best[3]
+    pick = preferred(tried)
+    for c in tried:
+        c["chosen"] = c is pick
+    drift = 1 if pick["trend"] == "linear" else 0
+    v, errors = fitted[(pick["model"], drift)]
+    return v, drift, tried, errors
 
 
 def interpolate(xy, z, targets, model: str = "auto", nugget: float | None = None, trend: str = "auto",
@@ -381,8 +415,12 @@ def interpolate(xy, z, targets, model: str = "auto", nugget: float | None = None
         report.update(method="idw", power=2.0, note=str(exc))
         return idw(xy, z, targets), np.full(len(targets), np.nan), report
     est, var = Kriging(xy, z, v, drift).predict(targets, variance=variance, progress=progress)
+    if var is not None and any(c.get("chosen") and c.get("exact") for c in tried):
+        var = np.zeros(len(targets))  # the plane is the whole surface: known exactly (the sill was a stand-in)
+    least = min(tried, key=lambda c: c["loocv_rmse"])
     report.update(method="kriging", variogram=v.to_dict(), trend="linear" if drift else "none",
                   loocv_rmse=float(np.sqrt(np.mean(errors ** 2))), loocv_mae=float(np.mean(np.abs(errors))),
                   loocv_max=float(np.max(np.abs(errors))), candidates=tried,
-                  neighbourhood="moving" if len(z) > MAX_GLOBAL else "global")
+                  least_error={"model": least["model"], "trend": least["trend"], "loocv_rmse": least["loocv_rmse"]},
+                  margin=CLEAR_MARGIN, neighbourhood="moving" if len(z) > MAX_GLOBAL else "global")
     return est, (var if var is not None else np.full(len(targets), np.nan)), report

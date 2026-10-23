@@ -25,16 +25,32 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
 * **Superfici di contatto per kriging**, scritto in NumPy: per il tetto di ogni unità il
   semivariogramma sperimentale, un modello sferico, esponenziale o gaussiano con effetto pepita
   adattato ai minimi quadrati pesati (pesi di Cressie), kriging ordinario o kriging universale con
-  una deriva lineare (un contatto che pende attraverso il sito); il modello e la deriva con
-  l'errore leave-one-out minore quando richiesto (`auto`), l'errore riportato; la varianza di
-  kriging come seconda banda; inverso della distanza sotto i 5 sondaggi. Dove un'unità manca in un
-  log il suo tetto è il contatto fra le unità sopra e sotto (spessore nullo); un sondaggio che
-  finisce sopra un contatto tiene il contatto sotto il proprio fondo. In modo `depth` si
-  interpolano le profondità dal terreno, poi appese al DEM. Sulla griglia del DEM (o con una cella
-  data), NaN fuori dall'inviluppo dei sondaggi più un margine.
-* **Pila coerente**: nessuna superficie sopra il terreno (il DEM) o sopra quella dell'unità
-  superiore; le celle abbassate vengono contate (dal terreno, da un contatto superiore) e la
-  correzione è la terza banda. **Spessori** (isopache) fra contatti consecutivi, con il volume.
+  una deriva lineare (un contatto che pende attraverso il sito). Con `auto` un modello o una
+  deriva non vincono per un guadagno trascurabile dell'errore leave-one-out: fra quelli entro il 5 %
+  dell'errore minore si prende il più stabile (sferico, esponenziale, senza deriva prima che con,
+  gaussiano per ultimo), e ogni modello provato viene riportato con il suo errore. La varianza di
+  kriging è la seconda banda; inverso della distanza sotto i 5 sondaggi. Un sondaggio che finisce
+  sopra un contatto tiene il contatto sotto il proprio fondo. Sulla griglia del DEM (o con una
+  cella data), NaN fuori dall'inviluppo dei sondaggi più un margine.
+* **Ogni contatto nel suo modo**: per *quota* (un contatto con una forma sua: il suolo naturale
+  sotto un tell, un piano sepolto) o per *profondità* dal terreno, appesa al DEM (un contatto che
+  segue il terreno: la base dell'humus, gli strati drappeggiati su un rilievo). Il modo `auto`,
+  predefinito, prende la profondità quando le profondità del contatto variano fra i sondaggi meno
+  della metà delle sue quote (la dispersione attorno a un piano), la quota altrimenti; il modo si
+  può fissare per alcune unità (`--mode auto,US2=depth,US5=elevation`, il campo *Per unità* del
+  dialogo, `modes={"US 2": "depth"}`). Il registro dice il modo di ogni contatto e perché.
+* **Pila coerente**: dove due contatti si incrociano cede quello con la varianza di kriging
+  maggiore (in ogni colonna la regressione pesata sulle varianze che tiene i contatti in ordine:
+  un suolo naturale ben determinato non viene spinto giù da un contatto incerto sopra di esso);
+  nessuno sale sopra il terreno (il DEM). Un'unità che manca in un log manca anche intorno: i
+  sondaggi votano la sua presenza con l'inverso della distanza, e dove vincono quelli senza e i
+  due contatti non distinguono uno spessore da nessuno (sotto due deviazioni standard del loro
+  kriging) il suo tetto e la sua base sono una sola superficie; niente unità sottili spurie fra i
+  sondaggi. Le celle spostate vengono contate (abbassate al terreno, abbassate da un contatto
+  sopra, alzate da uno sotto) e la correzione è la terza banda (positiva abbassata, negativa
+  alzata). **Spessori** (isopache) fra contatti consecutivi, con il volume sommato sulle celle col
+  DEM (quelle dove il terreno è la superficie dei collari sono riportate a parte) e dove l'unità
+  manca.
 * **Sezioni** lungo una traccia disegnata sull'ortofoto o sul DEM (lo strumento linea del
   programma, due clic), digitata, o per i sondaggi scelti: il profilo del terreno e di ogni
   contatto, le unità colorate fra di essi, i sondaggi entro una distanza proiettati sulla traccia
@@ -42,10 +58,13 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   come le sezioni del programma) con un'esagerazione verticale; SVG, PNG, DXF (coordinate di
   sezione, unità come campiture del loro colore) e CSV del profilo.
 * **Modello 3D delle unità**: un solido chiuso per unità fra il suo tetto e il tetto dell'unità
-  sotto (l'ultima fino a un fondo), costruito sulla griglia come il programma costruisce i proxy
-  delle unità stratigrafiche; un'unità il cui codice corrisponde a US disegnate nel chunk viene
-  ritagliata sui loro poligoni. Un PLY per unità (doppia precisione, colorato), un OBJ con un
-  oggetto e un materiale per unità, i volumi per unità in un CSV.
+  sotto (l'ultima fino a un fondo: il fondo più basso dei sondaggi, tenuto un margine - il 5 %
+  della loro altezza - sotto il tetto più basso dell'ultima unità, perché il solido non abbia
+  buchi), costruito sulla griglia come
+  il programma costruisce i proxy delle unità stratigrafiche; un'unità il cui codice corrisponde a
+  US disegnate nel chunk viene ritagliata sui loro poligoni. Un PLY per unità (doppia precisione,
+  colorato), un OBJ con un oggetto e un materiale per unità, i volumi per unità in un CSV (sulle
+  celle col DEM, le altre nelle loro colonne).
 * Il pannello *Geoarcheologia* del dock del progetto: sondaggi, superfici e sezioni in tre
   tabelle, i sondaggi come layer di punti della vista (id, quota, profondità, unità), una superficie
   (la quota, la varianza o la correzione) o uno spessore sopra l'ortofoto o il DEM con palette e
@@ -57,7 +76,8 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
 ```bash
 pip install "ppg-geoarchaeology @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/geoarchaeology"
 ppg plugin geoarchaeology import scavo.ppg collari.csv intervalli.csv
-ppg plugin geoarchaeology surfaces scavo.ppg --model auto --trend auto
+ppg plugin geoarchaeology surfaces scavo.ppg --model auto --trend auto --mode auto
+ppg plugin geoarchaeology surfaces scavo.ppg --mode "auto,US2=depth,US5=elevation"
 ppg plugin geoarchaeology section scavo.ppg --through S1,S4,S7 --exaggeration 5
 ppg plugin geoarchaeology section scavo.ppg --coords "438100,4553800;438180,4553860"
 ppg plugin geoarchaeology logs scavo.ppg S1 S2 S3 S4

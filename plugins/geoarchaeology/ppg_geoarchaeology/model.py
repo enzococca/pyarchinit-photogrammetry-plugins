@@ -171,9 +171,11 @@ def build(chunk, cell: float | None = None, clip: bool = True, floor: float | No
           min_thickness: float = 0.001, offset=None, units: list[str] | None = None, progress=None) -> dict:
     """A closed solid per unit (``units``: these only) from the surfaces of the chunk; ``clip``:
     the units drawn in the chunk cut the solids of their unit; ``last``: the last unit down to
-    ``floor`` (the deepest bottom of the boreholes by default); ``offset``: subtracted from the
-    coordinates of the OBJ (written in its header and in ``unita.obj.offset.txt``). Returns the
-    registry of the model."""
+    ``floor`` (by default the deepest bottom of the boreholes, kept a margin below the lowest top
+    of the last unit: :func:`default_floor`); ``offset``: subtracted from the coordinates of the
+    OBJ (written in its header and in ``unita.obj.offset.txt``). The volumes are summed over the
+    cells with a DEM, the others reported apart (``outside_dem``). Returns the registry of the
+    model."""
     from pyarchinit_photogrammetry.core.progress import as_progress
     from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
 
@@ -185,9 +187,11 @@ def build(chunk, cell: float | None = None, clip: bool = True, floor: float | No
     grid, f = model_grid(grid0, cell)
     tops = [(u, coarsen(v, f)) for u, v in sf.tops(chunk)]
     holes = bh.load(chunk)
+    floor_given = floor is not None
     if floor is None:
-        bottoms = [b.z - b.bottom for b in holes if b.z is not None]
-        floor = float(min(bottoms)) if bottoms else None
+        floor = default_floor(holes, tops[-1][1] if tops else None)
+    dem0 = sf.dem_on_grid(chunk, grid0)
+    has_dem = None if dem0 is None else np.isfinite(coarsen(np.where(np.isfinite(dem0), 1.0, np.nan), f))
     drawn = drawn_units(chunk) if clip else []
     colours = bh.colours(chunk)
     descriptions = {u["code"]: u.get("description", "") for u in bh.units(chunk)}
@@ -220,15 +224,21 @@ def build(chunk, cell: float | None = None, clip: bool = True, floor: float | No
         rgb = np.array([int(colours.get(unit, "#a0a0a0")[i:i + 2], 16) for i in (1, 3, 5)], np.uint8)
         name = sf.slug(unit)
         ply = write_mesh_ply(out_dir / f"{name}.ply", verts, faces, np.tile(rgb, (len(verts), 1)), double=True)
-        th = thick[mask]
-        rows.append({"unit": unit, "description": descriptions.get(unit, ""), "cells": int(mask.sum()),
-                     "area_m2": float(mask.sum() * area), "volume_m3": float(th.sum() * area),
-                     "mesh_volume_m3": signed_volume(verts, faces), "mean_thickness_m": float(th.mean()),
-                     "max_thickness_m": float(th.max()), "top_min": float(np.nanmin(top[mask])),
-                     "top_max": float(np.nanmax(top[mask])), "base_min": float(np.nanmin(base[mask])),
-                     "base_max": float(np.nanmax(base[mask])), "clipped": bool(clipped),
-                     "clipped_to": [f"{u.tipo or 'US'} {u.us}" for u in clipped], "faces": int(len(faces)),
-                     "ply": str(ply.relative_to(chunk.data_dir)), "to_floor": k + 1 == len(tops)})
+        on = mask if has_dem is None else mask & has_dem
+        th = thick[on] if on.any() else np.zeros(1)
+        row = {"unit": unit, "description": descriptions.get(unit, ""), "cells": int(mask.sum()),
+               "area_m2": float(on.sum() * area), "volume_m3": float(thick[on].sum() * area),
+               "mesh_volume_m3": signed_volume(verts, faces), "mean_thickness_m": float(th.mean()),
+               "max_thickness_m": float(th.max()), "top_min": float(np.nanmin(top[mask])),
+               "top_max": float(np.nanmax(top[mask])), "base_min": float(np.nanmin(base[mask])),
+               "base_max": float(np.nanmax(base[mask])), "clipped": bool(clipped),
+               "clipped_to": [f"{u.tipo or 'US'} {u.us}" for u in clipped], "faces": int(len(faces)),
+               "ply": str(ply.relative_to(chunk.data_dir)), "to_floor": k + 1 == len(tops)}
+        off = mask & ~on
+        if off.any():  # the cells whose ground is the surface of the collars, not the DEM
+            row["outside_dem"] = {"cells": int(off.sum()), "area_m2": float(off.sum() * area),
+                                  "volume_m3": float(thick[off].sum() * area)}
+        rows.append(row)
         meshes.append((unit, verts, faces, rgb))
     progress(0.88, "OBJ and volumes")
     files = {}
@@ -238,7 +248,7 @@ def build(chunk, cell: float | None = None, clip: bool = True, floor: float | No
     csv_path = write_volumes(out_dir / "volumi.csv", rows)
     files["csv"] = str(csv_path.relative_to(chunk.data_dir))
     registry = {"made": time.strftime("%Y-%m-%d %H:%M"), "cell": grid.cell, "factor": f, "floor": floor,
-                "clip": bool(clip), "units": rows, "files": files}
+                "floor_given": floor_given, "clip": bool(clip), "units": rows, "files": files}
     bh.meta(chunk)["model"] = registry
     progress(1.0, f"{len(meshes)} solids, {sum(r['volume_m3'] for r in rows):.3f} m3")
     return registry
@@ -267,15 +277,34 @@ def write_obj(path: Path, meshes, offset=None) -> Path:
     return path
 
 
+def default_floor(holes, last_top: np.ndarray | None) -> float | None:
+    """The base of the last unit: the deepest bottom of the boreholes, kept a margin (5 % of the
+    height of the boreholes, at least 10 cm) below the lowest top of the last unit, so that its
+    solid has no hole and is nowhere thinner than that margin."""
+    bottoms = [b.z - b.bottom for b in holes if b.z is not None]
+    floor = float(min(bottoms)) if bottoms else None
+    lowest = float(np.nanmin(last_top)) if last_top is not None and np.isfinite(last_top).any() else None
+    if lowest is None:
+        return floor
+    collars = [b.z for b in holes if b.z is not None]
+    span = (max(collars) - min(bottoms)) if collars and bottoms else float(np.nanmax(last_top) - lowest)
+    margin = max(0.1, 0.05 * span)
+    return lowest - margin if floor is None else min(floor, lowest - margin)
+
+
 VOLUME_COLUMNS = ("unit", "description", "volume_m3", "area_m2", "mean_thickness_m", "max_thickness_m", "top_min",
-                  "top_max", "base_min", "base_max", "cells", "clipped", "to_floor")
+                  "top_max", "base_min", "base_max", "cells", "clipped", "to_floor", "outside_dem_volume_m3",
+                  "outside_dem_area_m2")
 
 
 def write_volumes(path: Path, rows: list[dict]) -> Path:
+    """The volumes per unit (on the cells with a DEM; the cells without one in the last columns)."""
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(VOLUME_COLUMNS)
         for r in rows:
+            out = r.get("outside_dem") or {}
+            r = dict(r, outside_dem_volume_m3=out.get("volume_m3", 0.0), outside_dem_area_m2=out.get("area_m2", 0.0))
             w.writerow([round(r[c], 4) if isinstance(r.get(c), float) else r.get(c, "") for c in VOLUME_COLUMNS])
     return path
 

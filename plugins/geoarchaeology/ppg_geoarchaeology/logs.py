@@ -16,7 +16,7 @@ import textwrap
 from pathlib import Path
 
 from . import boreholes as bh
-from .texts import t
+from .texts import num, t
 
 LOG_SCALES = (10, 20, 50, 100, 200, 500, 1000)
 MAX_HEIGHT_MM = 250.0  # the height of the column on an A4 page
@@ -111,14 +111,14 @@ def draw(chunk, ids=None, path: str | Path | None = None, vertical: str = "auto"
                 ax.text(x0 + col_w / 2, (y0 + y1) / 2, iv.unit, ha="center", va="center", fontsize=6, zorder=3,
                         bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "alpha": 0.7, "linewidth": 0})
             if single:
-                words = f"{iv.top:.2f}-{iv.base:.2f} m  {iv.unit}" + (f": {iv.description}" if iv.description else "")
+                words = f"{num(iv.top, 2)}-{num(iv.base, 2)} m  {iv.unit}" + (f": {iv.description}" if iv.description else "")
                 if iv.colour:
                     words += f" ({iv.colour})"
                 ax.text(col_w + (16.0 if vertical == "elevation" else 4.0), (y0 + y1) / 2,
                         "\n".join(textwrap.wrap(words, 52)), ha="left", va="center", fontsize=5.5, clip_on=False)
         yb = y(b, b.bottom)
         ax.plot([x0 - 1.5, x0 + col_w + 1.5], [yb, yb], color="black", linewidth=1.0, zorder=4, clip_on=False)
-        label = b.id if b.z is None else f"{b.id}\n{b.z:.2f} m"
+        label = b.id if b.z is None else f"{b.id}\n{num(b.z, 2)} m"
         ax.annotate(label, (x0 + col_w / 2, y(b, 0.0)), xytext=(0, 3), textcoords="offset points", ha="center",
                     va="bottom", fontsize=6.5, fontweight="bold", annotation_clip=False)
     if correlate and not single:

@@ -186,28 +186,45 @@ def summary(chunk) -> str:
     reg = sf.registry(chunk)
     if reg:
         g = reg["grid"]
+        modes = reg["params"].get("modes") or {}
         lines.append(f"surfaces ({reg['made']}{', stale: build them again' if reg.get('stale') else ''}): "
-                     f"{g['width']} x {g['height']} cells of {g['cell']:g} m, mode {reg['params']['mode']}")
+                     f"{g['width']} x {g['height']} cells of {g['cell']:g} m, mode {reg['params']['mode']}"
+                     + (" (" + ", ".join(f"{u}={m}" for u, m in modes.items()) + ")" if modes else ""))
+        if reg.get("without_dem"):
+            lines.append(f"  {reg['without_dem']['area_m2']:.1f} m2 without a DEM: the ground there is the surface of "
+                         "the collars")
         for e in reg.get("contacts", []):
             st = e.get("stats") or {}
             how = e.get("method", "")
             if how == "kriging":
                 how += f" {e['variogram']['model']}, trend {e.get('trend')}, LOO {e.get('loocv_rmse', 0):.3f} m"
+            if e.get("mode") in ("elevation", "depth"):
+                why = (e.get("mode_reason") or {}).get("rule", "")
+                how += f", by {e['mode']}" + (f" ({why})" if why else "")
             cl = e.get("clamped") or {}
             lines.append(f"  {e['id']}: {how}, {e.get('points', 0)} boreholes, {st.get('min', float('nan')):.3f}.."
-                         f"{st.get('max', float('nan')):.3f} m, lowered on {cl.get('cells', 0)} cells "
-                         f"(max {cl.get('max_m', 0):.3f} m)")
+                         f"{st.get('max', float('nan')):.3f} m, moved by the stack on {cl.get('cells', 0)} cells "
+                         f"(lowered up to {cl.get('lowered_max_m', cl.get('max_m', 0)):.3f} m, raised up to "
+                         f"{cl.get('raised_max_m', 0):.3f} m)")
         for e in reg.get("thickness", []):
             st = e.get("stats") or {}
-            lines.append(f"  {e['id']}: mean {st.get('mean', 0):.3f} m, max {st.get('max', 0):.3f} m, "
-                         f"{e.get('volume_m3', 0):.2f} m3")
+            line = (f"  {e['id']}: mean {st.get('mean', 0):.3f} m, max {st.get('max', 0):.3f} m, "
+                    f"{e.get('volume_m3', 0):.2f} m3")
+            if e.get("outside_dem"):
+                line += f" (+ {e['outside_dem']['volume_m3']:.2f} m3 where there is no DEM)"
+            if e.get("absent"):
+                line += f", missing on {e['absent']['area_m2']:.1f} m2"
+            lines.append(line)
     for s in section_mod.entries(chunk):
         lines.append(f"section {s['id']} {s['name']!r}: {s['length']:.2f} m, 1:{s['scale']:g}, "
                      f"{len(s['boreholes'])} boreholes")
     reg = model_mod.registry(chunk)
     if reg:
-        lines.append(f"model ({reg['made']}): cell {reg['cell']:g} m")
+        lines.append(f"model ({reg['made']}): cell {reg['cell']:g} m, floor {reg.get('floor') or 0:.3f} m")
         for r in reg.get("units", []):
             lines.append(f"  {r['unit']}: {r['volume_m3']:.3f} m3 on {r.get('area_m2', 0):.1f} m2"
-                         + (" (clipped to the US drawn)" if r.get("clipped") else ""))
+                         + (f" (+ {r['outside_dem']['volume_m3']:.3f} m3 where there is no DEM)"
+                            if r.get("outside_dem") else "")
+                         + (" (clipped to the US drawn)" if r.get("clipped") else "")
+                         + (" (down to the floor)" if r.get("to_floor") else ""))
     return "\n".join(lines)

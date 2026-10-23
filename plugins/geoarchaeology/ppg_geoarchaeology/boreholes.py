@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .texts import t
+from .texts import num, t
 
 FOLDER = "geoarchaeology"
 KINDS = ("auger", "core", "trench", "section", "test_pit", "other")
@@ -405,14 +405,14 @@ def import_files(chunk, paths, replace: bool = False, kind: str = "", progress=N
                 top, base = z - rec["top_z"], z - rec["base_z"]
             unit = str(rec["unit"] or "").strip()
             if not unit:
-                warnings.append(t("{0}: intervallo {1:g}-{2:g} m senza unità (riga {3}): lasciato fuori",
-                                  "{0}: interval {1:g}-{2:g} m without a unit (line {3}): left out")
-                                .format(bid, top, base, rec["line"]))
+                warnings.append(t("{0}: intervallo {1}-{2} m senza unità (riga {3}): lasciato fuori",
+                                  "{0}: interval {1}-{2} m without a unit (line {3}): left out")
+                                .format(bid, num(top), num(base), rec["line"]))
                 continue
             if base <= top:
-                warnings.append(t("{0}: intervallo {1:g}-{2:g} m con la base sopra il tetto (riga {3}): lasciato fuori",
-                                  "{0}: interval {1:g}-{2:g} m with its base above its top (line {3}): left out")
-                                .format(bid, top, base, rec["line"]))
+                warnings.append(t("{0}: intervallo {1}-{2} m con la base sopra il tetto (riga {3}): lasciato fuori",
+                                  "{0}: interval {1}-{2} m with its base above its top (line {3}): left out")
+                                .format(bid, num(top), num(base), rec["line"]))
                 continue
             b.intervals.append(Interval(float(top), float(base), unit, rec["description"], rec["colour"],
                                         rec["lithology"]))
@@ -458,24 +458,32 @@ def _check_log(b: Borehole, warnings: list) -> None:
     for iv in b.intervals:
         if keep and iv.top < keep[-1].base - TOLERANCE:
             if iv.base <= keep[-1].base + TOLERANCE:
-                warnings.append(t("{0}: intervallo {1:g}-{2:g} m dentro il precedente: lasciato fuori",
-                                  "{0}: interval {1:g}-{2:g} m inside the one before: left out").format(b.id, iv.top, iv.base))
+                warnings.append(t("{0}: intervallo {1}-{2} m dentro il precedente: lasciato fuori",
+                                  "{0}: interval {1}-{2} m inside the one before: left out")
+                                .format(b.id, num(iv.top), num(iv.base)))
                 continue
-            warnings.append(t("{0}: intervalli sovrapposti a {1:g} m: il secondo parte dalla base del primo",
-                              "{0}: overlapping intervals at {1:g} m: the second starts at the base of the first")
-                            .format(b.id, iv.top))
+            warnings.append(t("{0}: intervalli sovrapposti a {1} m: il secondo parte dalla base del primo",
+                              "{0}: overlapping intervals at {1} m: the second starts at the base of the first")
+                            .format(b.id, num(iv.top)))
             iv.top = keep[-1].base
         elif keep and iv.top > keep[-1].base + TOLERANCE:
-            warnings.append(t("{0}: vuoto fra {1:g} e {2:g} m (contatto a metà)",
-                              "{0}: gap between {1:g} and {2:g} m (contact in the middle)").format(b.id, keep[-1].base, iv.top))
+            if iv.unit != keep[-1].unit:  # between two units: their contact is put in the middle
+                warnings.append(t("{0}: vuoto fra {1} e {2} m (contatto a metà)",
+                                  "{0}: gap between {1} and {2} m (contact in the middle)")
+                                .format(b.id, num(keep[-1].base), num(iv.top)))
+            else:  # inside one unit (a core lost): no contact there
+                warnings.append(t("{0}: vuoto fra {1} e {2} m dentro {3} (nessun contatto)",
+                                  "{0}: gap between {1} and {2} m inside {3} (no contact)")
+                                .format(b.id, num(keep[-1].base), num(iv.top), iv.unit))
         keep.append(iv)
     b.intervals = keep
     last = max((i.base for i in keep), default=0.0)
     if b.depth is not None and last - TOLERANCE <= b.depth < last:
         b.depth = last  # the same depth, rounded differently
     if b.depth is not None and b.depth < last - TOLERANCE:
-        warnings.append(t("{0}: profondità {1:g} m minore della base dell'ultimo intervallo ({2:g} m)",
-                          "{0}: depth {1:g} m less than the base of the last interval ({2:g} m)").format(b.id, b.depth, last))
+        warnings.append(t("{0}: profondità {1} m minore della base dell'ultimo intervallo ({2} m)",
+                          "{0}: depth {1} m less than the base of the last interval ({2} m)")
+                        .format(b.id, num(b.depth), num(last)))
         b.depth = last
 
 
@@ -716,6 +724,42 @@ def contact_data(boreholes: list[Borehole], codes: list[str]) -> tuple[list[Cont
                                np.asarray(r["depth"], float), r["bids"], np.asarray(r["bxy"], float).reshape(-1, 2),
                                np.asarray(r["bz"], float), np.asarray(r["bdepth"], float)))
     return out, notes
+
+
+@dataclass
+class Presence:
+    """Whether the unit ``order[k]`` is in the logs that can tell: ``present`` where the log has
+    it, not where the log goes from a unit above it to one below it; a borehole that ends before
+    the place of the unit in the sequence says nothing and is not among ``ids``."""
+
+    k: int
+    unit: str
+    ids: list
+    xy: np.ndarray
+    present: np.ndarray
+
+    @property
+    def everywhere(self) -> bool:
+        return bool(self.present.all())
+
+
+def presence(boreholes: list[Borehole], codes: list[str]) -> list[Presence]:
+    """For every unit of ``codes`` (in order from the top down) the boreholes that have it and
+    those that pass it by (a unit missing from a log: zero thickness there)."""
+    pos = {u: k for k, u in enumerate(codes)}
+    rows = [dict(ids=[], xy=[], present=[]) for _ in codes]
+    for b in boreholes:
+        here = {pos[iv.unit] for iv in b.intervals if iv.unit in pos}
+        if not here:
+            continue
+        deepest = max(here)
+        for k in range(len(codes)):
+            if k in here or deepest > k:  # logged, or passed by on the way to a unit below it
+                rows[k]["ids"].append(b.id)
+                rows[k]["xy"].append((b.x, b.y))
+                rows[k]["present"].append(k in here)
+    return [Presence(k, code, r["ids"], np.asarray(r["xy"], float).reshape(-1, 2), np.asarray(r["present"], bool))
+            for k, (code, r) in enumerate(zip(codes, rows))]
 
 
 def summary(chunk) -> str:

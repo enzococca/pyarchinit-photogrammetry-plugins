@@ -255,8 +255,9 @@ def test_warnings_order_and_colours(tmp_path):
                          "X9,0,1,top,\n")  # no collar
     rep = bh.import_files(ch, [collars, intervals])
     text = "\n".join(rep["warnings"])
-    for word in ("A1: intervalli sovrapposti", "A1: vuoto fra 2 e 2.5", "A2: intervallo 2-1.5 m con la base sopra",
-                 "A2: intervallo 2-2.4 m senza unità", "X9: intervalli senza la posizione"):
+    for word in ("A1: intervalli sovrapposti", "A1: vuoto fra 2 e 2,5 m (contatto a metà)",
+                 "A2: intervallo 2-1,5 m con la base sopra", "A2: intervallo 2-2,4 m senza unità",
+                 "X9: intervalli senza la posizione"):
         assert word in text, (word, text)
     assert bh.get(ch, "A1").intervals[1].top == pytest.approx(1.0)  # the overlap cut at the base of the one above
     assert bh.order(ch) == ["top", "mid", "low"]  # two boreholes against one
@@ -285,7 +286,12 @@ def test_surfaces_give_back_the_contacts(tmp_path):
     reg = sf.build(ch)
     contacts = {e["unit"]: e for e in reg["contacts"]}
     assert [e["unit"] for e in reg["contacts"]] == ["1", "2", "3", "4"]
-    assert contacts["1"]["method"] == "ground" and contacts["2"]["trend"] == "linear"
+    assert contacts["1"]["method"] == "ground" and contacts["1"]["mode"] == "ground"
+    # the base of the topsoil follows the ground: by depth; the plane and the bowl by elevation
+    assert contacts["2"]["mode"] == "depth" and contacts["2"]["mode_reason"]["rule"] == "follows_ground"
+    assert contacts["3"]["mode"] == "elevation" and contacts["3"]["trend"] == "linear"
+    assert contacts["4"]["mode"] == "elevation" and reg["modes"] == {"1": "ground", "2": "depth", "3": "elevation",
+                                                                      "4": "elevation"}
     assert contacts["4"]["below"] == len(SHALLOW)  # the shallow boreholes bound the top of 4 from above
     hold = holdout()
     truth = {"1": ground, "2": lambda X, Y: ground(X, Y) - TOPSOIL, "3": plane, "4": bowl}
@@ -356,7 +362,7 @@ def test_the_stack_stays_in_order_and_under_the_ground(tmp_path):
     c1 = np.array([[9.5, 9.5], [7.0, 9.0]])
     (k0, k1), (r0, r1), counts = sf.clamp_stack(ground_, [c0, c1])
     assert np.allclose(k0, [[10, 9], [np.nan, 8]], equal_nan=True) and np.allclose(k1, [[9.5, 9], [7, 8]])
-    assert counts == [(1, 0), (0, 2)] and r0[0, 0] == 1.0 and r1[0, 1] == pytest.approx(0.5) and r1[1, 1] == 1.0
+    assert counts == [(1, 0, 0), (0, 2, 0)] and r0[0, 0] == 1.0 and r1[0, 1] == pytest.approx(0.5) and r1[1, 1] == 1.0
     # a lens of unit b in the middle of the site (a gaussian model overshoots around it), and the collars
     # of its boreholes 1.2 m above the DEM (their top of b rises 0.2 m above the ground)
     doc, ch = project(tmp_path)
@@ -374,9 +380,9 @@ def test_the_stack_stays_in_order_and_under_the_ground(tmp_path):
     rep = bh.import_files(ch, [tmp_path / "lens.csv"])
     assert len(lens) >= 3 and rep["dem_check"]["worst"] in lens
     assert rep["dem_check"]["max_m"] == pytest.approx(1.2, abs=0.01)
-    reg = sf.build(ch, model="gaussian", trend="none")
+    reg = sf.build(ch, model="gaussian", trend="none", mode="elevation")
     by = {e["unit"]: e for e in reg["contacts"]}
-    assert by["c"]["clamped"]["by_upper"] > 0 and by["b"]["clamped"]["by_ground"] > 0
+    assert by["c"]["clamped"]["cells"] > 0 and by["b"]["clamped"]["by_ground"] > 0
     assert by["b"]["clamped"]["max_m"] > 0.1
     dem = sf.dem_on_grid(ch, sf.grid_of(ch))
     tops = [sf.load(ch, e["id"], 1)[0] for e in reg["contacts"]]
@@ -386,8 +392,10 @@ def test_the_stack_stays_in_order_and_under_the_ground(tmp_path):
         if k:
             both = np.isfinite(top) & np.isfinite(tops[k - 1])
             assert np.all(top[both] <= tops[k - 1][both] + 1e-9)
-    corr = sf.load(ch, by["c"]["id"], 3)[0]
-    assert np.nanmin(corr) >= 0 and (corr > 1e-6).sum() == by["c"]["clamped"]["cells"]
+    corr = sf.load(ch, by["c"]["id"], 3)[0]  # lowered (+) or raised (-) by the stack
+    assert (np.abs(corr) > 1e-6).sum() == by["c"]["clamped"]["cells"]
+    cl = by["c"]["clamped"]
+    assert cl["cells"] == cl["by_ground"] + cl["by_upper"] + cl["by_lower"]
     thick = sf.load(ch, "thickness_b", 1)[0]
     assert np.nanmin(thick) >= 0
 
