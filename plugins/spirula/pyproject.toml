@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-spirula"
-version = "0.1.1"
+version = "0.1.2"
 description = "pyarchinit-photogrammetry plugin: 3D Gaussian splatting of the aligned photos with Spirula Studio (Vulkan: NVIDIA, AMD, Intel and Apple GPUs), splat and mesh"
 readme = "README.md"
 license = "GPL-2.0-or-later"

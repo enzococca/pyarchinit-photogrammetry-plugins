@@ -13,30 +13,21 @@ AMD, Intel and Apple GPUs, one executable, no Python or CUDA).
   by itself the first time Spirula is needed and missing;
 * *Plugin > Spirula > Dove sta Spirula Studio...* - the executable (found by itself on the PATH
   and in the usual folders);
-* *File > Esporta > Splat (PLY)* - a copy of the splat;
-* ``ppg plugin spirula train|mesh|open|install|where ...`` - the same from the command line.
+* *File > Esporta > Splat (PLY 3D Gaussian Splatting)* - the splat in the survey coordinates of
+  the chunk (positions, rotations, scales and spherical harmonics moved from the frame Spirula
+  trained it in); *Splat (PLY, sistema dell'addestramento)* - the splat as Spirula wrote it;
+* ``ppg plugin spirula train|mesh|open|export|install|where ...`` - the same from the command line.
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
 from . import installer, runner
+from .texts import num, t
 
-__version__ = "0.1.0"
-
-
-def t(it: str, en: str) -> str:
-    """The Italian text, or the English one when the interface speaks English."""
-    try:
-        from pyarchinit_photogrammetry.gui import i18n
-
-        return en if i18n.current() == "en" else it
-    except Exception:  # the program without its interface
-        return it
-
+__version__ = "0.1.2"
 
 PRESET_LABELS = [("3dgs", "3dgs (" + "standard" + ")"), ("in-the-wild", "in-the-wild"), ("centered-object", "centered-object"),
                  ("360-camera", "360-camera"), ("hdr", "hdr"), ("synthetic", "synthetic"), ("meshing", "meshing")]
@@ -73,6 +64,8 @@ class SpirulaPlugin(Plugin):
                             help="Gaussian splatting with Spirula Studio: train, mesh, open, install, where")
         context.add_exporter(t("Splat (PLY 3D Gaussian Splatting)", "Splat (PLY 3D Gaussian Splatting)"), ".ply",
                              self.export_splat)
+        context.add_exporter(t("Splat (PLY, sistema dell'addestramento)", "Splat (PLY, frame of the training)"), ".ply",
+                             self.export_splat_training)
 
     # ------------------------------------------------------------------ helpers
     def _chunk(self):
@@ -157,15 +150,16 @@ class SpirulaPlugin(Plugin):
 
     # ------------------------------------------------------------------ exporter
     def export_splat(self, chunk, path, progress):
-        """File > Esporta: a copy of the splat PLY."""
-        splat = self.splat_path(chunk)
-        if splat is None:
-            raise RuntimeError(t("Il chunk non ha uno splat: Plugin > Spirula > Addestra Gaussian splatting.",
-                                 "The chunk has no splat: Plugin > Spirula > Train Gaussian splatting."))
-        progress(0.2, splat.name)
-        shutil.copy2(splat, path)
-        progress(1.0, str(path))
-        return path
+        """File > Esporta: the splat PLY in the survey coordinates of the chunk."""
+        from .splat import export_splat
+
+        return export_splat(chunk, path, "survey", progress)["path"]
+
+    def export_splat_training(self, chunk, path, progress):
+        """File > Esporta: the splat PLY as Spirula wrote it, in the frame of its training."""
+        from .splat import export_splat
+
+        return export_splat(chunk, path, "training", progress)["path"]
 
     # ------------------------------------------------------------------ window
     def where_dialog(self) -> None:
@@ -199,8 +193,10 @@ class SpirulaPlugin(Plugin):
         chunk = self._chunk()
         if window is None or chunk is None:
             return
-        if chunk.product_path("reconstruction") is None or not chunk.aligned_cameras:
-            message(window, "warning", self.title, t("Allinea le foto prima.", "Align the photos first."))
+        try:
+            runner.check_aligned(chunk)
+        except RuntimeError as exc:
+            message(window, "warning", self.title, str(exc))
             return
         exe = self._spirula_or_ask()
         if exe is None:
@@ -337,6 +333,14 @@ class SpirulaPlugin(Plugin):
         p.add_argument("project")
         p.add_argument("--chunk")
         p.add_argument("--spirula")
+        p = sub.add_parser("export", help="the splat of a chunk as a PLY, in the survey coordinates (by default) or "
+                                          "in the frame of the training")
+        p.add_argument("project")
+        p.add_argument("output")
+        p.add_argument("--chunk")
+        p.add_argument("--frame", choices=["survey", "training"], default="survey",
+                       help="survey: the coordinates of the chunk (its CRS or local frame); training: as Spirula "
+                            "wrote it")
         p = sub.add_parser("where", help="the spirula executable the plugin uses")
         p.add_argument("--set", help="remember this path")
         p = sub.add_parser("install", help="download the Spirula Studio release for this computer and install it")
@@ -382,6 +386,16 @@ class SpirulaPlugin(Plugin):
             print(f"no chunk {a.chunk!r} in {a.project}" if a.chunk else f"no active chunk in {a.project}")
             return 2
         try:
+            if a.what == "export":
+                from .splat import export_splat
+
+                out = export_splat(chunk, a.output, a.frame, print_progress)
+                print(t("Splat: {0} ({1})", "Splat: {0} ({1})").format(
+                    out["path"], t("coordinate del rilievo", "survey coordinates") if a.frame == "survey"
+                    else t("sistema dell'addestramento", "frame of the training")))
+                return 0
+            if a.what == "train":
+                runner.check_aligned(chunk)  # before looking for the executable: the first thing to do
             exe = runner.require(a.spirula or settings.get("spirula"))
             if a.what == "train":
                 divisor = a.divisor if a.divisor else runner.suggested_divisor(chunk)
@@ -410,14 +424,14 @@ class SpirulaPlugin(Plugin):
 
 
 def summary_train(report: dict) -> str:
-    """What was trained, in words."""
+    """What was trained, in words, in the language of the program."""
     lines = [t("Splat: {0}", "Splat: {0}").format(report.get("path", report.get("file", "")))]
-    lines.append(t("  preset {0}, qualita' {1}, {2:,} passi, {3:,} splat, {4} foto",
-                   "  preset {0}, quality {1}, {2:,} steps, {3:,} splats, {4} photos")
-                 .format(report.get("preset"), report.get("quality"), int(report.get("steps") or 0),
-                         int(report.get("splats") or 0), report.get("photos", 0)))
-    lines.append(t("  punti di partenza: {0} ({1:,}), maschere: {2}, tempo {3} s",
-                   "  seed: {0} ({1:,}), masks: {2}, time {3} s")
-                 .format(report.get("seed"), int(report.get("seed_points") or 0),
+    lines.append(t("  preset {0}, qualita' {1}, {2} passi, {3} splat, {4} foto",
+                   "  preset {0}, quality {1}, {2} steps, {3} splats, {4} photos")
+                 .format(report.get("preset"), report.get("quality"), num(int(report.get("steps") or 0)),
+                         num(int(report.get("splats") or 0)), report.get("photos", 0)))
+    lines.append(t("  punti di partenza: {0} ({1}), maschere: {2}, tempo {3} s",
+                   "  seed: {0} ({1}), masks: {2}, time {3} s")
+                 .format(report.get("seed"), num(int(report.get("seed_points") or 0)),
                          t("si'", "yes") if report.get("masks") else "no", report.get("seconds", 0)))
     return "\n".join(lines)

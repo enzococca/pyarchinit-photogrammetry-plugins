@@ -25,6 +25,8 @@ from pathlib import Path
 import numpy as np
 from pyarchinit_photogrammetry.core.progress import Cancelled, as_progress
 
+from .texts import num, t
+
 PRESETS = ("3dgs", "360-camera", "in-the-wild", "centered-object", "hdr", "synthetic", "meshing")
 QUALITIES = ("low", "medium", "high", "ultra")
 ITERATIONS = {"low": 15000, "medium": 30000, "high": 50000, "ultra": 80000}  # what Spirula's --quality sets
@@ -99,6 +101,18 @@ def require(setting: str | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------------- the dataset
+def check_aligned(chunk) -> None:
+    """RuntimeError, with what to do, unless the photos of ``chunk`` are aligned: Spirula trains
+    from the COLMAP model of the alignment and the poses of the photos."""
+    model = chunk.product_path("reconstruction")
+    if model is None or not Path(model).exists() or not chunk.aligned_cameras:
+        raise RuntimeError(t("Le foto del chunk {0} non sono allineate: allineale prima (Flusso di lavoro > Allinea "
+                             "foto, o ppg align). Spirula addestra dal modello dell'allineamento.",
+                             "The photos of the chunk {0} are not aligned: align them first (Workflow > Align "
+                             "photos, or ppg align). Spirula trains from the model of the alignment.")
+                           .format(chunk.label))
+
+
 def spirula_dir(chunk) -> Path:
     return chunk.data_dir / "spirula"
 
@@ -170,7 +184,7 @@ def prepare_dataset(chunk, masks: bool = True, seed: str = "dense", max_seed_poi
     _remove(folder)
     sparse = folder / "sparse" / "0"
     sparse.mkdir(parents=True)
-    progress(0.1, "COLMAP model")
+    progress(0.1, t("Modello COLMAP", "COLMAP model"))
     rec.write_text(str(sparse))
     photos = Path(photo_folder(chunk))
     report = {"folder": folder, "images": int(rec.num_reg_images()), "photos": photos,
@@ -184,14 +198,14 @@ def prepare_dataset(chunk, masks: bool = True, seed: str = "dense", max_seed_poi
     if seed == "dense":
         pc = chunk.point_cloud
         if pc is not None and len(pc):
-            progress(0.5, "Seed point cloud")
+            progress(0.5, t("Punti di partenza", "Seed points"))
             xyz, rgb = pc.xyz, pc.rgb
             if len(xyz) > max_seed_points:
                 keep = np.sort(np.random.default_rng(0).choice(len(xyz), max_seed_points, replace=False))
                 xyz, rgb = xyz[keep], (None if rgb is None else rgb[keep])
             report["seed"] = write_seed_ply(folder / "seed.ply", xyz, rgb)
             report["seed_points"] = int(len(xyz))
-    progress(1.0, f"Dataset: {report['images']} photos")
+    progress(1.0, t("Dati per Spirula: {0} foto", "Dataset: {0} photos").format(report["images"]))
     return report
 
 
@@ -256,6 +270,7 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
     ``--flag value`` pairs. The splat becomes the product ``splat`` of the chunk, its run is in
     ``chunk.meta["splat"]``."""
     progress = as_progress(progress)
+    check_aligned(chunk)
     exe = resolve(spirula)
     if not exe.is_file():
         raise SpirulaMissing(f"{exe}: not the spirula executable")
@@ -288,7 +303,7 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
         m = VIEWER.search(line)
         if m and viewer and not state["viewer"]:
             state["viewer"] = url = _local_url(m.group(1))
-            progress(0.05, f"Spirula: web viewer at {url}")
+            progress(0.05, t("Spirula: visualizzatore web su {0}", "Spirula: web viewer at {0}").format(url))
             if open_browser:
                 open_url(url)
         m = STEP.search(line)
@@ -297,15 +312,16 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
             s = SPLATS.search(line)
             if s:
                 state["splats"] = int(s.group(1))
-            text = f"Spirula: step {state['step']:,} of {state['total']:,}"
+            text = t("Spirula: passo {0} di {1}", "Spirula: step {0} of {1}").format(num(state["step"]), num(state["total"]))
             if state["splats"]:
-                text += f", {state['splats']:,} splats"
+                text += t(", {0} splat", ", {0} splats").format(num(state["splats"]))
             progress(0.05 + 0.93 * state["step"] / max(state["total"], 1), text)
         m = OUTPUT.search(line)
         if m:
             state["out"] = m.group(1).strip()
 
-    progress(0.05, f"Spirula: {ds['images']} photos, preset {preset}, quality {quality}")
+    progress(0.05, t("Spirula: {0} foto, preset {1}, qualita' {2}", "Spirula: {0} photos, preset {1}, quality {2}")
+             .format(ds["images"], preset, quality))
     code, lines = _run(cmd, progress, on_line, log)
     if code != 0:
         raise RuntimeError(f"spirula train ended with code {code}:\n" + "\n".join(lines[-12:]))
@@ -326,8 +342,8 @@ def train(chunk, spirula, preset: str = "3dgs", quality: str = "medium", iterati
         "seed_points": ds["seed_points"], "masks": ds["masks"], "photos": ds["images"],
         "created": datetime.now().isoformat(timespec="seconds"), "seconds": round(time.time() - started, 1),
         "spirula": str(exe), "command": " ".join(str(c) for c in cmd)}
-    progress(1.0, f"Splat: {state['splats']:,} splats after {state['step']:,} steps" if state["splats"]
-             else f"Splat: {splat.name}")
+    progress(1.0, t("Splat: {0} splat dopo {1} passi", "Splat: {0} splats after {1} steps")
+             .format(num(state["splats"]), num(state["step"])) if state["splats"] else f"Splat: {splat.name}")
     return dict(chunk.meta["splat"], path=splat, run_dir=run_dir, viewer=state["viewer"] or None)
 
 
@@ -423,9 +439,9 @@ def mesh(chunk, spirula, formats=("ply",), colour: str = "vertex", texture_size:
     def on_line(line: str) -> None:
         m = PERCENT.search(line)
         if m:
-            progress(min(0.95, int(m.group(1)) / 100), f"Spirula mesh: {line.strip()[:80]}")
+            progress(min(0.95, int(m.group(1)) / 100), f"Spirula mesh: {line.strip()[:80]}")  # Spirula's own words
 
-    progress(0.02, f"Spirula mesh: {', '.join(formats)}, colour {colour}")
+    progress(0.02, t("Spirula mesh: {0}, colore {1}", "Spirula mesh: {0}, colour {1}").format(", ".join(formats), colour))
     code, lines = _run(cmd, progress, on_line, log)
     if code != 0:
         raise RuntimeError(f"spirula mesh ended with code {code}:\n" + "\n".join(lines[-12:]))
