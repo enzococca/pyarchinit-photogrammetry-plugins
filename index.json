@@ -124,7 +124,7 @@
     },
     {
       "name": "terrio",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "title": "terrio",
       "description": "Point clouds of any format (LAS, LAZ, COPC, EPT, PLY, E57, also from the web) into the project, ground classification with SMRF, CSF and PMF, reference rasters from the web as versions of the DEM or orthomosaic, E57, EPT, PMTiles and MBTiles exports, through terrio (pure Rust, no GDAL or PDAL); the plugin downloads terrio from PyPI by itself",
       "i18n": {
@@ -139,8 +139,8 @@
       "api": 1,
       "min_app": "1.1.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/terrio-v0.1.1/ppg_terrio-0.1.1-py3-none-any.whl",
-      "sha256": "f47d9d92d146c4cf5c6efe91e87a33e7817ae78feafa944d6cde8ff9c7dc6feb"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/terrio-v0.1.2/ppg_terrio-0.1.2-py3-none-any.whl",
+      "sha256": "a346c95a4bc3502791396ea523233a4f2458482f89828bebee613dcca6b20d9f"
     }
   ]
 }
