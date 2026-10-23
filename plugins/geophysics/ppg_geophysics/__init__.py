@@ -456,6 +456,44 @@ class GeophysicsPlugin(Plugin):
         self.refresh_pane()
 
     # ------------------------------------------------------------------ command line
+    @staticmethod
+    def _project_args(args) -> tuple[list[str], str | None, str | None]:
+        """``ppg plugin NAME WHAT PROJECT.ppg ...``: the project given right after the subcommand (or
+        with ``--project``) and ``--chunk`` taken out of the arguments; without a project the commands
+        work on the document the program has open (the Python console of the window, the tests)."""
+        args = [str(a) for a in args]
+        rest, project, label, i = [], None, None, 0
+        while i < len(args):
+            a = args[i]
+            if a in ("--project", "--chunk") and i + 1 < len(args):
+                project, label = (args[i + 1], label) if a == "--project" else (project, args[i + 1])
+                i += 2
+                continue
+            if project is None and i == 1 and a.lower().endswith(".ppg"):
+                project = a
+            else:
+                rest.append(a)
+            i += 1
+        return rest, project, label
+
+    def _open_for_command(self, project: str | None, label: str | None):
+        """The chunk a command works on: of the project given (opened and made the program's
+        document, saved by the command), else of the document open."""
+        if project:
+            import pyarchinit_photogrammetry as ppg
+
+            doc = ppg.Document.open(project)
+            if self.context is not None:
+                self.context.app.document = doc
+            if label:
+                return next((c for c in doc.chunks if c.label == label), None)
+            return doc.chunk
+        chunk = self._chunk()
+        if chunk is not None and label:
+            doc = self.context.app.document
+            return next((c for c in doc.chunks if c.label == label), None)
+        return chunk
+
     def command(self, *args) -> int:
         """``ppg plugin geophysics import FILE [--kind K] [--name N] [--cell C] | list | georef GRID
         (--origin X,Y --azimuth A | --pairs 'lx ly E N;...') | filter GRID NAME [k=v ...] [--copy] |
@@ -491,10 +529,12 @@ class GeophysicsPlugin(Plugin):
         p_exp.add_argument("grid")
         p_exp.add_argument("out")
         p_exp.add_argument("--band", type=int, default=0)
-        ns = parser.parse_args(list(args))
-        chunk = self._chunk()
+        args, project, label = self._project_args(args)
+        ns = parser.parse_args(args)
+        chunk = self._open_for_command(project, label)
         if chunk is None:
-            print("no project open")
+            print(f"no chunk {label!r} in the project" if label else
+                  "no chunk: give the project, ppg plugin geophysics " + ns.what + " PROJECT.ppg ...")
             return 1
         if ns.what == "import":
             g = grids_mod.read_any(ns.source, kind=ns.kind, cell=ns.cell)

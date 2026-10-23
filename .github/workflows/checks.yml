@@ -37,7 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [plugins/geoarchaeology, plugins/gis-archive, plugins/powerlines, plugins/spirula, plugins/terrio, template]
+        plugin: [plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/powerlines, plugins/spirula,
+                 plugins/terrain, plugins/terrio, template]
     services:
       postgis:
         image: postgis/postgis:17-3.5

@@ -231,6 +231,11 @@ def test_command(tmp_path, capsys):
     assert '"crs": "EPSG:32633"' in out and "A destripe" in out
     assert plugin.command("export", "A destripe", str(tmp_path / "a_out.tif")) == 0
     assert (tmp_path / "a_out.tif").exists()
+    # from the command line: the project given after the subcommand, opened and saved
+    doc.save()
+    app.document = None
+    assert plugin.command("import", str(doc.path), str(tmp_path / "a.grd"), "--name", "B") == 0
+    assert plugin.command("list", "--project", str(doc.path)) == 0 and "B" in capsys.readouterr().out
 
 
 def test_the_pane_and_the_overlay_in_the_window(tmp_path):

@@ -20,14 +20,14 @@ slice GPR, elettromagnetica - accanto ai prodotti fotogrammetrici dello stesso t
 * **Esportazioni**: GeoTIFF e Surfer GRD di una griglia, un GeoPackage con i contorni delle griglie
   e le anomalie (*File > Esporta*), le griglie nel progetto QGIS del programma con la loro scala di
   colori.
-* `ppg plugin geophysics import|list|georef|filter|export ...` dalla riga di comando.
+* `ppg plugin geophysics import|list|georef|filter|export PROJECT.ppg ...` dalla riga di comando.
 
 ```bash
 pip install "ppg-geophysics @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/geophysics"
-ppg plugin geophysics import prospezione.grd --kind magnetometry --name "Area 1"
-ppg plugin geophysics georef "Area 1" --origin 438100.0,4553800.0 --azimuth 95
-ppg plugin geophysics filter "Area 1" destripe --copy
-ppg plugin geophysics export "Area 1 destripe" area1.tif
+ppg plugin geophysics import scavo.ppg prospezione.grd --kind magnetometry --name "Area 1"
+ppg plugin geophysics georef scavo.ppg "Area 1" --origin 438100.0,4553800.0 --azimuth 95
+ppg plugin geophysics filter scavo.ppg "Area 1" destripe --copy
+ppg plugin geophysics export scavo.ppg "Area 1 destripe" area1.tif
 ```
 
 Licenza: GPL-2.0-or-later.

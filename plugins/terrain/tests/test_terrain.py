@@ -215,6 +215,14 @@ def test_command(tmp_path, capsys):
     assert plugin.command("export", "ruggedness", str(tmp_path / "tri.tif")) == 0
     assert (tmp_path / "tri.tif").exists()
     assert plugin.command("remove", "ruggedness") == 0 and terrain.entries(ch) == []
+    # from the command line: the project given after the subcommand, opened, worked on and saved
+    doc.save()
+    app.document = None
+    assert plugin.command("geomorph", str(doc.path), "ruggedness") == 0
+    assert plugin.command("list", str(doc.path)) == 0 and '"ruggedness"' in capsys.readouterr().out
+    import pyarchinit_photogrammetry as ppg
+
+    assert [e["id"] for e in terrain.entries(ppg.Document.open(doc.path).chunk)] == ["ruggedness"]
 
 
 def test_the_pane_and_the_overlay_in_the_window(tmp_path):

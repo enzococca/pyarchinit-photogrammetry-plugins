@@ -19,14 +19,14 @@ electromagnetic - beside the photogrammetric products of the same ground.
   anomalies drawn with the polygon tool of the program in the layer *Anomalie geofisiche*.
 * **Exports**: GeoTIFF and Surfer GRD of a grid, a GeoPackage with the outlines of the grids and
   the anomalies (*File > Esporta*), the grids in the QGIS project of the program with their ramp.
-* `ppg plugin geophysics import|list|georef|filter|export ...` from the command line.
+* `ppg plugin geophysics import|list|georef|filter|export PROJECT.ppg ...` from the command line.
 
 ```bash
 pip install "ppg-geophysics @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/geophysics"
-ppg plugin geophysics import survey.grd --kind magnetometry --name "Area 1"
-ppg plugin geophysics georef "Area 1" --origin 438100.0,4553800.0 --azimuth 95
-ppg plugin geophysics filter "Area 1" destripe --copy
-ppg plugin geophysics export "Area 1 destripe" area1.tif
+ppg plugin geophysics import survey.ppg survey.grd --kind magnetometry --name "Area 1"
+ppg plugin geophysics georef survey.ppg "Area 1" --origin 438100.0,4553800.0 --azimuth 95
+ppg plugin geophysics filter survey.ppg "Area 1" destripe --copy
+ppg plugin geophysics export survey.ppg "Area 1 destripe" area1.tif
 ```
 
 Licence: GPL-2.0-or-later.
