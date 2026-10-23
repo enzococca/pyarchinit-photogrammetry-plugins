@@ -64,7 +64,7 @@
     },
     {
       "name": "powerlines",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "title": "Powerlines",
       "description": "Overhead powerlines in the dense cloud: conductors as catenaries with length, sag, clearance from the ground and distance from obstacles, the poles, the points classified; GeoPackage, DXF and CSV exports",
       "i18n": {
@@ -79,8 +79,8 @@
       "api": 1,
       "min_app": "1.1.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/powerlines-v0.1.0/ppg_powerlines-0.1.0-py3-none-any.whl",
-      "sha256": "2fe76cb3b461adc61be9ba3c34af30b0b25ec3a4f14addbb67a0c58ee9f25b99"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/powerlines-v0.1.1/ppg_powerlines-0.1.1-py3-none-any.whl",
+      "sha256": "154178b22afb45477fad916dff9ae59bb82302341119fe31c84ca2116f98810d"
     },
     {
       "name": "spirula",
