@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 def t(it: str, en: str) -> str:
@@ -82,9 +82,12 @@ class GisArchivePlugin(Plugin):
         def done(report):
             if report.get("project_changed"):  # the archive id of the project, kept when it is saved
                 doc.meta[ID_KEY] = dict(report["identity"])
-                dirty = getattr(window, "_dirty", None)
-                if callable(dirty):
-                    dirty(True)
+                if hasattr(self.context, "mark_modified"):  # program 1.3.2
+                    self.context.mark_modified()
+                else:
+                    dirty = getattr(window, "_dirty", None)
+                    if callable(dirty):
+                        dirty(True)
             message(window, "info", self.title, summary(report))
 
         self.context.run(t("Archivio GIS", "GIS archive"), job, done)
