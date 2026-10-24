@@ -37,7 +37,8 @@ class DeleteWatch(QObject):
     """The anomalies deleted in the view with the program's *Select* tool, taken out of the project
     too (then ``changed`` is emitted).
 
-    The program tells a plugin nothing when the user deletes features of its layers: the layers of
+    For the programs before 1.3.4, which tell a plugin nothing when the user deletes features of its
+    layers (since 1.3.4 ``context.on_features_deleted`` does, and the plugin uses it): the layers of
     the view are watched (``layers_changed``, checked once the change is over), with the selection.
     An anomaly that was selected and then is gone from the layer was deleted. Anomalies gone without
     being selected - the whole layer taken out of the view in the Layers pane, the scene of another

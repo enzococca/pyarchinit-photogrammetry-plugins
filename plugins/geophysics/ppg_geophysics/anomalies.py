@@ -6,7 +6,7 @@ They belong to the project: ``chunk.meta["geophysics"]["anomalies"]`` (``id``, `
 ``area_m2``, ``made``), exported by :func:`.export.export_gpkg` (table ``anomalie``). The view
 shows them as a layer of its own (:func:`.anomaly_view.draw`, again on every raster the view shows;
 a polygon deleted there with the program's *Select* tool leaves the project:
-:class:`.anomaly_view.DeleteWatch`).
+``context.on_features_deleted`` with the program 1.3.4, :class:`.anomaly_view.DeleteWatch` before).
 
 A polygon is drawn with the program's own drawing, lent to the plugin (``context.request_polygon``,
 program 1.3.2): a box dragged, or the vertices clicked. This module holds the data only (no Qt):

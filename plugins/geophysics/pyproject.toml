@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-geophysics"
-version = "0.1.2"
+version = "0.1.3"
 description = "pyarchinit-photogrammetry plugin: geophysical grids (magnetometry, resistivity, GPR, EM) imported, georeferenced, filtered, overlaid on the orthomosaic and DEM, exported"
 readme = "README.md"
 license = "GPL-2.0-or-later"

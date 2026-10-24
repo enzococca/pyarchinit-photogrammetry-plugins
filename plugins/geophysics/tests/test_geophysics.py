@@ -247,6 +247,13 @@ def test_command(tmp_path, capsys):
     assert plugin.command("list", "--project", str(doc.path)) == 0 and "B" in capsys.readouterr().out
 
 
+def _in_window(w, pane) -> bool:
+    """The pane is in the window: a dock of its own (program 1.3.4), else a tab of the project dock."""
+    if hasattr(w, "panes"):
+        return w.panes.dock(pane) is not None
+    return w.left_tabs.indexOf(pane) >= 0
+
+
 def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
     pytest.importorskip("PySide6")
     import os
@@ -284,7 +291,13 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
     try:
         plugin = GeophysicsPlugin()
         plugin.activate(Context("geophysics", tmp_path / "plugin", window=w))
-        assert plugin.pane is not None and w.left_tabs.indexOf(plugin.pane) >= 0
+        assert plugin.pane is not None and _in_window(w, plugin.pane)
+        if hasattr(plugin.context, "add_pane"):  # program 1.3.4: a dock of its own, on the right
+            dock = w.panes.groups["right"].dock(plugin.pane)
+            assert dock is not None and dock.objectName() == "pane_plugin_geophysics"
+            dock.close()
+            plugin.show_pane()  # back also when the user closed it
+            assert not dock.isHidden()
         assert plugin.pane.table.rowCount() == 1 and plugin.pane.selected_id() == e["id"]
         w._load_raster("dem")
         qapp.processEvents()
@@ -301,7 +314,7 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
         pane = plugin.pane
         plugin.deactivate()
         plugin.context.release()  # as the program's plugin manager does
-        assert w.left_tabs.indexOf(pane) < 0
+        assert not _in_window(w, pane)
         # enabled again (the program makes a new instance): the new pane follows the project
         again = GeophysicsPlugin()
         again.activate(Context("geophysics", tmp_path / "plugin", window=w))
@@ -521,6 +534,7 @@ def window(tmp_path, monkeypatch):
         yield w, plugin, ch, e, qapp, errors
     finally:
         plugin.deactivate()
+        plugin.context.release()  # as the program's plugin manager does
         w.setWindowModified(False)
         w.close()
 
@@ -663,6 +677,8 @@ def test_draw_an_anomaly(window, monkeypatch, tmp_path):
     for _ in range(3):
         qapp.processEvents()
     assert [x["etichetta"] for x in anomalies.entries(ch)] == ["A2"] and w.isWindowModified()
+    # with the program 1.3.4 the program tells the plugin, the plugin does not watch the view
+    assert (plugin._watch is None) == hasattr(plugin.context, "on_features_deleted")
     assert [f["etichetta"] for f in v.features(anomalies.LAYER)] == ["A2"]
     # the last one, alone in its layer: the layer goes, and the anomaly with it
     v.select_items([v.layers[anomalies.LAYER]["features"][0][0]])

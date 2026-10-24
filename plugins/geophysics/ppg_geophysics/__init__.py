@@ -19,7 +19,10 @@ kept in ``chunk.meta["geophysics"]["anomalies"]`` and shown in the layer *Anomal
 the raster view. The window's parts it uses come from the plugin API of the program
 (``request_polygon``, ``on_raster_loaded``, ``show_frame``, ``mark_modified`` since 1.3.2,
 ``on_refresh`` since 1.3.3): the anomalies and the grid shown are drawn again on every raster the
-view shows, the pane follows the active chunk.
+view shows, the pane follows the active chunk. With the program 1.3.4 the pane is a dock of its own
+(``add_pane``, ``show_pane``), the rasters are shown with ``show_raster`` and the program tells the
+plugin the anomalies the user deleted (``on_features_deleted``); older programs keep the tab, the
+window's own methods and :class:`.anomaly_view.DeleteWatch`.
 """
 from __future__ import annotations
 
@@ -32,7 +35,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import t
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 
 class GeophysicsPlugin(Plugin):
@@ -48,7 +51,8 @@ class GeophysicsPlugin(Plugin):
         self.pane = None
         self.overlay = None
         self._shown = None  # (grid id, band, palette, opacity) of the grid overlaid: shown again on another raster
-        self._watch = None  # the anomalies deleted in the view with the program's Select tool
+        self._watch = None  # the anomalies deleted in the view with the program's Select tool (before 1.3.4)
+        self._hooked = False  # the program tells the plugin the anomalies deleted (1.3.4)
 
     def activate(self, context) -> None:
         self.context = context
@@ -82,14 +86,16 @@ class GeophysicsPlugin(Plugin):
             self._watch.detach()
             self._watch.deleteLater()
             self._watch = None
-            view = getattr(window, "ortho_view", None) if window is not None else None
+        self._hooked = False  # the callback of on_features_deleted: the context disconnects it
+        view = getattr(window, "ortho_view", None) if window is not None else None
+        if view is not None:
             from .anomalies import LAYER
 
-            if view is not None and LAYER in getattr(view, "layers", {}):
+            if LAYER in getattr(view, "layers", {}):
                 view.remove_layer(LAYER)  # the anomalies stay in the project
         if window is not None and self.pane is not None:
             tabs = getattr(window, "left_tabs", None)
-            if tabs is not None:
+            if tabs is not None and not hasattr(self.context, "add_pane"):  # 1.3.4: the context removes it
                 k = tabs.indexOf(self.pane)
                 if k >= 0:
                     tabs.removeTab(k)
@@ -109,7 +115,10 @@ class GeophysicsPlugin(Plugin):
             ic = None
         self.pane = GeophysicsPane()
         tabs = getattr(window, "left_tabs", None)
-        if tabs is not None:
+        if hasattr(self.context, "add_pane"):  # program 1.3.4: a dock of its own, beside the workspace
+            self.context.add_pane(self.pane, t("Geofisica", "Geophysics"), ic if ic is not None else "index",
+                                  area="right")
+        elif tabs is not None:
             tabs.addTab(self.pane, ic, t("Geofisica", "Geophysics")) if ic is not None else tabs.addTab(self.pane, t("Geofisica", "Geophysics"))
         self.pane.import_requested.connect(self.import_dialog)
         self.pane.georef_requested.connect(self.georef_dialog)
@@ -123,7 +132,13 @@ class GeophysicsPlugin(Plugin):
         self.pane.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         view = getattr(window, "ortho_view", None)
-        if view is not None and hasattr(view, "layers_changed"):
+        if view is not None and hasattr(self.context, "on_features_deleted"):  # program 1.3.4
+            from .anomalies import LAYER
+
+            self.context.on_features_deleted(LAYER, self._anomalies_deleted)
+            self._hooked = True
+            self._draw_anomalies()
+        elif view is not None and hasattr(view, "layers_changed"):
             from .anomaly_view import DeleteWatch
 
             self._watch = DeleteWatch(view, self._chunk)
@@ -142,6 +157,9 @@ class GeophysicsPlugin(Plugin):
     def show_pane(self) -> None:
         window = self.context.window
         if window is None or self.pane is None:
+            return
+        if hasattr(self.context, "show_pane"):  # program 1.3.4: also when the user closed or floated it
+            self.context.show_pane(self.pane)
             return
         tabs = getattr(window, "left_tabs", None)
         if tabs is not None:
@@ -181,11 +199,23 @@ class GeophysicsPlugin(Plugin):
         self._dirty()
         self.refresh_pane()
 
+    def _anomalies_deleted(self, features) -> None:
+        """The user deleted anomalies in the view (``context.on_features_deleted``, program 1.3.4):
+        out of the project too."""
+        from .anomalies import remove
+
+        chunk = self._chunk()
+        ids = {f.get("id") for f in features} - {None}
+        if chunk is not None and ids and remove(chunk, ids):
+            self._anomalies_changed()
+
     def _draw_anomalies(self) -> None:
         """The layer of the anomalies drawn again from the project (nothing when the view shows nothing)."""
         from .anomaly_view import draw
 
-        if self._watch is not None:
+        if self._hooked:
+            draw(self._view(), self._chunk())
+        elif self._watch is not None:
             self._watch.drawn(draw(self._view(), self._chunk()))
 
     def _raster_loaded(self) -> None:
@@ -458,10 +488,14 @@ class GeophysicsPlugin(Plugin):
             return
         self._shown = None  # the grid shown before is not drawn again on the raster shown now
         if view.tr is None:  # an empty view: the products of the chunk, else a frame for the grid alone
-            for kind, path in (("ortho", getattr(chunk, "orthomosaic_path", None)), ("dem", getattr(chunk, "dem_path", None))):
-                if path is not None and Path(path).exists() and hasattr(window, "_show_raster"):
-                    window._show_raster(kind)
-                    break
+            if hasattr(self.context, "show_raster"):  # program 1.3.4
+                self.context.show_raster()
+            else:
+                for kind, path in (("ortho", getattr(chunk, "orthomosaic_path", None)),
+                                   ("dem", getattr(chunk, "dem_path", None))):
+                    if path is not None and Path(path).exists() and hasattr(window, "_show_raster"):
+                        window._show_raster(kind)
+                        break
             if view.tr is None:
                 self.context.show_frame(*frame_of(g))
         if self._paint_overlay(grid_id, band, palette, opacity, grid=g) and hasattr(window, "show_view"):
