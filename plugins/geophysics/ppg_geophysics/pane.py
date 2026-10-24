@@ -88,9 +88,11 @@ class GeophysicsPane(QWidget):
         self.b_hide = QPushButton(t("Nascondi", "Hide"))
         self.b_anomaly = QPushButton(t("Disegna anomalia", "Draw anomaly"))
         self.b_anomaly.setToolTip(t("Un poligono sulla vista nel layer Anomalie geofisiche, con griglia, banda e nota: "
-                                    "clic per i vertici, doppio clic o Invio per chiudere, Esc per annullare",
+                                    "trascina un riquadro, oppure clic per i vertici e doppio clic o Invio per chiudere; "
+                                    "Esc per annullare",
                                     "A polygon on the view in the layer Anomalie geofisiche, with grid, band and note: "
-                                    "click the vertices, double click or Enter to close, Esc to cancel"))
+                                    "drag a box, or click the vertices and double click or Enter to close; Esc to "
+                                    "cancel"))
         self.b_export = QPushButton(t("Esporta...", "Export..."))
         self.b_export.setToolTip(t("GeoTIFF con tutte le bande, oppure Surfer GRD della banda mostrata",
                                    "GeoTIFF with all the bands, or Surfer GRD of the band shown"))

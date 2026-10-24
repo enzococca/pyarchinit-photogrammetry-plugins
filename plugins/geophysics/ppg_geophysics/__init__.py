@@ -14,9 +14,11 @@ same ground.
 * ``ppg plugin geophysics import|list|georef|filter|export ...`` from the command line.
 
 The grids live in ``<chunk data>/geophysics/<id>.tif`` and in ``chunk.meta["geophysics"]``; the
-anomalies are polygons drawn with the plugin's own tool (*Disegna anomalia*), kept in
-``chunk.meta["geophysics"]["anomalies"]`` and shown in the layer *Anomalie geofisiche* of the
-raster view.
+anomalies are polygons drawn with the program's drawing, lent to the plugin (*Disegna anomalia*),
+kept in ``chunk.meta["geophysics"]["anomalies"]`` and shown in the layer *Anomalie geofisiche* of
+the raster view. The window's parts it uses come from the plugin API of the program 1.3.2
+(``request_polygon``, ``on_raster_loaded``, ``show_frame``, ``mark_modified``): the anomalies and
+the grid shown are drawn again on every raster the view shows.
 """
 from __future__ import annotations
 
@@ -29,7 +31,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import t
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 class GeophysicsPlugin(Plugin):
@@ -44,8 +46,8 @@ class GeophysicsPlugin(Plugin):
         self.context = None
         self.pane = None
         self.overlay = None
-        self._tool = None  # the polygon tool of an anomaly being drawn
-        self._sync = None  # the layer of the anomalies kept in step with the project
+        self._shown = None  # (grid id, band, palette, opacity) of the grid overlaid: shown again on another raster
+        self._watch = None  # the anomalies deleted in the view with the program's Select tool
 
     def activate(self, context) -> None:
         self.context = context
@@ -66,20 +68,26 @@ class GeophysicsPlugin(Plugin):
         window = context.window
         if window is not None:
             self._install_pane(window)
+            # the layer of the anomalies and the grid shown go with the raster the view leaves:
+            # drawn again on the next one
+            context.on_raster_loaded(self._raster_loaded)
 
     def deactivate(self) -> None:
         self.hide_overlay()
-        if self._tool is not None:
-            self._tool.cancel()
         window = self.context.window if self.context else None
-        if self._sync is not None:
-            self._sync.detach()
-            self._sync = None
+        if self._watch is not None:
+            self._watch.detach()
+            self._watch.deleteLater()
+            self._watch = None
             view = getattr(window, "ortho_view", None) if window is not None else None
             from .anomalies import LAYER
 
             if view is not None and LAYER in getattr(view, "layers", {}):
                 view.remove_layer(LAYER)  # the anomalies stay in the project
+        if window is not None:
+            instances = getattr(window, "_geophysics_instances", [])
+            if self in instances:
+                instances.remove(self)
         if window is not None and self.pane is not None:
             tabs = getattr(window, "left_tabs", None)
             if tabs is not None:
@@ -108,7 +116,7 @@ class GeophysicsPlugin(Plugin):
         self.pane.georef_requested.connect(self.georef_dialog)
         self.pane.filter_requested.connect(self.filter_dialog)
         self.pane.overlay_requested.connect(self.show_overlay)
-        self.pane.opacity_changed.connect(lambda v: self.overlay.set_opacity(v) if self.overlay else None)
+        self.pane.opacity_changed.connect(self._set_opacity)
         self.pane.hide_requested.connect(self.hide_overlay)
         self.pane.anomaly_requested.connect(self.draw_anomaly)
         self.pane.export_requested.connect(self.export_dialog)
@@ -117,22 +125,31 @@ class GeophysicsPlugin(Plugin):
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         view = getattr(window, "ortho_view", None)
         if view is not None and hasattr(view, "layers_changed"):
-            from .anomaly_view import ViewSync
+            from .anomaly_view import DeleteWatch
 
-            self._sync = ViewSync(view, self._chunk)
-            self._sync.changed.connect(self._anomalies_changed)
-            self._sync.check()
+            self._watch = DeleteWatch(view, self._chunk)
+            self._watch.changed.connect(self._anomalies_changed)
+            self._draw_anomalies()
         self.refresh_pane()
-        # the pane follows the project: after every refresh of the window
-        original = getattr(window, "refresh_all", None)
-        if original is not None and not getattr(window, "_geophysics_hooked", False):
-            def refresh_all(*args, _orig=original, **kwargs):
-                result = _orig(*args, **kwargs)
-                self.refresh_pane()
-                return result
+        # The pane follows the project: another project opened, another chunk made active, a step
+        # of the program or an undo that changed the chunk all end with the window's refresh_all,
+        # and the plugin API has no notice of those (on_raster_loaded tells the raster the view
+        # shows, not the project: the layer and the grid are drawn there, see _raster_loaded). So
+        # refresh_all is wrapped, once per window, for every active instance of the plugin (the
+        # program makes a new instance each time the plugin is enabled again).
+        instances = getattr(window, "_geophysics_instances", None)
+        if instances is None:
+            window._geophysics_instances = instances = []
+            original = getattr(window, "refresh_all", None)
+            if original is not None:
+                def refresh_all(*args, _orig=original, **kwargs):
+                    result = _orig(*args, **kwargs)
+                    for plugin in list(window._geophysics_instances):
+                        plugin.refresh_pane()
+                    return result
 
-            window.refresh_all = refresh_all
-            window._geophysics_hooked = True
+                window.refresh_all = refresh_all
+        instances.append(self)
 
     def refresh_pane(self) -> None:
         from .grids import entries
@@ -171,14 +188,35 @@ class GeophysicsPlugin(Plugin):
         message(self.context.window, kind, self.title, text)
 
     def _dirty(self) -> None:
-        window = self.context.window
-        if window is not None and hasattr(window, "_dirty"):
-            window._dirty(True)
+        """The project changed: the window shows it and asks to save it at closing."""
+        if self.context is not None:
+            self.context.mark_modified()
+
+    def _view(self):
+        window = self.context.window if self.context is not None else None
+        return getattr(window, "ortho_view", None) if window is not None else None
 
     def _anomalies_changed(self) -> None:
         """Anomalies deleted in the view: the project changed."""
         self._dirty()
         self.refresh_pane()
+
+    def _draw_anomalies(self) -> None:
+        """The layer of the anomalies drawn again from the project (nothing when the view shows nothing)."""
+        from .anomaly_view import draw
+
+        if self._watch is not None:
+            self._watch.drawn(draw(self._view(), self._chunk()))
+
+    def _raster_loaded(self) -> None:
+        """Another raster, an empty frame or nothing in the 2D view (``context.on_raster_loaded``):
+        the layer of the anomalies and the grid overlaid went with the old one; both are drawn again
+        on the new one (the grid only where it lies on it)."""
+        if self.pane is None:
+            return
+        self._draw_anomalies()
+        if self._shown is not None:
+            self._paint_overlay(*self._shown, quiet=True)
 
     # ------------------------------------------------------------------ import
     def import_dialog(self) -> None:
@@ -421,9 +459,10 @@ class GeophysicsPlugin(Plugin):
     # ------------------------------------------------------------------ overlay
     def show_overlay(self, grid_id: str, band: int = 0, palette: str | None = None, opacity: float = 0.7) -> None:
         """The grid over the raster view; with nothing shown in the view, over the orthomosaic or the
-        DEM of the chunk, else on an empty frame the size of the grid."""
+        DEM of the chunk, else on an empty frame the size of the grid (``context.show_frame``). It
+        stays over the raster the view shows next, until *Hide*."""
         from .grids import load_grid
-        from .overlay import Overlay, blank_frame
+        from .overlay import frame_of
 
         window = self.context.window
         chunk = self._chunk()
@@ -437,26 +476,49 @@ class GeophysicsPlugin(Plugin):
             self._message("warning", t("La griglia è in metri locali: georeferenziala prima.",
                                        "The grid is in local metres: georeference it first."))
             return
+        self._shown = None  # the grid shown before is not drawn again on the raster shown now
         if view.tr is None:  # an empty view: the products of the chunk, else a frame for the grid alone
             for kind, path in (("ortho", getattr(chunk, "orthomosaic_path", None)), ("dem", getattr(chunk, "dem_path", None))):
                 if path is not None and Path(path).exists() and hasattr(window, "_show_raster"):
                     window._show_raster(kind)
                     break
             if view.tr is None:
-                blank_frame(view, g)
+                self.context.show_frame(*frame_of(g))
+        if self._paint_overlay(grid_id, band, palette, opacity, grid=g) and hasattr(window, "show_view"):
+            window.show_view(view)
+
+    def _paint_overlay(self, grid_id: str, band: int, palette: str | None, opacity: float, grid=None,
+                       quiet: bool = False) -> bool:
+        """The grid painted over what the view shows now, the line of the pane on it; remembered, to
+        be painted again over the next raster. ``quiet``: a grid gone from the project, or outside
+        the raster shown, is not painted and no message says so (the next raster may hold it)."""
+        from .grids import load_grid
+        from .overlay import Overlay
+
+        view = self._view()
+        chunk = self._chunk()
+        if view is None or chunk is None:
+            return False
+        try:
+            g = grid if grid is not None else load_grid(chunk, grid_id)
+        except (KeyError, OSError):
+            self._shown = None  # the grid left the project
+            return False
         if self.overlay is None or self.overlay.view is not view:
             self.overlay = Overlay(view)
+        b = min(int(band), g.bands - 1)
         try:
-            lo, hi = self.overlay.show(g, min(band, g.bands - 1), palette, opacity)
+            lo, hi = self.overlay.show(g, b, palette, opacity)
         except RuntimeError as exc:
-            self._message("warning", str(exc))
-            return
+            if not quiet:  # asked now and not shown: not shown later either
+                self._shown = None
+                self._message("warning", str(exc))
+            return False
+        self._shown = (grid_id, b, palette, float(opacity))
         if self.pane is not None:
-            b = min(band, g.bands - 1)
             self.pane.status.setText(t("{0}: banda {1}, colori da {2:.3g} a {3:.3g} {4}", "{0}: band {1}, colours from {2:.3g} to {3:.3g} {4}")
                                      .format(g.name, g.slices[b] if b < len(g.slices) else b + 1, lo, hi, g.units))
-        if hasattr(window, "show_view"):
-            window.show_view(view)
+        return True
 
     def overlay_current(self) -> None:
         if self.pane is None:
@@ -465,22 +527,30 @@ class GeophysicsPlugin(Plugin):
         if gid:
             self.show_overlay(gid, self.pane.band(), str(self.pane.c_palette.currentData()), self.pane.s_opacity.value() / 100.0)
 
+    def _set_opacity(self, opacity: float) -> None:
+        if self.overlay is not None:
+            self.overlay.set_opacity(opacity)
+        if self._shown is not None:
+            self._shown = (*self._shown[:3], float(opacity))
+
     def hide_overlay(self) -> None:
+        self._shown = None
         if self.overlay is not None:
             self.overlay.remove()
 
     # ------------------------------------------------------------------ anomalies
     def draw_anomaly(self, grid_id: str | None = None) -> None:
-        """Draw an anomaly read on the grid (the one selected in the pane) as a polygon on the view:
-        click the vertices, double click or Enter to close, Backspace takes the last vertex back,
-        Esc or a right click cancel. The polygon, with the grid, the band shown and a note, goes into
-        the project and into the layer *Anomalie geofisiche*. An empty view shows the grid first."""
-        from .anomaly_view import PolygonTool
+        """Draw an anomaly read on the grid (the one selected in the pane) as a polygon on the view,
+        with the program's drawing lent to the plugin (``context.request_polygon``): drag a box, or
+        click the vertices and double click or Enter to close; Backspace takes the last vertex back,
+        a right click starts again, Esc or another tool of the drawing bar cancels. The polygon, with
+        the grid, the band shown and a note, goes into the project and into the layer *Anomalie
+        geofisiche*. An empty view shows the grid first."""
         from .grids import entry_of
 
         window = self.context.window
         chunk = self._chunk()
-        if window is None or chunk is None:
+        if window is None or chunk is None or not hasattr(window, "request_geometry"):
             return
         view = getattr(window, "ortho_view", None)
         if view is None:
@@ -494,26 +564,20 @@ class GeophysicsPlugin(Plugin):
             self.show_overlay(entry["id"], self.pane.band() if self.pane else 0,
                               str(self.pane.c_palette.currentData()) if self.pane else None,
                               self.pane.s_opacity.value() / 100.0 if self.pane else 0.7)
-        if view.tr is None:
+        products = [p for p in (getattr(chunk, "orthomosaic_path", None), getattr(chunk, "dem_path", None))
+                    if p is not None and Path(p).exists()]
+        if view.tr is None and not products:  # the program would show the orthomosaic or the DEM: there is none
             self._message("warning", t("Niente su cui disegnare: mostra l'ortofoto, il DEM o una griglia georeferenziata.",
                                        "Nothing to draw on: show the orthomosaic, the DEM or a georeferenced grid."))
             return
-        if hasattr(window, "set_draw_mode"):
-            window.set_draw_mode("pan")  # the program's tool in use stops (and Sposta is the one checked)
-        if hasattr(window, "show_view"):
-            window.show_view(view)
-        if self._tool is not None:
-            self._tool.cancel()
         band = ""
         if entry is not None:
             band = self.pane.band_label() if self.pane is not None and self.pane.selected_id() == entry["id"] else "1"
-        self._tool = PolygonTool(view, lambda xy: self._anomaly_drawn(xy, entry, band), self._anomaly_cancelled)
-        self._tool.start()
-        if hasattr(window, "statusBar"):
-            window.statusBar().showMessage(t("Anomalia: clic per i vertici, doppio clic o Invio per chiudere, Backspace "
-                                             "toglie l'ultimo vertice, Esc o tasto destro annulla",
-                                             "Anomaly: click the vertices, double click or Enter to close, Backspace "
-                                             "takes the last vertex back, Esc or right click cancels"), 60000)
+        self.context.request_polygon(lambda xy: self._anomaly_drawn(xy, entry, band), self._anomaly_cancelled, hint=t(
+            "Anomalia: trascina un riquadro, oppure clic per i vertici e doppio clic o Invio per chiudere; Backspace "
+            "toglie l'ultimo vertice, tasto destro ricomincia, Esc annulla",
+            "Anomaly: drag a box, or click the vertices and double click or Enter to close; Backspace takes the last "
+            "vertex back, right click starts again, Esc cancels"))
 
     def _anomaly_cancelled(self) -> None:
         window = self.context.window
@@ -527,7 +591,7 @@ class GeophysicsPlugin(Plugin):
 
         window = self.context.window
         chunk = self._chunk()
-        if chunk is None:
+        if chunk is None or self.pane is None:  # no project, or the plugin went away while the polygon was drawn
             return
         v = ParamDialog.ask(window, t("Anomalia geofisica", "Geophysical anomaly"), [
             Field("label", t("Etichetta", "Label"), anomalies.next_label(chunk), kind="text"),
@@ -538,8 +602,7 @@ class GeophysicsPlugin(Plugin):
         if not v:
             return
         a = anomalies.add(chunk, xy, entry, band, str(v.get("note", "")), str(v.get("label", "")).strip())
-        if self._sync is not None:
-            self._sync.redraw()
+        self._draw_anomalies()
         self._dirty()
         self.refresh_pane()
         if window is not None and hasattr(window, "statusBar"):
@@ -602,7 +665,7 @@ class GeophysicsPlugin(Plugin):
                    [t("Rimuovi", "Remove")])
         if k != 0:
             return
-        if self.overlay is not None and self.overlay.grid_id == e["id"]:
+        if (self.overlay is not None and self.overlay.grid_id == e["id"]) or (self._shown and self._shown[0] == e["id"]):
             self.hide_overlay()
         remove_grid(chunk, e["id"])
         self._dirty()

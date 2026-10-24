@@ -4,13 +4,13 @@ its layer *Anomalie geofisiche*, each with the grid and the band it was read on 
 They belong to the project: ``chunk.meta["geophysics"]["anomalies"]`` (``id``, ``etichetta``,
 ``griglia``, ``grid_id``, ``banda``, ``note``, ``coords`` in the coordinate system of the chunk,
 ``area_m2``, ``made``), exported by :func:`.export.export_gpkg` (table ``anomalie``). The view
-shows them as a layer of its own (:class:`.anomaly_view.ViewSync` draws it again when the view shows another
-raster; a polygon deleted there with the program's *Select* tool leaves the project).
+shows them as a layer of its own (:func:`.anomaly_view.draw`, again on every raster the view shows;
+a polygon deleted there with the program's *Select* tool leaves the project:
+:class:`.anomaly_view.DeleteWatch`).
 
-The program's polygon tool always makes stratigraphic units, and its raster view has no drawing
-mode for a plugin: :class:`.anomaly_view.PolygonTool` is the plugin's own, an event filter on the
-view that takes the clicks while it is on. This module holds the data only (no Qt): the command
-line uses it too.
+A polygon is drawn with the program's own drawing, lent to the plugin (``context.request_polygon``,
+program 1.3.2): a box dragged, or the vertices clicked. This module holds the data only (no Qt):
+the command line uses it too.
 """
 from __future__ import annotations
 

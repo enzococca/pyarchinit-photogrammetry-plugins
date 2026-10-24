@@ -7,6 +7,6 @@
       "description": "Griglie geofisiche - magnetometria, resistività, time slice GPR, EM - importate da Surfer GRD, XYZ/CSV, GeoTIFF o cartelle di slice, georeferenziate con i marker o le coordinate dei picchetti, filtrate (despike, destripe, passa-alto, clip, riempimento), sovrapposte a ortofoto e DEM con opacità, esportate in GeoTIFF, Surfer GRD e GeoPackage, nel progetto QGIS"
     }
   },
-  "min_app": "1.2.2",
+  "min_app": "1.3.3",
   "requires": []
 }

@@ -12,6 +12,14 @@ import pytest
 import pyarchinit_photogrammetry as ppg
 from ppg_geophysics import export, filters, georef, grids, overlay
 
+
+def _program_before(version: tuple) -> bool:
+    """True with a program older than ``version`` (its plugin API or a fix it needs)."""
+    from pyarchinit_photogrammetry import __version__
+
+    return tuple(int(p) for p in __version__.split(".")[:3]) < version
+
+
 CRS = "EPSG:32633"
 
 
@@ -239,7 +247,7 @@ def test_command(tmp_path, capsys):
     assert plugin.command("list", "--project", str(doc.path)) == 0 and "B" in capsys.readouterr().out
 
 
-def test_the_pane_and_the_overlay_in_the_window(tmp_path):
+def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
     pytest.importorskip("PySide6")
     import os
 
@@ -254,6 +262,7 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path):
 
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
+    monkeypatch.setenv("PPG_NO_PLUGINS", "1")  # the window alone: the plugin is activated below
     qapp = QApplication.instance() or QApplication([])
     from pyarchinit_photogrammetry.gui import main_window as mwmod
 
@@ -289,8 +298,21 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path):
         assert len(rasters) == 1 and any(p == plugin._qgis_entries for p in w.qgis_providers)
         plugin.hide_overlay()
         assert plugin.overlay.item is None
+        pane = plugin.pane
         plugin.deactivate()
-        assert w.left_tabs.indexOf(plugin.pane) < 0 if plugin.pane is not None else True
+        assert w.left_tabs.indexOf(pane) < 0
+        # enabled again (the program makes a new instance): the new pane follows the project
+        again = GeophysicsPlugin()
+        again.activate(Context("geophysics", tmp_path / "plugin", window=w))
+        try:
+            g2, _, _ = synthetic(rows=10, cols=12)
+            g2.name = "Area 2"
+            grids.save_grid(ch, g2)
+            w.refresh_all()
+            assert again.pane.table.rowCount() == 2 and w._geophysics_instances == [again]
+        finally:
+            again.deactivate()
+        assert w._geophysics_instances == []
     finally:
         w.setWindowModified(False)
         w.close()
@@ -476,6 +498,7 @@ def window(tmp_path, monkeypatch):
 
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
+    monkeypatch.setenv("PPG_NO_PLUGINS", "1")  # the window alone: the plugin is activated below
     qapp = QApplication.instance() or QApplication([])
     doc, ch = _project(tmp_path)
     g, _, _ = synthetic()  # 30 x 40 m of 0.5 m cells
@@ -531,12 +554,35 @@ def test_the_grid_shows_on_an_empty_view(window):
     v = w.ortho_view
     assert v.tr is None  # no orthomosaic, no DEM
     plugin.show_overlay(e["id"], 0, "grey", 0.7)
-    assert v.tr is not None and plugin.overlay.shown()
+    assert v.tr is not None and v.kind == "frame" and plugin.overlay.shown()  # the program's empty frame
     x0, y0, x1, y1 = grids.load_grid(ch, e["id"]).bounds()
     (fx0, fy1), (fx1, fy0) = v.world(v.sceneRect().topLeft()), v.world(v.sceneRect().bottomRight())
     assert fx0 < x0 < x1 < fx1 and fy0 < y0 < y1 < fy1  # the frame holds the grid
     img = plugin.overlay.item.pixmap().toImage()
     assert img.pixelColor(img.width() // 2, img.height() // 2).alpha() == 255  # drawn in the middle
+
+
+def test_the_grid_and_the_anomalies_follow_the_raster_of_the_view(window):
+    """Another raster in the view: the grid overlaid and the layer of the anomalies are drawn again
+    on it, with the same opacity; a grid hidden stays hidden."""
+    from ppg_geophysics import anomalies
+    from pyarchinit_photogrammetry.engine.dem import write_geotiff
+
+    w, plugin, ch, e, qapp, errors = window
+    v = w.ortho_view
+    anomalies.add(ch, [(500110.0, 4500810.0), (500114.0, 4500810.0), (500114.0, 4500814.0)], e, "1", "muro?")
+    dem = write_geotiff(ch.data_dir / "dem.tif", np.full((200, 200), 100.0, np.float32), (500090.0, 4500850.0), 0.25, CRS)
+    ch._set_product("dem", dem)
+    plugin.show_overlay(e["id"], 0, "grey", 0.7)  # the view was empty: the DEM of the chunk comes first
+    assert v.kind == "dem" and plugin.overlay.shown() and len(v.features(anomalies.LAYER)) == 1
+    plugin.pane.s_opacity.setValue(40)
+    w._load_raster("dem")
+    assert plugin.overlay.shown() and plugin.overlay.item.opacity() == pytest.approx(0.4)
+    assert plugin.overlay.grid_id == e["id"] and len(v.features(anomalies.LAYER)) == 1
+    plugin.hide_overlay()
+    w._load_raster("dem")
+    assert not plugin.overlay.shown() and len(v.features(anomalies.LAYER)) == 1
+    assert not errors and len(anomalies.entries(ch)) == 1
 
 
 def test_draw_an_anomaly(window, monkeypatch, tmp_path):
@@ -550,31 +596,37 @@ def test_draw_an_anomaly(window, monkeypatch, tmp_path):
 
     w, plugin, ch, e, qapp, errors = window
     v = w.ortho_view
-    monkeypatch.setattr(dialogs.ParamDialog, "ask", lambda parent, title, fields, intro="": {"label": "A1", "note": "fossa?"})
+    monkeypatch.setattr(dialogs.ParamDialog, "ask",
+                        lambda parent, title, fields, intro="": {"label": fields[0].default, "note": "fossa?"})
 
     def click(x, y):
         QTest.mouseClick(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(x, y)))
 
     plugin.pane.table.selectRow(0)
+    w.setWindowModified(False)
     plugin.draw_anomaly()  # the view is empty: the grid is shown first, on a frame of its own
-    assert v.tr is not None and v.mode == "geophysics_anomaly" and plugin._tool.active
+    assert v.tr is not None and v.kind == "frame" and v.mode == "req_polygon"  # the program's polygon, lent
+    assert not any(a.isChecked() for a in w.draw_group.actions())
     for x, y in ((500110.0, 4500810.0), (500114.0, 4500810.0), (500114.0, 4500814.0), (500110.0, 4500814.0)):
         click(x, y)
-    QTest.keyClick(v, Qt.Key.Key_Return)
-    assert not plugin._tool.active and v.mode == "pan"
+    # closed with a double click (with Enter the program 1.3.2 takes vertices a few metres apart in UTM
+    # coordinates for the same one: RasterView._finish_request compares them with np.allclose)
+    QTest.mouseDClick(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(500110.0, 4500814.0)))
+    assert v.mode == "pan" and w.draw_actions["pan"].isChecked()
     (a,) = anomalies.entries(ch)
     assert (a["etichetta"], a["griglia"], a["banda"], a["note"]) == ("A1", "Area 1", "1", "fossa?")
     assert a["area_m2"] == pytest.approx(16.0, rel=0.03)
     assert len(v.features(anomalies.LAYER)) == 1 and v.features(anomalies.LAYER)[0]["note"] == "fossa?"
-    # Esc cancels; another tool of the program ends the drawing
+    assert w.isWindowModified()  # the anomaly is in the project: to be saved
+    # Esc cancels; another tool of the drawing bar ends the drawing
     plugin.draw_anomaly()
     click(500120.0, 4500820.0)
     QTest.keyClick(v, Qt.Key.Key_Escape)
-    assert not plugin._tool.active and len(anomalies.entries(ch)) == 1
+    assert v.mode == "pan" and len(anomalies.entries(ch)) == 1
     plugin.draw_anomaly()
-    w.set_draw_mode("polygon")
-    QTest.mouseMove(v.viewport(), v.mapFromScene(v.scene_pt(500120.0, 4500820.0)))
-    assert not plugin._tool.active and v.mode == "polygon"
+    click(500120.0, 4500820.0)
+    w.draw_actions["polygon"].trigger()
+    assert v.mode == "polygon" and len(anomalies.entries(ch)) == 1
     w.set_draw_mode("pan")
     # in the GeoPackage of File > Export, from the project
     rows = gpkg.read_table(export.export_gpkg(ch, tmp_path / "geo.gpkg"), "anomalie")
@@ -586,9 +638,54 @@ def test_draw_an_anomaly(window, monkeypatch, tmp_path):
     for _ in range(3):
         qapp.processEvents()
     assert v.kind == "dem" and len(v.features(anomalies.LAYER)) == 1
-    # deleted in the view with the program's Select tool: out of the project too
+    # a box dragged is an anomaly too
+    plugin.draw_anomaly()
+    QTest.mousePress(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(500120.0, 4500820.0)))
+    for x, y in ((500123.0, 4500823.0), (500126.0, 4500826.0)):
+        QTest.mouseMove(v.viewport(), v.mapFromScene(v.scene_pt(x, y)))
+    QTest.mouseRelease(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(500126.0, 4500826.0)))
+    for _ in range(3):
+        qapp.processEvents()
+    assert [x["area_m2"] for x in anomalies.entries(ch)][1] == pytest.approx(36.0, rel=0.1)
+    assert len(v.features(anomalies.LAYER)) == 2
+    # the layer taken out of the view in the Layers pane: the anomalies stay in the project, and come back
+    v.remove_layer(anomalies.LAYER)
+    for _ in range(3):
+        qapp.processEvents()
+    assert len(anomalies.entries(ch)) == 2
+    w._load_raster("dem")
+    assert len(v.features(anomalies.LAYER)) == 2
+    # deleted in the view with the program's Select tool: out of the project too, the other one stays
+    w.setWindowModified(False)
+    v.select_items([v.layers[anomalies.LAYER]["features"][0][0]])
+    w.delete_selected(confirm=False)
+    for _ in range(3):
+        qapp.processEvents()
+    assert [x["etichetta"] for x in anomalies.entries(ch)] == ["A2"] and w.isWindowModified()
+    assert [f["etichetta"] for f in v.features(anomalies.LAYER)] == ["A2"]
+    # the last one, alone in its layer: the layer goes, and the anomaly with it
     v.select_items([v.layers[anomalies.LAYER]["features"][0][0]])
     w.delete_selected(confirm=False)
     for _ in range(3):
         qapp.processEvents()
     assert anomalies.entries(ch) == [] and not errors
+
+
+@pytest.mark.xfail(_program_before((1, 3, 3)), strict=False,
+                   reason="before program 1.3.3 vertices a few metres apart in UTM coordinates counted as the same "
+                          "vertex, so Enter did not close a small polygon")
+def test_a_small_anomaly_closed_with_enter(window, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from ppg_geophysics import anomalies
+    from pyarchinit_photogrammetry.gui import dialogs
+
+    w, plugin, ch, e, qapp, errors = window
+    v = w.ortho_view
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", lambda parent, title, fields, intro="": {"label": "A1", "note": ""})
+    plugin.draw_anomaly(e["id"])
+    for x, y in ((500110.0, 4500810.0), (500113.0, 4500810.0), (500113.0, 4500813.0)):
+        QTest.mouseClick(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(x, y)))
+    QTest.keyClick(v, Qt.Key.Key_Return)
+    assert len(anomalies.entries(ch)) == 1 and anomalies.entries(ch)[0]["area_m2"] == pytest.approx(4.5, rel=0.1)

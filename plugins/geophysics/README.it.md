@@ -3,7 +3,7 @@
 **[Guida d'uso](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/geophysics/)**: i file da esportare, come posare una griglia sui picchetti, i filtri, come leggere i risultati.
 
 Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.2.2 o successiva): le griglie di una prospezione geofisica - magnetometria, resistività, time
+(1.3.3 o successiva): le griglie di una prospezione geofisica - magnetometria, resistività, time
 slice GPR, elettromagnetica - accanto ai prodotti fotogrammetrici dello stesso terreno.
 
 * **Import**: Surfer GRD (ASCII e binario, Surfer 6 e 7), ASCII XYZ / CSV (`x y valore`, le
@@ -22,12 +22,15 @@ slice GPR, elettromagnetica - accanto ai prodotti fotogrammetrici dello stesso t
   passa-alto (il residuo di un lisciamento gaussiano di sigma 10 celle: le anomalie piccole sopra la
   geologia), riempimento dei vuoti, ricampionamento - in una copia o sul posto, ogni filtro
   registrato; gli stessi valori predefiniti nella finestra e dalla riga di comando.
-* **Sovrapposizione** all'ortofoto o al DEM della vista raster (oppure, se la vista è vuota, su un
-  riquadro della misura della griglia), con la banda (la slice di una prospezione GPR), la palette
-  (grigi, grigi invertiti, divergente, terra, calore) e l'opacità.
-* **Anomalie**: *Disegna anomalia* disegna un poligono sulla vista (clic sui vertici, doppio clic o
-  Invio per chiudere) con la griglia, la banda e una nota, nel layer *Anomalie geofisiche*;
-  conservate nel progetto, si cancellano con lo strumento *Seleziona* del programma.
+* **Sovrapposizione** all'ortofoto o al DEM della vista raster (oppure, se il chunk non ha né l'una
+  né l'altro, su un riquadro vuoto della misura della griglia), con la banda (la slice di una
+  prospezione GPR), la palette (grigi, grigi invertiti, divergente, terra, calore) e l'opacità; resta
+  sopra il raster che la vista mostra dopo, fino a *Nascondi*.
+* **Anomalie**: *Disegna anomalia* disegna un poligono sulla vista con il disegno del programma,
+  prestato al plugin (trascina un riquadro, oppure clic sui vertici e doppio clic o Invio per
+  chiudere), con la griglia, la banda e una nota, nel layer *Anomalie geofisiche* (ridisegnato su ogni
+  raster che la vista mostra); conservate nel progetto, si cancellano con lo strumento *Seleziona* del
+  programma.
 * **Esportazioni**: GeoTIFF (tutte le bande) e Surfer GRD (la banda mostrata; una griglia ruotata
   ricampionata con il nord in alto) di una griglia, un GeoPackage con i contorni delle griglie e le
   anomalie (*File > Esporta*), le griglie nel progetto QGIS del programma con la loro scala di

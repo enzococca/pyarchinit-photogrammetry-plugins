@@ -3,7 +3,7 @@
 **[User guide](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/geophysics/)**: the files to export, how to place a grid on the pegs, the filters, how to read the results.
 
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.2.2 or later): the grids of a geophysical survey - magnetometry, resistivity, GPR time slices,
+(1.3.3 or later): the grids of a geophysical survey - magnetometry, resistivity, GPR time slices,
 electromagnetic - beside the photogrammetric products of the same ground.
 
 * **Import**: Surfer GRD (ASCII and binary, Surfer 6 and 7), ASCII XYZ / CSV (`x y value`, the
@@ -22,12 +22,14 @@ electromagnetic - beside the photogrammetric products of the same ground.
   (the residual of a Gaussian smoothing of sigma 10 cells: the small anomalies over the geology),
   fill of the gaps, resample - into a copy or in place, every filter recorded; the same defaults in
   the window and on the command line.
-* **Overlay** on the orthomosaic or the DEM of the raster view (or, with nothing shown, on a frame
-  the size of the grid), with the band (the slice of a GPR survey), the palette (greys, inverted
-  greys, diverging, earth, heat) and the opacity.
-* **Anomalies**: *Draw anomaly* draws a polygon on the view (click the vertices, double click or
-  Enter to close) with the grid, the band and a note, in the layer *Anomalie geofisiche*; kept in
-  the project, deleted with the program's *Select* tool.
+* **Overlay** on the orthomosaic or the DEM of the raster view (or, when the chunk has neither, on
+  an empty frame the size of the grid), with the band (the slice of a GPR survey), the palette
+  (greys, inverted greys, diverging, earth, heat) and the opacity; it stays over the next raster the
+  view shows, until *Hide*.
+* **Anomalies**: *Draw anomaly* draws a polygon on the view with the program's drawing, lent to
+  the plugin (drag a box, or click the vertices and double click or Enter to close), with the grid,
+  the band and a note, in the layer *Anomalie geofisiche* (drawn again on every raster the view
+  shows); kept in the project, deleted with the program's *Select* tool.
 * **Exports**: GeoTIFF (all the bands) and Surfer GRD (the band shown; a turned grid resampled
   north up) of a grid, a GeoPackage with the outlines of the grids and the anomalies (*File >
   Esporta*), the grids in the QGIS project of the program with their ramp.
