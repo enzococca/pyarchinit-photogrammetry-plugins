@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-sentinel2"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: Sentinel-2 time series over the survey to look for crop marks - STAC search, the window of the area read from the public COGs, clouds masked with the scene classification, NDVI, NDRE and NDMI per date, monthly series and chart, seasonal composites, crop-mark maps"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# the standard library talks to the STAC API (pystac-client is used when it is installed),
+# rasterio reads the Cloud-Optimized GeoTIFFs: nothing the program does not already carry
+dependencies = []
+
+[project.optional-dependencies]
+pystac = ["pystac-client>=0.7"]
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/sentinel2"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+sentinel2 = "ppg_sentinel2:Sentinel2Plugin"
+
+[tool.setuptools]
+packages = ["ppg_sentinel2"]
