@@ -104,7 +104,7 @@
     },
     {
       "name": "terrain",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "title": "Terrain",
       "description": "Terrain analysis of the DEM with WhiteboxTools (downloaded once): stream network and basins, topographic position, geomorphons, curvatures, ruggedness and daylight, nested depressions and mounds with depth and volume, viewshed; overlaid on the orthomosaic and DEM, exported as GeoTIFF and GeoPackage, in the QGIS project",
       "i18n": {
@@ -119,8 +119,8 @@
       "api": 1,
       "min_app": "1.2.2",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/terrain-v0.1.1/ppg_terrain-0.1.1-py3-none-any.whl",
-      "sha256": "604ed29911ccf92ecf68bd9d8d336ef7a396214f9515400a42ea724cb16ec3b2"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/terrain-v0.1.2/ppg_terrain-0.1.2-py3-none-any.whl",
+      "sha256": "f2f42e644c0b8db6b1e78035179ffd9a784ad32cb37fb92dd72e1c63e04da05e"
     },
     {
       "name": "terrio",
