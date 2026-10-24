@@ -1,8 +1,8 @@
 """Blender ed EMtools - a plugin of pyarchinit-photogrammetry: the survey and the proxies of the units
 in Blender and in the Extended Matrix of EMtools, kept up to date while the work goes on.
 
-* **The matrix is the em.json** that PyArchInit (*Extended Matrix > Esporta sito in em.json*), EMStudio or EMtools 1.6 wrote
-  (:mod:`.emjson`): the plugin reads it and never writes it. Its units are paired with the proxies
+* **The matrix is the em.json** that PyArchInit (*Extended Matrix > Esporta sito in em.json*),
+  EMStudio or EMtools 1.6 wrote (:mod:`.emjson`): the plugin reads it and never writes it. Its units are paired with the proxies
   of the chunk (*Strumenti > Proxy 3D delle US*) by the ``node_uuid`` of the US form, or by area,
   type and number, or by name.
 * **The EM project** (:mod:`.scene`): each proxy into ``EM/proxies/<unit>.glb`` named as its node -
@@ -14,9 +14,14 @@ in Blender and in the Extended Matrix of EMtools, kept up to date while the work
   and Blender reloads it within a second. What was changed in Blender is never overwritten.
 * **EMtools, live** (:mod:`.sync`): with *Sincronizza con EMtools* the program joins the live sync
   of EMtools 1.6 (the WebSocket EMStudio uses): a proxy picked in Blender selects its unit in the
-  pane, a unit picked in the pane selects and frames its proxy in Blender.
+  pane, a unit picked in the pane selects and frames its proxy in Blender; *Proxy in Blender* has
+  EMtools start the proxy of a unit the program has none of (its command ``create_proxy_for_unit``).
+* **Back from Blender** (:mod:`.inbox`): what is modelled in Blender and sent with *Invia al
+  programma* comes into the chunk as the proxy of its unit, with its volume, area and elevations.
+* **Cameras** (:mod:`.cameras`): the aligned cameras in Blender, each with its photo undistorted
+  behind it, to model a reconstruction where the photos show it.
 
-``ppg plugin blender-em export|open|status|blender`` from the command line.
+``ppg plugin blender-em export|open|take|status|blender`` from the command line.
 """
 from __future__ import annotations
 
@@ -28,7 +33,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import plural, t
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 META = "blender_em"  # chunk.meta: the em.json linked and the EM project of the chunk
 LIVE_MS = 2000  # how often the live update looks at the chunk
 
@@ -95,6 +100,13 @@ def report_text(report: dict) -> str:
     line("unnamed", "Nomi che non possono essere file {0}: {1}", "Names that cannot be files {0}: {1}")
     for name, candidates in (report.get("ambiguous") or {}).items():
         lines.append(t("{0}: più unità possibili ({1})", "{0}: several possible units ({1})").format(name, candidates))
+    cams = report.get("cameras") or {}
+    if cams.get("written") or cams.get("kept"):
+        lines.append(t("Camere: {0} foto raddrizzate, {1} invariate", "Cameras: {0} photos undistorted, {1} unchanged").format(
+            len(cams.get("written") or []), len(cams.get("kept") or [])))
+    if cams.get("missing"):
+        lines.append(t("Foto non trovate {0}: {1}", "Photos not found {0}: {1}").format(
+            len(cams["missing"]), ", ".join(cams["missing"][:8])))
     shift = report.get("shift")
     if shift:
         lines.append(t("Spostamento delle coordinate: {0}", "Shift of the coordinates: {0}").format(
@@ -124,6 +136,7 @@ class BlenderEmPlugin(Plugin):
         self._live_signature = None
         self._matrices: dict[str, tuple] = {}  # path -> (mtime, Matrix)
         self._busy_signal = None
+        self._commands: dict[str, str] = {}  # cmd_id -> the unit EMtools is asked to make a proxy of
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
@@ -135,10 +148,14 @@ class BlenderEmPlugin(Plugin):
                                  "The proxies into EM/proxies and the survey into RB, named after the nodes of the em.json"))
         context.add_action(t("Apri in Blender (aggiornato dal vivo)", "Open in Blender (kept up to date)"),
                            self.open_blender, processing=True)
+        context.add_action(t("Importa i proxy da Blender", "Import the proxies from Blender"), self.take_from_blender,
+                           processing=True,
+                           tip=t("I proxy mandati da Blender con Invia al programma, nel chunk con il loro volume",
+                                 "The proxies sent from Blender with Invia al programma, into the chunk with their volume"))
         context.add_action(t("Scegli il programma Blender...", "Choose the Blender program..."), self.choose_blender)
         context.add_command("blender-em", self.command,
                             help="the proxies and the survey into an Extended Matrix project for Blender and EMtools: "
-                                 "export, open, status, blender")
+                                 "export, open, take, status, blender")
         if context.window is not None:
             self._install_pane()
             context.on_refresh(self.refresh_pane)
@@ -178,8 +195,12 @@ class BlenderEmPlugin(Plugin):
         self.pane.open_requested.connect(self.open_blender)
         self.pane.live_toggled.connect(self.set_live)
         self.pane.sync_toggled.connect(self.set_sync)
+        self.pane.cameras_toggled.connect(self.set_cameras)
+        self.pane.take_requested.connect(self.take_from_blender)
+        self.pane.proxy_requested.connect(self.proxies_in_blender)
         self.pane.selected.connect(self._picked)
-        self.pane.set_checks(self.context.settings.get("live", False), self.context.settings.get("sync", False))
+        self.pane.set_checks(self.context.settings.get("live", False), self.context.settings.get("sync", False),
+                             self.context.settings.get("cameras", False))
         signal = getattr(getattr(self.context.window, "runner", None), "busy_changed", None)
         if signal is not None:  # one step at a time: the buttons wait while the program works
             signal.connect(self._busy)
@@ -365,6 +386,8 @@ class BlenderEmPlugin(Plugin):
         if extra:
             parts.append(extra)
         self.pane.set_status("\n".join(parts))
+        connected = self.client is not None and self.client.connected
+        self.pane.set_commands(connected and self.host.get("accepts_commands") is not False)
 
     def _tree_items(self, chunk) -> list:
         stored = self.linked(chunk)
@@ -438,6 +461,8 @@ class BlenderEmPlugin(Plugin):
         matrix = self.matrix(chunk)
         uuids = self.form_uuids(chunk)
         survey = bool(self.context.settings.get("survey", True))
+        cameras = bool(self.context.settings.get("cameras", False))
+        max_side = int(self.context.settings.get("photo_side") or 2048)
 
         def done(report):
             self._live_signature = self._signature(chunk)
@@ -450,7 +475,7 @@ class BlenderEmPlugin(Plugin):
 
         self.context.run(t("Progetto EM", "EM project"),
                          lambda p: scene.export_project(chunk, folders, matrix, survey=survey, node_uuids=uuids,
-                                                        progress=p), done)
+                                                        progress=p, cameras=cameras, max_side=max_side), done)
 
     def open_blender(self) -> None:
         from . import blender
@@ -486,6 +511,99 @@ class BlenderEmPlugin(Plugin):
             self.context.save_settings()
             self._show_status()
 
+    def set_cameras(self, on: bool) -> None:
+        """The cameras with their photos in the next export (and taken away when off)."""
+        self.context.settings["cameras"] = bool(on)
+        self.context.save_settings()
+
+    def _proxies_changed(self, chunk) -> None:
+        """The proxies of the chunk changed here: the window's pane of the proxies and the project follow."""
+        pane = getattr(self.context.window, "proxies_pane", None) if self.context.window is not None else None
+        if pane is not None and chunk is self._chunk():
+            try:
+                pane.set_proxies(chunk.meta.get("proxies", []))
+            except Exception as exc:  # noqa: BLE001 - an older window: the proxies are in the project anyway
+                self.context.log.warning("proxies pane not refreshed: %s", exc)
+        self.context.mark_modified()
+        self.refresh_pane()
+
+    def take_from_blender(self, quiet: bool = False) -> dict | None:
+        """The proxies sent from Blender (*Invia al programma*) into the chunk, with their measures."""
+        from . import inbox
+
+        chunk = self._chunk()
+        folders = self.folders(chunk) if chunk is not None else None
+        if folders is None:
+            if not quiet:
+                self._message("warning", t("Il chunk non ha un progetto EM: esportalo prima.",
+                                           "The chunk has no EM project: export it first."))
+            return None
+        if not inbox.pending(folders):
+            if not quiet:
+                self._message("info", t("Nessun proxy mandato da Blender (in Blender: pannello PPG, Invia al programma).",
+                                        "No proxy sent from Blender (in Blender: PPG panel, Invia al programma)."))
+            return None
+        report = inbox.take(chunk, folders, self.matrix(chunk))
+        if report["taken"]:
+            self._proxies_changed(chunk)
+        text = self._take_text(report)
+        self._show_status(text)
+        if not quiet or report["errors"]:
+            self._message("info" if not report["errors"] else "warning", t("Proxy da Blender", "Proxies from Blender"),
+                          text)
+        return report
+
+    @staticmethod
+    def _take_text(report: dict) -> str:
+        lines = []
+        if report.get("taken"):
+            lines.append(t("Da Blender {0}: {1}", "From Blender {0}: {1}").format(len(report["taken"]),
+                                                                                   ", ".join(report["taken"])))
+        if report.get("replaced"):
+            lines.append(t("Sostituiti: {0}", "Replaced: {0}").format(", ".join(report["replaced"])))
+        if report.get("open"):
+            lines.append(t("Non chiusi, senza volume: {0}", "Not closed, no volume: {0}").format(", ".join(report["open"])))
+        if report.get("republish"):
+            lines.append(t("Da ripubblicare in PyArchInit: {0}", "To publish again in PyArchInit: {0}").format(
+                ", ".join(report["republish"])))
+        for name, reason in (report.get("errors") or {}).items():
+            lines.append(t("{0} non letto: {1}", "{0} not read: {1}").format(name, reason))
+        return "\n".join(lines)
+
+    def proxies_in_blender(self) -> None:
+        """EMtools starts the proxy of each unit picked in the pane that has none in the chunk."""
+        from . import scene, sync
+
+        chunk = self._chunk()
+        matrix = self.matrix(chunk) if chunk is not None else None
+        if self.client is None or not self.client.connected or matrix is None:
+            self._message("warning", t("Serve la sincronizzazione con EMtools 1.6 e la sua matrice (Sincronizza con "
+                                       "EMtools).", "The sync with EMtools 1.6 and its matrix are needed (Sync with "
+                                       "EMtools)."))
+            return
+        if self.host.get("accepts_commands") is False:
+            self._message("warning", t("EMtools non accetta comandi: in Blender abilita Accept commands from EMStudio "
+                                       "(pannello EM, Sync).", "EMtools does not accept commands: in Blender enable "
+                                       "Accept commands from EMStudio (EM panel, Sync)."))
+            return
+        if self.context.window is not None:
+            self.context.store_drawings()  # the units drawn, for the place of each proxy
+        with_proxy = {r["node_id"] for r in rows_for(chunk, matrix, self.form_uuids(chunk)) if r["node_id"] and r["proxy"]}
+        units = [u for u in (matrix.unit(n) for n in self.pane.node_ids()) if u is not None and u.id not in with_proxy] \
+            if self.pane is not None else []
+        if not units:
+            self._message("info", t("Scegli nella tabella le unità senza proxy.", "Pick in the table the units without a proxy."))
+            return
+        manifest = scene.read_manifest(self.folders(chunk).base) if self.folders(chunk) is not None else None
+        shift = (manifest or {}).get("shift") or (list(matrix.shift) if matrix.shift else [0.0, 0.0, 0.0])
+        for u in units:
+            params = scene.proxy_start(chunk, u, shift)
+            cmd_id = self.client.command(sync.PROXY_VERB, u.id, params)
+            if cmd_id:
+                self._commands[cmd_id] = u.name
+        self._show_status(t("Chiesti a EMtools i proxy di: {0}", "EMtools asked for the proxies of: {0}").format(
+            ", ".join(u.name for u in units)))
+
     # ------------------------------------------------------------------ live update
     def set_live(self, on: bool) -> None:
         self.context.settings["live"] = bool(on)
@@ -519,6 +637,12 @@ class BlenderEmPlugin(Plugin):
         if runner is not None and getattr(runner, "busy", False):
             return  # a step is running: its result comes at the next look
         chunk = self._chunk()
+        folders = self.folders(chunk) if chunk is not None else None
+        if folders is not None:
+            from . import inbox
+
+            if inbox.pending(folders):  # proxies sent from Blender: into the chunk, then written again below
+                self.take_from_blender(quiet=True)
         signature = self._signature(chunk)
         if signature is None or signature == self._live_signature:
             return
@@ -611,6 +735,19 @@ class BlenderEmPlugin(Plugin):
         elif kind == "host_info":
             self.host = dict(payload)
             self._show_status()
+        elif kind == "command_result":
+            name = self._commands.pop(str(payload.get("cmd_id") or ""), None)
+            if name is None:
+                return  # the answer to a command of another client (EMStudio)
+            if not payload.get("ok"):
+                self._message("warning", t("EMtools non ha creato il proxy di {0}: {1}",
+                                           "EMtools did not make the proxy of {0}: {1}").format(
+                    name, payload.get("error") or "?"))
+            elif (payload.get("info") or {}).get("already"):
+                self._show_status(t("{0} ha già un proxy in Blender", "{0} already has a proxy in Blender").format(name))
+            else:
+                self._show_status(t("Proxy di {0} creato in Blender: modellalo, poi Invia al programma (pannello PPG)",
+                                    "Proxy of {0} made in Blender: model it, then Invia al programma (PPG panel)").format(name))
         elif kind == "snapshot_unavailable":
             self._show_status(t("EMtools non ha un grafo caricato", "EMtools has no graph loaded"))
 
@@ -633,6 +770,7 @@ class BlenderEmPlugin(Plugin):
         sub = parser.add_subparsers(dest="what", required=True)
         for name, text in (("export", "write the EM project (EM/proxies, RB) and its manifest"),
                            ("open", "write the EM project and open it in Blender, kept up to date"),
+                           ("take", "the proxies sent from Blender (Invia al programma) into the chunk, saved"),
                            ("status", "the units of the em.json and the proxies of the chunk paired to them")):
             p = sub.add_parser(name, help=text)
             p.add_argument("project", help="the .ppg project")
@@ -640,7 +778,11 @@ class BlenderEmPlugin(Plugin):
             p.add_argument("--emjson", help="the em.json of the site (the one linked to the chunk by default)")
             if name != "status":
                 p.add_argument("--out", help="the folder of the EM project (else the project of the em.json)")
+            if name in ("export", "open"):
                 p.add_argument("--no-survey", action="store_true", help="the proxies only, not the model")
+                p.add_argument("--cameras", action="store_true",
+                               help="the aligned cameras with their photos undistorted (RB/<chunk>/foto)")
+                p.add_argument("--photo-side", type=int, default=2048, help="long side of the photos (pixels)")
             if name == "open":
                 p.add_argument("--blender", help="the Blender program (else the one found)")
         sub.add_parser("blender", help="the Blender programs found")
@@ -674,7 +816,16 @@ class BlenderEmPlugin(Plugin):
                 print("say where the EM project is: --out FOLDER or --emjson FILE")
                 return 2
             folders = scene.project_folders(root=stored)
-        report = scene.export_project(chunk, folders, matrix, survey=not a.no_survey)
+        if a.what == "take":
+            from . import inbox
+
+            taken = inbox.take(chunk, folders, matrix)
+            print(self._take_text(taken) or "nothing sent from Blender")
+            if taken["taken"]:
+                doc.save()
+            return 0 if not taken["errors"] else 1
+        report = scene.export_project(chunk, folders, matrix, survey=not a.no_survey,
+                                      cameras=True if a.cameras else None, max_side=a.photo_side)
         print(report_text(report))
         if a.what == "open":
             try:

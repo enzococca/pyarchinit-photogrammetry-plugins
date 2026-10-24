@@ -21,7 +21,8 @@ def test_the_plugin_in_the_program(tmp_path):
     assert info is not None and info.active, info and info.error
     titles = [a.title for a in manager.actions if a.plugin == "blender-em"]
     assert titles == ["Pannello Blender ed EMtools", "Collega l'em.json del sito...", "Esporta nel progetto EM",
-                      "Apri in Blender (aggiornato dal vivo)", "Scegli il programma Blender..."]
+                      "Apri in Blender (aggiornato dal vivo)", "Importa i proxy da Blender",
+                      "Scegli il programma Blender..."]
     assert "blender-em" in manager.commands
 
 
@@ -168,6 +169,79 @@ def test_the_pane_in_the_window(tmp_path, window, monkeypatch):
             host.close()
         assert not context.settings["sync"] and plugin.client is None
         assert json.loads((tmp_path / "plugin" / "settings.json").read_text())["live"] is True
+    finally:
+        plugin.deactivate()
+        context.release()
+
+
+def test_back_from_blender_and_proxies_made_by_emtools(tmp_path, window, monkeypatch):
+    from shapely.geometry import box
+    from test_inbox import _box, _send
+
+    from pyarchinit_photogrammetry.archaeo.stratigraphy import UnitPolygon
+    from pyarchinit_photogrammetry.plugins import Context
+    from samples import ORIGIN
+
+    w, qapp, doc, problems = window
+    em_path = tmp_path / "Scavo" / "EM" / "Scavo.em.json"
+    ids = emjson(em_path, units=[("1", "US", "1"), ("1", "USM", "2"), ("1", "US", "3"), ("1", "US", "4")])
+    plugin = BlenderEmPlugin()
+    context = Context("blender-em", tmp_path / "plugin", window=w)
+    messages = []
+    monkeypatch.setattr(plugin, "_message", lambda kind, text, details="": messages.append((kind, text, details)))
+    x0, y0, z0 = ORIGIN
+    try:
+        plugin.activate(context)
+        pane = plugin.pane
+        plugin._store(doc.chunk, emjson=em_path, root=None)
+        plugin.set_cameras(False)
+        report = scene.export_project(doc.chunk, plugin.folders(doc.chunk), plugin.matrix(doc.chunk), survey=False)
+        shift = report["shift"]
+        # USM 2 modelled in Blender and sent: Importa da Blender brings it into the chunk and the window
+        folders = plugin.folders(doc.chunk)
+        _send(folders, "1.USM2", _box(x0 + 1.8, y0 + 0.5, z0 - 0.4, x0 + 2.9, y0 + 2.5, z0 + 0.2), shift)
+        pane.b_take.click()
+        entry = next(e for e in doc.chunk.meta["proxies"] if e["name"] == "USM2")
+        assert entry["base"] == "blender" and entry["volume_m3"] == pytest.approx(1.32)
+        assert messages[-1][1] == "Proxy da Blender" and "Da Blender 1: USM2" in messages[-1][2]
+        assert w.proxies_pane.table.item(1, 3).text() == "1.320" and w.isWindowModified()
+        assert "1.320 m³" in [pane.table.item(r, 3).text() for r in range(pane.table.rowCount())]
+        # US 4 is drawn but has no proxy: EMtools is asked to start one, as wide as the unit, on the DEM
+        w.units.append(UnitPolygon(box(x0 + 3.2, y0 + 0.4, x0 + 4.2, y0 + 1.0), us="4", area="1", tipo="US",
+                                   attributes={"_layer": "Unita' stratigrafiche"}, sito="Scavo"))
+        port = free_port()
+        host = FakeHost(port)
+        context.settings["port"] = port
+        plugin.set_sync(True)
+        try:
+            assert _wait(qapp, lambda: host.kinds()[:2] == ["client_info", "request_snapshot"])
+            host.send(sync.envelope("host_info", {"tool": "Blender · EMtools", "accepts_commands": True},
+                                    source="emtools"))
+            assert _wait(qapp, lambda: pane.b_proxy.isEnabled())
+            us4 = next(k for k, v in ids.items() if v == ("1", "US", "4"))
+            row = next(r for r in range(pane.table.rowCount()) if pane.table.item(r, 0).text() == "1.US4")
+            pane.table.selectRow(row)
+            pane.b_proxy.click()
+            assert _wait(qapp, lambda: host.kinds()[-1:] == ["command"])
+            command = host.received[-1]["payload"]
+            assert command["verb"] == "create_proxy_for_unit" and command["target"] == us4
+            params = command["params"]
+            assert params["size"] == pytest.approx(1.0)
+            assert params["location"][:2] == pytest.approx([x0 + 3.7 - shift[0], y0 + 0.7 - shift[1]], abs=1e-3)
+            assert params["location"][2] == pytest.approx(z0 + 0.2 - 0.5 - shift[2], abs=0.06)  # top on the DEM
+            assert command["cmd_id"] == sync.make_cmd_id("create_proxy_for_unit", us4, params)
+            host.send(sync.envelope("command_result", {"ok": True, "cmd_id": command["cmd_id"],
+                                                       "info": {"proxy_object": "1.US4"}}, source="emtools"))
+            assert _wait(qapp, lambda: "Proxy di 1.US4 creato in Blender" in pane.l_status.text())
+            # EMtools that does not accept commands: said before anything is sent
+            host.send(sync.envelope("host_info", {"accepts_commands": False}, source="emtools"))
+            assert _wait(qapp, lambda: not pane.b_proxy.isEnabled())
+            plugin.proxies_in_blender()
+            assert "Accept commands from EMStudio" in messages[-1][1]
+        finally:
+            plugin.set_sync(False)
+            host.close()
+        assert not problems
     finally:
         plugin.deactivate()
         context.release()

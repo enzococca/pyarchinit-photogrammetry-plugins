@@ -72,3 +72,28 @@ def test_no_host():
         assert not client.select(["x"]) and client.last_selection == ()
     finally:
         client.stop()
+
+
+def test_the_id_of_a_command_is_the_one_of_emtools():
+    # computed with make_cmd_id of EMtools 1.6 (sync_manager/commands.py): the same command, the same id
+    params = {"size": 1.5, "location": [1.0, 2.0, -0.5]}
+    assert sync.make_cmd_id("create_proxy_for_unit", "abc-123", params) == "d0b79c5a-f501-59e6-a87b-ce380ed8c93a"
+    assert sync.make_cmd_id("create_proxy_for_unit", "abc-123", dict(reversed(list(params.items())))) == \
+        "d0b79c5a-f501-59e6-a87b-ce380ed8c93a"
+
+
+def test_a_command_to_emtools():
+    port = free_port()
+    host = FakeHost(port)
+    client = sync.SyncClient(port=port, retry=0.1)
+    client.start()
+    try:
+        assert sync.wait_for(lambda: client.connected and host.kinds()[:1] == ["client_info"])
+        cmd_id = client.command(sync.PROXY_VERB, "node-7", {"size": 2.0})
+        assert sync.wait_for(lambda: host.kinds()[-1:] == ["command"])
+        assert host.received[-1]["payload"] == {"cmd_id": cmd_id, "verb": "create_proxy_for_unit", "target": "node-7",
+                                                "params": {"size": 2.0}}
+    finally:
+        client.stop()
+        host.close()
+    assert client.command(sync.PROXY_VERB, "node-7") is None  # not connected

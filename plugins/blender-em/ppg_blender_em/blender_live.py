@@ -15,6 +15,12 @@ here by itself.
   EMtools / 3D Survey Collection when they are installed and not set yet).
 * With EMtools 1.6 the em.json of the manifest can be loaded into EMtools from the panel (*Carica
   l'em.json in EMtools*), which pairs the proxies with the units by name.
+* *Invia al programma* sends the selected objects (or those changed here) back: a glTF and a
+  description each in ``ppg_inbox`` beside the manifest, which the program takes as the proxies of
+  their units. When the program writes them again, the objects sent are *adopted* - they stay as
+  they are, followed again by the link - instead of being imported a second time.
+* The cameras of the manifest go into ``PPG Camere``, with their pose, focal length, principal point
+  and the undistorted photo behind each: looking through one, the proxies lie on the photo.
 
 Only bpy and the Python of Blender: nothing of pyarchinit-photogrammetry is imported here.
 """
@@ -28,7 +34,8 @@ import time
 import bpy
 
 FORMAT = "ppg-blender-em"
-COLLECTIONS = {"proxy": "PPG Proxy", "survey": "PPG Rilievo"}
+COLLECTIONS = {"proxy": "PPG Proxy", "survey": "PPG Rilievo", "camera": "PPG Camere"}
+INBOX = "ppg_inbox"  # beside the manifest: what Blender sends back to the program
 INTERVAL = 1.0  # seconds between two looks at the manifest
 STATE = {"manifest": "", "mtime": None, "revision": None, "live": True, "log": [], "detached": [],
          "counts": {}, "error": ""}
@@ -83,6 +90,21 @@ def managed(scene=None) -> dict:
 
 def _edited(obj) -> bool:
     return obj.type == "MESH" and obj.get("ppg_sig") not in (None, mesh_signature(obj))
+
+
+def _sent(obj) -> bool:
+    """The object was sent to the program as it is now (*Invia al programma*)."""
+    return obj.type == "MESH" and bool(obj.get("ppg_sent_sig")) and obj.get("ppg_sent_sig") == mesh_signature(obj)
+
+
+def _sent_for(scene, record: dict) -> list:
+    """Objects of this scene the link did not import, sent to the program and now back in the manifest
+    as ``record``: by the id of their node, else by name (also with the code of the graph EMtools puts
+    before it)."""
+    name, node = record.get("name") or "", record.get("node_id")
+    found = [o for o in scene.objects if not o.get("ppg_file") and _sent(o)
+             and ((node and o.get("ppg_node_id") == node) or o.name == name or o.name.endswith("." + name))]
+    return found[:1]
 
 
 def _import(path: str) -> list:
@@ -172,7 +194,7 @@ def sync(path: str, scene=None) -> dict:
     STATE["error"] = ""
     base = os.path.dirname(os.path.abspath(path))
     have = managed(scene)
-    done = {"imported": [], "updated": [], "kept": [], "removed": [], "detached": []}
+    done = {"imported": [], "updated": [], "kept": [], "removed": [], "detached": [], "adopted": []}
     wanted = set()
     for record in manifest.get("objects") or []:
         rel, sha1 = record.get("file"), record.get("sha1") or ""
@@ -182,6 +204,14 @@ def sync(path: str, scene=None) -> dict:
         objs = have.get(rel, [])
         if objs and all(o.get("ppg_sha1") == sha1 for o in objs):
             done["kept"].append(record.get("name") or rel)
+            continue
+        adopted = objs if objs and all(_sent(o) for o in objs) else (_sent_for(scene, record) if not objs else [])
+        if adopted:  # the geometry came from here: the object stays as it is, the link follows it again
+            for o in adopted:
+                _tag(o, record, sha1)
+                o["ppg_detached"] = False
+                del o["ppg_sent_sig"]
+            done["adopted"].append(record.get("name") or rel)
             continue
         if any(_edited(o) for o in objs):
             for o in objs:
@@ -222,11 +252,139 @@ def sync(path: str, scene=None) -> dict:
             done["removed"].append(objs[0].name)
             _remove(objs)
     set_shift(scene, manifest)
+    done["cameras"] = sync_cameras(scene, manifest, base)
     STATE.update(manifest=path, revision=manifest.get("revision"), detached=done["detached"],
                  counts={k: len(v) for k, v in done.items()})
-    changed = {k: v for k, v in done.items() if v and k != "kept"}
+    changed = {k: v for k, v in done.items() if v and k not in ("kept", "cameras")}
     if changed:
         log(f"revision {manifest.get('revision')}: " + "; ".join(f"{k} {', '.join(v)}" for k, v in changed.items()))
+    return done
+
+
+def _safe(name: str) -> str:
+    return "".join("_" if c in '\\/:*?"<>|' else c for c in name).strip(" .") or "proxy"
+
+
+def send(objects, path: str, scene=None) -> list[str]:
+    """The ``objects`` to the program, each a glTF in ``ppg_inbox`` beside the manifest at ``path``
+    (Y-up and shifted, as the files of the project) with a description: the program takes them as the
+    proxies of their units, with their volume. The names sent."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    scene = scene or bpy.context.scene
+    folder = os.path.join(os.path.dirname(os.path.abspath(path)), INBOX)
+    os.makedirs(folder, exist_ok=True)
+    view = bpy.context.view_layer
+    before = [o for o in view.objects if o.select_get()], view.objects.active
+    sent = []
+    try:
+        for obj in objects:
+            if obj.type != "MESH":
+                continue
+            stem = os.path.join(folder, _safe(obj.name))
+            for o in view.objects:
+                o.select_set(False)
+            obj.select_set(True)
+            view.objects.active = obj
+            part = stem + ".part.glb"
+            bpy.ops.export_scene.gltf(filepath=part, export_format="GLB", use_selection=True, export_apply=True,
+                                      export_yup=True)
+            os.replace(part, stem + ".glb")
+            info = {"name": obj.name, "node_id": obj.get("ppg_node_id"), "kind": "proxy",
+                    "shift": list(scene.get("ppg_shift", [0.0, 0.0, 0.0])),
+                    "sent": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "blender": bpy.app.version_string}
+            with open(stem + ".json.part", "w", encoding="utf-8") as f:
+                _json.dump(info, f, ensure_ascii=False)
+            os.replace(stem + ".json.part", stem + ".json")
+            obj["ppg_sent_sig"] = mesh_signature(obj)
+            sent.append(obj.name)
+    finally:
+        for o in view.objects:
+            o.select_set(o in before[0])
+        view.objects.active = before[1]
+    if sent:
+        log("sent to the program: " + ", ".join(sent))
+    return sent
+
+
+def _camera_signature(record: dict) -> str:
+    import hashlib
+    import json as _json
+
+    keys = ("file", "matrix", "width", "height", "fx", "fy", "cx", "cy", "sha1")
+    return hashlib.sha1(_json.dumps([record.get(k) for k in keys]).encode()).hexdigest()
+
+
+def place_camera(obj, record: dict, image_path: str | None) -> None:
+    """A camera of the program as a Blender camera: its pose (OpenCV axes: x right, y down, z forward;
+    Blender's camera looks along -z with y up), its focal length and principal point on the frame of
+    the photo, and the photo - undistorted by the program - behind it."""
+    from mathutils import Matrix
+
+    m = Matrix(record["matrix"])
+    rot = m.to_3x3() @ Matrix(((1, 0, 0), (0, -1, 0), (0, 0, -1)))
+    obj.matrix_world = Matrix.Translation(m.translation) @ rot.to_4x4()
+    cam = obj.data
+    w, h = float(record["width"]), float(record["height"])
+    side = max(w, h)
+    cam.sensor_fit = "AUTO"
+    cam.sensor_width = 36.0
+    cam.lens = 0.5 * (float(record["fx"]) + float(record["fy"])) * cam.sensor_width / side
+    cam.shift_x = (w / 2.0 - float(record["cx"])) / side
+    cam.shift_y = (float(record["cy"]) - h / 2.0) / side
+    cam.display_size = float(record.get("display_size") or 0.3)
+    if image_path and os.path.exists(image_path):
+        image = bpy.data.images.load(image_path, check_existing=True)
+        image.reload()
+        bg = cam.background_images[0] if len(cam.background_images) else cam.background_images.new()
+        bg.image = image
+        bg.frame_method = "STRETCH"
+        bg.alpha = 1.0
+        cam.show_background_images = True
+
+
+def sync_cameras(scene, manifest: dict, base: str) -> dict:
+    """The cameras of the manifest in the collection ``PPG Camere``: made, moved, or taken away. A
+    manifest without the list leaves them as they are."""
+    records = manifest.get("cameras")
+    done = {"cameras": 0, "removed": 0}
+    if records is None:
+        return done
+    have = {o.get("ppg_camera"): o for o in scene.objects if o.get("ppg_camera")}
+    coll = _collection(scene, "camera") if records else None
+    for record in records:
+        name = record.get("name")
+        if not name:
+            continue
+        sig = _camera_signature(record)
+        obj = have.pop(name, None)
+        if obj is not None and obj.get("ppg_sig") == sig:
+            continue
+        if obj is None:
+            obj = bpy.data.objects.new(name, bpy.data.cameras.new(name))
+            coll.objects.link(obj)
+        place_camera(obj, record, os.path.join(base, record["file"]) if record.get("file") else None)
+        obj["ppg_camera"] = name
+        obj["ppg_sig"] = sig
+        obj["ppg_photo"] = record.get("photo") or ""
+        done["cameras"] += 1
+    for obj in have.values():
+        data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is not None and data.users == 0:
+            bpy.data.cameras.remove(data)
+        done["removed"] += 1
+    size = manifest.get("resolution")
+    if records and size and not scene.get("ppg_resolution"):
+        # the frame of the photos, once: the user's own resolution is not touched afterwards
+        scene.render.resolution_x, scene.render.resolution_y = int(size[0]), int(size[1])
+        scene.render.resolution_percentage = 100
+        scene.render.pixel_aspect_x = scene.render.pixel_aspect_y = 1.0
+        scene["ppg_resolution"] = [int(size[0]), int(size[1])]
+    if done["cameras"] or done["removed"]:
+        log(f"cameras: {done['cameras']} placed, {done['removed']} removed")
     return done
 
 
@@ -326,6 +484,26 @@ class PPG_OT_choose(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class PPG_OT_send(bpy.types.Operator):
+    bl_idname = "ppg.send"
+    bl_label = "Invia al programma"
+    bl_description = ("The selected objects (or those changed here, when none is selected) to "
+                      "pyarchinit-photogrammetry, as the proxies of their units, with their volume")
+
+    def execute(self, context):
+        if not STATE.get("manifest"):
+            self.report({"WARNING"}, "no manifest")
+            return {"CANCELLED"}
+        objs = [o for o in context.selected_objects if o.type == "MESH"] or \
+            [o for o in context.scene.objects if o.type == "MESH" and o.get("ppg_detached")]
+        if not objs:
+            self.report({"WARNING"}, "select the proxies to send")
+            return {"CANCELLED"}
+        names = send(objs, STATE["manifest"], context.scene)
+        self.report({"INFO"}, f"{len(names)} sent to pyarchinit-photogrammetry")
+        return {"FINISHED"}
+
+
 class PPG_OT_emtools(bpy.types.Operator):
     bl_idname = "ppg.load_emtools"
     bl_label = "Carica l'em.json in EMtools"
@@ -356,6 +534,7 @@ class PPG_PT_panel(bpy.types.Panel):
         row.operator("ppg.live", text="Dal vivo: sì" if STATE.get("live") else "Dal vivo: no",
                      icon="PLAY" if STATE.get("live") else "PAUSE")
         row.operator("ppg.reload", text="", icon="FILE_REFRESH")
+        layout.operator("ppg.send", icon="EXPORT")
         layout.operator("ppg.load_emtools", icon="NODETREE")
         if STATE.get("error"):
             layout.label(text=STATE["error"], icon="ERROR")
@@ -369,7 +548,7 @@ class PPG_PT_panel(bpy.types.Panel):
         layout.operator("ppg.choose", text="Altro manifest...", icon="FILE_FOLDER")
 
 
-CLASSES = (PPG_OT_reload, PPG_OT_live, PPG_OT_choose, PPG_OT_emtools, PPG_PT_panel)
+CLASSES = (PPG_OT_reload, PPG_OT_live, PPG_OT_choose, PPG_OT_send, PPG_OT_emtools, PPG_PT_panel)
 
 
 def register() -> None:

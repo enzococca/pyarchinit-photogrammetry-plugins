@@ -17,8 +17,11 @@ class BlenderEmPane(QWidget):
     link_requested = Signal()  # link an em.json
     export_requested = Signal()  # write the EM project
     open_requested = Signal()  # Blender on the EM project
+    take_requested = Signal()  # the proxies sent from Blender into the chunk
+    proxy_requested = Signal()  # EMtools starts the proxies of the units picked
     live_toggled = Signal(bool)
     sync_toggled = Signal(bool)
+    cameras_toggled = Signal(bool)
     selected = Signal(list)  # the node ids picked in the table
 
     def __init__(self, parent=None):
@@ -52,7 +55,20 @@ class BlenderEmPane(QWidget):
         self.b_open = QPushButton(t("Apri in Blender", "Open in Blender"))
         self.b_open.setToolTip(t("Blender con i proxy e il rilievo, aggiornati dal vivo",
                                  "Blender with the proxies and the survey, kept up to date"))
-        for b in (self.b_link, self.b_export, self.b_open):
+        self.b_take = QPushButton(t("Importa da Blender", "Import from Blender"))
+        self.b_take.setToolTip(t("I proxy modellati in Blender e mandati con Invia al programma (pannello PPG): "
+                                 "nel chunk come proxy delle loro unità, con il volume",
+                                 "The proxies modelled in Blender and sent with Invia al programma (PPG panel): into "
+                                 "the chunk as the proxies of their units, with their volume"))
+        self.b_proxy = QPushButton(t("Proxy in Blender", "Proxy in Blender"))
+        self.b_proxy.setToolTip(t("EMtools crea il proxy delle unità scelte (un parallelepipedo grande quanto l'unità "
+                                  "disegnata, legato al suo nodo) da modellare in Blender; serve la sincronizzazione "
+                                  "e, in EMtools, Accept commands from EMStudio",
+                                  "EMtools makes the proxy of the units picked (a box as large as the unit drawn, bound "
+                                  "to its node) to model in Blender; it needs the sync and, in EMtools, Accept commands "
+                                  "from EMStudio"))
+        self.b_proxy.setEnabled(False)
+        for b in (self.b_link, self.b_export, self.b_open, self.b_take, self.b_proxy):
             bar.addWidget(b)
         lay.addWidget(holder)
         holder2 = QWidget()
@@ -67,8 +83,14 @@ class BlenderEmPane(QWidget):
                                  "in Blender seleziona la sua unità qui, e viceversa",
                                  "The selection shared with EMtools 1.6 (Sync in Blender, port 8788): a proxy picked in "
                                  "Blender selects its unit here, and back"))
+        self.c_cameras = QCheckBox(t("Camere e foto", "Cameras and photos"))
+        self.c_cameras.setToolTip(t("Le camere allineate in Blender, ciascuna con la sua foto raddrizzata dietro: "
+                                    "guardando da una camera, proxy e rilievo stanno sulla foto",
+                                    "The aligned cameras in Blender, each with its photo undistorted behind it: looking "
+                                    "through a camera, proxies and survey lie on the photo"))
         checks.addWidget(self.c_live)
         checks.addWidget(self.c_sync)
+        checks.addWidget(self.c_cameras)
         lay.addWidget(holder2)
         self.l_status = QLabel("")
         self.l_status.setWordWrap(True)
@@ -89,8 +111,11 @@ class BlenderEmPane(QWidget):
         self.b_link.clicked.connect(self.link_requested)
         self.b_export.clicked.connect(self.export_requested)
         self.b_open.clicked.connect(self.open_requested)
+        self.b_take.clicked.connect(self.take_requested)
+        self.b_proxy.clicked.connect(self.proxy_requested)
         self.c_live.toggled.connect(self.live_toggled)
         self.c_sync.toggled.connect(self.sync_toggled)
+        self.c_cameras.toggled.connect(self.cameras_toggled)
         self.table.itemSelectionChanged.connect(self._picked)
         self._holders = (holder,)
 
@@ -98,14 +123,21 @@ class BlenderEmPane(QWidget):
         for h in self._holders:
             h.setEnabled(not busy)
 
+    def set_commands(self, enabled: bool, tip: str = "") -> None:
+        """*Proxy in Blender* usable when EMtools is connected and accepts commands."""
+        self.b_proxy.setEnabled(bool(enabled))
+        if tip:
+            self.b_proxy.setStatusTip(tip)
+
     def set_matrix(self, text: str) -> None:
         self.l_matrix.setText(text)
 
     def set_status(self, text: str) -> None:
         self.l_status.setText(text)
 
-    def set_checks(self, live: bool, sync: bool) -> None:
-        for box, value in ((self.c_live, live), (self.c_sync, sync)):
+    def set_checks(self, live: bool, sync: bool, cameras: bool | None = None) -> None:
+        boxes = [(self.c_live, live), (self.c_sync, sync)] + ([(self.c_cameras, cameras)] if cameras is not None else [])
+        for box, value in boxes:
             box.blockSignals(True)
             box.setChecked(bool(value))
             box.blockSignals(False)

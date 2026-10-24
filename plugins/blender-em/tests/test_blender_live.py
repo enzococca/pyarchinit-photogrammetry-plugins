@@ -154,3 +154,91 @@ def test_the_names_of_the_matrix_in_blender(tmp_path):
     first = _run(exe, tmp_path, report["manifest"], "first")
     assert sorted(first["state"]) == ["1.US1", "1.US3", "1.USM2"]  # the names EMtools pairs with the units
     assert all(v["node_id"] for v in first["state"].values())
+
+
+ROUND = textwrap.dedent('''
+    import json, sys
+    sys.path.insert(0, {package!r})
+    import bpy
+    from mathutils import Vector
+    from bpy_extras.object_utils import world_to_camera_view
+    import blender_live as live
+
+    step, out = {step!r}, {{}}
+    if step == "first":
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        out["done"] = live.sync({manifest!r})
+        scene = bpy.context.scene
+        cam = bpy.data.objects["IMG_0000"]
+        dot = Vector({dot!r})
+        view = world_to_camera_view(scene, cam, dot)
+        out["view"] = [view.x, view.y, view.z]
+        out["resolution"] = [scene.render.resolution_x, scene.render.resolution_y]
+        out["background"] = cam.data.background_images[0].image.filepath if cam.data.background_images else ""
+        out["cameras"] = sorted(o.name for o in bpy.data.collections["PPG Camere"].objects)
+        # USM2 modelled by hand (5 cm higher), then sent to the program
+        obj = bpy.data.objects["USM2"]
+        for v in obj.data.vertices:
+            v.co.z += 0.05
+        out["sent"] = live.send([obj], {manifest!r})
+    else:
+        bpy.ops.wm.open_mainfile(filepath={blend!r})
+        out["done"] = live.sync({manifest!r})
+        obj = bpy.data.objects["USM2"]
+        out["usm2"] = {{"detached": bool(obj.get("ppg_detached")), "file": obj.get("ppg_file"),
+                        "count": len([o for o in bpy.data.objects if o.name.startswith("USM2")])}}
+    print("PPG_RESULT " + json.dumps(out))
+    bpy.ops.wm.save_as_mainfile(filepath={blend!r})
+''')
+
+
+def _round(exe, tmp_path, manifest, step, dot):
+    script = tmp_path / f"round_{step}.py"
+    script.write_text(ROUND.format(package=str(Path(blender.LIVE_SCRIPT).parent), manifest=str(manifest),
+                                   blend=str(tmp_path / "giro.blend"), step=step, dot=[float(v) for v in dot]),
+                      encoding="utf-8")
+    cmd = [exe, str(script)] if Path(exe).name.startswith("python") else \
+        [exe, "--background", "--factory-startup", "--python-exit-code", "1", "--python", str(script)]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+    line = next((ln for ln in r.stdout.splitlines() if ln.startswith("PPG_RESULT ")), None)
+    assert line is not None, (r.stdout + r.stderr)[-3000:]
+    return json.loads(line.split(" ", 1)[1])
+
+
+def test_cameras_and_the_way_back_in_blender(tmp_path):
+    exe = _bpy_runner()
+    if exe is None:
+        pytest.skip("no Blender: PPG_TEST_BLENDER is a Blender or a Python with bpy")
+    import numpy as np
+    from samples import DOT, add_cameras
+
+    from ppg_blender_em import inbox
+
+    doc = project(tmp_path)
+    add_cameras(doc.chunk, tmp_path / "foto", n=2)
+    folders = scene.project_folders(root=tmp_path / "Scavo")
+    report = scene.export_project(doc.chunk, folders, cameras=True, max_side=320)
+    shift = np.asarray(report["shift"])
+    first = _round(exe, tmp_path, report["manifest"], "first", DOT - shift)
+    assert first["cameras"] == ["IMG_0000", "IMG_0001"] and first["resolution"] == [320, 240]
+    assert first["background"].endswith("IMG_0000.jpg")
+    # Blender's camera sees the point where the pinhole of the undistorted photo sees it
+    record = scene.read_manifest(folders.base)["cameras"][0]
+    pose = np.asarray(record["matrix"])
+    p = np.linalg.inv(pose) @ np.append(DOT - shift, 1.0)
+    u = record["fx"] * p[0] / p[2] + record["cx"]
+    v = record["fy"] * p[1] / p[2] + record["cy"]
+    assert first["view"][0] == pytest.approx(u / 320, abs=0.004)  # the 1 % of fx and fy aside, a pixel
+    assert first["view"][1] == pytest.approx(1 - v / 240, abs=0.004)
+    assert first["view"][2] == pytest.approx(p[2], abs=1e-4)
+    # the proxy modelled in Blender comes into the chunk, and back in Blender it is adopted, not doubled
+    assert first["sent"] == ["USM2"] and [f.stem for f in inbox.pending(folders)] == ["USM2"]
+    taken = inbox.take(doc.chunk, folders, None)
+    assert taken["taken"] == ["USM2"] and taken["replaced"] == ["USM2"]
+    entry = next(e for e in doc.chunk.meta["proxies"] if e["name"] == "USM2")
+    assert entry["base"] == "blender" and entry["closed"] and entry["volume_m3"] > 0
+    assert "USM2" in scene.export_project(doc.chunk, folders)["written"]
+    again = _round(exe, tmp_path, report["manifest"], "again", DOT - shift)
+    assert again["done"]["adopted"] == ["USM2"] and again["done"]["detached"] == []
+    assert again["usm2"] == {"detached": False, "file": "EM/proxies/USM2.glb", "count": 1}

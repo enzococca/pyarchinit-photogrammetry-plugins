@@ -13,10 +13,14 @@ same way, as one more client, and speaks the same wire, version 2: every message
 * ``select`` (``{"node_id", "node_ids"}``), both ways: a proxy picked in Blender selects its unit
   here, a unit picked here selects and frames its proxy in Blender (EMtools must *accept* the
   selection, its default);
-* ``host_info``: what EMtools says of itself (tool, document, whether it accepts commands).
+* ``host_info``: what EMtools says of itself (tool, document, whether it accepts commands);
+* ``command`` -> ``command_result``: one verb only, ``create_proxy_for_unit`` - EMtools starts the
+  proxy of a unit (a box at a place and of a size, bound to its node in the graph) for the user to
+  model, when the Blender user has allowed commands (*Accept commands from EMStudio*). The id of a
+  command is the one EMtools and EMStudio mint (:func:`make_cmd_id`), so a command sent twice makes
+  one proxy.
 
-Graph edits (``op``) and commands are EMtools' and EMStudio's business: this client never sends
-them. The socket is read in a thread; ``on_message(kind, payload)`` and ``on_state(state, text)``
+Graph edits (``op``) are EMtools' and EMStudio's business: this client never sends them. The socket is read in a thread; ``on_message(kind, payload)`` and ``on_state(state, text)``
 are called from that thread (the plugin passes them on to the interface thread). Nothing outside
 the standard library: the packaged program has no ``websockets``.
 """
@@ -24,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import uuid
 import json
 import os
 import select
@@ -37,6 +42,9 @@ SOURCE = "pyarchinit-photogrammetry"
 HOST = "127.0.0.1"
 PORT = 8788
 _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+# the namespace of the ids of the commands, shared by EMtools (sync_manager/commands.py) and EMStudio
+CMD_NAMESPACE = uuid.UUID("6f1f2f4a-3f2a-5c7e-9d1b-4a6c8e2f0b31")
+PROXY_VERB = "create_proxy_for_unit"
 
 
 class WireError(ValueError):
@@ -48,6 +56,12 @@ def envelope(kind: str, payload: dict | None = None, source: str = SOURCE, **rou
     message.update({k: v for k, v in routing.items() if v is not None})
     message["payload"] = dict(payload or {})
     return message
+
+
+def make_cmd_id(verb: str, target: str, params: dict | None = None) -> str:
+    """The id of a command, as EMtools mints it: the same command, the same id (and one proxy)."""
+    payload = json.dumps(params or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return str(uuid.uuid5(CMD_NAMESPACE, f"{verb}|{target}|{payload}"))
 
 
 def read(message) -> tuple[str, dict]:
@@ -278,6 +292,14 @@ class SyncClient:
     def request_snapshot(self) -> bool:
         return self.send("request_snapshot", {})
 
+    def command(self, verb: str, target: str, params: dict | None = None) -> str | None:
+        """A command to EMtools; its id (the ``cmd_id`` of the ``command_result`` that answers), None when
+        not connected."""
+        params = dict(params or {})
+        cmd_id = make_cmd_id(verb, target, params)
+        sent = self.send("command", {"cmd_id": cmd_id, "verb": verb, "target": str(target), "params": params})
+        return cmd_id if sent else None
+
     def _run(self) -> None:
         while not self._stop.is_set():
             self._set("connecting", f"{self.host}:{self.port}")
@@ -345,4 +367,5 @@ def wait_for(predicate, timeout: float = 5.0, step: float = 0.02) -> bool:
     return bool(predicate())
 
 
-__all__ = ["WIRE", "SOURCE", "HOST", "PORT", "WireError", "envelope", "read", "WebSocket", "SyncClient", "wait_for"]
+__all__ = ["WIRE", "SOURCE", "HOST", "PORT", "CMD_NAMESPACE", "PROXY_VERB", "WireError", "envelope", "make_cmd_id", "read",
+           "WebSocket", "SyncClient", "wait_for"]

@@ -136,3 +136,11 @@ def test_a_file_of_another_program_is_left_alone(tmp_path):
 def test_names_that_cannot_be_files(tmp_path):
     assert scene.safe_name("1.US12") == "1.US12"
     assert scene.safe_name("A/B.US1") is None and scene.safe_name("..") is None and scene.safe_name("") is None
+
+
+def test_vertex_colours_are_written_linear():
+    # glTF keeps vertex colours linear: the sRGB of a photo, written as it is, looks pale in Blender
+    rgba = np.array([[0, 128, 255, 200], [10, 188, 64, 255]], np.uint8)
+    lin = scene.linear_colours(rgba)
+    assert lin.dtype == np.uint8 and lin[:, 3].tolist() == [200, 255]  # alpha is not a colour
+    assert lin[0, :3].tolist() == [0, 55, 255] and lin[1, :3].tolist() == [1, 128, 13]

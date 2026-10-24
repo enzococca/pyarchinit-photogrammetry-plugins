@@ -101,3 +101,47 @@ def emjson(path, units=UNITS, shift=None, site: str = "Scavo", container: bool =
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=1, ensure_ascii=False), encoding="utf-8")
     return ids
+
+
+def look_down(centre, height: float = 3.0, tilt: float = 0.0):
+    """``world_from_cam`` (OpenCV axes: x right, y down, z forward) of a camera ``height`` above
+    ``centre`` looking down, tilted ``tilt`` radians about the x axis."""
+    c, s = np.cos(tilt), np.sin(tilt)
+    tilt_m = np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+    r = np.array([[1.0, 0, 0], [0, -1.0, 0], [0, 0, -1.0]]) @ tilt_m  # x east, y south, z down
+    t = np.eye(4)
+    t[:3, :3] = r
+    t[:3, 3] = np.asarray(centre, float) + [0.0, 0.0, height]
+    return t
+
+
+def add_cameras(chunk, folder, n: int = 2, width: int = 640, height: int = 480, k1: float = -0.08):
+    """``n`` aligned cameras over the excavation with a sensor of radial distortion, and their photos
+    (noise, with a white dot where the corner of the first proxy - DOT - is seen, as the lens sees it)."""
+    import cv2
+
+    from pyarchinit_photogrammetry.core.camera import Camera, Sensor
+
+    folder.mkdir(parents=True, exist_ok=True)
+    f = 0.9 * width
+    sensor = Sensor(0, "test", width, height, "OPENCV", [f, f * 1.01, width / 2 + 7.0, height / 2 - 5.0, k1, 0.01, 0.0, 0.0])
+    chunk.sensors = {0: sensor}
+    t = np.asarray(chunk.transform, float)
+    inv = np.linalg.inv(t)
+    rng = np.random.default_rng(5)
+    chunk.cameras = []
+    for k in range(n):
+        world = look_down((ORIGIN[0] + 1.5 + 1.2 * k, ORIGIN[1] + 1.5, ORIGIN[2]), 3.0, 0.15 * k)
+        internal = inv @ world
+        internal[:3, :3] /= np.cbrt(np.linalg.det(internal[:3, :3]))  # a rotation in the frame of the chunk
+        cam = Camera(k, f"IMG_{k:04d}.JPG", str(folder / f"IMG_{k:04d}.JPG"), 0, transform=internal)
+        image = rng.integers(0, 90, (height, width, 3), dtype=np.uint8)
+        px, depth = cam.project(sensor, (inv @ np.append(DOT, 1.0))[:3][None])
+        if depth[0] > 0:
+            cv2.circle(image, (int(round(px[0, 0] - 0.5)), int(round(px[0, 1] - 0.5))), 3, (255, 255, 255), -1)
+        cv2.imwrite(cam.path, image)
+        chunk.cameras.append(cam)
+    return sensor
+
+
+DOT = np.array([ORIGIN[0] + 1.4, ORIGIN[1] + 2.5, ORIGIN[2] + 0.22])  # a point of the survey seen by the cameras

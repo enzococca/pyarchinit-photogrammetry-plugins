@@ -136,6 +136,16 @@ def _replace(tmp: Path, path: Path) -> None:
     os.replace(tmp, path)
 
 
+def linear_colours(rgba) -> np.ndarray:
+    """Vertex colours as glTF wants them, linear: the colours of a photo are sRGB, and a viewer that
+    follows the standard (Blender does) shows sRGB values written as they are paler than they are."""
+    c = np.asarray(rgba, float)[:, :3] / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    out = np.asarray(rgba).copy()
+    out[:, :3] = np.clip(np.round(lin * 255.0), 0, 255).astype(out.dtype)
+    return out
+
+
 def write_proxy_glb(path: Path, name: str, vertices, faces, shift, color: str | None = None,
                     extras: dict | None = None) -> Path:
     """One proxy as a glTF binary: a node and a mesh named ``name``, a material of ``color``, the
@@ -173,7 +183,10 @@ def write_survey_glb(chunk, path: Path, name: str, shift, extras: dict | None = 
         for k, node in enumerate(loaded.graph.nodes_geometry):
             transform, geom_name = loaded.graph[node]
             label = name if k == 0 else f"{name}.{k:03d}"
-            out.add_geometry(loaded.geometry[geom_name], node_name=label, geom_name=label, transform=move @ transform)
+            geom = loaded.geometry[geom_name]
+            if getattr(geom.visual, "kind", None) == "vertex":
+                geom.visual.vertex_colors = linear_colours(geom.visual.vertex_colors)
+            out.add_geometry(geom, node_name=label, geom_name=label, transform=move @ transform)
         out.metadata = {"ppg": dict(extras or {})}
         data = out.export(file_type="glb")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,12 +247,16 @@ def epsg_of(crs: str | None) -> str | None:
 
 
 def export_project(chunk, folders: Folders, matrix: Matrix | None = None, survey: bool = True,
-                   node_uuids: dict | None = None, progress=None) -> dict:
+                   node_uuids: dict | None = None, progress=None, cameras: bool | None = None,
+                   max_side: int = 2048) -> dict:
     """The proxies of ``chunk`` (``chunk.meta["proxies"]``) and its model into ``folders``, and the
-    manifest. Returns the report: ``written``, ``kept`` (unchanged), ``foreign`` (a file of the same
-    name another program wrote or changed: left alone), ``removed`` (written here before, gone from
-    the chunk), ``not_in_matrix``, ``ambiguous`` (``{proxy: candidates}``), ``unnamed`` (a unit
-    name that cannot be a file name), ``manifest``, ``shift``."""
+    manifest. ``cameras``: the aligned cameras with their undistorted photos (:mod:`.cameras`, the
+    photos ``max_side`` pixels on the long side) when True, none when False, those of the manifest
+    before when None (the live update does not undistort photos again). Returns the report:
+    ``written``, ``kept`` (unchanged), ``foreign`` (a file of the same name another program wrote or
+    changed: left alone), ``removed`` (written here before, gone from the chunk), ``not_in_matrix``,
+    ``ambiguous`` (``{proxy: candidates}``), ``unnamed`` (a unit name that cannot be a file name),
+    ``cameras`` (``{"written", "kept", "missing", "removed"}``), ``manifest``, ``shift``."""
     import trimesh
 
     progress = progress or (lambda *a: None)
@@ -319,6 +336,24 @@ def export_project(chunk, folders: Folders, matrix: Matrix | None = None, survey
         if before.get("stat") == _stat(path) or before.get("sha1") == sha1(path):
             path.unlink()
             report["removed"].append(before.get("name") or rel)
+    camera_records, resolution = old.get("cameras"), old.get("resolution")
+    if [float(v) for v in old.get("shift") or []] != shift and camera_records:
+        cameras = True if cameras is None else cameras  # another shift: the cameras move too
+    if cameras:
+        from .cameras import blender_cameras
+
+        label = _folder_name(chunk.label)
+        made = blender_cameras(chunk, folders.base, folders.survey / label / "foto", shift, max_side,
+                               old=camera_records, progress=lambda f, m: progress(0.75 + 0.2 * f, m))
+        camera_records, resolution = made["cameras"], made["resolution"]
+        report["cameras"] = {k: made[k] for k in ("written", "kept", "missing", "removed")}
+    elif cameras is False and camera_records:
+        for r in camera_records:  # the photos written for Blender go with their cameras
+            f = folders.base / str(r.get("file") or "")
+            if r.get("file") and f.exists():
+                f.unlink()
+        report["cameras"] = {"written": [], "kept": [], "missing": [], "removed": [r.get("name") for r in camera_records]}
+        camera_records, resolution = [], None
     progress(0.95, "manifest")
     doc = getattr(chunk, "document", None)
     path = folders.base / MANIFEST
@@ -333,6 +368,8 @@ def export_project(chunk, folders: Folders, matrix: Matrix | None = None, survey
         "graph_name": matrix.name if matrix is not None else None,
         "objects": objects,
     }
+    if camera_records is not None:
+        manifest["cameras"], manifest["resolution"] = camera_records, resolution
     unchanged = ("revision", "written")
     if old and {k: v for k, v in old.items() if k not in unchanged} == \
             {k: v for k, v in manifest.items() if k not in unchanged}:
@@ -349,5 +386,49 @@ def export_project(chunk, folders: Folders, matrix: Matrix | None = None, survey
     return report
 
 
+def drawn_unit(chunk, unit):
+    """The polygon of ``unit`` (of the matrix) drawn in the chunk (``chunk.meta["drawings"]``), or None."""
+    from pyarchinit_photogrammetry.archaeo.stratigraphy import UnitPolygon
+
+    def same(a, b):
+        return str(a or "").strip().lower() == str(b or "").strip().lower()
+
+    for d in ((chunk.meta or {}).get("drawings") or {}).get("units") or []:
+        try:
+            u = UnitPolygon.from_dict(d)
+        except Exception:  # noqa: BLE001 - a drawing that does not read is not this unit
+            continue
+        if same(u.us, unit.us) and same(u.tipo or "US", unit.tipo) and (not u.area or not unit.area
+                                                                      or same(u.area, unit.area)):
+            return u
+    return None
+
+
+def proxy_start(chunk, unit, shift) -> dict:
+    """Where EMtools starts the proxy of ``unit`` (``create_proxy_for_unit``): a box as wide as the
+    polygon of the unit drawn in the chunk, in the middle of it, its top on the DEM, in the coordinates
+    of Blender (the world less ``shift``); ``{}`` when the unit is not drawn (EMtools puts it at the 3D
+    cursor)."""
+    poly = drawn_unit(chunk, unit)
+    if poly is None or poly.geometry.is_empty:
+        return {}
+    x0, y0, x1, y1 = poly.geometry.bounds
+    size = max(0.1, float(max(x1 - x0, y1 - y0)))
+    centre = poly.geometry.representative_point()
+    z = None
+    dem = chunk.dem_path
+    if dem is not None and dem.exists():
+        import rasterio
+
+        with rasterio.open(dem) as src:
+            value = next(src.sample([(centre.x, centre.y)]))[0]
+            if src.nodata is None or value != src.nodata:
+                z = float(value)
+    shift = np.asarray(shift, float)
+    location = [centre.x - shift[0], centre.y - shift[1], (z - size / 2.0 - shift[2]) if z is not None else 0.0]
+    return {"location": [round(float(v), 4) for v in location], "size": round(size, 4)}
+
+
 __all__ = ["Folders", "MANIFEST", "find_project_root", "project_folders", "export_project", "read_manifest",
+           "drawn_unit", "proxy_start",
            "write_proxy_glb", "write_survey_glb", "to_gltf", "from_gltf", "safe_name", "epsg_of"]

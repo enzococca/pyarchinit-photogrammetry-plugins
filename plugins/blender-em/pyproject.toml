@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-blender-em"
-version = "0.1.0"
+version = "0.1.2"
 description = "pyarchinit-photogrammetry plugin: the unit proxies and the survey in Blender and in EMtools' Extended Matrix (em.json), kept up to date, and the selection shared with EMtools 1.6"
 readme = "README.md"
 license = "GPL-2.0-or-later"
