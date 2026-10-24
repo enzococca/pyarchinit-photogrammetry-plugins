@@ -103,6 +103,26 @@
       "sha256": "154178b22afb45477fad916dff9ae59bb82302341119fe31c84ca2116f98810d"
     },
     {
+      "name": "sentinel2",
+      "version": "0.1.0",
+      "title": "Sentinel-2",
+      "description": "Sentinel-2 time series over the survey to look for crop marks: scenes found in a STAC catalog (Earth Search by default), the window of the area read from the public COGs, clouds and shadows masked, NDVI, NDRE and NDMI per date, monthly series and chart, seasonal composites, crop-mark maps on the orthomosaic, GeoTIFF and CSV, in QGIS",
+      "i18n": {
+        "it": {
+          "title": "Sentinel-2",
+          "description": "Serie temporali Sentinel-2 sul rilievo per cercare i crop mark: scene da un catalogo STAC (Earth Search), la finestra dell'area letta dai COG pubblici, nuvole e ombre mascherate, NDVI, NDRE e NDMI per data, serie mensile e grafico, compositi stagionali, mappe dei crop mark sull'ortofoto, GeoTIFF e CSV, in QGIS"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/sentinel2",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.3.3",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/sentinel2-v0.1.0/ppg_sentinel2-0.1.0-py3-none-any.whl",
+      "sha256": "ce0d6542d168d96ebf217b3860fabd3323ee080d1021f09322651955f95ec5f5"
+    },
+    {
       "name": "spirula",
       "version": "0.1.2",
       "title": "Spirula",
