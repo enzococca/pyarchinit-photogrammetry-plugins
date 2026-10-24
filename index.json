@@ -20,7 +20,7 @@
       "min_app": "1.3.4",
       "requires": [],
       "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/blender-em-v0.1.2/ppg_blender_em-0.1.2-py3-none-any.whl",
-      "sha256": "6872428d230fce9bc9c9d56ba5ed09625ec92a7d97af8c8a138b1af5e40c8db9"
+      "sha256": "c06ccef304d5690b8066e9f2b0ee611faef8c86351d2571492c4b24ac04c328b"
     },
     {
       "name": "geoarchaeology",
