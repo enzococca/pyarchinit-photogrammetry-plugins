@@ -73,7 +73,7 @@ anno dopo anno.
   copie vanno nel progetto QGIS del programma. *Esporta tutto* scrive lo stack di ogni indice e data
   (un GeoTIFF), la serie (CSV per data e per mese), il grafico e i prodotti; *File > Esporta* ha la
   serie (CSV) e lo stack (GeoTIFF).
-* Il pannello **Sentinel-2** del dock del progetto fa tutto, in background con la barra di
+* Il pannello **Sentinel-2** (con il programma 1.3.4 un pannello a sé accanto all'area di lavoro, da *Vista > Pannelli*; prima una scheda del dock del progetto) fa tutto, in background con la barra di
   avanzamento (annulla ferma le letture in corso); *Plugin > Sentinel-2* ha le azioni principali.
 * **Nell'albero del progetto** (programma 1.3.4 o successivo): un nodo *Sentinel-2* sotto ogni chunk
   su cui il plugin ha lavorato, con le acquisizioni lette (data e parte serena dell'area), gli indici

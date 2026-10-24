@@ -68,7 +68,7 @@ fields show them: two satellites pass every five days, year after year.
   project of the program. *Export everything* writes the stack of every index and date (one
   GeoTIFF), the series (CSV per date and per month), the chart and the products; *File > Esporta*
   has the series (CSV) and the stack (GeoTIFF).
-* The **Sentinel-2** pane of the project dock does it all, in the background with the progress
+* The **Sentinel-2** pane (with the program 1.3.4 a pane of its own beside the workspace, from *Vista > Pannelli*; before, a tab of the project dock) does it all, in the background with the progress
   bar (cancel stops the readings under way); *Plugin > Sentinel-2* has the main actions.
 * **In the project's tree** (program 1.3.4 or later): a *Sentinel-2* node under every chunk the
   plugin worked on, with the acquisitions read (date and clear part of the area), the indices by

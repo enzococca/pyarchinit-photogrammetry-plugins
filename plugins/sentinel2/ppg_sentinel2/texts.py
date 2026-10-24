@@ -24,6 +24,18 @@ def t(it: str, en: str) -> str:
     return en if lang() == "en" else it
 
 
+def plural(n, one: str, many: str) -> str:
+    """``one`` or ``many`` (already in the language of the interface, see :func:`t`) for ``n``
+    things, ``{0}`` the number: ``plural(1, "{0} data", "{0} date")`` is "1 data"."""
+    text = one if abs(float(n)) == 1 else many
+    return text.format(n) if "{0}" in text else text
+
+
+def clear_dates_left(n: int) -> str:
+    """``1 data serena resta``, ``3 date serene restano`` (after the cache was emptied)."""
+    return plural(n, t("{0} data serena resta", "{0} clear date left"), t("{0} date serene restano", "{0} clear dates left"))
+
+
 INDEX_NAMES = {
     "NDVI": ("NDVI (vigore della vegetazione)", "NDVI (vegetation vigour)"),
     "NDRE": ("NDRE (clorofilla, bordo del rosso)", "NDRE (chlorophyll, red edge)"),

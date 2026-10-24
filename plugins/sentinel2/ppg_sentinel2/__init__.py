@@ -15,7 +15,9 @@ them, weaker or greener in some seasons).
   *Stack Sentinel-2 (GeoTIFF)*;
 * ``ppg plugin sentinel2 search|fetch|compute|series|composite|cropmarks|list|export|remove|remove-scene PROJECT ...``;
 * from program 1.3.4, a *Sentinel-2* node per chunk in the project's tree: the acquisitions read, the
-  indices by date, the series, the composites and the crop-mark maps, shown by a double click.
+  indices by date, the series, the composites and the crop-mark maps, shown by a double click; and
+  the pane a dock of its own (``context.add_pane``, ``show_pane``), the chunks and the rasters shown
+  with ``activate_chunk`` and ``show_raster`` (older programs: the tab and the window's own methods).
 
 What is read and made lives in ``<chunk data>/sentinel2/`` and in ``chunk.meta["sentinel2"]``.
 Contains modified Copernicus Sentinel data: the notice goes into every file made.
@@ -28,9 +30,9 @@ from pathlib import Path
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-from .texts import layer_name, t
+from .texts import clear_dates_left, layer_name, plural, t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 class Sentinel2Plugin(Plugin):
@@ -80,7 +82,7 @@ class Sentinel2Plugin(Plugin):
             view = getattr(window, "ortho_view", None)
             if view is not None and layer_name() in getattr(view, "layers", {}):
                 view.remove_layer(layer_name())
-            if self.pane is not None:
+            if self.pane is not None and not hasattr(self.context, "add_pane"):  # 1.3.4: the context removes it
                 tabs = getattr(window, "left_tabs", None)
                 if tabs is not None:
                     k = tabs.indexOf(self.pane)
@@ -101,7 +103,9 @@ class Sentinel2Plugin(Plugin):
             ic = None
         self.pane = Sentinel2Pane()
         tabs = getattr(window, "left_tabs", None)
-        if tabs is not None:
+        if hasattr(self.context, "add_pane"):  # program 1.3.4: a dock of its own, beside the workspace
+            self.context.add_pane(self.pane, "Sentinel-2", ic if ic is not None else "globe", area="right")
+        elif tabs is not None:
             if ic is not None:
                 tabs.addTab(self.pane, ic, "Sentinel-2")
             else:
@@ -214,6 +218,9 @@ class Sentinel2Plugin(Plugin):
     def show_pane(self) -> None:
         window = self.context.window
         if window is None or self.pane is None:
+            return
+        if hasattr(self.context, "show_pane"):  # program 1.3.4: also when the user closed or floated it
+            self.context.show_pane(self.pane)
             return
         tabs = getattr(window, "left_tabs", None)
         if tabs is not None:
@@ -485,7 +492,9 @@ class Sentinel2Plugin(Plugin):
             return False
         if view.tr is None:
             chunk = self._chunk()
-            if chunk is not None and (chunk.orthomosaic_path or chunk.dem_path) and hasattr(window, "_show_raster"):
+            if hasattr(self.context, "show_raster"):  # program 1.3.4
+                self.context.show_raster()
+            elif chunk is not None and (chunk.orthomosaic_path or chunk.dem_path) and hasattr(window, "_show_raster"):
                 window._show_raster("ortho" if chunk.orthomosaic_path else "dem")
             if view.tr is None:
                 self.show_frame()
@@ -731,14 +740,20 @@ class Sentinel2Plugin(Plugin):
         self._hide_if_shows(chunk, chosen, with_products, affected)
 
         def done(r):
-            text = t("Cache: {0} acquisizioni tolte, {1:.1f} MB liberati; {2} date serene restano",
-                     "Cache: {0} acquisitions out, {1:.1f} MB freed; {2} clear dates left").format(
-                len(r["removed"]), r["bytes"] / 1e6, r["computed"].get("dates", 0))
+            n = len(r["removed"])
+            text = ("Cache: " + plural(n, t("{0} acquisizione tolta", "{0} acquisition out"),
+                                       t("{0} acquisizioni tolte", "{0} acquisitions out"))
+                    + t(", {0:.1f} MB liberati; ", ", {0:.1f} MB freed; ").format(r["bytes"] / 1e6)
+                    + clear_dates_left(r["computed"].get("dates", 0)))
             if r["products_removed"]:
-                text += t("; {0} prodotti rimossi", "; {0} products removed").format(len(r["products_removed"]))
+                text += "; " + plural(len(r["products_removed"]), t("{0} prodotto rimosso", "{0} product removed"),
+                                      t("{0} prodotti rimossi", "{0} products removed"))
             if r["products_marked"]:
-                text += t("; {0} prodotti segnati come fatti da date non più in cache",
-                          "; {0} products marked as made from dates no longer in the cache").format(len(r["products_marked"]))
+                text += "; " + plural(len(r["products_marked"]),
+                                      t("{0} prodotto segnato come fatto da date non più in cache",
+                                        "{0} product marked as made from dates no longer in the cache"),
+                                      t("{0} prodotti segnati come fatti da date non più in cache",
+                                        "{0} products marked as made from dates no longer in the cache"))
             self._status(text)
 
         self._run(t("Sentinel-2: cache", "Sentinel-2: cache"),
@@ -918,9 +933,12 @@ class Sentinel2Plugin(Plugin):
         if self._chunk() is chunk:
             return True
         window = self.context.window if self.context else None
-        activate = getattr(window, "_activate_chunk", None) if window is not None else None
-        if activate is not None:
-            activate(chunk)
+        if hasattr(self.context, "activate_chunk") and window is not None:  # program 1.3.4
+            self.context.activate_chunk(chunk)
+        else:
+            activate = getattr(window, "_activate_chunk", None) if window is not None else None
+            if activate is not None:
+                activate(chunk)
         if self._chunk() is chunk:
             return True
         self._say("Sentinel-2", t("Rendi attivo il chunk «{0}» per vederlo.", "Make the chunk «{0}» the active one to "

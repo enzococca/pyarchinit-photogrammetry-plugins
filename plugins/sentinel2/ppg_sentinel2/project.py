@@ -28,7 +28,7 @@ import numpy as np
 
 from . import analysis, reader, stac
 from .area import Area, Grid, NotPlaced, area_mask, chunk_crs, grid_of
-from .texts import lang, product_name, t
+from .texts import clear_dates_left, lang, plural, product_name, t
 
 FOLDER = "sentinel2"
 CHUNK_CELL_M = 2.5  # the cell of the copies on the chunk's grid: a quarter of a 10 m pixel
@@ -338,16 +338,18 @@ def remove_scenes(chunk, ids=None, with_products: bool = False, progress=None) -
         for pid in affected:
             remove(chunk, pid)
             gone.append(pid)
-    progress(0.2, t("{0} acquisizioni tolte dalla cache ({1:.1f} MB)", "{0} acquisitions out of the cache ({1:.1f} MB)")
-             .format(len(targets), freed / 1e6))
+    progress(0.2, plural(len(targets), t("{0} acquisizione tolta dalla cache", "{0} acquisition out of the cache"),
+                         t("{0} acquisizioni tolte dalla cache", "{0} acquisitions out of the cache"))
+             + " ({0:.1f} MB)".format(freed / 1e6))
     try:
         computed = compute(chunk, progress.sub(0.2, 0.8))
     except NoData:
         clear_series(chunk)
         computed = {"dates": 0}
     marked = mark_missing(chunk)
-    progress(1.0, t("Cache: {0} file cancellati, {1} date serene restano", "Cache: {0} files deleted, {1} clear "
-                    "dates left").format(files, computed.get("dates", 0)))
+    progress(1.0, "Cache: " + plural(files, t("{0} file cancellato", "{0} file deleted"),
+                                     t("{0} file cancellati", "{0} files deleted")) + ", "
+             + clear_dates_left(computed.get("dates", 0)))
     return {"removed": targets, "files": files, "bytes": freed, "products_removed": gone,
             "products_marked": [pid for pid in marked if pid in affected], "computed": computed}
 

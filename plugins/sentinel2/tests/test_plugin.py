@@ -100,6 +100,22 @@ def _wait(window, app_, seconds: float = 60.0) -> None:
         app_.processEvents()
 
 
+def _in_window(w, pane) -> bool:
+    """The pane is in the window: a dock of its own (program 1.3.4), else a tab of the project dock."""
+    if hasattr(w, "panes"):
+        return w.panes.dock(pane) is not None
+    return w.left_tabs.indexOf(pane) >= 0
+
+
+def test_one_and_many_in_the_messages():
+    from ppg_sentinel2.texts import clear_dates_left, plural
+
+    assert plural(1, "{0} acquisizione tolta", "{0} acquisizioni tolte") == "1 acquisizione tolta"
+    assert plural(3, "{0} acquisizione tolta", "{0} acquisizioni tolte") == "3 acquisizioni tolte"
+    assert clear_dates_left(1) in ("1 data serena resta", "1 clear date left")
+    assert clear_dates_left(0) in ("0 date serene restano", "0 clear dates left")
+
+
 def test_the_pane_in_the_window(tmp_path, monkeypatch):
     pytest.importorskip("PySide6")
     from PySide6.QtCore import QDate, QSettings
@@ -127,9 +143,16 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
     plugin = _plugin(tmp_path, w_)
     try:
         p = plugin.pane
-        assert p is not None and w_.left_tabs.indexOf(p) >= 0 and plugin._qgis_entries in w_.qgis_providers
-        plugin.show_pane()
-        assert w_.left_tabs.currentWidget() is p
+        assert p is not None and _in_window(w_, p) and plugin._qgis_entries in w_.qgis_providers
+        if hasattr(plugin.context, "add_pane"):  # program 1.3.4: a dock of its own, on the right
+            dock = w_.panes.groups["right"].dock(p)
+            assert dock is not None and dock.objectName() == "pane_plugin_sentinel2"
+            dock.close()
+            plugin.show_pane()  # back also when the user closed it
+            assert not dock.isHidden()
+        else:
+            plugin.show_pane()
+            assert w_.left_tabs.currentWidget() is p
         # search: the area from the DEM, the acquisitions in the table
         p.d_start.setDate(QDate(2023, 1, 1))
         p.d_end.setDate(QDate(2023, 12, 31))
@@ -234,7 +257,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         assert not errors, errors
         plugin.deactivate()
         plugin.context.release()  # what the program does after deactivate()
-        assert w_.left_tabs.indexOf(p) < 0 and plugin._qgis_entries not in w_.qgis_providers
+        assert not _in_window(w_, p) and plugin._qgis_entries not in w_.qgis_providers
         assert "Sentinel-2: area" not in w_.ortho_view.layers
         w_.refresh_all()  # nothing of the plugin told any more; the view drawn again without the area
         assert "Sentinel-2: area" not in w_.ortho_view.layers

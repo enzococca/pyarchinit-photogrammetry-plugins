@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-sentinel2"
-version = "0.1.0"
+version = "0.1.1"
 description = "pyarchinit-photogrammetry plugin: Sentinel-2 time series over the survey to look for crop marks - STAC search, the window of the area read from the public COGs, clouds masked with the scene classification, NDVI, NDRE and NDMI per date, monthly series and chart, seasonal composites, crop-mark maps"
 readme = "README.md"
 license = "GPL-2.0-or-later"
