@@ -299,6 +299,58 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------ removing, cells, names
+def test_the_pane_follows_the_project_after_the_plugin_is_turned_on_again(tmp_path):
+    """A plugin turned off and on again is a new instance: the window refreshes its pane, not the old
+    one's - with the program's notice (1.3.3) and with the wrapper of older programs."""
+    pytest.importorskip("PySide6")
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("PPG_RENDERER", "software")
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_terrain import TerrainPlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.plugins import Context
+
+    class Counting(TerrainPlugin):
+        def refresh_pane(self):
+            self.calls = getattr(self, "calls", 0) + 1
+            super().refresh_pane()
+
+    class OldContext(Context):  # a program before 1.3.3
+        @property
+        def on_refresh(self):
+            raise AttributeError("on_refresh")
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
+    QApplication.instance() or QApplication([])
+    from pyarchinit_photogrammetry.gui import main_window as mwmod
+
+    doc, _ch, _tr = _dem(tmp_path)
+    app.document = doc
+    for context_class in (Context, OldContext):
+        w_ = mwmod.MainWindow(doc, autoconnect=False)
+        w_.runner.show_dialog = False
+        try:
+            first = Counting()
+            first.activate(context_class("terrain", tmp_path / "plugin", window=w_))
+            first.deactivate()
+            first.context.release()  # what the program does after deactivate()
+            second = Counting()
+            second.activate(context_class("terrain", tmp_path / "plugin", window=w_))
+            before = (first.calls, second.calls)
+            w_.refresh_all()
+            assert (first.calls, second.calls) == (before[0], before[1] + 1), context_class.__name__
+            second.deactivate()
+            second.context.release()
+        finally:
+            w_.setWindowModified(False)
+            w_.close()
+
+
 def test_remove_keeps_a_geopackage_another_product_uses(tmp_path):
     _have_wbt(tmp_path)
     doc, ch, tr = _dem(tmp_path)

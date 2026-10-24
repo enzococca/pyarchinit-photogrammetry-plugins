@@ -26,7 +26,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import wbt
 from .texts import layer_name, t
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 VECTOR_LAYERS = {"hydrology.gpkg": ("reticolo", "bacini"), "depressioni.gpkg": ("depressioni",),
                  "rilievi.gpkg": ("rilievi",)}  # the layers of the view drawn from each GeoPackage
 
@@ -62,10 +62,17 @@ class TerrainPlugin(Plugin):
         window = context.window
         if window is not None:
             self._install_pane(window)
+            if hasattr(context, "on_refresh"):  # the pane follows the active chunk (program 1.3.3)
+                context.on_refresh(self.refresh_pane)
+            else:
+                self._hook_refresh(window)
 
     def deactivate(self) -> None:
         self.hide_overlay()
         window = self.context.window if self.context else None
+        instances = getattr(window, "_terrain_instances", None) if window is not None else None
+        if instances and self in instances:
+            instances.remove(self)
         if window is not None and self.pane is not None:
             tabs = getattr(window, "left_tabs", None)
             if tabs is not None:
@@ -105,15 +112,24 @@ class TerrainPlugin(Plugin):
         self.pane.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         self.refresh_pane()
-        original = getattr(window, "refresh_all", None)
-        if original is not None and not getattr(window, "_terrain_hooked", False):
-            def refresh_all(*args, _orig=original, **kwargs):
-                result = _orig(*args, **kwargs)
-                self.refresh_pane()
-                return result
 
-            window.refresh_all = refresh_all
-            window._terrain_hooked = True
+    def _hook_refresh(self, window) -> None:
+        """Programs before 1.3.3 have no ``context.on_refresh``: the window's ``refresh_all`` is wrapped
+        once and calls the pane of every instance of the plugin active now (a plugin turned off and on
+        again is a new instance; before 0.1.2 the first one kept being called)."""
+        instances = getattr(window, "_terrain_instances", None)
+        if instances is None:
+            window._terrain_instances = instances = []
+            original = getattr(window, "refresh_all", None)
+            if original is not None:
+                def refresh_all(*args, _orig=original, **kwargs):
+                    result = _orig(*args, **kwargs)
+                    for plugin in list(window._terrain_instances):
+                        plugin.refresh_pane()
+                    return result
+
+                window.refresh_all = refresh_all
+        instances.append(self)
 
     def refresh_pane(self) -> None:
         from . import terrain
