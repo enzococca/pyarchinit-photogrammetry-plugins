@@ -234,6 +234,13 @@ def test_command(tmp_path, capsys):
     assert [e["id"] for e in terrain.entries(ppg.Document.open(doc.path).chunk)] == ["ruggedness"]
 
 
+def _in_window(w, pane) -> bool:
+    """The pane is in the window: a dock (program 1.3.4, also a tab added the old way), else a tab."""
+    if hasattr(w, "panes"):
+        return w.panes.dock(pane) is not None
+    return w.left_tabs.indexOf(pane) >= 0
+
+
 def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
     pytest.importorskip("PySide6")
     import os
@@ -260,7 +267,14 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
     plugin = TerrainPlugin()
     try:
         plugin.activate(Context("terrain", tmp_path / "plugin", window=w_))
-        assert plugin.pane is not None and w_.left_tabs.indexOf(plugin.pane) >= 0
+        assert plugin.pane is not None and _in_window(w_, plugin.pane)
+        if hasattr(plugin.context, "add_pane"):  # program 1.3.4: a dock of its own, on the right
+            dock = w_.panes.groups["right"].dock(plugin.pane)
+            assert dock is not None and dock.objectName().startswith("pane_plugin_terrain")
+            dock.close()
+            plugin.show_pane()  # back also when the user closed it
+            assert not dock.isHidden()
+        pane = plugin.pane
         r = terrain.hydrology(ch, threshold_m2=20.0)
         depressions.find(ch, min_area_m2=2.0, min_depth=0.2)
         plugin.refresh_pane()
@@ -292,7 +306,8 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
         plugin.hide_overlay()
         assert plugin.overlay.item is None
         plugin.deactivate()
-        assert w_.left_tabs.indexOf(plugin.pane or w_) < 0 or plugin.pane is None
+        plugin.context.release()  # what the program does after deactivate()
+        assert not _in_window(w_, pane)
     finally:
         w_.setWindowModified(False)
         w_.close()
@@ -319,10 +334,11 @@ def test_the_pane_follows_the_project_after_the_plugin_is_turned_on_again(tmp_pa
             self.calls = getattr(self, "calls", 0) + 1
             super().refresh_pane()
 
-    class OldContext(Context):  # a program before 1.3.3
-        @property
-        def on_refresh(self):
-            raise AttributeError("on_refresh")
+    class OldContext(Context):  # a program before 1.3.2: no on_refresh, no pane of its own, no mark_modified
+        def __getattribute__(self, name):
+            if name in ("on_refresh", "add_pane", "show_pane", "show_raster", "mark_modified"):
+                raise AttributeError(name)
+            return super().__getattribute__(name)
 
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
@@ -337,11 +353,17 @@ def test_the_pane_follows_the_project_after_the_plugin_is_turned_on_again(tmp_pa
         try:
             first = Counting()
             first.activate(context_class("terrain", tmp_path / "plugin", window=w_))
+            first_pane = first.pane
             first.deactivate()
             first.context.release()  # what the program does after deactivate()
             second = Counting()
             second.activate(context_class("terrain", tmp_path / "plugin", window=w_))
             before = (first.calls, second.calls)
+            # the pane of the new instance alone in the window: a dock of its own, or a tab of the old way
+            assert _in_window(w_, second.pane) and not _in_window(w_, first_pane)
+            assert (w_.panes.groups["right"].dock(second.pane) is not None) == (context_class is Context)
+            second._modified()
+            assert w_.isWindowModified()
             w_.refresh_all()
             assert (first.calls, second.calls) == (before[0], before[1] + 1), context_class.__name__
             second.deactivate()

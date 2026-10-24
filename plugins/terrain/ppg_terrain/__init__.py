@@ -13,7 +13,10 @@
 
 WhiteboxTools is a program (MIT): its binary for this computer is downloaded once into the
 plugin's folder at the first analysis. The products live in ``<chunk data>/terrain/`` and in
-``chunk.meta["terrain"]``.
+``chunk.meta["terrain"]``. With the program 1.3.4 the pane is a dock of its own (``context.add_pane``,
+``show_pane``) and the DEM is shown with ``show_raster``; ``mark_modified`` (1.3.2) and
+``on_refresh`` (1.3.3) when the program has them; older programs keep the tab and the window's own
+methods.
 """
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import wbt
 from .texts import layer_name, t
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 VECTOR_LAYERS = {"hydrology.gpkg": ("reticolo", "bacini"), "depressioni.gpkg": ("depressioni",),
                  "rilievi.gpkg": ("rilievi",)}  # the layers of the view drawn from each GeoPackage
 
@@ -75,7 +78,7 @@ class TerrainPlugin(Plugin):
             instances.remove(self)
         if window is not None and self.pane is not None:
             tabs = getattr(window, "left_tabs", None)
-            if tabs is not None:
+            if tabs is not None and not hasattr(self.context, "add_pane"):  # 1.3.4: the context removes it
                 k = tabs.indexOf(self.pane)
                 if k >= 0:
                     tabs.removeTab(k)
@@ -94,7 +97,9 @@ class TerrainPlugin(Plugin):
             ic = None
         self.pane = TerrainPane()
         tabs = getattr(window, "left_tabs", None)
-        if tabs is not None:
+        if hasattr(self.context, "add_pane"):  # program 1.3.4: a dock of its own, beside the workspace
+            self.context.add_pane(self.pane, t("Terreno", "Terrain"), ic if ic is not None else "relief", area="right")
+        elif tabs is not None:
             if ic is not None:
                 tabs.addTab(self.pane, ic, t("Terreno", "Terrain"))
             else:
@@ -147,6 +152,9 @@ class TerrainPlugin(Plugin):
         window = self.context.window
         if window is None or self.pane is None:
             return
+        if hasattr(self.context, "show_pane"):  # program 1.3.4: also when the user closed or floated it
+            self.context.show_pane(self.pane)
+            return
         tabs = getattr(window, "left_tabs", None)
         if tabs is not None:
             tabs.setCurrentWidget(self.pane)
@@ -193,12 +201,20 @@ class TerrainPlugin(Plugin):
         else:
             print(f"{title}: {text}")
 
+    def _modified(self) -> None:
+        """The project has changes to save (``context.mark_modified`` since the program 1.3.2)."""
+        if hasattr(self.context, "mark_modified"):
+            self.context.mark_modified()
+            return
+        window = self.context.window if self.context else None
+        if window is not None and hasattr(window, "_dirty"):
+            window._dirty(True)
+
     def _done(self, message: str, overlay_id: str | None = None, layer_table: str | None = None) -> None:
         self.refresh_pane()
         window = self.context.window if self.context else None
         if window is not None:
-            if hasattr(window, "_dirty"):
-                window._dirty(True)
+            self._modified()
             if layer_table:
                 try:
                     self._add_layer(layer_table)
@@ -363,7 +379,9 @@ class TerrainPlugin(Plugin):
         if view is None:
             return
         if view.tr is None:
-            if hasattr(window, "_show_raster"):
+            if hasattr(self.context, "show_raster"):  # program 1.3.4
+                self.context.show_raster("dem")
+            elif hasattr(window, "_show_raster"):
                 window._show_raster("dem")
             if hasattr(window, "show_view"):
                 window.show_view(view)
@@ -492,8 +510,7 @@ class TerrainPlugin(Plugin):
                     getattr(window, "line_layers", {}).pop(name, None)
                     if view is not None and name in getattr(view, "layers", {}):
                         view.remove_layer(name)
-            if hasattr(window, "_dirty"):
-                window._dirty(True)
+            self._modified()
         self.refresh_pane()
         return True
 

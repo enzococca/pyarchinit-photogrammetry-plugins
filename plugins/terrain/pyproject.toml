@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-terrain"
-version = "0.1.2"
+version = "0.1.3"
 description = "pyarchinit-photogrammetry plugin: terrain analysis of the DEM with WhiteboxTools - hydrology (streams and basins), geomorphometry (TPI, geomorphons, curvature, ruggedness, daylight), nested depressions and mounds, viewshed"
 readme = "README.md"
 license = "GPL-2.0-or-later"

@@ -29,7 +29,7 @@ folder at the first analysis, about 40 MB; `PPG_WBT` names a binary of your own.
   in `terrain/depressioni.gpkg` / `terrain/rilievi.gpkg`. Written in NumPy and SciPy: no GDAL
   bindings needed.
 * **Viewshed** from a point of the DEM with the height of the eye.
-* The products in the *Terreno* (*Terrain*) pane of the project dock, named in the language of the
+* The products in the *Terreno* (*Terrain*) pane (with the program 1.3.4 a pane of its own beside the workspace, from *Vista > Pannelli*; before, a tab of the project dock), named in the language of the
   interface, overlaid on the orthomosaic or DEM with palette and opacity (greys, diverging around
   zero, earth, heat, water, a colour per class), the vectors as layers of the view, exports as
   GeoTIFF and GeoPackage (*File > Esporta*), the rasters and tables in the QGIS project of the
