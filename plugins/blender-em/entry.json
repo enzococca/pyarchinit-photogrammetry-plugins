@@ -1,0 +1,12 @@
+{
+  "title": "Blender and EMtools",
+  "description": "The unit proxies and the survey into an Extended Matrix project (EM/proxies, RB), named after the nodes of the em.json of PyArchInit or EMStudio; Blender opened on it and kept up to date as the proxies change; the selection shared live with EMtools 1.6 (its sync WebSocket)",
+  "i18n": {
+    "it": {
+      "title": "Blender ed EMtools",
+      "description": "I proxy delle US e il rilievo in un progetto Extended Matrix (EM/proxies, RB), con i nomi dei nodi dell'em.json di PyArchInit o EMStudio; Blender aperto sul progetto e aggiornato dal vivo quando i proxy cambiano; la selezione condivisa dal vivo con EMtools 1.6 (il suo WebSocket di sync)"
+    }
+  },
+  "min_app": "1.3.4",
+  "requires": []
+}

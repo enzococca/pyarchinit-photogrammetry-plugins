@@ -15,6 +15,7 @@ with `ppg plugins available`.
 | [`powerlines`](plugins/powerlines) - Powerlines | Overhead powerlines in the dense cloud: every conductor as a catenary with its length, sag, clearance from the ground and distance from the nearest obstacle, the poles, the points of wires and poles classified (14, 15); GeoPackage, DXF and CSV exports |
 | [`spirula`](plugins/spirula) - Spirula | 3D Gaussian splatting of the aligned photos with [Spirula Studio](https://github.com/harry7557558/spirula-studio) (Vulkan: NVIDIA, AMD, Intel and Apple GPUs): the splat as a product of the chunk, a mesh from it, the viewer |
 | [`terrio`](plugins/terrio) - terrio | Point clouds of any format (LAS, LAZ, COPC, EPT, PLY, E57, also from the web) into the project, ground classification with the SMRF, CSF and PMF filters, reference rasters from the web as versions of the DEM or orthomosaic, E57, EPT, PMTiles and MBTiles exports, through [terrio](https://github.com/opengeos/terrio) (pure Rust, no GDAL or PDAL) |
+| [`blender-em`](plugins/blender-em) - Blender and EMtools | The 3D proxies of the stratigraphic units and the survey into an Extended Matrix project (`EM/proxies/<unit>.glb`, `RB/`), named after the nodes of the em.json of PyArchInit or EMStudio, which EMtools pairs by name; Blender opened on the project and kept up to date while the proxies change (what was changed in Blender never overwritten); the selection shared live with [EMtools](https://github.com/zalmoxes-laran/EM-blender-tools) 1.6 through its sync WebSocket |
 
 ## Installing a plugin
 
