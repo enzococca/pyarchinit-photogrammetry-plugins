@@ -22,7 +22,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from . import environment
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 
 def t(it: str, en: str) -> str:
@@ -213,9 +213,11 @@ class TerrioPlugin(Plugin):
             return holder["chunk"]
 
         def done(chunk):
-            activate = getattr(window, "_activate_chunk", None)
-            if target is None and activate is not None:
-                activate(chunk)
+            if target is None:  # the new chunk the active one (context.activate_chunk since the program 1.3.4)
+                if hasattr(self.context, "activate_chunk"):
+                    self.context.activate_chunk(chunk)
+                elif getattr(window, "_activate_chunk", None) is not None:
+                    window._activate_chunk(chunk)
             n = (chunk.meta.get("terrio_import") or {}).get("points", 0)
             message(window, "info", self.title, t("{0} punti in {1}.", "{0} points in {1}.").format(num(n), chunk.label))
 

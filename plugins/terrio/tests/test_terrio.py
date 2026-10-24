@@ -300,6 +300,50 @@ def test_ground_changes_only_unclassified_and_ground_points(tmp_path):
     assert report["kept"] == int(other.sum())
 
 
+def test_the_imported_chunk_becomes_the_active_one(tmp_path, monkeypatch):
+    """A cloud imported into a new chunk: the new chunk is the active one (``context.activate_chunk``
+    with the program 1.3.4, the window's own method before)."""
+    from ppg_terrio import TerrioPlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import dialogs
+    from pyarchinit_photogrammetry.plugins import Context
+
+    doc = _project(tmp_path)
+    first = doc.chunk
+    world = first.to_world(first.point_cloud.xyz)
+    laz = tmp_path / "laser.copc.laz"
+    terrio.PointCloud.from_dict({"x": world[:, 0], "y": world[:, 1], "z": world[:, 2]}, crs=CRS).write(str(laz))
+    activated = []
+
+    class Window:
+        def __init__(self):
+            self.doc = doc
+
+        def run_task(self, title, job, done=None, refresh=True, save=True):
+            result = job(lambda *a: None)
+            if done is not None:
+                done(result)
+
+        def _activate_chunk(self, chunk):  # what the window does when the user picks a chunk
+            activated.append(chunk)
+            doc.chunk = chunk
+
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", staticmethod(
+        lambda parent, title, fields, intro="": {f.name: f.default for f in fields} | {"file": str(laz),
+                                                                                        "label": "laser"}))
+    monkeypatch.setattr(dialogs, "message", lambda *a, **k: None)
+    plugin = TerrioPlugin()
+    plugin.activate(Context("terrio", tmp_path / "_data", window=Window()))
+    previous, app.document = app.document, doc
+    try:
+        plugin.import_dialog()
+    finally:
+        app.document = previous
+    new = doc.chunks[-1]
+    assert new is not first and new.label == "laser"
+    assert doc.chunk is new and activated == [new]
+
+
 def test_ground_dialog_has_the_defaults_of_each_filter(tmp_path, monkeypatch):
     """The window gives PMF its own defaults (slope 1.0, initial distance 0.15) and the
     vegetation option says what it does to walls, sections and spoil heaps."""
