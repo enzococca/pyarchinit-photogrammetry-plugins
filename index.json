@@ -63,6 +63,26 @@
       "sha256": "4abd9992e96503635a98b898d2ff6bab9c41e96567401877c6da9f93529da497"
     },
     {
+      "name": "mesh-tools",
+      "version": "0.1.0",
+      "title": "Mesh (MeshLab)",
+      "description": "MeshLab's filters on the model through pymeshlab: quadric decimation keeping the texture, isotropic remeshing, Taubin and HC smoothing with the borders kept, holes closed, topology repaired, measures (area, volume, parts, borders); every result a new version of the model; pymeshlab in a process of its own, installed by the plugin when missing",
+      "i18n": {
+        "it": {
+          "title": "Mesh (MeshLab)",
+          "description": "I filtri di MeshLab sul modello con pymeshlab: decimazione con le quadriche che conserva la texture, rimaglia isotropa, levigatura Taubin e HC con i bordi fermi, chiusura dei buchi, riparazione della topologia, misure (area, volume, parti, bordi); ogni risultato una nuova versione del modello; pymeshlab in un processo separato, installato dal plugin se manca"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/mesh-tools",
+      "license": "GPL-3.0-or-later",
+      "api": 1,
+      "min_app": "1.3.3",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/mesh-tools-v0.1.0/ppg_mesh_tools-0.1.0-py3-none-any.whl",
+      "sha256": "c884e55902028ecbae57d406152c371488713484e65835e643ade2bb87bb584b"
+    },
+    {
       "name": "powerlines",
       "version": "0.1.1",
       "title": "Powerlines",
