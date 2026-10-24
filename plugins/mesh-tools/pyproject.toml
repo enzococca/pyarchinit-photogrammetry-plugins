@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-mesh-tools"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: MeshLab's filters on the model through pymeshlab - quadric decimation keeping the texture, isotropic remeshing, Taubin and HC smoothing, holes closed, topology repaired, measures - every result a new version of the model"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# pymeshlab (GPL-3) runs in a process of its own: with this Python when installed here, else in an
+# environment the plugin installs on request with uv; never imported by the program
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/mesh-tools"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+mesh-tools = "ppg_mesh_tools:MeshToolsPlugin"
+
+[tool.setuptools]
+packages = ["ppg_mesh_tools"]

@@ -37,8 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/powerlines, plugins/spirula,
-                 plugins/terrain, plugins/terrio, template]
+        plugin: [plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/mesh-tools, plugins/powerlines,
+                 plugins/spirula, plugins/terrain, plugins/terrio, template]
     services:
       postgis:
         image: postgis/postgis:17-3.5
@@ -58,5 +58,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-mod-spatialite libegl1 libgl1 libgomp1
       - name: The program and the plugin
         run: python -m pip install "$PPG_APP" pytest -e "${{ matrix.plugin }}"
+      - name: MeshLab for the tests of mesh-tools (its other tests run without it)
+        if: matrix.plugin == 'plugins/mesh-tools'
+        run: python -m pip install pymeshlab
       - name: Tests
         run: python -m pytest -q -p no:cacheprovider "${{ matrix.plugin }}/tests"
