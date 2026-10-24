@@ -84,7 +84,7 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   unità il modello di un nuovo chunk del progetto (*Apri come modello di un nuovo chunk*), dove il
   pulsante *Taglia* della vista 3D del programma le taglia e chiude ogni unità sul taglio nel suo
   colore.
-* Il pannello *Geoarcheologia* del dock del progetto: sondaggi, superfici e sezioni in tre
+* Il pannello *Geoarcheologia* (con il programma 1.3.4 un pannello a sé accanto all'area di lavoro, da *Vista > Pannelli*; prima una scheda del dock del progetto): sondaggi, superfici e sezioni in tre
   tabelle, i sondaggi come layer di punti della vista (id, quota, profondità, unità), una superficie
   (la quota, la varianza o la correzione - questa su una rampa divergente attorno a zero, celle
   abbassate e alzate distinte) o uno spessore sopra l'ortofoto o il DEM con palette e opacità, una

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-geoarchaeology"
-version = "0.1.3"
+version = "0.1.4"
 description = "pyarchinit-photogrammetry plugin: boreholes, cores and trench logs on the survey - stratigraphic columns, contact surfaces and thicknesses by kriging, sections, a 3D model of the units with their volumes"
 readme = "README.md"
 license = "GPL-2.0-or-later"

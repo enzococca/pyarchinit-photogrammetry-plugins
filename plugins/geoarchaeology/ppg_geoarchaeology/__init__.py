@@ -17,7 +17,9 @@ photogrammetric survey (the DEM and the orthomosaic of the chunk).
 
 Everything lives in ``chunk.meta["geoarchaeology"]`` and in ``<chunk data>/geoarchaeology/``. The
 window's parts it uses come from the plugin API of the program (``request_line``,
-``on_raster_loaded``, ``mark_modified`` since 1.3.2, ``on_refresh`` since 1.3.3).
+``on_raster_loaded``, ``mark_modified`` since 1.3.2, ``on_refresh`` since 1.3.3); with the program 1.3.4 the
+pane is a dock of its own (``add_pane``, ``show_pane``) and the views are shown with ``activate_chunk``,
+``show_raster`` and ``show_model``, older programs keep the tab and the window's own methods.
 """
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import num, plural, signed, t
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 SECTION_COLOUR = "#ff7f0e"
 
 
@@ -82,7 +84,7 @@ class GeoarchaeologyPlugin(Plugin):
         self.hide_overlay()
         window = self.context.window if self.context else None
         if window is not None:
-            if self.pane is not None:
+            if self.pane is not None and not hasattr(self.context, "add_pane"):  # 1.3.4: the context removes it
                 tabs = getattr(window, "left_tabs", None)
                 if tabs is not None and tabs.indexOf(self.pane) >= 0:
                     tabs.removeTab(tabs.indexOf(self.pane))
@@ -107,7 +109,10 @@ class GeoarchaeologyPlugin(Plugin):
             ic = None
         self.pane = GeoarchaeologyPane()
         tabs = getattr(window, "left_tabs", None)
-        if tabs is not None:
+        if hasattr(self.context, "add_pane"):  # program 1.3.4: a dock of its own, beside the workspace
+            self.context.add_pane(self.pane, t("Geoarcheologia", "Geoarchaeology"), ic if ic is not None else "line",
+                                  area="right")
+        elif tabs is not None:
             if ic is not None:
                 tabs.addTab(self.pane, ic, t("Geoarcheologia", "Geoarchaeology"))
             else:
@@ -172,6 +177,9 @@ class GeoarchaeologyPlugin(Plugin):
     def show_pane(self) -> None:
         window = self.context.window if self.context else None
         if window is None or self.pane is None:
+            return
+        if hasattr(self.context, "show_pane"):  # program 1.3.4: also when the user closed or floated it
+            self.context.show_pane(self.pane)
             return
         tabs = getattr(window, "left_tabs", None)
         if tabs is not None:
@@ -551,13 +559,17 @@ class GeoarchaeologyPlugin(Plugin):
                        t("Unità geoarcheologiche ({0} unità)", "Geoarchaeological units ({0} units)"))
         back = t("Scegli un'altra vista nell'elenco «Mostra» della vista 3D per tornare ai prodotti del chunk.",
                  "Choose another view in the Show list of the 3D view to go back to the products of the chunk.")
-        view.show_version("model", path, title)
-        label = getattr(view, "version_label", None)
-        if label is not None:  # the units are not a version of the model of the survey
-            label.setText(title)
-            label.setToolTip(back)
-        if hasattr(window, "show_view"):
-            window.show_view(view)
+        if hasattr(self.context, "show_model"):  # program 1.3.4: a file of the plugin, named by the view
+            if not self.context.show_model("model", path=path, title=title):
+                return False
+        else:
+            view.show_version("model", path, title)
+            label = getattr(view, "version_label", None)
+            if label is not None:  # the units are not a version of the model of the survey
+                label.setText(title)
+                label.setToolTip(back)
+            if hasattr(window, "show_view"):
+                window.show_view(view)
         if hasattr(window, "statusBar"):
             window.statusBar().showMessage(f"{title}. {back}", 15000)
         return True
@@ -596,10 +608,13 @@ class GeoarchaeologyPlugin(Plugin):
             new, report = result
             window = self.context.window
             if window is not None:
-                if hasattr(window, "_activate_chunk"):
-                    window._activate_chunk(new)
-                if hasattr(window, "_show_model"):
-                    window._show_model("model")
+                if hasattr(self.context, "show_model"):  # program 1.3.4
+                    self.context.show_model("model", chunk=new)
+                else:
+                    if hasattr(window, "_activate_chunk"):
+                        window._activate_chunk(new)
+                    if hasattr(window, "_show_model"):
+                        window._show_model("model")
             self.context.mark_modified()
             text = t("Unità geoarcheologiche nel chunk «{0}» ({1} facce): il pulsante Taglia della vista 3D ora le "
                      "taglia, e i solidi chiusi si chiudono sul taglio, ognuno nel suo colore. Salva il progetto per "
@@ -791,8 +806,8 @@ class GeoarchaeologyPlugin(Plugin):
         if window is None or chunk is None:
             return
         view = getattr(window, "ortho_view", None)
-        if view is not None and view.tr is None and hasattr(window, "_show_raster"):
-            window._show_raster("ortho" if chunk.orthomosaic_path else "dem")
+        if view is not None and view.tr is None:
+            self._show_raster(chunk)
         self._show_holes = True
         if self._draw_boreholes() and view is not None:
             from .overlay import BOREHOLES_LAYER
@@ -800,6 +815,15 @@ class GeoarchaeologyPlugin(Plugin):
             view.zoom_to_layer(BOREHOLES_LAYER)
             if hasattr(window, "show_view"):
                 window.show_view(view)
+
+    def _show_raster(self, chunk) -> None:
+        """The orthomosaic of the chunk in the 2D view, else its DEM (the view was empty)."""
+        if hasattr(self.context, "show_raster"):  # program 1.3.4
+            self.context.show_raster()
+            return
+        window = self.context.window
+        if hasattr(window, "_show_raster"):
+            window._show_raster("ortho" if chunk.orthomosaic_path else "dem")
 
     def _draw_boreholes(self) -> int:
         from . import boreholes as bh
@@ -823,8 +847,8 @@ class GeoarchaeologyPlugin(Plugin):
         e = sf.entry(chunk, pid)
         if view is None or e is None:
             return
-        if view.tr is None and hasattr(window, "_show_raster"):
-            window._show_raster("ortho" if chunk.orthomosaic_path else "dem")
+        if view.tr is None:
+            self._show_raster(chunk)
         kind = e.get("kind", "surface")
         band = int(band) if kind == "surface" else 1
         values, transform = sf.load(chunk, pid, band)

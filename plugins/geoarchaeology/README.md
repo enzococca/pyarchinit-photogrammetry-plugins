@@ -81,7 +81,7 @@ DEM and the orthomosaic of the chunk).
   vertically); the pane shows them again, opens the folder of the model, or makes the units the
   model of a new chunk of the project (*Apri come modello di un nuovo chunk*), where the *Taglia*
   button of the program's 3D view cuts them and closes every unit on the cut in its colour.
-* The *Geoarcheologia* pane of the project dock: boreholes, surfaces and sections in three
+* The *Geoarcheologia* pane (with the program 1.3.4 a pane of its own beside the workspace, from *Vista > Pannelli*; before, a tab of the project dock): boreholes, surfaces and sections in three
   tables, the boreholes as a layer of points of the view (id, z, depth, units), a surface (its
   elevation, variance or correction - this one on a diverging ramp around zero, lowered and raised
   cells apart) or a thickness over the orthomosaic or DEM with palette and opacity, a section

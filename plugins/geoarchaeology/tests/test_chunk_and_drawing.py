@@ -92,10 +92,17 @@ def test_the_units_as_the_model_of_a_new_chunk(tmp_path, monkeypatch):
     monkeypatch.setattr(w, "_warn", lambda text: problems.append(text))
     monkeypatch.setattr(w, "_error", lambda *a, **k: problems.append(a))
     plugin = GeoarchaeologyPlugin()
+    context = Context("geoarchaeology", tmp_path / "plugin", window=w)
     try:
-        plugin.activate(Context("geoarchaeology", tmp_path / "plugin", window=w))
+        plugin.activate(context)
         pane = plugin.pane
         assert pane.b_model_chunk.isEnabled() and pane.t_holes.rowCount() == 3
+        if hasattr(context, "add_pane"):  # program 1.3.4: the pane is a dock of its own, on the right
+            dock = w.panes.groups["right"].dock(pane)
+            assert dock is not None and dock.objectName() == "pane_plugin_geoarchaeology"
+            dock.close()
+            plugin.show_pane()  # back also when the user closed it
+            assert not dock.isHidden()
         w.setWindowModified(False)
         pane.b_model_chunk.click()  # in the background, as the window runs its steps
         w.runner.wait()
@@ -125,6 +132,9 @@ def test_the_units_as_the_model_of_a_new_chunk(tmp_path, monkeypatch):
         assert pane.t_holes.rowCount() == 3
     finally:
         plugin.deactivate()
+        context.release()
+        if hasattr(w, "panes"):
+            assert w.panes.dock(pane) is None  # the pane went with the plugin
         w.setWindowModified(False)
         w.close()
 

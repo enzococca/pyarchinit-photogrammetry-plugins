@@ -658,6 +658,13 @@ def test_command_line_round_trip(tmp_path, capsys):
     assert plugin.command("surfaces", p) == 1  # no borehole any more
 
 
+def _in_window(w, pane) -> bool:
+    """The pane is in the window: a dock of its own (program 1.3.4), else a tab of the project dock."""
+    if hasattr(w, "panes"):
+        return w.panes.dock(pane) is not None
+    return w.left_tabs.indexOf(pane) >= 0
+
+
 def test_the_pane_in_the_window(tmp_path, monkeypatch):
     pytest.importorskip("PySide6")
     import os
@@ -696,7 +703,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
     try:
         plugin.activate(Context("geoarchaeology", tmp_path / "plugin", window=w))
         pane = plugin.pane
-        assert pane is not None and w.left_tabs.indexOf(pane) >= 0
+        assert pane is not None and _in_window(w, pane)
         assert pane.minimumSizeHint().width() < 300  # never widens the column of the window
         assert "_load_raster" not in vars(w)  # the layers follow the view through on_raster_loaded
         plugin.refresh_pane()
@@ -755,7 +762,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         assert len(rasters) == 7 and {v["table"] for v in vectors} == {"sondaggi", "sezioni"}
         plugin.deactivate()
         plugin.context.release()  # as the program's plugin manager does
-        assert w.left_tabs.indexOf(pane) < 0 and not any(p == plugin._qgis_entries for p in w.qgis_providers)
+        assert not _in_window(w, pane) and not any(p == plugin._qgis_entries for p in w.qgis_providers)
         assert overlay.BOREHOLES_LAYER not in w.ortho_view.layers and overlay.SECTIONS_LAYER not in w.ortho_view.layers
         w.refresh_all()  # no longer told
         assert overlay.BOREHOLES_LAYER not in w.ortho_view.layers
