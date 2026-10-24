@@ -473,6 +473,13 @@ def test_command(tmp_path, fake, capsys):
         app.document = None
 
 
+def _in_window(w, pane) -> bool:
+    """The pane is in the window: a dock of its own (program 1.3.4), else a tab of the project dock."""
+    if hasattr(w, "panes"):
+        return w.panes.dock(pane) is not None
+    return w.left_tabs.indexOf(pane) >= 0
+
+
 def test_the_pane_in_the_window(tmp_path, fake):
     pytest.importorskip("PySide6")
     from PySide6.QtCore import QSettings
@@ -502,7 +509,13 @@ def test_the_pane_in_the_window(tmp_path, fake):
     try:
         plugin.activate(Context("mesh-tools", tmp_path / "plugin", window=w))
         pane = plugin.pane
-        assert pane is not None and w.left_tabs.indexOf(pane) >= 0
+        assert pane is not None and _in_window(w, pane)
+        if hasattr(plugin.context, "add_pane"):  # program 1.3.4: a dock of its own, on the right
+            dock = w.panes.groups["right"].dock(pane)
+            assert dock is not None and dock.objectName() == "pane_plugin_mesh-tools"
+            dock.close()
+            plugin.show_pane()  # back also when the user closed it
+            assert not dock.isHidden()
         assert "facce" in pane.l_model.text() and "texture (1 pagina)" in pane.l_model.text()
         pane.buttons["decimate"].click()
         assert w.runner.busy and not pane.buttons["measure"].isEnabledTo(pane)  # one step at a time
@@ -513,6 +526,10 @@ def test_the_pane_in_the_window(tmp_path, fake):
         assert len(read_mesh(ch.product_path("model")).faces) == 700
         assert versions.active_info(ch, "model")["name"] == "MeshLab: decimazione a 700 facce (texture conservata)"
         assert w.model_view.kind == "model_textured" and w.tabs.currentWidget() is w.model_view
+        from PySide6.QtCore import Qt
+
+        flags = Qt.MatchFlag.MatchContains | Qt.MatchFlag.MatchRecursive
+        assert w.workspace.findItems("MeshLab: decimazione a 700 facce", flags)  # the workspace lists the new version
         assert "Modello decimato" in pane.l_last.text() and pane.table.rowCount() > 5
         import pyarchinit_photogrammetry as ppg
 
@@ -563,7 +580,8 @@ def test_the_pane_in_the_window(tmp_path, fake):
         pane.buttons["repair"].click()
         assert offers and "non è installato" in offers[0] and not w.runner.busy
         plugin.deactivate()
-        assert w.left_tabs.indexOf(pane) < 0
+        plugin.context.release()  # as the program's plugin manager does
+        assert not _in_window(w, pane)
     finally:
         app.document = None
         w.setWindowModified(False)

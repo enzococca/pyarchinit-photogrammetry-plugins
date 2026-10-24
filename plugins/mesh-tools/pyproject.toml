@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-mesh-tools"
-version = "0.1.0"
+version = "0.1.1"
 description = "pyarchinit-photogrammetry plugin: MeshLab's filters on the model through pymeshlab - quadric decimation keeping the texture, isotropic remeshing, Taubin and HC smoothing, holes closed, topology repaired, measures - every result a new version of the model"
 readme = "README.md"
 license = "GPL-3.0-or-later"

@@ -36,7 +36,7 @@ taglio con i piani, la texture.
 
 ## Dove
 
-* il pannello **Mesh (MeshLab)** del dock del progetto: il modello attivo, le operazioni (i loro
+* il pannello **Mesh (MeshLab)** (con il programma 1.3.4 un pannello a sé accanto all'area di lavoro, da *Vista > Pannelli*; prima una scheda del dock del progetto): il modello attivo, le operazioni (i loro
   parametri in una finestra), le misure, *Installa MeshLab...*; il risultato si vede nella vista 3D;
 * *Plugin > Mesh (MeshLab)* nel menu, le stesse operazioni;
 * la riga di comando:

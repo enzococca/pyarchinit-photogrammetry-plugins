@@ -36,7 +36,7 @@ cut with planes, the texture.
 
 ## Where
 
-* the **Mesh (MeshLab)** pane of the project dock: the active model, the operations (their
+* the **Mesh (MeshLab)** pane (with the program 1.3.4 a pane of its own beside the workspace, from *Vista > Pannelli*; before, a tab of the project dock): the active model, the operations (their
   parameters in a dialog), the measures, *Installa MeshLab...*; the result is shown in the 3D view;
 * *Plugin > Mesh (MeshLab)* in the menu, the same operations;
 * the command line:

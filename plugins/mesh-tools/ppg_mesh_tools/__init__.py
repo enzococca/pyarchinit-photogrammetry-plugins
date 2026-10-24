@@ -17,6 +17,9 @@ from the command line. pymeshlab is never imported by the program: it runs in a 
 (:mod:`.worker`) with this Python when pymeshlab is installed here, else in an environment the
 plugin installs with uv (:mod:`.environment`). What the program already does - Poisson meshing,
 the cleaning of the model by confidence and pieces, cutting with planes - stays the program's.
+With the program 1.3.4 the pane is a dock of its own (``context.add_pane``, ``show_pane``) and the
+model and the workspace are shown again with ``show_model`` and ``refresh_tree``; older programs
+keep the tab and the window's own methods.
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import number, plural, t, title
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 COMMAND_OPS = {"decimate": "decimate", "remesh": "remesh", "smooth": "smooth", "close-holes": "close_holes",
                "repair": "repair"}
 
@@ -81,6 +84,8 @@ class MeshToolsPlugin(Plugin):
                 pass
         window = self.context.window if self.context else None
         tabs = getattr(window, "left_tabs", None) if window is not None else None
+        if hasattr(self.context, "add_pane"):  # program 1.3.4: the context takes the pane away
+            tabs = None
         if tabs is not None and self.pane is not None:
             k = tabs.indexOf(self.pane)
             if k >= 0:
@@ -92,7 +97,9 @@ class MeshToolsPlugin(Plugin):
 
         self.pane = MeshToolsPane()
         tabs = getattr(window, "left_tabs", None)
-        if tabs is not None:
+        if hasattr(self.context, "add_pane"):  # program 1.3.4: a dock of its own, beside the workspace
+            self.context.add_pane(self.pane, t("Mesh (MeshLab)", "Mesh (MeshLab)"), "model", area="right")
+        elif tabs is not None:
             try:
                 from pyarchinit_photogrammetry.gui.icons import icon
 
@@ -144,6 +151,9 @@ class MeshToolsPlugin(Plugin):
     def show_pane(self) -> None:
         window = self.context.window
         if window is None or self.pane is None:
+            return
+        if hasattr(self.context, "show_pane"):  # program 1.3.4: also when the user closed or floated it
+            self.context.show_pane(self.pane)
             return
         tabs = getattr(window, "left_tabs", None)
         if tabs is not None:
@@ -397,8 +407,10 @@ class MeshToolsPlugin(Plugin):
         if report.get("changed"):
             self._project_changed()
             window = self.context.window
-            if window is not None and hasattr(window, "refresh_all"):
-                window.refresh_all()  # the workspace lists the new version
+            if hasattr(self.context, "refresh_tree"):  # program 1.3.4
+                self.context.refresh_tree()  # the workspace lists the new version
+            elif window is not None and hasattr(window, "refresh_all"):
+                window.refresh_all()
             self._show_model(report)
         rows = model.measure_rows(report.get("measures") or {})
         self.last = (chunk, t("Misure dopo «{0}»", "Measures after '{0}'").format(title(report["operation"])), rows)
@@ -444,6 +456,9 @@ class MeshToolsPlugin(Plugin):
         textured = chunk.product_path("model_textured")
         kind = "model_textured" if textured is not None and textured.exists() and (report is None or report.get(
             "texture_kept")) else "model"
+        if hasattr(self.context, "show_model"):  # program 1.3.4
+            self.context.show_model(kind)
+            return
         if hasattr(window, "_show_model"):
             window._show_model(kind)
             return
