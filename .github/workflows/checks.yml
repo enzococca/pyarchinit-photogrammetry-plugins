@@ -37,8 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/mesh-tools, plugins/powerlines,
-                 plugins/sentinel2, plugins/spirula, plugins/terrain, plugins/terrio, template]
+        plugin: [plugins/blender-em, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/mesh-tools,
+                 plugins/powerlines, plugins/sentinel2, plugins/spirula, plugins/terrain, plugins/terrio, template]
     services:
       postgis:
         image: postgis/postgis:17-3.5
@@ -63,5 +63,17 @@ jobs:
       - name: MeshLab for the tests of mesh-tools (its other tests run without it)
         if: matrix.plugin == 'plugins/mesh-tools'
         run: python -m pip install pymeshlab
+      - name: Blender for the tests of blender-em (its other tests run without it)
+        # bpy, Blender as a Python module, has wheels for Python 3.13 only: an environment of its own, made by uv;
+        # the tests run the live script in it as the plugin runs Blender, in a process of its own
+        if: matrix.plugin == 'plugins/blender-em'
+        run: |
+          python -m pip install uv
+          uv venv -p 3.13 "$RUNNER_TEMP/bpy"
+          VIRTUAL_ENV="$RUNNER_TEMP/bpy" uv pip install "bpy==5.2.*"
+          echo "PPG_TEST_BLENDER=$RUNNER_TEMP/bpy/bin/python" >> "$GITHUB_ENV"
+      - name: s3dgraphy for the em.json test of blender-em
+        if: matrix.plugin == 'plugins/blender-em'
+        run: python -m pip install --pre "s3dgraphy>=1.6.0.dev40"
       - name: Tests
         run: python -m pytest -q -p no:cacheprovider "${{ matrix.plugin }}/tests"
