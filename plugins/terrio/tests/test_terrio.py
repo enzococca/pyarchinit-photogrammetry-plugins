@@ -194,8 +194,9 @@ def test_the_plugin_in_the_program(tmp_path):
     info = manager.get("terrio")
     assert info is not None and info.active, info and info.error
     assert [a.title for a in manager.actions if a.plugin == "terrio"] == [
-        "Importa nuvola di punti...", "Classifica il terreno (SMRF, CSF, PMF)...", "Raster di riferimento dal web...",
-        "Installa terrio..."]
+        "Importa nuvola di punti...", "Classifica il terreno (SMRF, CSF, PMF)...", "Pulisci la nuvola (LOF, DBSCAN)...",
+        "Colori e valori da un raster...", "Valori dei punti nella vista 3D...", "Quote ellissoidiche e sul geoide...",
+        "Raster di riferimento dal web...", "Installa terrio..."]
     assert "terrio" in manager.commands
     assert [e.suffix for e in manager.exporters if e.plugin == "terrio"] == [".e57", ".ept", ".pmtiles", ".mbtiles"]
     assert environment.lib_dir() == tmp_path / "plugins" / "_data" / "terrio" / "lib"
@@ -234,10 +235,12 @@ def test_command(tmp_path, capsys):
 
 
 def test_version_gate():
-    """The 0.3.2 and 0.4 releases of terrio are accepted, older and newer ones refused."""
+    """terrio from 0.3.2 up to the 0.5 releases is accepted, older and newer ones refused; the
+    steps of 0.2.0 need 0.5."""
     inside = lambda v: environment.OLDEST <= environment._key(v) < environment.NEWEST  # noqa: E731
-    assert inside("0.3.2") and inside("0.4.0") and inside("0.4.7")
-    assert not inside("0.3.1") and not inside("0.5.0") and not inside("1.0.0")
+    assert inside("0.3.2") and inside("0.4.0") and inside("0.5.0") and inside("0.5.9")
+    assert not inside("0.3.1") and not inside("0.6.0") and not inside("1.0.0")
+    assert environment._key("0.4.2") < environment.FEATURES_SINCE <= environment._key("0.5.0")
     assert environment._key(environment.TERRIO_VERSION) >= environment.OLDEST
 
 

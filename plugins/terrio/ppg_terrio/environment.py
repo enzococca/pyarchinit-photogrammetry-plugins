@@ -5,8 +5,13 @@ terrio is a compiled module (pure Rust, no C library to install) published as on
 per platform: macOS (Apple Silicon and Intel), Windows (x64 and ARM64), Linux (x86_64 and
 aarch64, glibc and musl). :func:`install` picks the wheel of this computer from the PyPI
 listing of :data:`TERRIO_VERSION`, checks its SHA-256 against the one PyPI publishes, unpacks it
-into ``<plugin data>/lib`` and puts that folder on ``sys.path``; :func:`load` imports terrio from
-the environment first, then from there.
+into ``<plugin data>/lib`` and puts that folder on ``sys.path``; :func:`load` imports the newer
+of the two: the terrio of the environment or the one of the plugin folder (a terrio downloaded to
+update the one the application carries wins over it).
+
+The plugin works with terrio from 0.3.2 up to the 0.5 releases; the steps added in 0.2.0 of the
+plugin (cleaning, colours from rasters, heights, Planetary Computer) need terrio 0.5
+(:data:`FEATURES_SINCE`) and say so when an older one is installed (:class:`TerrioTooOld`).
 """
 from __future__ import annotations
 
@@ -22,26 +27,44 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
-TERRIO_VERSION = "0.4.0"  # the version the plugin is written and tested with
-OLDEST, NEWEST = (0, 3, 2), (0, 5)  # accepted: from 0.3.2 up to (not including) 0.5
+TERRIO_VERSION = "0.5.0"  # the version the plugin is written and tested with
+OLDEST, NEWEST = (0, 3, 2), (0, 6)  # accepted: from 0.3.2 up to (not including) 0.6
+FEATURES_SINCE = (0, 5)  # LOF, DBSCAN, colorization, heights through geoid grids, Planetary Computer signing
 PYPI = "https://pypi.org/pypi/terrio/{version}/json"
 USER_AGENT = "pyarchinit-photogrammetry plugin terrio"
 
-_LIB_DIR: Path | None = None  # the plugin folder where install() puts terrio (configure())
+_DATA_DIR: Path | None = None  # the folder of the plugin's files (configure())
+_LIB_DIR: Path | None = None  # the plugin folder where install() puts terrio
 
 
 class TerrioMissing(RuntimeError):
     """terrio cannot be imported; the message says why and how to get it."""
 
 
+class TerrioTooOld(TerrioMissing):
+    """terrio is there but older than a step needs (``found``, ``wanted``)."""
+
+    def __init__(self, message: str, found: str = "", wanted: str = ""):
+        super().__init__(message)
+        self.found, self.wanted = found, wanted
+
+
 def configure(context) -> None:
-    """Remember the plugin folder (``context.data_dir / "lib"``) where terrio may be installed."""
-    global _LIB_DIR
-    _LIB_DIR = Path(context.data_dir) / "lib"
+    """Remember the plugin folder (``context.data_dir``): terrio may be installed in its ``lib``,
+    the geoid and datum grids are kept in its ``grids``."""
+    global _DATA_DIR, _LIB_DIR
+    _DATA_DIR = Path(context.data_dir)
+    _LIB_DIR = _DATA_DIR / "lib"
 
 
 def lib_dir() -> Path | None:
     return _LIB_DIR
+
+
+def grids_dir() -> Path | None:
+    """Where the plugin keeps the PROJ grids (geoid models, datum shifts) it downloads:
+    ``<plugin data>/grids``; ``None`` before :func:`configure` (terrio's own cache is used then)."""
+    return None if _DATA_DIR is None else _DATA_DIR / "grids"
 
 
 def _key(version: str) -> tuple:
@@ -54,20 +77,68 @@ def _key(version: str) -> tuple:
     return tuple(out)
 
 
-def _import():
+def _text(it: str, en: str) -> str:
+    from .texts import t
+
+    return t(it, en)
+
+
+def _import(minimum: tuple | None = None, feature: str = ""):
     import terrio
 
     version = getattr(terrio, "__version__", "0")
     if not (OLDEST <= _key(version) < NEWEST):
         raise TerrioMissing(f"terrio {version} is installed, this plugin needs terrio {TERRIO_VERSION} "
-                            f"(0.3.2 up to the 0.4 releases): pip install 'terrio>=0.3.2,<0.5'")
+                            f"(0.3.2 up to the 0.5 releases): pip install 'terrio>=0.5,<0.6'")
+    if minimum is not None and _key(version) < tuple(minimum):
+        from .texts import needs_newer
+
+        wanted = ".".join(str(v) for v in minimum)
+        raise TerrioTooOld(needs_newer(feature or _text("Questo passo", "This step"), version, wanted),
+                           found=version, wanted=wanted)
     return terrio
 
 
-def load():
-    """The terrio module (version checked), from the environment or from the plugin folder."""
+def folder_version(folder: Path | None) -> str:
+    """The version of the terrio unpacked in ``folder`` (its ``.dist-info``), "" when none."""
+    if folder is None or not folder.is_dir():
+        return ""
+    found = sorted(folder.glob("terrio-*.dist-info"))
+    return found[-1].name[len("terrio-"):-len(".dist-info")] if found else ""
+
+
+def _environment_version(folder: Path | None) -> str:
+    """The version of the terrio of the Python environment (the plugin folder left out)."""
+    from importlib import metadata
+
+    skip = str(folder) if folder is not None else None
+    for dist in metadata.distributions(path=[p for p in sys.path if p != skip], name="terrio"):
+        return str(dist.version)
+    return ""
+
+
+def _prefer_newest() -> None:
+    """The plugin folder first on ``sys.path`` when its terrio is newer than the environment's
+    (a terrio downloaded to update the one the application carries), before the first import."""
+    folder = _LIB_DIR
+    mine = folder_version(folder)
+    if not mine or "terrio" in sys.modules:
+        return
+    theirs = _environment_version(folder)
+    if not theirs or _key(mine) > _key(theirs):
+        if str(folder) in sys.path:
+            sys.path.remove(str(folder))
+        sys.path.insert(0, str(folder))
+        importlib.invalidate_caches()
+
+
+def load(minimum: tuple | None = None, feature: str = ""):
+    """The terrio module (version checked), the newer of the environment's and the plugin
+    folder's. ``minimum``: the version a step needs (:class:`TerrioTooOld` otherwise, the message
+    naming ``feature``)."""
+    _prefer_newest()
     try:
-        return _import()
+        return _import(minimum, feature)
     except ImportError as first:
         error = first
     folder = _LIB_DIR
@@ -76,19 +147,38 @@ def load():
             sys.path.insert(0, str(folder))
             importlib.invalidate_caches()
         try:
-            return _import()
+            return _import(minimum, feature)
         except ImportError as exc:
             error = exc
     raise TerrioMissing(f"terrio is not installed ({error}): pip install terrio=={TERRIO_VERSION}, "
                         "or Plugin > terrio > Installa terrio in the window") from error
 
 
-def available() -> str:
-    """The version of terrio the plugin can use, "" when none."""
+def load_features(feature: str = ""):
+    """terrio for the steps that need :data:`FEATURES_SINCE` (0.5)."""
+    return load(FEATURES_SINCE, feature)
+
+
+def available(minimum: tuple | None = None) -> str:
+    """The version of terrio the plugin can use (at least ``minimum``), "" when none."""
+    try:
+        return str(load(minimum).__version__)
+    except TerrioMissing:
+        return ""
+
+
+def installed() -> str:
+    """The version of the terrio found, even when too old or too new for the plugin; "" when none."""
     try:
         return str(load().__version__)
     except TerrioMissing:
-        return ""
+        pass
+    try:
+        import terrio
+
+        return str(getattr(terrio, "__version__", ""))
+    except ImportError:
+        return folder_version(_LIB_DIR)
 
 
 def platform_tags() -> list[str]:

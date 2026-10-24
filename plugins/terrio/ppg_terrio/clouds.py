@@ -13,7 +13,7 @@ import numpy as np
 from pyarchinit_photogrammetry.core.pointcloud import PointCloud
 from pyarchinit_photogrammetry.core.progress import as_progress
 
-from . import environment
+from . import cloudfile, environment
 
 METHODS = ("smrf", "csf", "pmf")
 NOISE, GROUND, OTHER = 7, 2, 1
@@ -196,7 +196,7 @@ def ground(chunk, method: str = "smrf", cell: float = 1.0, slope: float | None =
             codes[used[other]] = veg[other]
     keep_manual_labels(pc, codes)
     pc.classification = codes
-    chunk.point_cloud = pc
+    cloudfile.write(chunk, pc, cloudfile.read_extras(chunk.product_path("point_cloud")))  # the plugin's dimensions stay
     counts = {int(c): int(n) for c, n in zip(*np.unique(codes, return_counts=True))}
     kept = int((~changeable).sum())
     chunk.meta["terrio_ground"] = {"method": method, "cell": cell, "slope": slope, "threshold": threshold,
@@ -211,7 +211,8 @@ def ground(chunk, method: str = "smrf", cell: float = 1.0, slope: float | None =
 def export_cloud(chunk, path, progress=None) -> Path:
     """The dense cloud in world coordinates written by terrio: E57 (``.e57``), an EPT dataset in
     the folder ``path`` (``ept.json`` inside) when ``path`` ends with ``.ept``, or LAS, LAZ, COPC
-    (``.copc.laz``) and PLY. Colours and classes go with the points."""
+    (``.copc.laz``) and PLY. Colours and classes go with the points, and the values the plugin gave
+    them (temperature, index...) as extra dimensions of their own."""
     from pyarchinit_photogrammetry.core import crs as crs_mod
 
     terrio = environment.load()
@@ -225,8 +226,10 @@ def export_cloud(chunk, path, progress=None) -> Path:
     if pc.rgb is not None:
         colours = pc.rgb.astype(np.uint16) * 257
         arrays.update({"red": colours[:, 0], "green": colours[:, 1], "blue": colours[:, 2]})
-    cloud = terrio.PointCloud.from_dict(arrays, crs=None if crs_mod.is_local(chunk.crs) else chunk.crs)
     path = Path(path)
+    for name, values in cloudfile.read_extras(chunk.product_path("point_cloud")).items():
+        arrays.setdefault(name, np.asarray(values, np.float32))
+    cloud = terrio.PointCloud.from_dict(arrays, crs=None if crs_mod.is_local(chunk.crs) else chunk.crs)
     progress(0.4, f"Writing {path.name}")
     if path.suffix.lower() == ".ept" or path.name == "ept.json":
         folder = path if path.suffix.lower() == ".ept" else path.parent
