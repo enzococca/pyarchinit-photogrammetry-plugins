@@ -5,7 +5,7 @@
 **[Guida d'uso](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/geoarchaeology/)**: i dati da raccogliere, come compilare le tabelle CSV, i passi nel programma, come leggere i risultati.
 
 Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.2.2 o successiva): i log di trivellate manuali, carotaggi meccanici e sezioni di scavo
+(1.3.3 o successiva): i log di trivellate manuali, carotaggi meccanici e sezioni di scavo
 trasformati in superfici e in un modello 3D dei depositi, sullo stesso terreno del rilievo
 fotogrammetrico (il DEM e l'ortofoto del chunk).
 
@@ -63,8 +63,9 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   alzata). **Spessori** (isopache) fra contatti consecutivi, con il volume sommato sulle celle col
   DEM (quelle dove il terreno è la superficie dei collari sono riportate a parte) e dove l'unità
   manca.
-* **Sezioni** lungo una traccia disegnata sull'ortofoto o sul DEM (lo strumento linea del
-  programma, due clic), digitata, o per i sondaggi scelti: il profilo del terreno e di ogni
+* **Sezioni** lungo una traccia disegnata sull'ortofoto o sul DEM (il disegno del programma,
+  prestato al plugin: due o più vertici, doppio clic o Invio per finire), digitata, o per i sondaggi
+  scelti: il profilo del terreno e di ogni
   contatto, le unità colorate fra di essi, i sondaggi entro una distanza proiettati sulla traccia
   con i loro log e la distanza dalla traccia; in scala (scelta per un foglio A0 quando non data,
   come le sezioni del programma) con un'esagerazione verticale; SVG, PNG, DXF (coordinate di
@@ -79,15 +80,19 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   Un PLY per unità (doppia precisione, colorato), un OBJ con un oggetto e un materiale per unità, i
   volumi per unità in un CSV (sulle celle col DEM, le altre nelle loro colonne). Alla fine le unità
   si vedono insieme nella vista 3D del programma, ognuna nel suo colore (`unita_vista.ply`, se si
-  vuole separate in verticale); il pannello le fa rivedere e apre la cartella del modello.
+  vuole separate in verticale); il pannello le fa rivedere, apre la cartella del modello o fa delle
+  unità il modello di un nuovo chunk del progetto (*Apri come modello di un nuovo chunk*), dove il
+  pulsante *Taglia* della vista 3D del programma le taglia e chiude ogni unità sul taglio nel suo
+  colore.
 * Il pannello *Geoarcheologia* del dock del progetto: sondaggi, superfici e sezioni in tre
   tabelle, i sondaggi come layer di punti della vista (id, quota, profondità, unità), una superficie
   (la quota, la varianza o la correzione - questa su una rampa divergente attorno a zero, celle
   abbassate e alzate distinte) o uno spessore sopra l'ortofoto o il DEM con palette e opacità, una
-  sezione per i sondaggi nell'ordine in cui sono stati scelti, le tracce delle sezioni come layer,
+  sezione per i sondaggi nell'ordine in cui sono stati scelti, le tracce delle sezioni come layer
+  (sondaggi e tracce ridisegnati su ogni raster che la vista mostra),
   le esportazioni, il progetto QGIS (superfici, sondaggi e sezioni; anche per un chunk in un sistema
   locale). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
-* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|logs|export|remove PROGETTO ...`;
+* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|export|remove PROGETTO ...`;
   `ppg plugin geoarchaeology help` stampa le opzioni di ogni comando.
 
 ```bash
@@ -99,6 +104,7 @@ ppg plugin geoarchaeology section scavo.ppg --through S1,S4,S7 --exaggeration 5
 ppg plugin geoarchaeology section scavo.ppg --coords "500100,4500800;500180,4500860"
 ppg plugin geoarchaeology logs scavo.ppg S1 S2 S3 S4
 ppg plugin geoarchaeology model scavo.ppg
+ppg plugin geoarchaeology model-chunk scavo.ppg
 ppg plugin geoarchaeology export scavo.ppg geoarcheologia.gpkg
 ```
 

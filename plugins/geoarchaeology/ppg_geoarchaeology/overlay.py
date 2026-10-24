@@ -3,7 +3,8 @@ the kriging variance or the correction of the stack) or a thickness, with a pale
 2nd and 98th percentiles of its values - from zero for variances and thicknesses, around zero for
 the correction, whose cells lowered and raised take the two ends of a diverging ramp -, as a
 pixmap in the frame of what the view shows, with an opacity; the boreholes as a layer of points
-of the view."""
+of the view, the traces of the sections as a layer of lines (the plugin draws both again on every
+raster the view shows: ``context.on_raster_loaded``)."""
 from __future__ import annotations
 
 import numpy as np
@@ -94,10 +95,11 @@ class Overlay:
         from pyarchinit_photogrammetry.gui.image_views import to_qimage
 
         view = self.view
-        if view.tr is None or getattr(view, "_base_size", None) is None:
+        rect = view.sceneRect()  # the raster shown, in its pixels
+        w, h = int(round(rect.width())), int(round(rect.height()))
+        if view.tr is None or w < 1 or h < 1:
             raise RuntimeError("nothing in the raster view to overlay on: show the orthomosaic or the DEM first")
         self.remove()
-        w, h = view._base_size
         values = resample_to(values, transform, view.tr, (h, w))
         lo, hi = limits(values, zero, symmetric)
         rgba = render(values, lo, hi, palette)
@@ -142,6 +144,26 @@ def draw_boreholes(view, holes, colour: str = "#d62728") -> int:
                            attrs={"id": b.id, "z": None if b.z is None else round(b.z, 3), "depth": round(b.bottom, 3),
                                   "units": " / ".join(b.units), "kind": b.kind})
     return len(holes)
+
+
+def draw_traces(view, sections, colour: str = "#ff7f0e") -> int:
+    """The traces of ``sections`` (the entries of :func:`.section.entries`) as lines of the layer
+    :data:`SECTIONS_LAYER` of the view (attributes: id, length, boreholes); the layer drawn again
+    from scratch, or taken away when there is no section. Returns the lines drawn."""
+    if view is None or view.tr is None:
+        return 0
+    if SECTIONS_LAYER in getattr(view, "layers", {}):
+        view.remove_layer(SECTIONS_LAYER)
+    if not sections:
+        return 0
+    batch = getattr(view, "batch", None)
+    ctx = batch() if batch is not None else _Nothing()
+    with ctx:
+        for s in sections:
+            view.add_line(np.asarray(s["coords"], float)[:, :2], colour, s["name"], layer=SECTIONS_LAYER,
+                          attrs={"id": s["id"], "lunghezza_m": round(float(s["length"]), 2),
+                                 "sondaggi": ", ".join(h["id"] for h in s.get("boreholes", []))}, width=2.0)
+    return len(sections)
 
 
 class _Nothing:

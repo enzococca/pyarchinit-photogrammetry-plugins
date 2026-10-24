@@ -13,6 +13,10 @@ the colour of the unit), one OBJ with an object per unit and its material (``uni
 ``unita.mtl``), the volumes in ``volumi.csv``, all the units in one PLY for the program's 3D view
 (``unita_vista.ply``, in the internal frame of the chunk, optionally set apart vertically); the
 registry in ``chunk.meta["geoarchaeology"]["model"]``.
+
+:func:`to_chunk` makes the units the model of a new chunk of the project (the OBJ read by the
+program's mesh import): each unit stays a closed solid in its colour, so the program's cut of the
+model (the *Taglia* button of the 3D view, ``ppg cut-model``) closes every unit on the plane.
 """
 from __future__ import annotations
 
@@ -369,6 +373,62 @@ def display_mesh(chunk, explode: float | None = None) -> tuple[Path | None, int]
         reg.setdefault("files", {})["display"] = str(path.relative_to(chunk.data_dir))
         reg["explode"] = gap
     return path, len(meshes)
+
+
+# ------------------------------------------------------------------ the units as the model of a new chunk
+def obj_offset(path) -> np.ndarray:
+    """The offset subtracted from the coordinates of an OBJ written by :func:`write_obj`: the
+    ``# offset X Y Z`` line of its header, else the ``.offset.txt`` file beside it, else zeros."""
+    path = Path(path)
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            parts = line[1:].split()
+            if len(parts) == 4 and parts[0] == "offset":
+                try:
+                    return np.array([float(v) for v in parts[1:]])
+                except ValueError:
+                    break
+    side = path.with_suffix(path.suffix + ".offset.txt")
+    if side.exists():
+        try:
+            values = [float(v) for v in side.read_text(encoding="utf-8").split()]
+            if len(values) == 3:
+                return np.array(values)
+        except ValueError:
+            pass
+    return np.zeros(3)
+
+
+def _free_label(doc, label: str) -> str:
+    """``label``, or ``label (2)``, ``label (3)``... when a chunk of ``doc`` has it already."""
+    taken = {c.label for c in doc.chunks}
+    if label not in taken:
+        return label
+    k = 2
+    while f"{label} ({k})" in taken:
+        k += 1
+    return f"{label} ({k})"
+
+
+def to_chunk(doc, chunk, label: str | None = None, progress=None):
+    """The units of the model of ``chunk`` as the model of a new chunk of ``doc``: ``unita.obj`` read
+    by the program's mesh import (``io.mesh_import.import_model_chunk``) with its offset added back,
+    in the coordinate system of ``chunk``. Every unit stays a closed solid in its colour, so the cut
+    of the model of the new chunk closes each one on the plane. ``label``: the label of the new
+    chunk (by default *Unità geoarcheologiche - <label of chunk>*, numbered when taken). Returns
+    ``(new chunk, report of the import)``; the document is not saved."""
+    from pyarchinit_photogrammetry.io.mesh_import import import_model_chunk
+
+    rel = (registry(chunk).get("files") or {}).get("obj")
+    obj = Path(chunk.data_dir) / rel if rel else None
+    if obj is None or not obj.exists() or not has_model(chunk):
+        raise RuntimeError(t("Costruisci prima il modello 3D delle unità", "Build the 3D model of the units first"))
+    name = label or _free_label(doc, t("Unità geoarcheologiche - {0}", "Geoarchaeological units - {0}").format(chunk.label))
+    return import_model_chunk(doc, obj, label=name, crs=chunk.crs, offset=obj_offset(obj),
+                              name=t("Unità geoarcheologiche di {0}", "Geoarchaeological units of {0}").format(chunk.label),
+                              progress=progress)
 
 
 def remove(chunk) -> None:

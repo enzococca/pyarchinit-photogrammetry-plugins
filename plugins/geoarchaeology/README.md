@@ -5,7 +5,7 @@
 **[User guide](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/geoarchaeology/)**: the data to collect, how to write the CSV tables, the steps in the program, how to read the results.
 
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.2.2 or later): the logs of hand augers, mechanical cores and trench sections turned into
+(1.3.3 or later): the logs of hand augers, mechanical cores and trench sections turned into
 surfaces and a 3D model of the deposits, on the same ground as the photogrammetric survey (the
 DEM and the orthomosaic of the chunk).
 
@@ -61,8 +61,9 @@ DEM and the orthomosaic of the chunk).
   rasters between consecutive contacts, with the volume summed over the cells with a DEM (those
   where the ground is the surface of the collars are reported apart) and where the unit is
   missing.
-* **Sections** along a trace drawn on the orthomosaic or DEM (the line tool of the program, two
-  clicks), typed, or through the boreholes chosen: the profile of the ground and of every
+* **Sections** along a trace drawn on the orthomosaic or DEM (the program's drawing, lent to the
+  plugin: two or more vertices, double click or Enter to end), typed, or through the boreholes
+  chosen: the profile of the ground and of every
   contact, the units filled between them, the boreholes within a distance projected onto the
   trace with their logs and their offset; at a scale (chosen to fit an A0 sheet when not given,
   as the program's own sections) with a vertical exaggeration; SVG, PNG, DXF (section
@@ -77,15 +78,18 @@ DEM and the orthomosaic of the chunk).
   coloured), one OBJ with an object and a material per unit, the volumes per unit in a CSV (on
   the cells with a DEM, the others in their own columns). At the end the units are shown together
   in the program's 3D view, each in its colour (`unita_vista.ply`, optionally set apart
-  vertically); the pane shows them again and opens the folder of the model.
+  vertically); the pane shows them again, opens the folder of the model, or makes the units the
+  model of a new chunk of the project (*Apri come modello di un nuovo chunk*), where the *Taglia*
+  button of the program's 3D view cuts them and closes every unit on the cut in its colour.
 * The *Geoarcheologia* pane of the project dock: boreholes, surfaces and sections in three
   tables, the boreholes as a layer of points of the view (id, z, depth, units), a surface (its
   elevation, variance or correction - this one on a diverging ramp around zero, lowered and raised
   cells apart) or a thickness over the orthomosaic or DEM with palette and opacity, a section
-  through the boreholes in the order they were picked, the section traces as a layer, the
+  through the boreholes in the order they were picked, the section traces as a layer (boreholes
+  and traces drawn again on every raster the view shows), the
   exports, the QGIS project (surfaces, boreholes and sections; also for a chunk in a local
   system). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
-* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|logs|export|remove PROJECT ...`;
+* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|export|remove PROJECT ...`;
   `ppg plugin geoarchaeology help` prints the options of every command.
 
 ```bash
@@ -97,6 +101,7 @@ ppg plugin geoarchaeology section scavo.ppg --through S1,S4,S7 --exaggeration 5
 ppg plugin geoarchaeology section scavo.ppg --coords "500100,4500800;500180,4500860"
 ppg plugin geoarchaeology logs scavo.ppg S1 S2 S3 S4
 ppg plugin geoarchaeology model scavo.ppg
+ppg plugin geoarchaeology model-chunk scavo.ppg
 ppg plugin geoarchaeology export scavo.ppg geoarcheologia.gpkg
 ```
 

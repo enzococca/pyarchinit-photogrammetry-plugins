@@ -1,8 +1,8 @@
 """The Geoarcheologia pane: the steps as buttons (their parameters asked in dialogs), the
 boreholes, the surfaces and the sections of the chunk in three tables, the overlay of a surface
 on the raster view with its band, palette and opacity, the model of the units in the 3D view of
-the program and its folder, the exports. The boreholes selected are kept in the order they were
-picked: a section through them follows that order.
+the program, its folder, the units as the model of a new chunk, the exports. The boreholes
+selected are kept in the order they were picked: a section through them follows that order.
 
 Every row of buttons is a :class:`FlowLayout` and the combos keep a short minimum: in a narrow
 dock the pane wraps and never widens the column of the window."""
@@ -68,6 +68,7 @@ class GeoarchaeologyPane(QWidget):
     model_requested = Signal()
     model_view_requested = Signal()  # the units of the model in the 3D view of the program
     model_folder_requested = Signal()  # the folder of the model in the file manager
+    model_chunk_requested = Signal()  # the units as the model of a new chunk (to cut them in the 3D view)
     section_draw_requested = Signal()
     section_through_requested = Signal(list)  # the boreholes selected, in the order they were picked
     logs_requested = Signal(list)
@@ -110,14 +111,24 @@ class GeoarchaeologyPane(QWidget):
         self.b_model_folder = QPushButton(t("Apri la cartella", "Open the folder"))
         self.b_model_folder.setToolTip(t("La cartella del modello: un PLY per unità, l'OBJ, i volumi",
                                          "The folder of the model: a PLY per unit, the OBJ, the volumes"))
-        for b in (self.b_import, self.b_order, self.b_surfaces, self.b_model, self.b_model_view, self.b_model_folder):
+        self.b_model_chunk = QPushButton(t("Apri come modello di un nuovo chunk", "Open as the model of a new chunk"))
+        self.b_model_chunk.setToolTip(t("Le unità diventano il modello di un nuovo chunk del progetto, che diventa il "
+                                        "chunk attivo: il pulsante Taglia della vista 3D le taglia, e ogni unità si "
+                                        "chiude sul taglio nel suo colore",
+                                        "The units become the model of a new chunk of the project, which becomes the "
+                                        "active chunk: the Cut button of the 3D view cuts them, and every unit is "
+                                        "closed on the cut in its colour"))
+        for b in (self.b_import, self.b_order, self.b_surfaces, self.b_model, self.b_model_view, self.b_model_folder,
+                  self.b_model_chunk):
             bar.addWidget(b)
         lay.addWidget(holder)
         holder2 = QWidget()
         bar2 = FlowLayout(holder2)
         self.b_draw = QPushButton(t("Traccia una sezione", "Draw a section"))
-        self.b_draw.setToolTip(t("Due clic sull'ortofoto o sul DEM: inizio e fine della sezione",
-                                 "Two clicks on the orthomosaic or DEM: start and end of the section"))
+        self.b_draw.setToolTip(t("Clic sull'ortofoto o sul DEM per i vertici della traccia (due o più), doppio clic o "
+                                 "Invio per finire",
+                                 "Click the vertices of the trace on the orthomosaic or DEM (two or more), double click "
+                                 "or Enter to end"))
         self.b_through = QPushButton(t("Sezione per i sondaggi", "Section through the boreholes"))
         self.b_through.setToolTip(t("Una sezione che passa per i sondaggi selezionati, nell'ordine in cui li hai scelti",
                                     "A section through the selected boreholes, in the order you picked them"))
@@ -171,6 +182,7 @@ class GeoarchaeologyPane(QWidget):
         self.b_model.clicked.connect(self.model_requested)
         self.b_model_view.clicked.connect(self.model_view_requested)
         self.b_model_folder.clicked.connect(self.model_folder_requested)
+        self.b_model_chunk.clicked.connect(self.model_chunk_requested)
         self.b_draw.clicked.connect(self.section_draw_requested)
         self.b_through.clicked.connect(lambda: self.section_through_requested.emit(self.selected_boreholes()))
         self.b_logs.clicked.connect(lambda: self.logs_requested.emit(self.selected_boreholes()))
@@ -245,7 +257,7 @@ class GeoarchaeologyPane(QWidget):
             b.setEnabled(has_holes)
         self.b_through.setEnabled(len(self.selected_boreholes()) >= 2)
         self.b_model.setEnabled(bool(self.products))
-        for b in (self.b_model_view, self.b_model_folder):
+        for b in (self.b_model_view, self.b_model_folder, self.b_model_chunk):
             b.setEnabled(self.has_model)
         self.b_overlay.setEnabled(product is not None)
         self.c_band.setEnabled(entry is not None and entry.get("kind") == "surface")

@@ -4,7 +4,8 @@ bowl (the top of unit 4), 36 boreholes on a jittered grid, five of them ending i
 The kriging must give back the plane and the bowl at points between the boreholes, the stack
 must stay in order, the sections must follow the surfaces, the volumes of the model must be those
 of the analytic solids; the tables are read in their variants, the pane fits a narrow dock and
-borrows the line tool of the view, the command line goes round the whole workflow."""
+traces a section with the drawing the window lends to plugins, the command line goes round the
+whole workflow."""
 from __future__ import annotations
 
 import re
@@ -611,7 +612,8 @@ def test_the_plugin_in_the_program(tmp_path):
     assert info is not None and info.active, info and info.error
     assert [a.title for a in manager.actions if a.plugin == "geoarchaeology"] == [
         "Importa sondaggi...", "Superfici di contatto (kriging)...", "Sezione geoarcheologica...",
-        "Colonne stratigrafiche...", "Modello 3D delle unità...", "Geoarcheologia...", "Nascondi la sovrapposizione"]
+        "Colonne stratigrafiche...", "Modello 3D delle unità...", "Apri come modello di un nuovo chunk",
+        "Geoarcheologia...", "Nascondi la sovrapposizione"]
     assert "geoarchaeology" in manager.commands
     assert [e.suffix for e in manager.exporters if e.plugin == "geoarchaeology"] == [".gpkg"]
 
@@ -673,6 +675,9 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
     monkeypatch.setenv("PPG_NO_PLUGINS", "1")  # the window alone: the plugin is activated below
     qapp = QApplication.instance() or QApplication([])
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
     from pyarchinit_photogrammetry.gui import dialogs
     from pyarchinit_photogrammetry.gui import main_window as mwmod
 
@@ -682,6 +687,8 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
     app.document = doc
     w = mwmod.MainWindow(doc, autoconnect=False)
     w.runner.show_dialog = False
+    w.resize(1200, 800)
+    w.show()  # the clicks of the trace land where the view shows the raster
     warnings = []
     monkeypatch.setattr(w, "_warn", lambda text: warnings.append(text))
     monkeypatch.setattr(w, "_info", lambda title, text: warnings.append(text))
@@ -691,6 +698,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         pane = plugin.pane
         assert pane is not None and w.left_tabs.indexOf(pane) >= 0
         assert pane.minimumSizeHint().width() < 300  # never widens the column of the window
+        assert "_load_raster" not in vars(w)  # the layers follow the view through on_raster_loaded
         plugin.refresh_pane()
         assert pane.t_holes.rowCount() == 36 and pane.t_products.rowCount() == 4 + 3
         assert "36 sondaggi" in pane.l_status.text()
@@ -707,27 +715,48 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         assert plugin.overlay.item.opacity() == pytest.approx(0.6) and "Spessore di 2" in pane.l_limits.text()
         plugin.hide_overlay()
         assert plugin.overlay.item is None
-        # a section drawn with the line tool of the view: the plugin takes the tool for one trace
+        # a section traced on the view with the program's drawing, lent to the plugin: three vertices, Enter
         monkeypatch.setattr(dialogs.ParamDialog, "ask", staticmethod(
             lambda parent, title, fields, intro="": {"name": "Disegnata", "distance": 6.0, "scale": None,
                                                      "exaggeration": None}))
         plugin._run = lambda title, job, done=None: done(job(None)) if done else job(None)
+        view = w.ortho_view
+
+        def click(x, y):
+            QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                             view.mapFromScene(view.scene_pt(x, y)))
+
+        w.setWindowModified(False)
         plugin.draw_section()
-        assert plugin._armed and w.ortho_view.mode == "line"
-        a, b = np.array([X0 + 5.0, Y0 + 10.0]), np.array([X0 + 95.0, Y0 + 70.0])
-        w.ortho_view.line_finished.emit(a, b)
-        assert not plugin._armed and [s["name"] for s in section.entries(ch)] == ["Disegnata"]
+        assert view.mode == "req_line" and not any(a.isChecked() for a in w.draw_group.actions())
+        trace = [(X0 + 5.0, Y0 + 10.0), (X0 + 50.0, Y0 + 30.0), (X0 + 95.0, Y0 + 70.0)]
+        for x, y in trace:
+            click(x, y)
+        QTest.keyClick(view, Qt.Key.Key_Return)
+        assert view.mode == "pan" and [s["name"] for s in section.entries(ch)] == ["Disegnata"]
+        assert w.isWindowModified()  # the section is in the project: to be saved
+        assert np.allclose(np.asarray(section.entries(ch)[0]["coords"], float)[:, :2], trace, atol=0.3)
         assert not warnings and not w.sections  # the program's own section did not run
-        assert len(w.line_layers[overlay.SECTIONS_LAYER]) == 1 and pane.t_sections.rowCount() == 1
-        w.ortho_view.line_finished.emit(a, b)  # the tool is the program's again
-        assert warnings
+        assert len(view.features(overlay.SECTIONS_LAYER)) == 1 and pane.t_sections.rowCount() == 1
+        w._load_raster("dem")  # the trace comes back on the raster loaded again
+        assert [f["id"] for f in view.features(overlay.SECTIONS_LAYER)] == [section.entries(ch)[0]["id"]]
+        # another tool of the drawing bar ends the request: no section
+        plugin.draw_section()
+        click(X0 + 20.0, Y0 + 20.0)
+        w.draw_actions["measure"].trigger()
+        assert view.mode == "measure" and len(section.entries(ch)) == 1
+        w.set_draw_mode("pan")
+        # the line tool of the program still draws the program's own sections
+        a, b = np.array([X0 + 5.0, Y0 + 10.0]), np.array([X0 + 95.0, Y0 + 70.0])
+        view.line_finished.emit(a, b)
+        assert warnings and len(section.entries(ch)) == 1
         assert any(p == plugin._qgis_entries for p in w.qgis_providers)
         rasters, vectors = plugin._qgis_entries()
         assert len(rasters) == 7 and {v["table"] for v in vectors} == {"sondaggi", "sezioni"}
         plugin.deactivate()
         assert w.left_tabs.indexOf(pane) < 0 and not any(p == plugin._qgis_entries for p in w.qgis_providers)
         assert plugin not in w._geoarchaeology_instances and overlay.BOREHOLES_LAYER not in w.ortho_view.layers
-        assert overlay.SECTIONS_LAYER not in w.line_layers
+        assert overlay.SECTIONS_LAYER not in w.ortho_view.layers
     finally:
         w.setWindowModified(False)
         w.close()

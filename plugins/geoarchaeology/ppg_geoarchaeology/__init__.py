@@ -4,16 +4,20 @@ photogrammetric survey (the DEM and the orthomosaic of the chunk).
 
 * the *Geoarcheologia* pane of the project dock: import of the logs (CSV of collars and
   intervals, or one table), the order of the units, the contact surfaces and the thicknesses by
-  kriging, the sections (a trace drawn on the view, or through the boreholes chosen), the
-  stratigraphic columns, the 3D model of the units with their volumes (shown in the program's 3D
-  view, its folder opened in the file manager); the boreholes as a layer of points of the view, a
-  surface or a thickness over the orthomosaic or DEM with palette and opacity, the exports, the
-  QGIS project;
+  kriging, the sections (a trace drawn on the view with the program's drawing, lent to the plugin,
+  or through the boreholes chosen), the stratigraphic columns, the 3D model of the units with their
+  volumes (shown in the program's 3D view, its folder opened in the file manager, or made the model
+  of a new chunk, to cut it with the *Taglia* button of the 3D view); the boreholes and the section
+  traces as layers of the view (drawn again on every raster the view shows), a surface or a
+  thickness over the orthomosaic or DEM with palette and opacity, the exports, the QGIS project;
 * *Plugin > Geoarcheologia* menu actions for the same; *File > Esporta > Sondaggi e superfici
   geoarcheologiche (GeoPackage)*;
-* ``ppg plugin geoarchaeology import|list|order|surfaces|section|model|logs|export|remove PROJECT ...``.
+* ``ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|export|remove
+  PROJECT ...``.
 
-Everything lives in ``chunk.meta["geoarchaeology"]`` and in ``<chunk data>/geoarchaeology/``.
+Everything lives in ``chunk.meta["geoarchaeology"]`` and in ``<chunk data>/geoarchaeology/``. The
+window's parts it uses come from the plugin API of the program 1.3.2 (``request_line``,
+``on_raster_loaded``, ``mark_modified``).
 """
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import num, plural, signed, t
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 SECTION_COLOUR = "#ff7f0e"
 
 
@@ -40,8 +44,6 @@ class GeoarchaeologyPlugin(Plugin):
         self.context = None
         self.pane = None
         self.overlay = None
-        self._armed = False
-        self._took_line = False
         self._show_holes = False
 
     # ------------------------------------------------------------------ activation
@@ -55,23 +57,29 @@ class GeoarchaeologyPlugin(Plugin):
         context.add_action(t("Sezione geoarcheologica...", "Geoarchaeological section..."), self.draw_section)
         context.add_action(t("Colonne stratigrafiche...", "Stratigraphic columns..."), lambda: self.logs_dialog([]))
         context.add_action(t("Modello 3D delle unità...", "3D model of the units..."), self.model_dialog, processing=True)
+        context.add_action(t("Apri come modello di un nuovo chunk", "Open as the model of a new chunk"), self.model_chunk,
+                           tip=t("Le unità del modello 3D come modello di un nuovo chunk, da tagliare con il pulsante "
+                                 "Taglia della vista 3D",
+                                 "The units of the 3D model as the model of a new chunk, to cut with the Cut button "
+                                 "of the 3D view"), processing=True)
         context.add_action(t("Geoarcheologia...", "Geoarchaeology..."), self.show_pane,
                            tip=t("Il pannello Geoarcheologia del dock del progetto",
                                  "The Geoarcheologia pane of the project dock"))
         context.add_action(t("Nascondi la sovrapposizione", "Hide the overlay"), self.hide_overlay)
         context.add_command("geoarchaeology", self.command,
                             help="boreholes and their logs, contact surfaces by kriging, sections, 3D model of the units: "
-                                 "import, list, order, surfaces, section, model, logs, export, remove")
+                                 "import, list, order, surfaces, section, model, model-chunk, logs, export, remove")
         context.add_exporter(t("Sondaggi e superfici geoarcheologiche (GeoPackage)",
                                "Boreholes and geoarchaeological surfaces (GeoPackage)"), ".gpkg", self._export_gpkg)
         if context.window is not None:
             self._install_pane(context.window)
+            # the layers of the plugin go with the raster the view leaves: drawn again on the next one
+            context.on_raster_loaded(self._raster_loaded)
 
     def deactivate(self) -> None:
         self.hide_overlay()
         window = self.context.window if self.context else None
         if window is not None:
-            self._arm(False)
             if self.pane is not None:
                 tabs = getattr(window, "left_tabs", None)
                 if tabs is not None and tabs.indexOf(self.pane) >= 0:
@@ -82,7 +90,6 @@ class GeoarchaeologyPlugin(Plugin):
                 instances.remove(self)
             from .overlay import BOREHOLES_LAYER, SECTIONS_LAYER
 
-            getattr(window, "line_layers", {}).pop(SECTIONS_LAYER, None)
             view = getattr(window, "ortho_view", None)
             for layer in (BOREHOLES_LAYER, SECTIONS_LAYER):
                 if view is not None and layer in getattr(view, "layers", {}):
@@ -113,6 +120,7 @@ class GeoarchaeologyPlugin(Plugin):
         p.model_requested.connect(self.model_dialog)
         p.model_view_requested.connect(self.show_model)
         p.model_folder_requested.connect(self.open_model_folder)
+        p.model_chunk_requested.connect(self.model_chunk)
         p.section_draw_requested.connect(self.draw_section)
         p.section_through_requested.connect(self.section_through)
         p.logs_requested.connect(self.logs_dialog)
@@ -126,8 +134,11 @@ class GeoarchaeologyPlugin(Plugin):
         p.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         self.refresh_pane()
-        # the pane follows the project, the layer of the boreholes the raster shown: the window is
-        # hooked once, for every active instance of the plugin
+        # The pane follows the project: another project opened, another chunk made active, a step
+        # of the program or an undo that changed the chunk all end with the window's refresh_all,
+        # and the plugin API has no notice of those (on_raster_loaded tells the raster the view
+        # shows, not the project: its layers are drawn there, see _raster_loaded). So refresh_all
+        # is wrapped, once per window, for every active instance of the plugin.
         instances = getattr(window, "_geoarchaeology_instances", None)
         if instances is None:
             window._geoarchaeology_instances = instances = []
@@ -140,16 +151,6 @@ class GeoarchaeologyPlugin(Plugin):
                     return result
 
                 window.refresh_all = refresh_all
-            load = getattr(window, "_load_raster", None)
-            if load is not None:
-                def load_raster(*args, _orig=load, **kwargs):
-                    result = _orig(*args, **kwargs)
-                    for plugin in list(window._geoarchaeology_instances):
-                        if plugin._show_holes:
-                            plugin._draw_boreholes()
-                    return result
-
-                window._load_raster = load_raster
         instances.append(self)
 
     def refresh_pane(self) -> None:
@@ -240,12 +241,11 @@ class GeoarchaeologyPlugin(Plugin):
 
     def _after(self, text: str = "") -> None:
         self.refresh_pane()
+        if self.context is not None:
+            self.context.mark_modified()
         window = self.context.window if self.context else None
-        if window is not None:
-            if hasattr(window, "_dirty"):
-                window._dirty(True)
-            if text and hasattr(window, "statusBar"):
-                window.statusBar().showMessage(text, 15000)
+        if window is not None and text and hasattr(window, "statusBar"):
+            window.statusBar().showMessage(text, 15000)
 
     def _open_file(self, path) -> None:
         from PySide6.QtCore import QUrl
@@ -595,6 +595,45 @@ class GeoarchaeologyPlugin(Plugin):
             return
         self._open_file(out)
 
+    def model_chunk(self) -> None:
+        """The units of the 3D model as the model of a new chunk of the project, in the background
+        (:func:`.model.to_chunk`); then the new chunk is the active one and its model is in the 3D
+        view, where the *Taglia* button cuts it: each unit, a closed solid, is closed on the cut in
+        its colour. The project is to be saved afterwards (it shows as modified)."""
+        from . import model as model_mod
+
+        chunk = self._chunk()
+        doc = self.context.app.document if self.context is not None else None
+        if chunk is None or doc is None:
+            return
+        if not model_mod.has_model(chunk):
+            self._message("warning", t("Costruisci prima il modello 3D delle unità.",
+                                       "Build the 3D model of the units first."))
+            return
+
+        def done(result):
+            new, report = result
+            window = self.context.window
+            if window is not None:
+                if hasattr(window, "_activate_chunk"):
+                    window._activate_chunk(new)
+                if hasattr(window, "_show_model"):
+                    window._show_model("model")
+            self.context.mark_modified()
+            text = t("Unità geoarcheologiche nel chunk «{0}» ({1} facce): il pulsante Taglia della vista 3D ora le "
+                     "taglia, e i solidi chiusi si chiudono sul taglio, ognuno nel suo colore. Salva il progetto per "
+                     "tenere il nuovo chunk.",
+                     "Geoarchaeological units in the chunk «{0}» ({1} faces): the Cut button of the 3D view now cuts "
+                     "them, and the closed solids are closed on the cut, each in its colour. Save the project to keep "
+                     "the new chunk.").format(new.label, num(report["faces"], 0))
+            if window is not None and hasattr(window, "statusBar"):
+                window.statusBar().showMessage(text, 30000)
+            else:
+                print(text)
+
+        self.context.run(t("Unità in un nuovo chunk", "Units in a new chunk"),
+                         lambda p: model_mod.to_chunk(doc, chunk, progress=p), done)
+
     @staticmethod
     def model_text(reg: dict, folder=None) -> str:
         """The volumes of the model, in the language of the interface."""
@@ -615,67 +654,25 @@ class GeoarchaeologyPlugin(Plugin):
 
     # ------------------------------------------------------------------ sections
     def draw_section(self) -> None:
-        """The line tool of the view lent to the plugin for one trace (two clicks)."""
+        """A trace drawn on the orthomosaic or the DEM with the program's drawing, lent to the plugin
+        (``context.request_line``): click its vertices, two or more, double click or Enter to end,
+        Backspace drops the last one, Esc or another tool of the drawing bar cancels. The section
+        dialog follows, with the vertices."""
         chunk = self._need_boreholes()
         window = self.context.window
-        if chunk is None or window is None:
+        if chunk is None or window is None or not hasattr(window, "request_geometry"):
             return
-        view = getattr(window, "ortho_view", None)
-        if view is None:
-            return
-        if view.tr is None and hasattr(window, "_show_raster"):
-            window._show_raster("ortho" if chunk.orthomosaic_path else "dem")
-        if view.tr is None:
-            self._message("warning", t("Costruisci prima il DEM o l'ortofoto.", "Build the DEM or the orthomosaic first."))
-            return
-        self._arm(True)
-        if hasattr(window, "set_draw_mode"):
-            window.set_draw_mode("line")
-        if hasattr(window, "show_view"):
-            window.show_view(view)
-        window.statusBar().showMessage(t("Sezione geoarcheologica: due clic, inizio e fine della traccia",
-                                         "Geoarchaeological section: two clicks, start and end of the trace"), 30000)
+        self.context.request_line(self._line_drawn, hint=t(
+            "Sezione geoarcheologica: clic per i vertici della traccia, doppio clic o Invio per finire; Backspace "
+            "toglie l'ultimo vertice, Esc annulla",
+            "Geoarchaeological section: click the vertices of the trace, double click or Enter to end; Backspace "
+            "takes the last vertex back, Esc cancels"))
 
-    def _arm(self, on: bool) -> None:
-        window = self.context.window if self.context else None
-        view = getattr(window, "ortho_view", None) if window is not None else None
-        if view is None:
+    def _line_drawn(self, xy) -> None:
+        """The trace drawn (an (N, 2) array in the coordinates of the chunk): the section dialog."""
+        if self.pane is None:  # the plugin went away while the line was drawn
             return
-        group = getattr(window, "draw_group", None)
-        if on and not self._armed:
-            try:
-                view.line_finished.disconnect(window._section_drawn)
-                self._took_line = True
-            except (RuntimeError, TypeError, AttributeError):
-                self._took_line = False
-            view.line_finished.connect(self._line_drawn)
-            if group is not None:
-                group.triggered.connect(self._tool_changed)
-            self._armed = True
-        elif not on and self._armed:
-            for signal, slot in ((view.line_finished, self._line_drawn),
-                                 (getattr(group, "triggered", None), self._tool_changed)):
-                if signal is None:
-                    continue
-                try:
-                    signal.disconnect(slot)
-                except (RuntimeError, TypeError):
-                    pass
-            if self._took_line:
-                view.line_finished.connect(window._section_drawn)
-            self._armed, self._took_line = False, False
-
-    def _tool_changed(self, action) -> None:
-        window = self.context.window
-        if getattr(window, "draw_actions", {}).get("line") is not action:
-            self._arm(False)  # another tool chosen: the line tool goes back to the program's sections
-
-    def _line_drawn(self, a, b) -> None:
-        self._arm(False)
-        window = self.context.window
-        if hasattr(window, "set_draw_mode"):
-            window.set_draw_mode("pan")
-        self.section_dialog([(float(a[0]), float(a[1])), (float(b[0]), float(b[1]))])
+        self.section_dialog([(float(x), float(y)) for x, y in xy])
 
     def section_through(self, ids: list) -> None:
         from . import section as section_mod
@@ -731,27 +728,22 @@ class GeoarchaeologyPlugin(Plugin):
                                               scale=v["scale"], exaggeration=v["exaggeration"], progress=p), done)
 
     def _sync_traces(self) -> None:
-        """The traces of the sections of the chunk as a line layer of the window (kept across the
-        reloads of the raster)."""
+        """The traces of the sections of the chunk as the line layer :data:`.overlay.SECTIONS_LAYER`
+        of the view, drawn again when the sections of the chunk differ from the lines it shows (a
+        section made or removed, another chunk); the plugin draws them on every raster the view
+        shows (:meth:`_raster_loaded`)."""
         from . import section as section_mod
-        from .overlay import SECTIONS_LAYER
+        from .overlay import SECTIONS_LAYER, draw_traces
 
         window = self.context.window if self.context else None
+        view = getattr(window, "ortho_view", None) if window is not None else None
+        if view is None or view.tr is None:
+            return
         chunk = self._chunk()
-        if window is None or chunk is None or not hasattr(window, "_add_line_feature"):
+        sections = section_mod.entries(chunk) if chunk is not None else []
+        if [f.get("id") for f in view.features(SECTIONS_LAYER)] == [s["id"] for s in sections]:
             return
-        sections = section_mod.entries(chunk)
-        have = [attrs.get("id") for _c, _col, _l, attrs, _w in getattr(window, "line_layers", {}).get(SECTIONS_LAYER, [])]
-        if have == [s["id"] for s in sections]:
-            return
-        window.line_layers.pop(SECTIONS_LAYER, None)
-        view = getattr(window, "ortho_view", None)
-        if view is not None and SECTIONS_LAYER in getattr(view, "layers", {}):
-            view.remove_layer(SECTIONS_LAYER)
-        for s in sections:
-            window._add_line_feature(SECTIONS_LAYER, s["coords"], SECTION_COLOUR, s["name"],
-                                     {"id": s["id"], "lunghezza_m": round(s["length"], 2),
-                                      "sondaggi": ", ".join(h["id"] for h in s["boreholes"])}, width=2.0)
+        draw_traces(view, sections, SECTION_COLOUR)
 
     def open_section(self, sid: str) -> None:
         from . import section as section_mod
@@ -802,6 +794,16 @@ class GeoarchaeologyPlugin(Plugin):
                   lambda p: logs.draw(chunk, chosen, vertical=v["vertical"], scale=v["scale"]), done)
 
     # ------------------------------------------------------------------ the view
+    def _raster_loaded(self) -> None:
+        """Another raster, an empty frame or nothing in the 2D view (``context.on_raster_loaded``):
+        the layers of the plugin went with the old one; the traces of the sections, and the
+        boreholes when they were asked for, are drawn again on the new one."""
+        if self.pane is None:
+            return
+        self._sync_traces()
+        if self._show_holes:
+            self._draw_boreholes()
+
     def show_boreholes(self) -> None:
         window = self.context.window
         chunk = self._chunk()
@@ -991,6 +993,12 @@ class GeoarchaeologyPlugin(Plugin):
         p.add_argument("--offset", default=None, help="X,Y,Z subtracted from the coordinates of the OBJ")
         p.add_argument("--explode", type=float, default=None,
                        help="metres between the units in unita_vista.ply, the file of the program's 3D view")
+        p = sub.add_parser("model-chunk", help="the units of the 3D model as the model of a new chunk of the project, "
+                                               "to cut them in the 3D view (each unit closed on the cut in its colour)")
+        p.add_argument("project")
+        p.add_argument("--label", default=None,
+                       help="label of the new chunk (default: 'Unità geoarcheologiche - <chunk>' in the language of "
+                            "the interface, numbered when taken)")
         p = sub.add_parser("logs", help="stratigraphic columns: one borehole or a panel")
         p.add_argument("project")
         p.add_argument("ids", nargs="*", help="the boreholes (all by default)")
@@ -1069,6 +1077,11 @@ class GeoarchaeologyPlugin(Plugin):
                              if r.get("outside_dem") else "")
                           + (" (clipped to the US drawn)" if r.get("clipped") else ""))
                 print(model_mod.folder(chunk))
+            elif a.what == "model-chunk":
+                new, report = model_mod.to_chunk(doc, chunk, label=a.label, progress=print_progress)
+                solids = sum(1 for r in model_mod.registry(chunk).get("units", []) if r.get("ply"))
+                print(f"{new.label}: {solids} units, {report['faces']} faces, {report['vertices']} vertices "
+                      f"(chunk key {new.key})")
             elif a.what == "logs":
                 drawn = logs.draw(chunk, a.ids or None, path=a.out, vertical=a.vertical, scale=a.scale)
                 for path in drawn:
