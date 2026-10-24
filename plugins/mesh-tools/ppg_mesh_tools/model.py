@@ -1,9 +1,10 @@
 """MeshLab's filters on the model of a chunk, and the result as a new version of it.
 
 The model (``model.ply``, internal frame of the chunk) is read with the program's own reader
-(every vertex property, the texture coordinates of the face corners, the pages), its vertices at
-the same position welded (a textured model repeats them along the seams of the texture: MeshLab
-would take every seam for a border, smoothing would open it), and written for the worker with
+(every vertex property, the texture coordinates of the face corners, the pages), the vertices it
+repeats along the seams of its texture welded (MeshLab would take every seam for a border,
+smoothing would open it; vertices that only touch at a point stay apart: a non-manifold vertex
+split by MeshLab's repair stays split), and written for the worker with
 only what MeshLab needs: positions, colours, and the texture coordinates when the operation keeps
 them. MeshLab's result comes back the same way and gets the properties it cannot carry
 (confidence, any other) from the nearest vertex of the model, or vertex by vertex when the
@@ -140,19 +141,35 @@ def _mean_edge(xyz: np.ndarray, faces: np.ndarray) -> float:
 
 
 def _welded(mesh):
-    """The vertices at the same position counted once (the seams of a textured model), faces that
-    become degenerate dropped; the number of vertices welded."""
+    """The vertices repeated along the seams of a texture counted once, faces that become degenerate
+    dropped; the number of vertices welded. A seam is a pair of border edges between the same two
+    places: only the vertices along one are joined. Vertices at the same place that touch only at a
+    point stay apart - the copies of a non-manifold vertex that MeshLab's repair split, two pieces
+    meeting at a corner: joined, the repair would be undone by the next operation."""
     from pyarchinit_photogrammetry.engine.cleaning import weld
     from pyarchinit_photogrammetry.io.mesh_ply import MeshData
 
-    first, inverse = weld(mesh.xyz)
-    if len(first) == len(mesh.vertices):
+    first, place = weld(mesh.xyz)
+    n = len(mesh.vertices)
+    if len(first) == n or not len(mesh.faces):
         return mesh, 0
-    f = inverse[mesh.faces]
-    ok = (f[:, 0] != f[:, 1]) & (f[:, 1] != f[:, 2]) & (f[:, 0] != f[:, 2])
-    return (MeshData(mesh.vertices[first], f[ok], None if mesh.texcoords is None else mesh.texcoords[ok],
+    f = np.asarray(mesh.faces, np.int64)
+    edges, count = np.unique(np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1), axis=0,
+                             return_counts=True)
+    border = edges[count == 1]
+    places = np.sort(place[border], axis=1)
+    _, again, times = np.unique(places, axis=0, return_inverse=True, return_counts=True)
+    on_seam = np.zeros(n, bool)
+    on_seam[border[times[again.ravel()] >= 2].ravel()] = True
+    label = np.where(on_seam, place, len(first) + np.arange(n))  # off a seam a vertex keeps its own label
+    kept, keep, index = np.unique(label, return_index=True, return_inverse=True)
+    if len(kept) == n:
+        return mesh, 0
+    g = index.ravel()[f]
+    ok = (g[:, 0] != g[:, 1]) & (g[:, 1] != g[:, 2]) & (g[:, 0] != g[:, 2])
+    return (MeshData(mesh.vertices[keep], g[ok], None if mesh.texcoords is None else mesh.texcoords[ok],
                      list(mesh.comments), None if mesh.texnumber is None else mesh.texnumber[ok]),
-            int(len(mesh.vertices) - len(first)))
+            int(n - len(kept)))
 
 
 def _input_mesh(mesh, texture: bool, colors: bool):
@@ -615,6 +632,13 @@ def report_text(report: dict) -> str:
             text = t("Topologia riparata: {0}", "Topology repaired: {0}").format(", ".join(parts) or "-")
     else:
         text = title(op)
+    m = report.get("measures") or {}
+    vertices, edges = max(0, int(m.get("non_manifold_vertices") or 0)), max(0, int(m.get("non_manifold_edges") or 0))
+    if vertices or edges:  # what MeshLab left (the remeshing can join the vertices a repair split)
+        text += t("; restano {0} {1} e {2} {3} non-manifold («Ripara la topologia»)",
+                  "; {0} non-manifold {1} and {2} {3} left ('Repair the topology')").format(
+            number(vertices), plural(vertices, t("vertice", "vertex"), t("vertici", "vertices")),
+            number(edges), plural(edges, t("spigolo", "edge"), t("spigoli", "edges")))
     if report.get("changed") and report.get("textured") and not report.get("texture_kept"):
         text += t("; la texture va ricostruita (Flusso di lavoro > Costruisci texture)",
                   "; the texture has to be built again (Workflow > Build texture)")

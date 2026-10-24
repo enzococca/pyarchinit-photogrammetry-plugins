@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mesh_samples import SCALE, grid_mesh, project
+from mesh_samples import SCALE, bowtie_mesh, grid_mesh, project
 from ppg_mesh_tools import environment, model, runner
 from pyarchinit_photogrammetry.core import versions
 from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
@@ -208,6 +208,29 @@ def test_the_outlines_stay_open(tmp_path, fake):
     fake.setenv("PPG_MESH_TOOLS_FAKE", "crash")
     report = model.apply(ch, "close_holes", {"max_hole_edges": 100000})
     assert not report["changed"] and report["details"]["holes"] == 0 and versions.versions(ch, "model") == []
+
+
+def test_only_the_seams_are_welded():
+    """The copies of the vertices along a seam of the texture are joined; copies that touch only at a
+    point - a non-manifold vertex split by MeshLab's repair - stay apart, else the next operation would
+    undo the repair."""
+    seam = grid_mesh(duplicate_seam=True)
+    welded, n = model._welded(seam)
+    plain = grid_mesh()
+    assert n == len(seam.vertices) - len(plain.vertices) > 20 and len(welded.vertices) == len(plain.vertices)
+    assert model._boundary(welded.faces, len(welded.vertices)).sum() == model._boundary(plain.faces, len(plain.vertices)).sum()
+    split = bowtie_mesh(split=True)
+    assert len(split.vertices) == len(bowtie_mesh().vertices) + 1  # the corner in two copies
+    assert model._welded(split) == (split, 0)
+
+
+def test_the_report_says_the_non_manifold_left():
+    report = {"operation": "remesh", "params": {"edge_length": 0.02}, "changed": True, "faces_before": 10, "faces": 12,
+              "textured": False, "texture_kept": False, "unit": "m",
+              "measures": {"non_manifold_vertices": 3, "non_manifold_edges": 0}}
+    assert model.report_text(report).endswith("; restano 3 vertici e 0 spigoli non-manifold («Ripara la topologia»)")
+    report["measures"] = {"non_manifold_vertices": -1, "non_manifold_edges": 0}  # MeshLab could not count: nothing said
+    assert "non-manifold" not in model.report_text(report)
 
 
 def test_a_failure_while_storing_puts_the_model_back(tmp_path, fake):

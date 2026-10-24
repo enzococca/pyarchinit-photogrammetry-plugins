@@ -51,6 +51,26 @@ def grid_mesh(n: int = 40, hole: bool = True, texture: bool = True, duplicate_se
     return MeshData(arr, f.astype(np.int64), tex, arr_tex or [], None)
 
 
+def bowtie_mesh(n: int = 12, split: bool = False):
+    """Two wavy squares of side 1 meeting at one corner: a non-manifold vertex (two fans of faces
+    around one vertex); ``split``: the vertex in two copies at the same place, one per square, as
+    MeshLab's repair leaves it."""
+    from pyarchinit_photogrammetry.io.mesh_ply import MeshData
+
+    a = grid_mesh(n=n, hole=False, texture=False)
+    b = a.vertices.copy()
+    b["x"] += 1.0
+    b["y"] += 1.0
+    na = len(a.vertices)
+    corner_a = int(np.argmax(a.xyz[:, 0] + a.xyz[:, 1]))  # (1, 1) of the first square
+    corner_b = int(np.argmin(a.xyz[:, 0] + a.xyz[:, 1]))  # (0, 0) of the second, at the same place
+    fb = a.faces + na
+    if not split:
+        fb[fb == corner_b + na] = corner_a
+    mesh = MeshData(np.concatenate([a.vertices, b]), np.vstack([a.faces, fb]))
+    return mesh.subset_faces(np.ones(len(mesh.faces), bool))
+
+
 def sphere_mesh(radius: float = 1.0, subdivisions: int = 4):
     import trimesh
 

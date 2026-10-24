@@ -137,13 +137,18 @@ class PyMeshLab:
         return {"target_faces": target, "texture": bool(op.get("texture"))}
 
     def remesh(self, op: dict) -> dict:
-        """Isotropic explicit remeshing to an edge length (it needs a 2-manifold mesh: repaired first)."""
-        details = {"repaired": self.repair({}) if op.get("repair_first", True) else {}}
+        """Isotropic explicit remeshing to an edge length (it needs a 2-manifold mesh: repaired first,
+        and again after, since the remeshing joins again the copies of a non-manifold vertex the
+        repair split)."""
+        repair = bool(op.get("repair_first", True))
+        details = {"repaired": self.repair({}) if repair else {}}
         kw = dict(iterations=int(op.get("iterations", 10)), adaptive=bool(op.get("adaptive", False)),
                   targetlen=self.pure(float(op["edge_length"])), featuredeg=float(op.get("feature_angle", 30.0)))
         if float(op.get("max_distance") or 0.0) > 0:
             kw.update(checksurfdist=True, maxsurfdist=self.pure(float(op["max_distance"])))
         self.ms.meshing_isotropic_explicit_remeshing(**kw)
+        if repair:
+            details["repaired_after"] = self.repair({})
         details["edge_length"] = float(op["edge_length"])
         return details
 

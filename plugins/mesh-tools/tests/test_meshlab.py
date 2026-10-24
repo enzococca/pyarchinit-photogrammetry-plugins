@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mesh_samples import SCALE, grid_mesh, project, sphere_mesh
+from mesh_samples import SCALE, bowtie_mesh, grid_mesh, project, sphere_mesh
 from ppg_mesh_tools import environment, model, runner
 from pyarchinit_photogrammetry.core import versions
 from pyarchinit_photogrammetry.io.mesh_ply import MeshData, read_mesh
@@ -163,3 +163,22 @@ def test_decimation_keeps_a_texture_of_two_pages(tmp_path):
     # every face on its page (a face on the other one would be 10 off), every corner where it was: a
     # vertex that slides along the seam of the pages takes its coordinate along, within a cell (0.026)
     assert err.max() < 0.03 and np.median(err) < 1e-4
+
+
+def test_the_repair_stays_repaired(tmp_path):
+    """Two squares meeting at a corner: the repair splits the vertex they share and the next operations
+    keep it split - the remeshing, which joins it again, is repaired after as well, and the measures
+    after do not weld the copies back."""
+    doc, ch = project(tmp_path, bowtie_mesh(), texture=False)
+    assert model.measure(ch)["non_manifold_vertices"] == 1
+    report = model.apply(ch, "remesh", {"edge_length": 0.1})
+    assert "repaired_after" in report["details"] and report["measures"]["non_manifold_vertices"] == 0
+    assert "non-manifold" not in model.report_text(report)
+    assert model.measure(ch)["non_manifold_vertices"] == 0  # the copies stay apart
+    report = model.apply(ch, "smooth", {"method": "taubin"})
+    assert report["measures"]["non_manifold_vertices"] == 0
+    # asked not to repair, the remeshing says what it left
+    doc2, ch2 = project(tmp_path / "unrepaired", bowtie_mesh(), texture=False)
+    report = model.apply(ch2, "remesh", {"edge_length": 0.1, "repair_first": False})
+    assert report["measures"]["non_manifold_vertices"] == 1
+    assert "; restano 1 vertice e 0 spigoli non-manifold" in model.report_text(report)

@@ -11,16 +11,18 @@ chunk (*Versioni* in the workspace), to compare them or to go back.
 | Operation | What MeshLab does | The texture |
 |---|---|---|
 | **Decimate** | Quadric edge collapse to a number or a fraction of the faces; borders and topology kept by default; optional planar simplification, quality threshold of the triangles | kept: MeshLab's variant that carries the texture coordinates of the face corners (several texture pages too) |
-| **Remesh** | Isotropic explicit remeshing: regular triangles of one edge length (by default the mean edge of the model), sharp edges kept above an angle, adaptive on request, a largest distance from the surface before | to build again |
+| **Remesh** | Isotropic explicit remeshing: regular triangles of one edge length (by default the mean edge of the model), sharp edges kept above an angle, adaptive on request, a largest distance from the surface before; the topology repaired before and after (the remeshing joins again the vertices a repair split) | to build again |
 | **Smooth** | Taubin (λ 0.5, μ -0.53, 10 steps: no shrinking) or HC Laplacian (1 step); the borders stay where they are (on request they move too) | kept |
 | **Close holes** | Holes up to a number of border edges closed with new faces (no self-intersection, optional refinement to an edge length); the outline of each separate part - its longest border - stays open unless you ask (the bottom of an object): MeshLab alone would cap a whole excavated surface | to build again, when holes were closed |
 | **Repair the topology** | Duplicate vertices and faces, faces without area, non-manifold edges (faces removed or vertices split), non-manifold vertices (split), unused vertices | kept |
 | **Measure** | Surface area, volume of a closed (watertight) model, 2-manifold or not, separate parts, border loops, border and non-manifold edges, non-manifold and unused vertices, size, mean edge | - |
 
 Lengths and measures are in metres of the survey (in units of the model when the chunk has no
-scale). Before MeshLab sees the model, the vertices it repeats at the same position - a textured
-model has them along the seams of its texture - are counted once: otherwise MeshLab takes every
-seam for a border, the smoothing opens it and the measures count it as a hole. The properties
+scale). Before MeshLab sees the model, the vertices a textured model repeats along the seams of
+its texture are counted once: otherwise MeshLab takes every seam for a border, the smoothing
+opens it and the measures count it as a hole (copies that touch only at a point, like a
+non-manifold vertex the repair split, stay apart). The report of an operation says the
+non-manifold vertices and edges MeshLab left, if any. The properties
 MeshLab cannot carry (the confidence of the vertices, any other) come back from the vertex of the
 model each new vertex is nearest to; the colours are MeshLab's, interpolated on new vertices.
 When MeshLab changes nothing (no hole that small, nothing to repair) the model stays as it is and

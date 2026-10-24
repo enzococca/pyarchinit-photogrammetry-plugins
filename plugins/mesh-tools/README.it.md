@@ -11,16 +11,18 @@ risultato è una **nuova versione del modello**: quella di prima resta tra le ve
 | Operazione | Cosa fa MeshLab | La texture |
 |---|---|---|
 | **Decima** | Collasso degli spigoli con le quadriche fino a un numero o a una frazione delle facce; bordi e topologia conservati in modo predefinito; semplificazione planare a richiesta, soglia di qualità dei triangoli | resta: la variante di MeshLab che porta con sé le coordinate della texture degli angoli delle facce (anche con più pagine di texture) |
-| **Rimaglia** | Rimaglia isotropa esplicita: triangoli regolari di un solo lato (in modo predefinito il lato medio del modello), spigoli vivi conservati oltre un angolo, adattiva a richiesta, una distanza massima dalla superficie di partenza | da ricostruire |
+| **Rimaglia** | Rimaglia isotropa esplicita: triangoli regolari di un solo lato (in modo predefinito il lato medio del modello), spigoli vivi conservati oltre un angolo, adattiva a richiesta, una distanza massima dalla superficie di partenza; topologia riparata prima e dopo (la rimaglia riunisce i vertici che una riparazione aveva diviso) | da ricostruire |
 | **Leviga** | Taubin (λ 0,5, μ -0,53, 10 passi: non restringe) o HC laplaciana (1 passo); i bordi restano fermi (a richiesta si muovono anche loro) | resta |
 | **Chiudi i buchi** | Buchi fino a un numero di lati del bordo chiusi con nuove facce (senza autointersezioni, raffinamento a un lato a richiesta); il contorno esterno di ogni parte separata - il suo bordo più lungo - resta aperto se non chiedi altrimenti (il fondo di un oggetto): MeshLab da solo coprirebbe con un tappo un'intera superficie di scavo | da ricostruire, se dei buchi sono stati chiusi |
 | **Ripara la topologia** | Vertici e facce doppi, facce senza area, spigoli non-manifold (facce tolte o vertici divisi), vertici non-manifold (divisi), vertici non usati | resta |
 | **Misura** | Area della superficie, volume di un modello chiuso (watertight), 2-manifold o no, parti separate, anelli di bordo, spigoli di bordo e non-manifold, vertici non-manifold e non usati, dimensioni, lato medio | - |
 
 Lunghezze e misure sono in metri del rilievo (in unità del modello se il chunk non ha una scala).
-Prima che MeshLab veda il modello, i vertici ripetuti nella stessa posizione - un modello con
-texture li ha lungo le cuciture della texture - vengono contati una volta sola: altrimenti MeshLab
-prende ogni cucitura per un bordo, la levigatura la apre e le misure la contano come un buco. Le
+Prima che MeshLab veda il modello, i vertici che un modello con texture ripete lungo le cuciture
+della texture vengono contati una volta sola: altrimenti MeshLab prende ogni cucitura per un bordo,
+la levigatura la apre e le misure la contano come un buco (le copie che si toccano solo in un
+punto, come un vertice non-manifold diviso dalla riparazione, restano separate). Il resoconto di
+un'operazione dice i vertici e gli spigoli non-manifold che MeshLab ha lasciato, se ce ne sono. Le
 proprietà che MeshLab non può portare (la confidenza dei vertici, qualsiasi altra) tornano dal
 vertice del modello più vicino a ogni nuovo vertice; i colori sono quelli di MeshLab, interpolati
 sui vertici nuovi. Se MeshLab non cambia niente (nessun buco così piccolo, niente da riparare) il
