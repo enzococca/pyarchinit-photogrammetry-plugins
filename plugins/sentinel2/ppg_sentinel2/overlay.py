@@ -84,17 +84,30 @@ def render_rgb(rgb: np.ndarray, limits=None) -> np.ndarray:
     return rgba
 
 
+ENDS = {  # the colours of the low and of the high end of each palette (it, en)
+    "rdylgn": (("rosso", "red"), ("verde", "green")),
+    "grey": (("nero", "black"), ("bianco", "white")),
+    "viridis": (("viola", "purple"), ("giallo", "yellow")),
+    "turbo": (("blu", "blue"), ("rosso", "red")),
+    "diverging": (("blu", "blue"), ("rosso", "red")),
+}
+
+
 def legend_text(kind: str, lo: float, hi: float, palette: str) -> str:
+    """What the colours of an overlay mean. A crop-mark map reads the same way as an index: the
+    low end (red in the default red-yellow-green, as in QGIS) is vegetation weaker than around it,
+    over walls, roads, compacted ground; the high end (green) is greener, over ditches and pits."""
     from .texts import t
 
     if kind == "rgb":
         return t("Colori naturali (B04, B03, B02), contrasto 2-98 %", "Natural colour (B04, B03, B02), 2-98 % stretch")
+    low, high = (t(*end) for end in ENDS.get(palette, ENDS["rdylgn"]))
     if kind == "z":
-        return t("z da {0:g} a {1:g}: sotto -2 vegetazione più debole dello sfondo (muri, strade), sopra 2 più "
-                 "vigorosa (fossati, fosse)",
-                 "z from {0:g} to {1:g}: under -2 vegetation weaker than the background (walls, roads), over 2 "
-                 "greener (ditches, pits)").format(lo, hi)
-    return t("da {0:.3f} a {1:.3f}", "from {0:.3f} to {1:.3f}").format(lo, hi)
+        return t("z da {0:g} ({2}) a {1:g} ({3}): sotto -2 la vegetazione è più debole di quella intorno (muri, strade, "
+                 "terreno compattato), sopra 2 è più vigorosa (fossati, fosse)",
+                 "z from {0:g} ({2}) to {1:g} ({3}): under -2 the vegetation is weaker than around it (walls, roads, "
+                 "compacted ground), over 2 it is greener (ditches, pits)").format(lo, hi, low, high)
+    return t("da {0:.3f} ({2}) a {1:.3f} ({3})", "from {0:.3f} ({2}) to {1:.3f} ({3})").format(lo, hi, low, high)
 
 
 class ViewOverlay:

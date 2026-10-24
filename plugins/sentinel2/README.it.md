@@ -33,6 +33,14 @@ anno dopo anno.
   finestra di un sito di qualche centinaio di metri un'acquisizione sono circa 16 MB da scaricare
   (i COG si leggono per tasselli interni da 1024 pixel) e circa 10 secondi; la cache ne tiene circa
   100 KB.
+* **La cache**: le acquisizioni lette si possono togliere - quelle selezionate nella tabella del
+  pannello (*Rimuovi dalla cache*, anche dal menu del tasto destro) o tutte (*Svuota la cache...*),
+  dopo una domanda. I loro file vengono cancellati, restano nella ricerca come *da leggere* e il
+  prossimo *Scarica e calcola* le legge di nuovo; indici e serie vengono ricalcolati con le altre.
+  Se da quelle acquisizioni sono stati fatti compositi o mappe dei crop mark, la domanda chiede se
+  rimuovere anche quelli o tenerli: tenuti, sono segnati *date non più in cache* (sono ciò che è
+  stato calcolato allora, ma la cache non può più rifarli), e il segno se ne va quando le
+  acquisizioni vengono lette di nuovo.
 * **Gli indici** di ogni data serena: NDVI = (B08 - B04) / (B08 + B04), vigore della vegetazione
   (10 m); NDRE = (B8A - B05) / (B8A + B05), clorofilla (bordo del rosso, 20 m); NDMI = (B8A - B11) /
   (B8A + B11), acqua nelle foglie (20 m). Solo le celle serene; un GeoTIFF per indice con una banda
@@ -49,7 +57,9 @@ anno dopo anno.
   dispersione robusta di ciò che resta (1,4826 volte la deviazione assoluta mediana): uno z-score,
   vicino a 0 sui campi uniformi, sotto -2 dove la vegetazione è più debole di quella intorno (muri,
   strade, terreno compattato) e sopra 2 dove è più verde (fossati, fosse). I segni sono linee larghe
-  pochi pixel.
+  pochi pixel. Si leggono come un indice, nel pannello come in QGIS: rosso-giallo-verde da -3 (rosso,
+  vegetazione più debole) a 3 (verde, più vigorosa); la legenda sotto la vista nomina i due estremi
+  della palette scelta.
 * **Sulla vista**: un indice di una data o di un periodo, i colori naturali (B04, B03, B02) di una
   data, un composito o una mappa dei crop mark sopra l'ortofoto o il DEM del chunk, con le palette
   degli indici di vegetazione del programma (rosso-giallo-verde, grigi, viridis, turbo) o una
@@ -65,6 +75,13 @@ anno dopo anno.
   serie (CSV) e lo stack (GeoTIFF).
 * Il pannello **Sentinel-2** del dock del progetto fa tutto, in background con la barra di
   avanzamento (annulla ferma le letture in corso); *Plugin > Sentinel-2* ha le azioni principali.
+* **Nell'albero del progetto** (programma 1.3.4 o successivo): un nodo *Sentinel-2* sotto ogni chunk
+  su cui il plugin ha lavorato, con le acquisizioni lette (data e parte serena dell'area), gli indici
+  per data, la serie, i compositi e le mappe dei crop mark. Il doppio clic ne mostra uno sulla vista
+  (colori naturali per un'acquisizione, l'indice di una data, un prodotto; il grafico per la serie)
+  e il pannello lo segue; il menu del tasto destro ha *Mostra*, *Nascondi*, *Esporta...*, *Apri in
+  QGIS*, *Rimuovi* e, per le acquisizioni, *Rimuovi dalla cache*. Con il programma 1.3.3 fa tutto il
+  pannello.
 
 ```bash
 pip install "ppg-sentinel2 @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/sentinel2"
@@ -75,14 +92,21 @@ ppg plugin sentinel2 cropmarks scavo.ppg --index NDVI --period 2022-summer --bac
 ppg plugin sentinel2 composite scavo.ppg --index NDMI --period 2022-06
 ppg plugin sentinel2 list scavo.ppg
 ppg plugin sentinel2 export scavo.ppg cartella_export/
+ppg plugin sentinel2 remove-scene scavo.ppg 20220614_S2B      # fuori dalla cache (fetch la rilegge)
+ppg plugin sentinel2 remove-scene scavo.ppg --all --with-products
 # un riquadro in longitudine e latitudine invece dell'impronta del DEM (qui un sito pubblico)
 ppg plugin sentinel2 search scavo.ppg --bbox -1.8334,51.1744,-1.8191,51.1834 --margin 0
 ```
 
 `fetch --scenes ID,ID` legge solo alcune acquisizioni (i loro id sono in `search` e `list`),
 `--clear 4,5,6,7` tiene anche i pixel non classificati, `--buffer` fissa i metri mascherati intorno
-a nuvole e ombre; `compute` ricalcola indici e serie dalla cache, senza rete. `--catalog URL` cerca
-in un'altra API STAC (`--client stdlib|pystac` sceglie il client).
+a nuvole e ombre; `compute` ricalcola indici e serie dalla cache, senza rete (`--min-clear` cambia
+la parte serena minima dell'area e la salva, come fa *Ricalcola* con il valore del pannello).
+`remove-scene ID [ID...]` o `--all` toglie acquisizioni dalla cache: i prodotti fatti da esse
+restano, segnati, a meno di `--with-products`. `--bbox` accetta `ovest,sud,est,nord` anche con il
+primo numero negativo, come `--bbox=...` o come quattro numeri; `--polygon` un poligono nelle
+coordinate del chunk (`"x,y;x,y;x,y"`). `--catalog URL` cerca in un'altra API STAC
+(`--client stdlib|pystac` sceglie il client).
 
 I numeri dei COG diventano riflettanza con la scala e l'offset del catalogo: dalla processing
 baseline 04.00 (gennaio 2022) l'ESA aggiunge 1000 ai numeri L2A, che l'offset di -0,1 toglie; Earth

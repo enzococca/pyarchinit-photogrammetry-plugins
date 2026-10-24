@@ -196,9 +196,10 @@ def test_registry_in_the_project_and_exports(fetched, tmp_path):
     assert st["area"]["source"] == "dem" and st["grid"]["crs"] == "EPSG:32632" and len(st["scenes"]) == 6
     assert st["series"]["attribution"] == NOTICE and len(st["dates"]) == 5
     assert project.summary(back)["attribution"] == NOTICE
-    # QGIS: the copies on the chunk's grid, crop marks diverging between -3 and 3
+    # QGIS: the copies on the chunk's grid, with the colours of the pane: red-yellow-green, crop marks
+    # between -3 (red, weaker vegetation) and 3 (green)
     rasters, vectors = project.qgis_entries(back)
-    assert vectors == [] and [r["ramp"] for r in rasters] == ["diverging", "index"]
+    assert vectors == [] and [r["ramp"] for r in rasters] == ["index", "index"]
     assert rasters[0]["limits"] == [-3.0, 3.0] and rasters[0]["path"].endswith("_chunk.tif")
     # the exports
     files = project.export_all(back, tmp_path / "out")
@@ -230,3 +231,52 @@ def test_a_local_chunk_searched_with_a_box(tmp_path):
     e = project.cropmarks(ch, "NDVI", "2023-summer")
     assert e["chunk_file"] is None and project.absolute(ch, e["file"]).exists()
     assert project.qgis_entries(ch) == ([], [])
+
+
+def test_acquisitions_out_of_the_cache(fetched):
+    """An acquisition read can be taken out of the cache: its file deleted, its row back to *to read*,
+    the indices and the series computed again without it; the products made from it stay, marked,
+    or go with it; reading it again takes the mark away; emptying the cache deletes every file, an
+    older search's too, and leaves no stale stack or series behind."""
+    import rasterio
+
+    doc, ch, _counts, _tmp = fetched
+    marks = project.cropmarks(ch, "NDVI", "2023-summer", 50.0)
+    april = project.composite(ch, "NDVI", "2023-04")
+    july = project.cache_dir(ch) / "20230709_S2B.tif"
+    assert july.exists() and project.cached_ids(ch) == ["20230410_S2B", "20230614_S2B", "20230709_S2B",
+                                                         "20230803_S2B", "20230912_S2B"]
+    r = project.remove_scenes(ch, ["20230709_S2B"])
+    assert r["removed"] == ["20230709_S2B"] and r["files"] == 1 and r["bytes"] > 0
+    assert r["products_removed"] == [] and r["products_marked"] == [marks["id"]]
+    assert not july.exists()
+    row = next(x for x in project.scene_rows(ch) if x["id"] == "20230709_S2B")
+    assert (row["status"], row["clear"], row["file"]) == ("found", None, None)
+    assert "20230709_S2B" not in [d["id"] for d in project.dates(ch)] and r["computed"]["dates"] == 4
+    with rasterio.open(project.stack_path(ch, "NDVI")) as src:
+        assert src.count == 4 and "20230709_S2B" not in src.descriptions
+    assert "20230709_S2B" not in {x["acquisition"] for x in project.series(ch)}
+    assert project.product(ch, marks["id"])["missing"] == ["20230709_S2B"]
+    assert "missing" not in project.product(ch, april["id"])
+    # read again (the files of the catalog are still there): the mark goes
+    again = project.fetch(ch, ["20230709_S2B"])
+    assert again["read"] == 1 and july.exists() and "missing" not in project.product(ch, marks["id"])
+    # out with its products
+    r = project.remove_scenes(ch, ["20230614_S2B"], with_products=True)
+    assert r["products_removed"] == [marks["id"]] and project.product(ch, marks["id"]) is None
+    assert not (project.folder(ch) / "products" / f"{marks['id']}.tif").exists()
+    assert project.product(ch, april["id"]) is not None
+    # the whole cache, a file of an older search too
+    stray = project.cache_dir(ch) / "20220101_S2A.tif"
+    stray.write_bytes(b"old")
+    r = project.remove_scenes(ch)
+    assert set(r["removed"]) == {"20220101_S2A", "20230410_S2B", "20230709_S2B", "20230803_S2B", "20230912_S2B"}
+    assert project.cache_size(ch) == (0, 0) and project.cached_ids(ch) == []
+    assert r["computed"] == {"dates": 0} and r["products_marked"] == [april["id"]]
+    assert project.product(ch, april["id"])["missing"] == ["20230410_S2B"]
+    st = ch.meta["sentinel2"]
+    assert "indices" not in st and "series" not in st and "dates" not in st
+    assert not list((project.folder(ch) / "indices").glob("*.tif")) and not (project.folder(ch) / "series.csv").exists()
+    statuses = {x["id"]: x["status"] for x in project.scene_rows(ch)}
+    assert statuses["20230520_S2B"] == "cloudy" and {s for k, s in statuses.items() if k != "20230520_S2B"} == {"found"}
+    assert project.summary(ch)["cache"] == {"files": 0, "megabytes": 0.0, "acquisitions": []}

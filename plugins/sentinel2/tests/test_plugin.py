@@ -68,9 +68,20 @@ def test_command(tmp_path, capsys, monkeypatch):
     assert plugin.command("export", path, str(tmp_path / "serie.csv")) == 0 and (tmp_path / "serie_monthly.csv").exists()
     assert plugin.command("remove", path, "composite_NDMI_2023_06") == 0
     assert plugin.command("remove", path, "composite_NDMI_2023_06") == 1
+    # acquisitions out of the cache: one, then all (the crop marks of the summer stay, marked)
+    capsys.readouterr()
+    assert plugin.command("remove-scene", path, "20230709_S2B") == 0
+    out = capsys.readouterr().out
+    assert '"removed": [' in out and '"20230709_S2B"' in out and '"products_marked": [' in out
+    assert plugin.command("remove-scene", path, "20230709_S2B") == 1 and "not in the cache" in capsys.readouterr().out
+    assert plugin.command("remove-scene", path) == 1 and "--all" in capsys.readouterr().out
+    assert plugin.command("list", path) == 0 and '"20230709_S2B"' not in capsys.readouterr().out.split('"cache"')[1].split("]")[0]
+    assert plugin.command("remove-scene", path, "--all") == 0
     capsys.readouterr()
     back = ppg.Document.open(doc.path).chunk  # every command saved the project
     assert [p["id"] for p in project.products(back)] == ["cropmarks_NDVI_2023_summer_60m"]
+    assert project.cached_ids(back) == [] and project.products(back)[0]["missing"] == [
+        "20230614_S2B", "20230709_S2B", "20230803_S2B"]
     # a local chunk: said, not a traceback
     local = ppg.Document()
     local.add_chunk("Locale")
@@ -156,8 +167,9 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         _wait(w_, app_)
         assert not errors and p.products.rowCount() == 1 and plugin.overlay.spec["what"] == "product"
         assert "sotto -2" in p.l_legend.text() and "sotto -2" in w_.statusBar().currentMessage()
+        assert p.l_legend.text().startswith("z da -3 (rosso) a 3 (verde)")  # as in QGIS
         rasters, _v = plugin._qgis_entries()
-        assert rasters and rasters[0]["ramp"] == "diverging"
+        assert rasters and rasters[0]["ramp"] == "index" and rasters[0]["limits"] == [-3.0, 3.0]
         # the menu actions ask their parameters in the program's dialog
         asked = {}
 
@@ -247,3 +259,271 @@ def test_the_pane_in_english(tmp_path, monkeypatch):
     assert period_name("2023-summer") == "summer 2023" and period_name("2023-06") == "June 2023"
     assert product_name({"kind": "cropmarks", "index": "NDVI", "period": "summer", "params": {"background_m": 50}}) == \
         "Crop marks NDVI summer (every year), background 50 m"
+
+
+class TreeContext:
+    """A context of the program with the two methods of the project's tree of program 1.3.4
+    (``add_tree_items(provider)``, ``refresh_tree()``) on top of the real ones."""
+
+    def __new__(cls, *args, **kwargs):
+        from pyarchinit_photogrammetry.plugins import Context
+
+        class _Context(Context):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.providers, self.refreshed = [], 0
+
+            def add_tree_items(self, provider):
+                self.providers.append(provider)
+
+            def refresh_tree(self):
+                self.refreshed += 1
+
+        return _Context(*args, **kwargs)
+
+
+def _labels(items) -> list[str]:
+    return [i["label"] for i in items]
+
+
+def _find(items, start: str) -> dict:
+    return next(i for i in items if i["label"].startswith(start))
+
+
+def _action(item, text: str):
+    return next(f for label, f in item["actions"] if label.startswith(text))
+
+
+def test_the_products_in_the_projects_tree(tmp_path, monkeypatch):
+    """The plugin gives the project's tree (program 1.3.4) a *Sentinel-2* node per chunk: acquisitions
+    read, indices by date, series, composites, crop marks; the double clicks and the actions call what
+    they say; every change of products or cache fills the tree again. On a program without the tree
+    (1.3.3) nothing is registered and nothing breaks."""
+    import pyarchinit_photogrammetry as ppg
+    from ppg_sentinel2 import Sentinel2Plugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.plugins import Context
+
+    from ppg_sentinel2 import area as area_mod
+
+    items = s2synth.world(tmp_path / "cogs")
+    doc, ch = s2synth.project(tmp_path)
+    project.search(ch, area_mod.area_of_chunk(ch), "2023-01-01", "2023-12-31", 30, s2synth.CATALOG,
+                   opener=s2synth.FakeCatalog(items))
+    project.fetch(ch)
+    marks = project.cropmarks(ch, "NDVI", "2023-summer", 50.0)
+    april = project.composite(ch, "NDVI", "2023-04")
+    other = doc.add_chunk("Senza Sentinel-2")
+    app.document = doc
+    # program 1.3.3: no tree, no error
+    plain = Sentinel2Plugin()
+    plain.activate(Context("sentinel2", tmp_path / "plain"))
+    plain._refresh_tree()
+    ctx = TreeContext("sentinel2", tmp_path / "plugin")
+    plugin = Sentinel2Plugin()
+    called = []
+    for name in ("show_acquisition", "show_overlay", "show_product", "open_chart", "export_product",
+                 "export_date_dialog", "export_acquisition_dialog", "export_series_dialog", "open_qgis", "show_pane",
+                 "show_frame", "hide_overlay", "export_dialog"):
+        monkeypatch.setattr(plugin, name, lambda *a, _n=name, **k: called.append((_n, a)))
+    plugin.activate(ctx)
+    assert ctx.providers == [plugin._tree_items]
+    provider = ctx.providers[0]
+    assert provider(other) == []
+    (root,) = provider(ch)
+    assert root["label"] == "Sentinel-2" and root["icon"] == "globe" and root["expanded"]
+    assert "Area: 4" in root["tooltip"] and "Ricerca: 2023-01-01 - 2023-12-31" in root["tooltip"]
+    assert _labels(root["children"]) == ["Acquisizioni lette (5)", "Indici per data (5 date)", "Serie temporale",
+                                         "Compositi (1)", "Crop mark (1)"]
+    acqs = root["children"][0]
+    assert _labels(acqs["children"]) == ["2023-09-12 S2B, sereno 100 %", "2023-08-03 S2B, sereno 100 %",
+                                         "2023-07-09 S2B, sereno 76 %", "2023-06-14 S2B, sereno 100 %",
+                                         "2023-04-10 S2B, sereno 100 %"]
+    assert {i["icon"] for i in acqs["children"]} == {"ortho"} and "32TMR" in acqs["children"][0]["tooltip"]
+    indices = root["children"][1]
+    assert _labels(indices["children"]) == ["NDVI (vigore della vegetazione)", "NDRE (clorofilla, bordo del rosso)",
+                                            "NDMI (acqua nella vegetazione)"]
+    ndvi = indices["children"][0]
+    assert len(ndvi["children"]) == 5 and ndvi["children"][0]["label"].startswith("2023-09-12")
+    crop = _find(root["children"], "Crop mark")["children"][0]
+    assert crop["label"] == "Crop mark NDVI estate 2023, sfondo 50 m" and "% dell'area sotto -2" in crop["tooltip"]
+    assert [a for a, _f in crop["actions"]] == ["Mostra", "Nascondi", "Esporta...", "Apri in QGIS", "Rimuovi"]
+    assert [a for a, _f in acqs["children"][0]["actions"]] == ["Mostra (colori naturali)", "Nascondi", "Esporta...",
+                                                              "Rimuovi dalla cache"]
+    # double clicks and actions call what they say, on that chunk
+    acqs["children"][1]["activate"]()
+    ndvi["children"][1]["activate"]()
+    crop["activate"]()
+    _find(root["children"], "Serie")["activate"]()
+    _action(crop, "Esporta")()
+    _action(ndvi["children"][0], "Esporta")()
+    _action(acqs["children"][0], "Esporta")()
+    _action(crop, "Apri in QGIS")()
+    root["activate"]()
+    _action(root, "Mostra l'area intera")()
+    _action(crop, "Nascondi")()
+    assert called[:5] == [("show_acquisition", ("20230803_S2B",)),
+                          ("show_overlay", ({"index": "NDVI", "period": "20230803_S2B", "palette": "rdylgn",
+                                             "opacity": 0.75},)),
+                          ("show_product", (marks["id"],)), ("open_chart", (ch,)), ("export_product", (marks["id"], ch))]
+    assert called[5:] == [("export_date_dialog", ("NDVI", "20230912_S2B", ch)),
+                          ("export_acquisition_dialog", ("20230912_S2B", ch)), ("open_qgis", ()), ("show_pane", ()),
+                          ("show_frame", ()), ("hide_overlay", ())]
+    # removing: from the cache (no window: no question, products kept and marked), a product; the tree
+    # is filled again each time
+    seen = ctx.refreshed
+    _action(acqs["children"][2], "Rimuovi dalla cache")()  # 9 July
+    assert ctx.refreshed > seen and "20230709_S2B" not in project.cached_ids(ch)
+    (root,) = provider(ch)
+    assert _labels(root["children"])[:2] == ["Acquisizioni lette (4)", "Indici per data (4 date)"]
+    crop = _find(root["children"], "Crop mark")["children"][0]
+    assert crop["label"].endswith("(date non più in cache)") and "20230709_S2B" in crop["tooltip"]
+    seen = ctx.refreshed
+    _action(_find(root["children"], "Compositi")["children"][0], "Rimuovi")()
+    assert ctx.refreshed > seen and project.product(ch, april["id"]) is None
+    _action(root, "Svuota la cache")()
+    (root,) = provider(ch)
+    assert _labels(root["children"]) == ["Acquisizioni lette (0)", "Crop mark (1)"]
+    assert root["children"][0]["actions"] == []
+    assert ppg is not None
+
+
+def test_cache_and_tree_in_the_window(tmp_path, monkeypatch):
+    """In the window: the acquisitions selected out of the cache after the question of the program
+    (the products kept, marked), the context menu of the table, the whole cache emptied with its
+    products; the overlay that showed a removed acquisition goes; the tree's double clicks show over
+    the view and the pane follows them."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_sentinel2 import Sentinel2Plugin
+    from ppg_sentinel2 import area as area_mod
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import dialogs
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "settings"))
+    app_ = QApplication.instance() or QApplication([])
+    from pyarchinit_photogrammetry.gui import main_window as mwmod
+
+    items = s2synth.world(tmp_path / "cogs")
+    monkeypatch.setenv("PPG_NO_PLUGINS", "1")
+    said = []
+    monkeypatch.setattr(dialogs, "message", lambda *a, **k: said.append(a[3]))
+    doc, ch = s2synth.project(tmp_path)
+    project.search(ch, area_mod.area_of_chunk(ch), "2023-01-01", "2023-12-31", 30, s2synth.CATALOG,
+                   opener=s2synth.FakeCatalog(items))
+    project.fetch(ch)
+    marks = project.cropmarks(ch, "NDVI", "2023-summer", 50.0)
+    app.document = doc
+    w_ = mwmod.MainWindow(doc, autoconnect=False)
+    w_.runner.show_dialog = False
+    errors = []
+    monkeypatch.setattr(w_, "_error", lambda *a, **k: errors.append(a))
+    ctx = TreeContext("sentinel2", tmp_path / "plugin", window=w_)
+    plugin = Sentinel2Plugin()
+    try:
+        plugin.activate(ctx)
+        p = plugin.pane
+        assert p.scenes.rowCount() == 6 and p.b_clear_cache.isEnabled() and not p.b_uncache.isEnabled()
+        # Ricalcola takes the least clear part of the pane, and saves it: 9 July (76 %) out at 90 %
+        p.s_clear.setValue(90)
+        p.b_compute.click()
+        _wait(w_, app_)
+        assert project.settings(ch)["min_clear"] == 0.9 and len(project.dates(ch)) == 4
+        p.s_clear.setValue(50)
+        p.b_compute.click()
+        _wait(w_, app_)
+        assert project.settings(ch)["min_clear"] == 0.5 and len(project.dates(ch)) == 5 and not errors
+        # the tree: a date of NDVI shown over the view, the pane follows
+        (root,) = ctx.providers[0](ch)
+        leaf = root["children"][1]["children"][0]["children"][2]  # NDVI, 9 July
+        leaf["activate"]()
+        assert plugin.overlay.item is not None and plugin.overlay.spec["period"] == "20230709_S2B"
+        assert p.c_period.currentData() == "20230709_S2B" and p.c_index.currentData() == "NDVI"
+        # 9 July selected and taken out: the question names the products made from it, kept here
+        row = next(r for r in range(p.scenes.rowCount()) if p.scenes.item(r, 0).data(mwmod.Qt.ItemDataRole.UserRole)
+                   == "20230709_S2B")
+        p.scenes.selectRow(row)
+        assert p.selected_cached() == ["20230709_S2B"] and p.b_uncache.isEnabled()
+        asked = []
+
+        def choice(parent, kind, title, text, options, *a, **k):
+            asked.append((title, text, options))
+            return answer[0]
+
+        answer = [1]
+        monkeypatch.setattr(dialogs, "choice", choice)
+        p.b_uncache.click()
+        _wait(w_, app_)
+        assert not errors, errors
+        title, text, options = asked[-1]
+        assert title == "Rimuovi dalla cache" and "Crop mark NDVI estate 2023" in text
+        assert options == ["Rimuovi anche i prodotti", "Tieni i prodotti"]
+        assert plugin.overlay.spec is None  # it showed the date removed
+        assert "20230709_S2B" not in project.cached_ids(ch) and project.product(ch, marks["id"])["missing"]
+        assert p.products.item(0, 0).text().endswith("(date non più in cache)")
+        status = {p.scenes.item(r, 0).data(mwmod.Qt.ItemDataRole.UserRole): p.scenes.item(r, 5).text()
+                  for r in range(p.scenes.rowCount())}
+        assert status["20230709_S2B"] == "da leggere" and ctx.refreshed > 0
+        # closed without answering: nothing happens
+        answer[0] = None
+        p.scenes.selectRow(0)
+        assert not plugin.remove_scenes(p.selected_cached()) and len(project.cached_ids(ch)) == 4
+        # the context menu: natural colour of the row, out of the cache, the whole cache
+        menu = p.scenes_menu(0)
+        texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+        assert texts == ["Mostra (colori naturali)", "Rimuovi dalla cache (1)", "Svuota la cache..."]
+        menu.actions()[0].trigger()
+        assert plugin.overlay.spec["what"] == "rgb" and plugin.overlay.item is not None
+        answer[0] = 0  # remove the products too
+        [a for a in menu.actions() if a.text() == "Svuota la cache..."][0].trigger()
+        _wait(w_, app_)
+        assert not errors, errors
+        assert asked[-1][0] == "Svuota la cache" and "MB" in asked[-1][1]
+        assert project.cached_ids(ch) == [] and project.products(ch) == [] and plugin.overlay.spec is None
+        assert not p.b_clear_cache.isEnabled() and p.products.rowCount() == 0
+        plugin.deactivate()
+        ctx.release()
+    finally:
+        w_.setWindowModified(False)
+        w_.close()
+
+
+def test_command_line_boxes(tmp_path, monkeypatch, capsys):
+    """``--bbox`` with a negative longitude, in every form: the value glued to its option by the
+    plugin, ``--bbox=...``, four numbers; ``--polygon`` beginning with a minus too."""
+    from ppg_sentinel2 import Sentinel2Plugin
+    from pyarchinit_photogrammetry.app import app
+
+    glue = Sentinel2Plugin.glue_values
+    assert glue(["search", "--bbox", "-1.83,51.17,-1.82,51.18", "--margin", "0"]) == [
+        "search", "--bbox=-1.83,51.17,-1.82,51.18", "--margin", "0"]
+    assert glue(["--bbox", "-1.83", "51.17", "-1.82", "51.18"]) == ["--bbox", "-1.83", "51.17", "-1.82", "51.18"]
+    assert glue(["--polygon", "-10,5;-12,7;-11,9"]) == ["--polygon=-10,5;-12,7;-11,9"]
+    assert glue(["--bbox", "--margin", "0"]) == ["--bbox", "--margin", "0"]
+    assert Sentinel2Plugin.bbox_values(["-1.83", "51.17", "-1.82", "51.18"]) == (-1.83, 51.17, -1.82, 51.18)
+    with pytest.raises(ValueError):
+        Sentinel2Plugin.bbox_values(["-1.83,51.17"])
+    items = s2synth.world(tmp_path / "cogs")
+    monkeypatch.setattr(stac, "_urlopen", s2synth.FakeCatalog(items))
+    doc, ch = s2synth.project(tmp_path)
+    app.document = None
+    plugin = _plugin(tmp_path)
+    path = str(doc.path)
+    import pyarchinit_photogrammetry as ppg
+
+    for form in (["--bbox", "-1.83,51.17,-1.82,51.18"], ["--bbox=-1.83,51.17,-1.82,51.18"],
+                 ["--bbox", "-1.83", "51.17", "-1.82", "51.18"]):
+        assert plugin.command("search", path, *form, "--margin", "0", "--catalog", s2synth.CATALOG) == 0, form
+        a = project.area_of(ppg.Document.open(doc.path).chunk)
+        assert a.source == "bbox" and a.margin_m == 0
+        assert a.lonlat_bbox(margin=False) == pytest.approx((-1.83, 51.17, -1.82, 51.18), abs=1e-6)
+    assert plugin.command("search", path, "--bbox", "-1.83,51.17", "--catalog", s2synth.CATALOG) == 1
+    assert "four numbers" in capsys.readouterr().out
+    # a polygon in the chunk's coordinates (EPSG:3035 here) beginning with a minus: read, not taken for an option
+    assert plugin.command("search", path, "--polygon", "-10,5;-12,7;-11,9", "--catalog", s2synth.CATALOG) == 0
+    a = project.area_of(ppg.Document.open(doc.path).chunk)
+    assert a.source == "polygon" and a.ring == [[-10.0, 5.0], [-12.0, 7.0], [-11.0, 9.0]]
+    capsys.readouterr()

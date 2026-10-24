@@ -235,7 +235,121 @@ def fetch(chunk, ids=None, min_clear: float | None = None, workers: int = reader
             counts["computed"] = compute(chunk, progress.sub(span, 1.0 - span))
         except NoData as exc:
             counts["computed"] = {"dates": 0, "note": str(exc)}
+    mark_missing(chunk)  # the products whose acquisitions were read again lose their mark
     return counts
+
+
+# ------------------------------------------------------------------ the cache of the acquisitions read
+def cache_dir(chunk) -> Path:
+    return folder(chunk) / "scenes"
+
+
+def cached_ids(chunk) -> list[str]:
+    """The acquisitions of the search read into the cache (status ``cached``), in time order."""
+    rows = sorted(scene_rows(chunk), key=lambda r: (r.get("datetime") or "", r.get("id")))
+    return [r["id"] for r in rows if r.get("status") == "cached"]
+
+
+def _acquisition_of(file: Path) -> str:
+    name = file.name
+    return name[:-len(".part.tif")] if name.endswith(".part.tif") else name[:-len(".tif")]
+
+
+def cache_size(chunk) -> tuple[int, int]:
+    """How many files the cache of the chunk has, and their bytes."""
+    d = cache_dir(chunk)
+    files = list(d.glob("*.tif")) if d.exists() else []
+    return len(files), sum(p.stat().st_size for p in files)
+
+
+def products_using(chunk, ids) -> list[dict]:
+    """The products computed (also) from the acquisitions ``ids``."""
+    ids = {str(i) for i in ids}
+    return [e for e in products(chunk) if ids & set(e.get("dates") or [])]
+
+
+def mark_missing(chunk) -> list[str]:
+    """Every product told which of its acquisitions are no longer in the cache (``missing``: removed,
+    or read on another grid since): the product stays as it was computed, the mark says it cannot be
+    made again from the cache as it is. Products whose acquisitions are all back lose the mark.
+    Returns the ids of the products marked."""
+    grid = grid_of_chunk(chunk)
+    status = {r["id"]: r.get("status") for r in scene_rows(chunk)}
+    marked = []
+    for e in state(chunk).get("products") or []:
+        gone = [d for d in e.get("dates") or []
+                if status.get(d) != "cached" and (status.get(d) is not None or grid is None
+                                                  or not reader.cache_valid(cache_dir(chunk) / f"{d}.tif", grid))]
+        if gone:
+            e["missing"] = gone
+            marked.append(e["id"])
+        else:
+            e.pop("missing", None)
+    return marked
+
+
+def clear_series(chunk) -> None:
+    """No clear acquisition left in the cache: the stacks of the indices, the series and its chart
+    deleted, with their entries (nothing stale stays behind)."""
+    st = state(chunk)
+    for key in ("indices", "series", "dates"):
+        st.pop(key, None)
+    base = folder(chunk)
+    stale = list((base / "indices").glob("*.tif")) if (base / "indices").exists() else []
+    for p in stale + [base / "series.csv", base / "series_monthly.csv", base / "series.png"]:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def remove_scenes(chunk, ids=None, with_products: bool = False, progress=None) -> dict:
+    """Acquisitions out of the cache: their files deleted, their rows back to ``found`` (``fetch``
+    reads them again from the catalog). ``ids`` None empties the cache: every file in it, those of
+    an older search too. The stacks of the indices and the series are computed again from what is
+    left, without network. The products computed from the acquisitions removed are removed too with
+    ``with_products``; otherwise they stay as they are and are marked (``missing``: made from
+    acquisitions no longer in the cache). Returns what was done."""
+    from pyarchinit_photogrammetry.core.progress import as_progress
+
+    progress = as_progress(progress)
+    st = state(chunk)
+    rows = {r["id"]: r for r in st.get("scenes") or []}
+    d = cache_dir(chunk)
+    if ids is None:
+        files_now = sorted(d.glob("*.tif")) if d.exists() else []
+        targets = sorted({_acquisition_of(p) for p in files_now} | set(cached_ids(chunk)))
+    else:
+        targets = list(dict.fromkeys(str(i) for i in ids))
+    files, freed = 0, 0
+    for acq in targets:
+        for p in (d / f"{acq}.tif", d / f"{acq}.part.tif"):
+            if p.exists():
+                freed += p.stat().st_size
+                p.unlink()
+                files += 1
+        row = rows.get(acq)
+        if row is not None and row.get("status") == "cached":
+            row.update(status="found", clear=None, file=None)
+            row.pop("error", None)
+    affected = [e["id"] for e in products_using(chunk, targets)]
+    gone = []
+    if with_products:
+        for pid in affected:
+            remove(chunk, pid)
+            gone.append(pid)
+    progress(0.2, t("{0} acquisizioni tolte dalla cache ({1:.1f} MB)", "{0} acquisitions out of the cache ({1:.1f} MB)")
+             .format(len(targets), freed / 1e6))
+    try:
+        computed = compute(chunk, progress.sub(0.2, 0.8))
+    except NoData:
+        clear_series(chunk)
+        computed = {"dates": 0}
+    marked = mark_missing(chunk)
+    progress(1.0, t("Cache: {0} file cancellati, {1} date serene restano", "Cache: {0} files deleted, {1} clear "
+                    "dates left").format(files, computed.get("dates", 0)))
+    return {"removed": targets, "files": files, "bytes": freed, "products_removed": gone,
+            "products_marked": [pid for pid in marked if pid in affected], "computed": computed}
 
 
 # ------------------------------------------------------------------ indices and series
@@ -249,9 +363,11 @@ def _read_scl(path: Path, grid: Grid) -> np.ndarray | None:
         return src.read(k).astype(np.uint8)
 
 
-def compute(chunk, progress=None) -> dict:
+def compute(chunk, progress=None, min_clear: float | None = None) -> dict:
     """The indices of every clear acquisition in the cache (``indices/<name>.tif``, a band per
-    date), the series over the area per date and per month (CSV) and their chart (PNG)."""
+    date), the series over the area per date and per month (CSV) and their chart (PNG).
+    ``min_clear``: the least clear part of the area an acquisition needs (saved in the settings);
+    the one of the last reading when not given."""
     import rasterio
     from pyarchinit_photogrammetry.core.progress import as_progress
 
@@ -261,6 +377,9 @@ def compute(chunk, progress=None) -> dict:
         raise NoData(t("Nessuna scena: cerca prima nel catalogo.", "No scene: search the catalog first."))
     st = state(chunk)
     s = settings(chunk)
+    if min_clear is not None:
+        s["min_clear"] = float(min_clear)
+        st["settings"] = s
     mask_area = area_mask(area, grid)
     n_area = max(int(mask_area.sum()), 1)
     usable = []
@@ -278,8 +397,7 @@ def compute(chunk, progress=None) -> dict:
     out_dir = folder(chunk) / "indices"
     out_dir.mkdir(parents=True, exist_ok=True)
     if not usable:
-        for key in ("indices", "series", "dates"):
-            st.pop(key, None)
+        clear_series(chunk)
         raise NoData(t("Nessuna acquisizione serena nella cache: scarica prima le scene.",
                        "No clear acquisition in the cache: read the scenes first."))
     years = sorted({int(r["date"][:4]) for r, _p in usable})
@@ -653,6 +771,41 @@ def rgb(chunk, acq_id: str):
 
 
 # ------------------------------------------------------------------ exports
+def export_date(chunk, index: str, acq_id: str, path) -> list[Path]:
+    """One index of one date as a GeoTIFF on the grid of the scenes (UTM), and its copy on the
+    chunk's grid beside it (``<name>_chunk.tif``)."""
+    values, ids, tr, crs = read_stack(chunk, index, [acq_id])
+    if not ids:
+        raise NoData(t("Nessun {0} del {1}: la data non è fra quelle serene.", "No {0} of {1}: the date is not among "
+                       "the clear ones.").format(index, acq_id))
+    notice = attribution([int(acq_id[:4])])
+    tags = {"INDEX": index, "FORMULA": analysis.FORMULAS[index], "ACQUISITION": acq_id, "ATTRIBUTION": notice,
+            "TIFFTAG_COPYRIGHT": notice, "TIFFTAG_SOFTWARE": "pyarchinit-photogrammetry sentinel2"}
+    path = Path(path)
+    out = [_write(path, [values[0]], tr, crs, [f"{index} {acq_id}"], tags)]
+    on_chunk = to_chunk(chunk, values[0], grid_of_chunk(chunk), path.with_name(path.stem + "_chunk.tif"),
+                        f"{index} {acq_id}", tags)
+    if on_chunk is not None:
+        out.append(on_chunk)
+    return out
+
+
+def export_acquisition(chunk, acq_id: str, path) -> Path:
+    """The reflectance of the seven bands of a cached acquisition (float32, NaN where no data) and
+    its scene classification as the eighth band, on the grid of the scenes (UTM)."""
+    grid = grid_of_chunk(chunk)
+    cache = reader.read_cache(cache_dir(chunk) / f"{acq_id}.tif", grid) if grid is not None else None
+    if cache is None:
+        raise NoData(t("L'acquisizione {0} non è nella cache.", "The acquisition {0} is not in the cache.").format(acq_id))
+    notice = attribution([int(acq_id[:4])])
+    bands = [cache["reflectance"][b] for b in stac.BANDS] + [cache["scl"].astype(np.float32)]
+    names = [f"{b} reflectance" for b in stac.BANDS] + ["SCL scene classification (0 = no data)"]
+    tags = {"ACQUISITION": acq_id, "ATTRIBUTION": notice, "TIFFTAG_COPYRIGHT": notice,
+            "TIFFTAG_SOFTWARE": "pyarchinit-photogrammetry sentinel2", **{k: v for k, v in cache["tags"].items()
+                                                                        if k in ("DATETIME", "PLATFORM", "TILES", "ITEMS")}}
+    return _write(Path(path), bands, grid.transform, grid.crs, names, tags)
+
+
 def export_stack(chunk, path) -> Path:
     """Every index of every clear date in one GeoTIFF (UTM of the area): bands named
     ``NDVI 2023-06-14 20230614_S2B``."""
@@ -730,8 +883,10 @@ def export_all(chunk, target, progress=None) -> list[Path]:
 
 
 def qgis_entries(chunk) -> tuple[list[dict], list[dict]]:
-    """The products on the chunk's grid for the QGIS project of the program (composites with the
-    ramp of the vegetation indices, crop-mark maps diverging between -3 and 3)."""
+    """The products on the chunk's grid for the QGIS project of the program, with the ramp of the
+    vegetation indices (red-yellow-green) as in the pane: the composites between their 10th and 90th
+    percentiles, the crop-mark maps between -3 (red: vegetation weaker than around it, over walls and
+    roads) and 3 (green: greener, over ditches and pits)."""
     from .texts import product_name as name_of
 
     rasters = []
@@ -740,8 +895,8 @@ def qgis_entries(chunk) -> tuple[list[dict], list[dict]]:
         if p is None or not p.exists():
             continue
         st = e.get("stats") or {}
-        if e.get("kind") == "cropmarks":
-            entry = {"ramp": "diverging", "limits": [-Z_LIMIT, Z_LIMIT]}
+        if e.get("kind") == "cropmarks":  # the same colours as the pane's default: red low, green high
+            entry = {"ramp": "index", "limits": [-Z_LIMIT, Z_LIMIT]}
         else:
             entry = {"ramp": "index", "limits": [float(st.get("p10", -1.0)), float(st.get("p90", 1.0))]}
         rasters.append({"name": f"Sentinel-2: {name_of(e)}", "path": str(p), "band": 1, "opacity": 0.75,
@@ -751,7 +906,9 @@ def qgis_entries(chunk) -> tuple[list[dict], list[dict]]:
 
 def summary(chunk) -> dict:
     st = peek(chunk)
+    files, size = cache_size(chunk)
     return {"area": st.get("area"), "grid": st.get("grid"), "search": st.get("search"), "settings": settings(chunk),
+            "cache": {"files": files, "megabytes": round(size / 1e6, 2), "acquisitions": cached_ids(chunk)},
             "scenes": [{k: r.get(k) for k in ("id", "date", "platform", "tiles", "cloud", "clear", "status")}
                        for r in st.get("scenes") or []],
             "dates": [d["id"] for d in st.get("dates") or []], "products": st.get("products") or [],

@@ -13,7 +13,9 @@ them, weaker or greener in some seasons).
   the composites of a period, the exports (GeoTIFF stack, CSV, PNG), the QGIS project;
 * *Plugin > Sentinel-2* menu actions; *File > Esporta > Serie temporale Sentinel-2 (CSV)* and
   *Stack Sentinel-2 (GeoTIFF)*;
-* ``ppg plugin sentinel2 search|fetch|compute|series|composite|cropmarks|list|export|remove PROJECT ...``.
+* ``ppg plugin sentinel2 search|fetch|compute|series|composite|cropmarks|list|export|remove|remove-scene PROJECT ...``;
+* from program 1.3.4, a *Sentinel-2* node per chunk in the project's tree: the acquisitions read, the
+  indices by date, the series, the composites and the crop-mark maps, shown by a double click.
 
 What is read and made lives in ``<chunk data>/sentinel2/`` and in ``chunk.meta["sentinel2"]``.
 Contains modified Copernicus Sentinel data: the notice goes into every file made.
@@ -58,7 +60,7 @@ class Sentinel2Plugin(Plugin):
         context.add_action(t("Nascondi la sovrapposizione", "Hide the overlay"), self.hide_overlay)
         context.add_command("sentinel2", self.command,
                             help="Sentinel-2 time series: search, fetch, compute, series, composite, cropmarks, list, "
-                                 "export, remove")
+                                 "export, remove, remove-scene")
         context.add_exporter(t("Serie temporale Sentinel-2 (CSV)", "Sentinel-2 time series (CSV)"), ".csv",
                              self._export_series)
         context.add_exporter(t("Stack Sentinel-2 (GeoTIFF)", "Sentinel-2 stack (GeoTIFF)"), ".tif", self._export_stack)
@@ -68,6 +70,8 @@ class Sentinel2Plugin(Plugin):
             context.on_raster_loaded(self._raster_loaded)
             # the pane follows the project and its active chunk: another project, chunk, step or undo
             context.on_refresh(self.refresh_pane)
+        if hasattr(context, "add_tree_items"):  # program 1.3.4: the products in the project's tree too
+            context.add_tree_items(self._tree_items)
 
     def deactivate(self) -> None:
         self.hide_overlay()
@@ -108,7 +112,7 @@ class Sentinel2Plugin(Plugin):
         p.frame_requested.connect(self.show_frame)
         p.search_requested.connect(self.search)
         p.fetch_requested.connect(self.fetch)
-        p.compute_requested.connect(self.compute)
+        p.compute_requested.connect(lambda: self.compute())
         p.overlay_requested.connect(self.show_overlay)
         p.opacity_changed.connect(lambda v: self.overlay.set_opacity(v) if self.overlay else None)
         p.hide_requested.connect(self.hide_overlay)
@@ -119,7 +123,10 @@ class Sentinel2Plugin(Plugin):
         p.remove_requested.connect(self.remove)
         p.export_requested.connect(self.export_dialog)
         p.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
-        p.chart_requested.connect(self.open_chart)
+        p.chart_requested.connect(lambda: self.open_chart())
+        p.scenes_remove_requested.connect(lambda ids: self.remove_scenes(list(ids)))
+        p.cache_clear_requested.connect(lambda: self.clear_cache())
+        p.scene_show_requested.connect(self.show_acquisition)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         runner = getattr(window, "runner", None)
         if runner is not None and hasattr(runner, "busy_changed"):  # no second step while one runs
@@ -157,6 +164,16 @@ class Sentinel2Plugin(Plugin):
     def _changed(self) -> None:
         self.context.mark_modified()
         self.refresh_pane()
+        self._refresh_tree()
+
+    def _refresh_tree(self) -> None:
+        """The project's tree filled again (program 1.3.4; nothing before)."""
+        refresh = getattr(self.context, "refresh_tree", None) if self.context is not None else None
+        if refresh is not None:
+            try:
+                refresh()
+            except Exception as exc:  # noqa: BLE001 - the tree must never stop the plugin
+                self.context.log.warning("Sentinel-2 tree: %s", exc)
 
     def _area_text(self, chunk) -> str:
         from . import project
@@ -446,14 +463,18 @@ class Sentinel2Plugin(Plugin):
         self._run(t("Sentinel-2: lettura delle scene", "Sentinel-2: reading the scenes"),
                   lambda p: project.fetch(chunk, list(ids) or None, min_clear, progress=p), done)
 
-    def compute(self) -> None:
+    def compute(self, min_clear: float | None = None) -> None:
+        """Indices and series again from the acquisitions read, with the least clear part of the area
+        of the pane (saved), without network."""
         from . import project
 
         chunk = self._chunk()
         if chunk is None:
             return
+        if min_clear is None and self.pane is not None:
+            min_clear = self.pane.s_clear.value() / 100.0
         self._run(t("Sentinel-2: indici e serie", "Sentinel-2: indices and series"),
-                  lambda p: project.compute(chunk, progress=p),
+                  lambda p: project.compute(chunk, progress=p, min_clear=min_clear),
                   lambda r: self._status(t("{0} date serene nella serie", "{0} clear dates in the series").format(r["dates"])))
 
     # ------------------------------------------------------------------ overlays
@@ -476,6 +497,9 @@ class Sentinel2Plugin(Plugin):
 
         chunk = self._chunk()
         what = spec.get("what", "index")
+        if what == "rgb":  # natural colour of one acquisition of the cache, clear or not
+            values, tr, crs = project.rgb(chunk, spec["acq"])
+            return values, tr, crs, "rgb"
         if what == "product":
             e = project.product(chunk, spec["id"])
             values, tr, crs = project.read_product(chunk, spec["id"])
@@ -618,11 +642,11 @@ class Sentinel2Plugin(Plugin):
                 .format(st["low"] * 100, st["high"] * 100)
         return text
 
-    def remove(self, pid: str, confirm: bool = True) -> bool:
+    def remove(self, pid: str, confirm: bool = True, chunk=None) -> bool:
         from . import project
         from .texts import product_name
 
-        chunk = self._chunk()
+        chunk = chunk or self._chunk()
         e = project.product(chunk, pid) if chunk is not None else None
         if e is None:
             return False
@@ -635,18 +659,135 @@ class Sentinel2Plugin(Plugin):
             if dialogs.choice(window, "question", t("Rimuovi il prodotto", "Remove the product"), text,
                               [t("Rimuovi", "Remove")]) != 0:
                 return False
-        if self.overlay is not None and (self.overlay.spec or {}).get("id") == pid:
+        spec = self.overlay.spec if self.overlay is not None else None
+        if spec and spec.get("id") == pid and spec.get("chunk") == getattr(chunk, "key", None):
             self.hide_overlay()
         project.remove(chunk, pid)
         self._changed()
         return True
 
-    def export_product(self, pid: str) -> None:
+    def remove_scenes(self, ids=None, confirm: bool = True, chunk=None, with_products: bool | None = None) -> bool:
+        """Acquisitions out of the cache (``ids``; None: the whole cache), after a question in the window
+        (the program's non-native box): their files deleted, their rows back to *to read* (they can be
+        read again), the indices and the series computed again from the others. The products made from
+        them: removed too, or kept and marked as made from acquisitions no longer in the cache - the
+        question asks when there are any; ``with_products`` answers it without asking."""
+        from . import project
+        from .texts import product_name
+
+        chunk = chunk or self._chunk()
+        if chunk is None:
+            return False
+        cached = project.cached_ids(chunk)
+        files, size = project.cache_size(chunk)
+        if ids is None:
+            if not cached and not files:
+                self._say("Sentinel-2", t("La cache è già vuota.", "The cache is empty already."))
+                return False
+            targets, chosen = None, cached
+        else:
+            targets = [str(i) for i in ids if str(i) in cached]
+            if not targets:
+                self._say("Sentinel-2", t("Nessuna delle acquisizioni scelte è nella cache.",
+                                          "None of the acquisitions chosen is in the cache."), "warning")
+                return False
+            chosen = targets
+        affected = project.products_using(chunk, chosen)
+        window = self.context.window
+        if with_products is None:
+            with_products = False
+            if confirm and window is not None:
+                from pyarchinit_photogrammetry.gui import dialogs
+
+                if targets is None:
+                    text = t("Svuotare la cache Sentinel-2 del chunk? {0} file ({1:.1f} MB) vengono cancellati; le "
+                             "acquisizioni restano nella ricerca e si possono leggere di nuovo.",
+                             "Empty the Sentinel-2 cache of the chunk? {0} files ({1:.1f} MB) are deleted; the "
+                             "acquisitions stay in the search and can be read again.").format(files, size / 1e6)
+                else:
+                    names = ", ".join(targets[:6]) + (", ..." if len(targets) > 6 else "")
+                    text = t("Togliere dalla cache {0} acquisizioni ({1})? I file letti vengono cancellati; restano "
+                             "nella ricerca e si possono leggere di nuovo. Indici e serie vengono ricalcolati con le "
+                             "altre.",
+                             "Take {0} acquisitions ({1}) out of the cache? The files read are deleted; they stay in "
+                             "the search and can be read again. Indices and series are computed again from the "
+                             "others.").format(len(targets), names)
+                options = [t("Rimuovi", "Remove")]
+                if affected:
+                    listed = ", ".join(f"«{product_name(e)}»" for e in affected[:4]) + (", ..." if len(affected) > 4 else "")
+                    text += "\n\n" + t("{0} prodotti sono stati calcolati anche da queste acquisizioni ({1}): rimuoverli "
+                                       "anche loro, o tenerli segnati come fatti da date non più in cache?",
+                                       "{0} products were computed from these acquisitions too ({1}): remove them as "
+                                       "well, or keep them marked as made from dates no longer in the cache?").format(
+                        len(affected), listed)
+                    options = [t("Rimuovi anche i prodotti", "Remove the products too"),
+                               t("Tieni i prodotti", "Keep the products")]
+                title = t("Svuota la cache", "Empty the cache") if targets is None else t("Rimuovi dalla cache",
+                                                                                         "Remove from the cache")
+                k = dialogs.choice(window, "question", title, text, options)
+                if k is None:
+                    return False
+                with_products = bool(affected) and k == 0
+        self._hide_if_shows(chunk, chosen, with_products, affected)
+
+        def done(r):
+            text = t("Cache: {0} acquisizioni tolte, {1:.1f} MB liberati; {2} date serene restano",
+                     "Cache: {0} acquisitions out, {1:.1f} MB freed; {2} clear dates left").format(
+                len(r["removed"]), r["bytes"] / 1e6, r["computed"].get("dates", 0))
+            if r["products_removed"]:
+                text += t("; {0} prodotti rimossi", "; {0} products removed").format(len(r["products_removed"]))
+            if r["products_marked"]:
+                text += t("; {0} prodotti segnati come fatti da date non più in cache",
+                          "; {0} products marked as made from dates no longer in the cache").format(len(r["products_marked"]))
+            self._status(text)
+
+        self._run(t("Sentinel-2: cache", "Sentinel-2: cache"),
+                  lambda p: project.remove_scenes(chunk, targets, with_products, p), done)
+        return True
+
+    def clear_cache(self, confirm: bool = True, chunk=None) -> bool:
+        """Every acquisition read out of the cache (see :meth:`remove_scenes`)."""
+        return self.remove_scenes(None, confirm, chunk)
+
+    def _hide_if_shows(self, chunk, ids, with_products: bool, affected: list[dict]) -> None:
+        """The overlay hidden when it shows something taken away: an acquisition removed, a period
+        with one of them, a product removed."""
+        from . import project
+
+        spec = self.overlay.spec if self.overlay is not None else None
+        if not spec or spec.get("chunk") != getattr(chunk, "key", None):
+            return
+        ids = {str(i) for i in ids}
+        what = spec.get("what")
+        if what == "rgb":
+            hide = spec.get("acq") in ids
+        elif what == "product":
+            hide = with_products and spec.get("id") in {e["id"] for e in affected}
+        else:
+            try:
+                hide = bool(ids & set(project.period_ids(chunk, spec.get("period", "all"))))
+            except ValueError:
+                hide = True
+        if hide:
+            self.hide_overlay()
+
+    def show_acquisition(self, acq_id: str) -> None:
+        """Natural colour of an acquisition of the cache over the view."""
+        from . import area as area_mod
+        from . import project
+
+        params = self.pane.view_params() if self.pane is not None else {"opacity": 0.75}
+        try:
+            self._overlay({"what": "rgb", "acq": str(acq_id), "opacity": params["opacity"]})
+        except (project.NoData, area_mod.NotPlaced, RuntimeError, ValueError) as exc:
+            self._say("Sentinel-2", str(exc), "warning")
+
+    def export_product(self, pid: str, chunk=None) -> None:
         import shutil
 
         from . import project
 
-        chunk = self._chunk()
+        chunk = chunk or self._chunk()
         e = project.product(chunk, pid) if chunk is not None else None
         window = self.context.window
         if e is None or window is None:
@@ -666,10 +807,69 @@ class Sentinel2Plugin(Plugin):
             out.append(other)
         self._status(t("Esportato: {0}", "Exported: {0}").format(", ".join(str(p) for p in out)))
 
-    def export_dialog(self) -> None:
+    def _save_path(self, title: str, name: str, filters: str = "GeoTIFF (*.tif)") -> Path | None:
+        window = self.context.window
+        if window is None:
+            return None
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(window, title, name, filters)
+        return Path(path) if path else None
+
+    def export_date_dialog(self, index: str, acq_id: str, chunk=None) -> None:
+        """One index of one date as GeoTIFF (and its copy on the chunk's grid)."""
         from . import project
 
-        chunk = self._chunk()
+        chunk = chunk or self._chunk()
+        path = self._save_path(t("Esporta l'indice della data", "Export the index of the date"), f"{index}_{acq_id}.tif")
+        if chunk is None or path is None:
+            return
+        try:
+            out = project.export_date(chunk, index, acq_id, path)
+        except (project.NoData, OSError) as exc:
+            self._say("Sentinel-2", str(exc), "warning")
+            return
+        self._status(t("Esportato: {0}", "Exported: {0}").format(", ".join(str(p) for p in out)))
+
+    def export_acquisition_dialog(self, acq_id: str, chunk=None) -> None:
+        """The reflectance of an acquisition of the cache as GeoTIFF."""
+        from . import project
+
+        chunk = chunk or self._chunk()
+        path = self._save_path(t("Esporta l'acquisizione", "Export the acquisition"), f"{acq_id}_reflectance.tif")
+        if chunk is None or path is None:
+            return
+        try:
+            out = project.export_acquisition(chunk, acq_id, path)
+        except (project.NoData, OSError) as exc:
+            self._say("Sentinel-2", str(exc), "warning")
+            return
+        self._status(t("Esportato: {0}", "Exported: {0}").format(out))
+
+    def export_series_dialog(self, chunk=None) -> None:
+        """The series (CSV per date, per month beside it, and the chart)."""
+        from . import project
+
+        chunk = chunk or self._chunk()
+        path = self._save_path(t("Esporta la serie", "Export the series"), "sentinel2_series.csv", "CSV (*.csv)")
+        if chunk is None or path is None:
+            return
+        try:
+            out = project.export_series(chunk, path)
+        except (project.NoData, OSError) as exc:
+            self._say("Sentinel-2", str(exc), "warning")
+            return
+        self._status(t("Esportato: {0}", "Exported: {0}").format(", ".join(str(p) for p in out)))
+
+    def open_qgis(self) -> None:
+        window = self.context.window if self.context else None
+        if window is not None and hasattr(window, "open_in_qgis"):
+            window.open_in_qgis()
+
+    def export_dialog(self, chunk=None) -> None:
+        from . import project
+
+        chunk = chunk or self._chunk()
         window = self.context.window
         if chunk is None or window is None:
             return
@@ -683,10 +883,10 @@ class Sentinel2Plugin(Plugin):
                          lambda p: project.export_all(chunk, folder, p),
                          lambda files: self._status(t("{0} file in {1}", "{0} files in {1}").format(len(files), folder)))
 
-    def open_chart(self) -> None:
+    def open_chart(self, chunk=None) -> None:
         from . import project
 
-        chunk = self._chunk()
+        chunk = chunk or self._chunk()
         path = project.absolute(chunk, (project.peek(chunk).get("series") or {}).get("chart")) if chunk else None
         if path is None or not path.exists():
             return
@@ -709,6 +909,175 @@ class Sentinel2Plugin(Plugin):
             progress(0.5, t("Stack Sentinel-2", "Sentinel-2 stack"))
         return project.export_stack(chunk, path)
 
+    # ------------------------------------------------------------------ the project's tree (program 1.3.4)
+    def _focus(self, chunk) -> bool:
+        """The chunk of an item of the tree made the active one (the view, its overlays and the pane
+        show the active chunk), as the tree itself does when a chunk is clicked."""
+        if chunk is None:
+            return False
+        if self._chunk() is chunk:
+            return True
+        window = self.context.window if self.context else None
+        activate = getattr(window, "_activate_chunk", None) if window is not None else None
+        if activate is not None:
+            activate(chunk)
+        if self._chunk() is chunk:
+            return True
+        self._say("Sentinel-2", t("Rendi attivo il chunk «{0}» per vederlo.", "Make the chunk «{0}» the active one to "
+                                  "see it.").format(getattr(chunk, "label", "")), "warning")
+        return False
+
+    def _tree_show_pane(self, chunk) -> None:
+        if self._focus(chunk):
+            self.show_pane()
+
+    def _tree_show_frame(self, chunk) -> None:
+        if self._focus(chunk):
+            self.show_frame()
+
+    def _tree_show_acquisition(self, chunk, acq_id: str) -> None:
+        if self._focus(chunk):
+            self.show_acquisition(acq_id)
+
+    def _tree_show_index(self, chunk, index: str, period: str) -> None:
+        """An index of a date (or of the whole period) over the view; the pane follows the choice."""
+        if not self._focus(chunk):
+            return
+        params = {"index": index, "period": period, "palette": "rdylgn", "opacity": 0.75}
+        if self.pane is not None:
+            p = self.pane
+            for combo, value in ((p.c_index, index), (p.c_period, period)):
+                k = combo.findData(value)
+                if k >= 0:
+                    combo.setCurrentIndex(k)
+            params.update(palette=p.view_params()["palette"], opacity=p.view_params()["opacity"])
+        self.show_overlay(params)
+
+    def _tree_show_product(self, chunk, pid: str) -> None:
+        if self._focus(chunk):
+            self.show_product(pid)
+
+    def _tree_items(self, chunk) -> list[dict]:
+        """The *Sentinel-2* node of a chunk in the project's tree: the acquisitions read (date and clear
+        part of the area), the indices by date, the series, the composites and the crop-mark maps; a
+        double click shows one over the view, the context menu has its actions. Nothing for a chunk
+        the plugin has not worked on. Called by the program at every refresh of the tree: it reads
+        only ``chunk.meta`` and the size of the cache."""
+        from functools import partial
+
+        from . import analysis, project
+        from .texts import index_name, period_name, product_name
+
+        st = project.peek(chunk)
+        if not st.get("area") and not st.get("scenes"):
+            return []
+        c = chunk
+        rows = {r["id"]: r for r in st.get("scenes") or []}
+        cached = project.cached_ids(chunk)
+        files, size = project.cache_size(chunk)
+        show, hide = t("Mostra", "Show"), t("Nascondi", "Hide")
+        export, out_of_cache = t("Esporta...", "Export..."), t("Rimuovi dalla cache", "Remove from the cache")
+
+        def clear_text(value) -> str:
+            return "" if value is None else t(", sereno {0:.0f} %", ", {0:.0f} % clear").format(float(value) * 100)
+
+        acq_items = []
+        for acq in reversed(cached):
+            r = rows[acq]
+            acq_items.append({
+                "label": f"{r['date']} {r.get('platform', '')}{clear_text(r.get('clear'))}",
+                "icon": "ortho",
+                "tooltip": t("{0}: tile {1}, nuvole del tile {2}; doppio clic: colori naturali",
+                             "{0}: tiles {1}, clouds of the tiles {2}; double click: natural colour").format(
+                    acq, " ".join(r.get("tiles") or []), "-" if r.get("cloud") is None else f"{float(r['cloud']):.0f} %"),
+                "activate": partial(self._tree_show_acquisition, c, acq),
+                "actions": [(t("Mostra (colori naturali)", "Show (natural colour)"), partial(self._tree_show_acquisition, c, acq)),
+                            (hide, self.hide_overlay),
+                            (export, partial(self.export_acquisition_dialog, acq, c)),
+                            (out_of_cache, partial(self.remove_scenes, [acq], True, c))]})
+        groups = [{
+            "label": t("Acquisizioni lette ({0})", "Acquisitions read ({0})").format(len(cached)),
+            "icon": "photos",
+            "tooltip": t("Le finestre dell'area lette dal catalogo, nella cache del progetto: {0} file, {1:.1f} MB",
+                         "The windows of the area read from the catalog, in the project's cache: {0} files, "
+                         "{1:.1f} MB").format(files, size / 1e6),
+            "children": acq_items, "expanded": False,
+            "actions": [(t("Svuota la cache...", "Empty the cache..."), partial(self.remove_scenes, None, True, c))]
+            if (cached or files) else []}]
+        ds = st.get("dates") or []
+        if ds:
+            index_nodes = []
+            for name in analysis.INDICES:
+                leaves = [{"label": f"{d['date']} {d.get('platform', '')}{clear_text(d.get('clear'))}",
+                           "icon": "index",
+                           "tooltip": f"{name} = {analysis.FORMULAS[name]}  ({d['id']})",
+                           "activate": partial(self._tree_show_index, c, name, d["id"]),
+                           "actions": [(show, partial(self._tree_show_index, c, name, d["id"])),
+                                       (hide, self.hide_overlay),
+                                       (export, partial(self.export_date_dialog, name, d["id"], c)),
+                                       (out_of_cache, partial(self.remove_scenes, [d["id"]], True, c))]}
+                          for d in reversed(ds)]
+                index_nodes.append({
+                    "label": index_name(name), "icon": "index", "tooltip": f"{name} = {analysis.FORMULAS[name]}",
+                    "children": leaves, "expanded": False,
+                    "actions": [(t("Mostra la mediana di {0}", "Show the median of {0}").format(period_name("all")),
+                                 partial(self._tree_show_index, c, name, "all")), (hide, self.hide_overlay)]})
+            groups.append({"label": t("Indici per data ({0} date)", "Indices by date ({0} dates)").format(len(ds)),
+                           "icon": "index", "tooltip": t("Una banda per data serena, solo le celle serene",
+                                                         "A band per clear date, clear cells only"),
+                           "children": index_nodes, "expanded": False})
+        if st.get("series"):
+            groups.append({"label": t("Serie temporale", "Time series"), "icon": "graph",
+                           "tooltip": (st["series"].get("attribution") or "") + "\n"
+                           + t("Doppio clic: il grafico", "Double click: the chart"),
+                           "activate": partial(self.open_chart, c),
+                           "actions": [(t("Apri il grafico", "Open the chart"), partial(self.open_chart, c)),
+                                       (t("Esporta la serie (CSV)...", "Export the series (CSV)..."),
+                                        partial(self.export_series_dialog, c))]})
+        for kind, names, icon_name in (("composite", ("Compositi", "Composites"), "multispectral"),
+                                       ("cropmarks", ("Crop mark", "Crop marks"), "zones")):
+            items = []
+            for e in st.get("products") or []:
+                if e.get("kind") != kind:
+                    continue
+                missing = e.get("missing") or []
+                tip = [e["id"], t("{0} date: {1}", "{0} dates: {1}").format(len(e.get("dates") or []),
+                                                                          ", ".join(e.get("dates") or []))]
+                stats = e.get("stats") or {}
+                if kind == "cropmarks" and "low" in stats:
+                    tip.append(t("{0:.1f}% dell'area sotto -2, {1:.1f}% sopra 2", "{0:.1f}% of the area under -2, "
+                                 "{1:.1f}% over 2").format(stats["low"] * 100, stats["high"] * 100))
+                if missing:
+                    tip.append(t("Fatto anche da acquisizioni non più in cache: {0}", "Made also from acquisitions no "
+                                 "longer in the cache: {0}").format(", ".join(missing)))
+                items.append({
+                    "label": product_name(e) + (t(" (date non più in cache)", " (dates no longer cached)") if missing else ""),
+                    "icon": icon_name, "tooltip": "\n".join(tip),
+                    "activate": partial(self._tree_show_product, c, e["id"]),
+                    "actions": [(show, partial(self._tree_show_product, c, e["id"])),
+                                (hide, self.hide_overlay),
+                                (export, partial(self.export_product, e["id"], c)),
+                                (t("Apri in QGIS", "Open in QGIS"), self.open_qgis),
+                                (t("Rimuovi", "Remove"), partial(self.remove, e["id"], True, c))]})
+            if items:
+                groups.append({"label": f"{t(*names)} ({len(items)})", "icon": icon_name, "children": items,
+                               "expanded": True})
+        search = st.get("search") or {}
+        tip = self._area_text(chunk)
+        if search:
+            tip += "\n" + t("Ricerca: {0} - {1}, nuvole fino a {2:.0f} %, {3} acquisizioni", "Search: {0} - {1}, clouds "
+                            "up to {2:.0f} %, {3} acquisitions").format(search.get("start", ""), search.get("end", ""),
+                                                                       float(search.get("max_cloud", 0)), len(rows))
+        return [{
+            "label": "Sentinel-2", "icon": "globe", "tooltip": tip, "expanded": True, "children": groups,
+            "activate": partial(self._tree_show_pane, c),
+            "actions": [(t("Mostra il pannello", "Show the pane"), partial(self._tree_show_pane, c)),
+                        (t("Mostra l'area intera", "Show the whole area"), partial(self._tree_show_frame, c)),
+                        (t("Nascondi la sovrapposizione", "Hide the overlay"), self.hide_overlay),
+                        (t("Esporta tutto...", "Export everything..."), partial(self.export_dialog, c)),
+                        (t("Apri in QGIS", "Open in QGIS"), self.open_qgis),
+                        (t("Svuota la cache...", "Empty the cache..."), partial(self.remove_scenes, None, True, c))]}]
+
     # ------------------------------------------------------------------ command line
     @staticmethod
     def _project_args(args) -> tuple[list[str], str | None, str | None]:
@@ -729,6 +1098,36 @@ class Sentinel2Plugin(Plugin):
                 rest.append(a)
             i += 1
         return rest, project, label
+
+    @staticmethod
+    def glue_values(args: list[str]) -> list[str]:
+        """``--bbox -1.83,51.17,-1.82,51.18``: argparse takes a value beginning with a dash for an
+        option; glued to its option (``--bbox=-1.83,...``) it is read as the value. A lone negative
+        number (``--bbox -1.83 51.17 -1.82 51.18``) argparse reads by itself."""
+        import re
+
+        out, i = [], 0
+        while i < len(args):
+            a = args[i]
+            nxt = args[i + 1] if i + 1 < len(args) else None
+            if (a in ("--bbox", "--polygon") and nxt is not None and nxt.startswith("-") and not nxt.startswith("--")
+                    and not re.fullmatch(r"-\d+(\.\d*)?|-\.\d+", nxt)):
+                out.append(f"{a}={nxt}")
+                i += 2
+                continue
+            out.append(a)
+            i += 1
+        return out
+
+    @staticmethod
+    def bbox_values(values) -> tuple[float, float, float, float]:
+        """West, south, east, north from ``--bbox`` (one ``W,S,E,N`` or four numbers)."""
+        parts = [v for v in ",".join(values if isinstance(values, (list, tuple)) else [values]).replace(" ", ",").split(",")
+                 if v]
+        if len(parts) != 4:
+            raise ValueError(f"--bbox needs four numbers, west,south,east,north in degrees (got {len(parts)})")
+        w, s, e, n = (float(v) for v in parts)
+        return w, s, e, n
 
     def _open_for_command(self, project: str | None, label: str | None):
         if project:
@@ -764,7 +1163,8 @@ class Sentinel2Plugin(Plugin):
         p.add_argument("--margin", type=float, default=300.0, help="metres around the area")
         p.add_argument("--area", choices=("auto", "dem", "orthomosaic", "keep"), default="auto",
                        help="the footprint of the DEM or orthomosaic, or keep the area set before (drawn)")
-        p.add_argument("--bbox", help="a box instead: west,south,east,north in degrees")
+        p.add_argument("--bbox", nargs="+", metavar="W,S,E,N",
+                       help="a box instead: west,south,east,north in degrees (also as four numbers, or --bbox=...)")
         p.add_argument("--polygon", help='a polygon instead, in the chunk\'s coordinates: "x,y;x,y;x,y"')
         p.add_argument("--client", choices=("auto", "stdlib", "pystac"), default=None)
         p = sub.add_parser("fetch", help="read the window of the area of the acquisitions found (cached), then compute")
@@ -775,7 +1175,9 @@ class Sentinel2Plugin(Plugin):
                                                                   f"(default {reader.BUFFER_M:g})")
         p.add_argument("--workers", type=int, default=reader.WORKERS)
         p.add_argument("--no-compute", action="store_true", help="read only")
-        sub.add_parser("compute", help="indices and series from the acquisitions read (no network)")
+        p = sub.add_parser("compute", help="indices and series from the acquisitions read (no network)")
+        p.add_argument("--min-clear", type=float, default=None,
+                       help="least clear part of the area, 0-1 (default: the one of the last reading; saved)")
         p = sub.add_parser("series", help="the series over the area (per date, or per month)")
         p.add_argument("--monthly", action="store_true")
         p.add_argument("--index", choices=tuple(analysis.INDICES), default=None)
@@ -793,6 +1195,12 @@ class Sentinel2Plugin(Plugin):
         p.add_argument("path")
         p = sub.add_parser("remove", help="a product out of the project")
         p.add_argument("id")
+        p = sub.add_parser("remove-scene", help="acquisitions out of the cache (fetch reads them again); --all empties it")
+        p.add_argument("ids", nargs="*", help="acquisition ids (see list)")
+        p.add_argument("--all", action="store_true", help="every acquisition of the cache")
+        p.add_argument("--with-products", action="store_true",
+                       help="remove the products computed from them too (by default they stay, marked as made from "
+                            "acquisitions no longer in the cache)")
         return parser
 
     def command(self, *args) -> int:
@@ -800,7 +1208,7 @@ class Sentinel2Plugin(Plugin):
         from . import area as area_mod
 
         args, project_path, label = self._project_args(args)
-        ns = self._parser().parse_args(args)
+        ns = self._parser().parse_args(self.glue_values(args))
         chunk = self._open_for_command(project_path, label)
         if chunk is None:
             print(f"no chunk {label!r} in the project" if label else
@@ -812,7 +1220,7 @@ class Sentinel2Plugin(Plugin):
         try:
             if ns.what == "search":
                 if ns.bbox:
-                    w, s, e, n = (float(v) for v in ns.bbox.split(","))
+                    w, s, e, n = self.bbox_values(ns.bbox)
                     area = area_mod.area_of_bbox(chunk, w, s, e, n, ns.margin)
                 elif ns.polygon:
                     xy = [[float(v) for v in pt.split(",")] for pt in ns.polygon.split(";") if pt.strip()]
@@ -836,7 +1244,7 @@ class Sentinel2Plugin(Plugin):
                                                                     ns.buffer, p, not ns.no_compute))
                 print(json.dumps(r, indent=1))
             elif ns.what == "compute":
-                print(json.dumps(run("Sentinel-2 compute", lambda p: project.compute(chunk, p)), indent=1))
+                print(json.dumps(run("Sentinel-2 compute", lambda p: project.compute(chunk, p, ns.min_clear)), indent=1))
             elif ns.what == "series":
                 rows = project.series(chunk, ns.monthly)
                 if not rows:
@@ -878,6 +1286,18 @@ class Sentinel2Plugin(Plugin):
                     print(f"no product {ns.id!r}: see ppg plugin sentinel2 list")
                     return 1
                 print(json.dumps({"removed": ns.id, "files_deleted": project.remove(chunk, ns.id)}))
+            elif ns.what == "remove-scene":
+                if ns.all == bool(ns.ids):
+                    print("give the acquisitions to remove from the cache, or --all (see ppg plugin sentinel2 list)")
+                    return 1
+                cached = project.cached_ids(chunk)
+                unknown = [i for i in ns.ids if i not in cached]
+                if unknown:
+                    print(f"not in the cache: {', '.join(unknown)} (in the cache: {', '.join(cached) or 'nothing'})")
+                    return 1
+                r = run("Sentinel-2 cache", lambda p: project.remove_scenes(chunk, None if ns.all else ns.ids,
+                                                                           ns.with_products, p))
+                print(json.dumps(r, indent=1))
         except (area_mod.NotPlaced, project.NoData, stac.CatalogError, ValueError, RuntimeError) as exc:
             print(f"error: {exc}")
             if doc is not None and getattr(doc, "path", None):

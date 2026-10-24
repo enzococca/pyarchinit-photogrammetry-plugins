@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QDate, QSize, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDateEdit, QDoubleSpinBox, QGridLayout, QGroupBox,
-                               QHeaderView, QLabel, QPushButton, QSizePolicy, QSlider, QSpinBox, QTableWidget,
+                               QHeaderView, QLabel, QMenu, QPushButton, QSizePolicy, QSlider, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
@@ -105,6 +105,9 @@ class Sentinel2Pane(QWidget):
     export_requested = Signal()
     qgis_requested = Signal()
     chart_requested = Signal()
+    scenes_remove_requested = Signal(list)  # acquisitions of the cache to take out of it
+    cache_clear_requested = Signal()  # every acquisition out of the cache
+    scene_show_requested = Signal(str)  # natural colour of an acquisition of the cache
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -197,8 +200,19 @@ class Sentinel2Pane(QWidget):
         self.b_compute = QPushButton(t("Ricalcola", "Compute again"))
         self.b_compute.setToolTip(t("Indici e serie dalle acquisizioni già lette, senza rete", "Indices and series "
                                     "from the acquisitions already read, without network"))
-        gr.addWidget(_buttons(self.b_fetch, self.b_compute), 1, 0, 1, 2)
+        self.b_uncache = QPushButton(t("Rimuovi dalla cache", "Remove from the cache"))
+        self.b_uncache.setToolTip(t("Le acquisizioni lette selezionate: i loro file vengono cancellati, restano nella "
+                                    "ricerca e si possono leggere di nuovo", "The acquisitions read that are selected: "
+                                    "their files are deleted, they stay in the search and can be read again"))
+        self.b_clear_cache = QPushButton(t("Svuota la cache...", "Empty the cache..."))
+        self.b_clear_cache.setToolTip(t("Tutte le acquisizioni lette tolte dalla cache del progetto",
+                                        "Every acquisition read taken out of the project's cache"))
+        gr.addWidget(_buttons(self.b_fetch, self.b_compute, self.b_uncache, self.b_clear_cache), 1, 0, 1, 2)
         lay.addWidget(g_read)
+        self.scenes.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.scenes.customContextMenuRequested.connect(self._scenes_context)
+        self.scenes.itemDoubleClicked.connect(self._scene_double)
+        self.scenes.itemSelectionChanged.connect(self._enable)
 
         self.chart = ChartLabel()
         lay.addWidget(self.chart)
@@ -287,6 +301,8 @@ class Sentinel2Pane(QWidget):
         self.b_fetch.clicked.connect(lambda: self.fetch_requested.emit(self.selected_scenes(),
                                                                        self.s_clear.value() / 100.0))
         self.b_compute.clicked.connect(self.compute_requested)
+        self.b_uncache.clicked.connect(lambda: self.scenes_remove_requested.emit(self.selected_cached()))
+        self.b_clear_cache.clicked.connect(self.cache_clear_requested)
         self.b_overlay.clicked.connect(lambda: self.overlay_requested.emit(self.view_params()))
         self.b_hide.clicked.connect(self.hide_requested)
         self.s_opacity.valueChanged.connect(lambda v: self.opacity_changed.emit(v / 100.0))
@@ -332,6 +348,45 @@ class Sentinel2Pane(QWidget):
         rows = sorted({i.row() for i in self.scenes.selectionModel().selectedRows()}) if self.scenes.selectionModel() else []
         return [str(self.scenes.item(r, 0).data(Qt.ItemDataRole.UserRole)) for r in rows]
 
+    def _status_of(self) -> dict:
+        return {r.get("id"): r.get("status") for r in (getattr(self, "_state", {}) or {}).get("scenes") or []}
+
+    def selected_cached(self) -> list[str]:
+        """The acquisitions selected in the table that are in the cache."""
+        status = self._status_of()
+        return [i for i in self.selected_scenes() if status.get(i) == "cached"]
+
+    def scenes_menu(self, row: int) -> QMenu:
+        """The context menu of the table of the acquisitions (``row`` under the mouse, -1 for none):
+        natural colour of a cached one, the selected ones out of the cache, the whole cache emptied."""
+        menu = QMenu(self)
+        status = self._status_of()
+        under = str(self.scenes.item(row, 0).data(Qt.ItemDataRole.UserRole)) if row >= 0 and self.scenes.item(row, 0) else None
+        busy = getattr(self, "_busy", False)
+        a = menu.addAction(t("Mostra (colori naturali)", "Show (natural colour)"))
+        a.setEnabled(under is not None and status.get(under) == "cached")
+        a.triggered.connect(lambda: self.scene_show_requested.emit(under))
+        chosen = self.selected_cached()
+        if under is not None and status.get(under) == "cached" and under not in chosen:
+            chosen = [under]
+        a = menu.addAction(t("Rimuovi dalla cache ({0})", "Remove from the cache ({0})").format(len(chosen)))
+        a.setEnabled(bool(chosen) and not busy)
+        a.triggered.connect(lambda: self.scenes_remove_requested.emit(list(chosen)))
+        menu.addSeparator()
+        a = menu.addAction(t("Svuota la cache...", "Empty the cache..."))
+        a.setEnabled(any(s == "cached" for s in status.values()) and not busy)
+        a.triggered.connect(self.cache_clear_requested)
+        return menu
+
+    def _scenes_context(self, pos) -> None:
+        index = self.scenes.indexAt(pos)
+        self.scenes_menu(index.row() if index.isValid() else -1).exec(self.scenes.viewport().mapToGlobal(pos))
+
+    def _scene_double(self, item) -> None:
+        acq = str(self.scenes.item(item.row(), 0).data(Qt.ItemDataRole.UserRole))
+        if self._status_of().get(acq) == "cached":
+            self.scene_show_requested.emit(acq)
+
     def view_params(self) -> dict:
         return {"index": str(self.c_index.currentData() or "NDVI"), "period": str(self.c_period.currentData() or "all"),
                 "palette": str(self.c_palette.currentData() or "rdylgn"), "opacity": self.s_opacity.value() / 100.0}
@@ -370,8 +425,11 @@ class Sentinel2Pane(QWidget):
         self.c_palette.setEnabled(not rgb)
         self.b_cropmarks.setEnabled(not busy and not rgb and bool(ds))
         self.b_composite.setEnabled(not busy and not rgb and bool(ds))
+        any_cached = any(r.get("status") == "cached" for r in st.get("scenes") or [])
         self.b_fetch.setEnabled(not busy and bool(st.get("scenes")))
-        self.b_compute.setEnabled(not busy and any(r.get("status") == "cached" for r in st.get("scenes") or []))
+        self.b_compute.setEnabled(not busy and any_cached)
+        self.b_uncache.setEnabled(not busy and bool(self.selected_cached()))
+        self.b_clear_cache.setEnabled(not busy and any_cached)
         self.b_overlay.setEnabled(bool(ds))
         self.b_export.setEnabled(not busy and bool(ds))
         self.b_qgis.setEnabled(any(e.get("chunk_file") for e in self.entries))
@@ -458,7 +516,9 @@ class Sentinel2Pane(QWidget):
         for e in self.entries:
             r = self.products.rowCount()
             self.products.insertRow(r)
-            for c, text in enumerate([product_name(e), str(len(e.get("dates") or [])), e.get("made", "")]):
+            missing = e.get("missing") or []
+            name = product_name(e) + (t(" (date non più in cache)", " (dates no longer cached)") if missing else "")
+            for c, text in enumerate([name, str(len(e.get("dates") or [])), e.get("made", "")]):
                 it = QTableWidgetItem(text)
                 if c == 0:
                     it.setData(Qt.ItemDataRole.UserRole, e.get("id"))
@@ -468,6 +528,9 @@ class Sentinel2Pane(QWidget):
                         tip += "\n" + t("{0:.1f}% dell'area sotto -2, {1:.1f}% sopra 2",
                                         "{0:.1f}% of the area under -2, {1:.1f}% over 2").format(stats["low"] * 100,
                                                                                                stats["high"] * 100)
+                    if missing:
+                        tip += "\n" + t("Fatto anche da acquisizioni non più in cache: {0}",
+                                        "Made also from acquisitions no longer in the cache: {0}").format(", ".join(missing))
                     it.setToolTip(tip)
                 self.products.setItem(r, c, it)
             if e.get("id") == selected:

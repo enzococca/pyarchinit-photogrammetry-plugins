@@ -31,6 +31,13 @@ fields show them: two satellites pass every five days, year after year.
   read is cached in the project: **a second look needs no network**. With the window of a site of
   a few hundred metres, an acquisition is about 16 MB to download (the COGs are read by internal
   tiles of 1024 pixels) and about 10 seconds; the cache keeps about 100 KB of it.
+* **The cache**: the acquisitions read can be taken out of it - those selected in the table of the
+  pane (*Remove from the cache*, also in its context menu) or all of them (*Empty the cache...*),
+  after a question. Their files are deleted, they stay in the search as *to read* and the next
+  *Read and compute* reads them again; indices and series are computed again from the others. When
+  composites or crop-mark maps were made from them, the question asks whether to remove those too
+  or to keep them: kept, they are marked *dates no longer cached* (they are what was computed then,
+  but the cache cannot make them again), and the mark goes when the acquisitions are read again.
 * **The indices** of every clear date: NDVI = (B08 - B04) / (B08 + B04), vigour of the vegetation
   (10 m); NDRE = (B8A - B05) / (B8A + B05), chlorophyll (red edge, 20 m); NDMI = (B8A - B11) /
   (B8A + B11), water in the leaves (20 m). Clear cells only; one GeoTIFF per index with a band per
@@ -46,7 +53,9 @@ fields show them: two satellites pass every five days, year after year.
   the robust spread of what is left (1.4826 times the median absolute deviation): a z-score, near
   0 over even fields, under -2 where the vegetation is weaker than around it (walls, roads,
   compacted ground) and over 2 where it is greener (ditches, pits). The marks are lines a few
-  pixels wide.
+  pixels wide. They read as an index does, in the pane and in QGIS alike: red-yellow-green from
+  -3 (red, weaker vegetation) to 3 (green, greener); the legend under the view names the two ends
+  of whatever palette is chosen.
 * **On the view**: an index of a date or a period, natural colour (B04, B03, B02) of a date, a
   composite or a crop-mark map over the orthomosaic or the DEM of the chunk, with the palettes of
   the program's vegetation indices (red-yellow-green, greys, viridis, turbo) or a diverging one,
@@ -61,6 +70,12 @@ fields show them: two satellites pass every five days, year after year.
   has the series (CSV) and the stack (GeoTIFF).
 * The **Sentinel-2** pane of the project dock does it all, in the background with the progress
   bar (cancel stops the readings under way); *Plugin > Sentinel-2* has the main actions.
+* **In the project's tree** (program 1.3.4 or later): a *Sentinel-2* node under every chunk the
+  plugin worked on, with the acquisitions read (date and clear part of the area), the indices by
+  date, the series, the composites and the crop-mark maps. A double click shows one over the view
+  (natural colour for an acquisition, the index of a date, a product; the chart for the series) and
+  the pane follows; the context menu has *Show*, *Hide*, *Export...*, *Open in QGIS*, *Remove* and,
+  for the acquisitions, *Remove from the cache*. With program 1.3.3 the pane does the same.
 
 ```bash
 pip install "ppg-sentinel2 @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/sentinel2"
@@ -71,14 +86,21 @@ ppg plugin sentinel2 cropmarks scavo.ppg --index NDVI --period 2022-summer --bac
 ppg plugin sentinel2 composite scavo.ppg --index NDMI --period 2022-06
 ppg plugin sentinel2 list scavo.ppg
 ppg plugin sentinel2 export scavo.ppg cartella_export/
+ppg plugin sentinel2 remove-scene scavo.ppg 20220614_S2B      # out of the cache (read again by fetch)
+ppg plugin sentinel2 remove-scene scavo.ppg --all --with-products
 # a box of longitudes and latitudes instead of the footprint of the DEM (here a public site)
 ppg plugin sentinel2 search scavo.ppg --bbox -1.8334,51.1744,-1.8191,51.1834 --margin 0
 ```
 
 `fetch --scenes ID,ID` reads only some acquisitions (their ids are in `search` and `list`),
 `--clear 4,5,6,7` keeps the unclassified pixels too, `--buffer` sets the metres masked around
-clouds and shadows; `compute` recomputes indices and series from the cache, with no network.
-`--catalog URL` searches another STAC API (`--client stdlib|pystac` chooses the client).
+clouds and shadows; `compute` recomputes indices and series from the cache, with no network
+(`--min-clear` changes the least clear part of the area and saves it, as *Compute again* does with
+the value of the pane). `remove-scene ID [ID...]` or `--all` takes acquisitions out of the cache:
+the products made from them stay, marked, unless `--with-products`. `--bbox` takes
+`west,south,east,north` also with a negative first number, as `--bbox=...` or as four numbers;
+`--polygon` a polygon in the chunk's coordinates (`"x,y;x,y;x,y"`). `--catalog URL` searches
+another STAC API (`--client stdlib|pystac` chooses the client).
 
 The numbers of the COGs become reflectance with the scale and offset of the catalog: from the
 processing baseline 04.00 (January 2022) ESA adds 1000 to the L2A numbers, which the offset of
