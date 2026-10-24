@@ -3,7 +3,7 @@
 *[English](README.md)*
 
 Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.3.2 o successiva): i filtri di [MeshLab](https://www.meshlab.net) sul modello del chunk, con
+(1.3.3 o successiva): i filtri di [MeshLab](https://www.meshlab.net) sul modello del chunk, con
 [pymeshlab](https://github.com/cnr-isti-vclab/PyMeshLab) (Visual Computing Lab, ISTI-CNR). Ogni
 risultato è una **nuova versione del modello**: quella di prima resta tra le versioni del chunk
 (*Versioni* nell'area di lavoro), per confrontarle o per tornare indietro.

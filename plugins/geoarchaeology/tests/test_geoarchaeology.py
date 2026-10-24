@@ -754,9 +754,11 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         rasters, vectors = plugin._qgis_entries()
         assert len(rasters) == 7 and {v["table"] for v in vectors} == {"sondaggi", "sezioni"}
         plugin.deactivate()
+        plugin.context.release()  # as the program's plugin manager does
         assert w.left_tabs.indexOf(pane) < 0 and not any(p == plugin._qgis_entries for p in w.qgis_providers)
-        assert plugin not in w._geoarchaeology_instances and overlay.BOREHOLES_LAYER not in w.ortho_view.layers
-        assert overlay.SECTIONS_LAYER not in w.ortho_view.layers
+        assert overlay.BOREHOLES_LAYER not in w.ortho_view.layers and overlay.SECTIONS_LAYER not in w.ortho_view.layers
+        w.refresh_all()  # no longer told
+        assert overlay.BOREHOLES_LAYER not in w.ortho_view.layers
     finally:
         w.setWindowModified(False)
         w.close()

@@ -300,6 +300,7 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
         assert plugin.overlay.item is None
         pane = plugin.pane
         plugin.deactivate()
+        plugin.context.release()  # as the program's plugin manager does
         assert w.left_tabs.indexOf(pane) < 0
         # enabled again (the program makes a new instance): the new pane follows the project
         again = GeophysicsPlugin()
@@ -309,10 +310,10 @@ def test_the_pane_and_the_overlay_in_the_window(tmp_path, monkeypatch):
             g2.name = "Area 2"
             grids.save_grid(ch, g2)
             w.refresh_all()
-            assert again.pane.table.rowCount() == 2 and w._geophysics_instances == [again]
+            assert again.pane.table.rowCount() == 2
         finally:
             again.deactivate()
-        assert w._geophysics_instances == []
+            again.context.release()
     finally:
         w.setWindowModified(False)
         w.close()

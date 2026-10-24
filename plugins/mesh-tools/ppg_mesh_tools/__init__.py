@@ -69,6 +69,8 @@ class MeshToolsPlugin(Plugin):
                                  "install, status")
         if context.window is not None:
             self._install_pane(context.window)
+            # the pane follows the active model: another project, chunk, processing step or undo
+            context.on_refresh(self.refresh_pane)
 
     def deactivate(self) -> None:
         signal, self._busy_signal = self._busy_signal, None
@@ -78,8 +80,6 @@ class MeshToolsPlugin(Plugin):
             except (RuntimeError, TypeError):  # already gone with the window
                 pass
         window = self.context.window if self.context else None
-        if window is not None and getattr(window, "_mesh_tools_plugin", None) is self:
-            window._mesh_tools_plugin = None
         tabs = getattr(window, "left_tabs", None) if window is not None else None
         if tabs is not None and self.pane is not None:
             k = tabs.indexOf(self.pane)
@@ -106,18 +106,6 @@ class MeshToolsPlugin(Plugin):
         if signal is not None:  # one step at a time: the buttons wait while the program works
             signal.connect(self._busy)
             self._busy_signal = signal
-        window._mesh_tools_plugin = self  # the plugin the hook below refreshes (None once it goes away)
-        original = getattr(window, "refresh_all", None)
-        if original is not None and not getattr(window, "_mesh_tools_hooked", False):
-            def refresh_all(*args, _orig=original, _window=window, **kwargs):  # another project, chunk or model
-                result = _orig(*args, **kwargs)
-                plugin = getattr(_window, "_mesh_tools_plugin", None)
-                if plugin is not None:
-                    plugin.refresh_pane()
-                return result
-
-            window.refresh_all = refresh_all
-            window._mesh_tools_hooked = True
         self.refresh_pane()
 
     def _busy(self, busy: bool) -> None:

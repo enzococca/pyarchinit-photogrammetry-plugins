@@ -7,6 +7,6 @@
       "description": "Serie temporali Sentinel-2 sul rilievo per cercare i crop mark: scene da un catalogo STAC (Earth Search), la finestra dell'area letta dai COG pubblici, nuvole e ombre mascherate, NDVI, NDRE e NDMI per data, serie mensile e grafico, compositi stagionali, mappe dei crop mark sull'ortofoto, GeoTIFF e CSV, in QGIS"
     }
   },
-  "min_app": "1.3.2",
+  "min_app": "1.3.3",
   "requires": []
 }

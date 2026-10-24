@@ -7,6 +7,6 @@
       "description": "I filtri di MeshLab sul modello con pymeshlab: decimazione con le quadriche che conserva la texture, rimaglia isotropa, levigatura Taubin e HC con i bordi fermi, chiusura dei buchi, riparazione della topologia, misure (area, volume, parti, bordi); ogni risultato una nuova versione del modello; pymeshlab in un processo separato, installato dal plugin se manca"
     }
   },
-  "min_app": "1.3.2",
+  "min_app": "1.3.3",
   "requires": []
 }

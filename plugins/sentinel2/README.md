@@ -3,7 +3,7 @@
 *[Italiano](README.it.md)*
 
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.3.2 or later): Sentinel-2 time series over the area of a survey, to look for **crop marks**.
+(1.3.3 or later): Sentinel-2 time series over the area of a survey, to look for **crop marks**.
 Buried walls and ditches show through the crop above them in some weeks of some years: over a
 wall the roots find less water and the crop is weaker (a lower index, a *negative* mark), over a
 ditch they find more and the crop is greener (a *positive* mark). At 10 m a pixel, Sentinel-2 sees

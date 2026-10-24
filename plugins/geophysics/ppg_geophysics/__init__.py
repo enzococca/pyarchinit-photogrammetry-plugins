@@ -16,9 +16,10 @@ same ground.
 The grids live in ``<chunk data>/geophysics/<id>.tif`` and in ``chunk.meta["geophysics"]``; the
 anomalies are polygons drawn with the program's drawing, lent to the plugin (*Disegna anomalia*),
 kept in ``chunk.meta["geophysics"]["anomalies"]`` and shown in the layer *Anomalie geofisiche* of
-the raster view. The window's parts it uses come from the plugin API of the program 1.3.2
-(``request_polygon``, ``on_raster_loaded``, ``show_frame``, ``mark_modified``): the anomalies and
-the grid shown are drawn again on every raster the view shows.
+the raster view. The window's parts it uses come from the plugin API of the program
+(``request_polygon``, ``on_raster_loaded``, ``show_frame``, ``mark_modified`` since 1.3.2,
+``on_refresh`` since 1.3.3): the anomalies and the grid shown are drawn again on every raster the
+view shows, the pane follows the active chunk.
 """
 from __future__ import annotations
 
@@ -71,6 +72,8 @@ class GeophysicsPlugin(Plugin):
             # the layer of the anomalies and the grid shown go with the raster the view leaves:
             # drawn again on the next one
             context.on_raster_loaded(self._raster_loaded)
+            # the pane follows the active chunk: another project, chunk, processing step or undo
+            context.on_refresh(self.refresh_pane)
 
     def deactivate(self) -> None:
         self.hide_overlay()
@@ -84,10 +87,6 @@ class GeophysicsPlugin(Plugin):
 
             if view is not None and LAYER in getattr(view, "layers", {}):
                 view.remove_layer(LAYER)  # the anomalies stay in the project
-        if window is not None:
-            instances = getattr(window, "_geophysics_instances", [])
-            if self in instances:
-                instances.remove(self)
         if window is not None and self.pane is not None:
             tabs = getattr(window, "left_tabs", None)
             if tabs is not None:
@@ -131,25 +130,6 @@ class GeophysicsPlugin(Plugin):
             self._watch.changed.connect(self._anomalies_changed)
             self._draw_anomalies()
         self.refresh_pane()
-        # The pane follows the project: another project opened, another chunk made active, a step
-        # of the program or an undo that changed the chunk all end with the window's refresh_all,
-        # and the plugin API has no notice of those (on_raster_loaded tells the raster the view
-        # shows, not the project: the layer and the grid are drawn there, see _raster_loaded). So
-        # refresh_all is wrapped, once per window, for every active instance of the plugin (the
-        # program makes a new instance each time the plugin is enabled again).
-        instances = getattr(window, "_geophysics_instances", None)
-        if instances is None:
-            window._geophysics_instances = instances = []
-            original = getattr(window, "refresh_all", None)
-            if original is not None:
-                def refresh_all(*args, _orig=original, **kwargs):
-                    result = _orig(*args, **kwargs)
-                    for plugin in list(window._geophysics_instances):
-                        plugin.refresh_pane()
-                    return result
-
-                window.refresh_all = refresh_all
-        instances.append(self)
 
     def refresh_pane(self) -> None:
         from .grids import entries

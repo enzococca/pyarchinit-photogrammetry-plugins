@@ -3,7 +3,7 @@
 *[English](README.md)*
 
 Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.3.2 o successiva): serie temporali Sentinel-2 sull'area di un rilievo, per cercare i **crop
+(1.3.3 o successiva): serie temporali Sentinel-2 sull'area di un rilievo, per cercare i **crop
 mark**. Muri e fossati sepolti si vedono nella coltura che li copre in alcune settimane di alcuni
 anni: sopra un muro le radici trovano meno acqua e la coltura è più debole (un indice più basso,
 un segno *negativo*), sopra un fossato ne trovano di più e la coltura è più verde (un segno

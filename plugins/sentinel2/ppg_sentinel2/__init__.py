@@ -66,6 +66,8 @@ class Sentinel2Plugin(Plugin):
         if window is not None:
             self._install_pane(window)
             context.on_raster_loaded(self._raster_loaded)
+            # the pane follows the project and its active chunk: another project, chunk, step or undo
+            context.on_refresh(self.refresh_pane)
 
     def deactivate(self) -> None:
         self.hide_overlay()
@@ -82,9 +84,6 @@ class Sentinel2Plugin(Plugin):
                         tabs.removeTab(k)
             providers = getattr(window, "qgis_providers", [])
             window.qgis_providers = [p for p in providers if p != self._qgis_entries]
-            hooks = getattr(window, "_sentinel2_refresh", None)
-            if hooks is not None and self.refresh_pane in hooks:
-                hooks.remove(self.refresh_pane)
         self.pane = None
 
     def _install_pane(self, window) -> None:
@@ -127,27 +126,6 @@ class Sentinel2Plugin(Plugin):
             runner.busy_changed.connect(p.set_busy)
             self.context.contributions.connections.append((runner.busy_changed, p.set_busy))
         self.refresh_pane()
-        # the pane follows the project and its active chunk: after every refresh of the window. One
-        # wrapper per window, calling the panes of the instances active now (a plugin disabled and
-        # enabled again, two instances in a test, leave no stale or missing call behind)
-        hooks = getattr(window, "_sentinel2_refresh", None)
-        if hooks is None:
-            hooks = window._sentinel2_refresh = []
-            original = getattr(window, "refresh_all", None)
-            if original is not None:
-                log = self.context.log
-
-                def refresh_all(*args, _orig=original, **kwargs):
-                    result = _orig(*args, **kwargs)
-                    for hook in list(window._sentinel2_refresh):
-                        try:
-                            hook()
-                        except Exception as exc:  # noqa: BLE001 - the window refreshes anyway
-                            log.warning("Sentinel-2 pane: %s", exc)
-                    return result
-
-                window.refresh_all = refresh_all
-        hooks.append(self.refresh_pane)
 
     # ------------------------------------------------------------------ helpers
     def _chunk(self):

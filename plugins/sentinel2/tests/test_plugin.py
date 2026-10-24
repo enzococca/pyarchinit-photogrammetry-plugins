@@ -221,10 +221,10 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         assert p.scenes.rowCount() == 6 and p.d_start.date() == QDate(2023, 1, 1)  # the chunk's own search again
         assert not errors, errors
         plugin.deactivate()
-        assert w_.left_tabs.indexOf(p) < 0 and plugin._qgis_entries not in w_.qgis_providers
-        assert w_._sentinel2_refresh == [] and "Sentinel-2: area" not in w_.ortho_view.layers
-        w_.refresh_all()  # the wrapper stays, with nothing to call; the view drawn again without the area
         plugin.context.release()  # what the program does after deactivate()
+        assert w_.left_tabs.indexOf(p) < 0 and plugin._qgis_entries not in w_.qgis_providers
+        assert "Sentinel-2: area" not in w_.ortho_view.layers
+        w_.refresh_all()  # nothing of the plugin told any more; the view drawn again without the area
         assert "Sentinel-2: area" not in w_.ortho_view.layers
     finally:
         w_.setWindowModified(False)

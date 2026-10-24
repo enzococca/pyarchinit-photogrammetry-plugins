@@ -16,8 +16,8 @@ photogrammetric survey (the DEM and the orthomosaic of the chunk).
   PROJECT ...``.
 
 Everything lives in ``chunk.meta["geoarchaeology"]`` and in ``<chunk data>/geoarchaeology/``. The
-window's parts it uses come from the plugin API of the program 1.3.2 (``request_line``,
-``on_raster_loaded``, ``mark_modified``).
+window's parts it uses come from the plugin API of the program (``request_line``,
+``on_raster_loaded``, ``mark_modified`` since 1.3.2, ``on_refresh`` since 1.3.3).
 """
 from __future__ import annotations
 
@@ -75,6 +75,8 @@ class GeoarchaeologyPlugin(Plugin):
             self._install_pane(context.window)
             # the layers of the plugin go with the raster the view leaves: drawn again on the next one
             context.on_raster_loaded(self._raster_loaded)
+            # the pane follows the active chunk: another project, chunk, processing step or undo
+            context.on_refresh(self.refresh_pane)
 
     def deactivate(self) -> None:
         self.hide_overlay()
@@ -85,9 +87,6 @@ class GeoarchaeologyPlugin(Plugin):
                 if tabs is not None and tabs.indexOf(self.pane) >= 0:
                     tabs.removeTab(tabs.indexOf(self.pane))
             window.qgis_providers = [p for p in getattr(window, "qgis_providers", []) if p != self._qgis_entries]
-            instances = getattr(window, "_geoarchaeology_instances", [])
-            if self in instances:
-                instances.remove(self)
             from .overlay import BOREHOLES_LAYER, SECTIONS_LAYER
 
             view = getattr(window, "ortho_view", None)
@@ -134,24 +133,6 @@ class GeoarchaeologyPlugin(Plugin):
         p.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         self.refresh_pane()
-        # The pane follows the project: another project opened, another chunk made active, a step
-        # of the program or an undo that changed the chunk all end with the window's refresh_all,
-        # and the plugin API has no notice of those (on_raster_loaded tells the raster the view
-        # shows, not the project: its layers are drawn there, see _raster_loaded). So refresh_all
-        # is wrapped, once per window, for every active instance of the plugin.
-        instances = getattr(window, "_geoarchaeology_instances", None)
-        if instances is None:
-            window._geoarchaeology_instances = instances = []
-            original = getattr(window, "refresh_all", None)
-            if original is not None:
-                def refresh_all(*args, _orig=original, **kwargs):
-                    result = _orig(*args, **kwargs)
-                    for plugin in list(window._geoarchaeology_instances):
-                        plugin.refresh_pane()
-                    return result
-
-                window.refresh_all = refresh_all
-        instances.append(self)
 
     def refresh_pane(self) -> None:
         from . import boreholes as bh
