@@ -31,6 +31,7 @@ def fake(monkeypatch):
     monkeypatch.setattr(environment, "worker_python", lambda: Path(sys.executable))
     monkeypatch.setattr(environment, "where", lambda: ("local", "0.0-fake"))
     monkeypatch.setattr(environment, "unsupported", lambda *a: None)
+    monkeypatch.setattr(environment, "known_usable", lambda: True)
     monkeypatch.delenv("PPG_MESH_TOOLS_FAKE", raising=False)
     return monkeypatch
 
@@ -293,19 +294,37 @@ def test_where_meshlab_runs(tmp_path, monkeypatch):
         environment.worker_python()
 
 
+ANSWER_OK = {"python": "3.12.12", "pymeshlab": "2099.1", "numpy": "2.0", "missing_filters": [], "reads_ply": True,
+             "warning": ""}
+ANSWER_NO_GL = {"python": "3.12.12", "pymeshlab": "2099.1", "numpy": "2.0", "missing_filters": [], "reads_ply": False,
+                "error": "Unknown format for load: ply",
+                "warning": "Warning:\nUnable to load the following plugins:\n\n\t/x/libio_base.so: Cannot load library "
+                           "/x/libio_base.so: (libOpenGL.so.0: cannot open shared object file: No such file or directory)"}
+
+
+def _fake_python(path: Path) -> Path:
+    """A "Python" that answers the check of pymeshlab with the JSON of the file ``$ANSWER``."""
+    path.write_text('#!/bin/sh\ncat "$ANSWER"\n')
+    path.chmod(0o755)
+    return path
+
+
 @pytest.mark.skipif(os.name == "nt", reason="the fake uv is a shell script")
 def test_the_environment_installed_with_uv(tmp_path, monkeypatch):
     from pyarchinit_photogrammetry.core.progress import Progress
 
     monkeypatch.setattr(environment, "local_available", lambda: False)
     monkeypatch.setattr(environment, "unsupported", lambda *a: None)
+    monkeypatch.setattr(environment, "_CHECKED", {})
+    answer = tmp_path / "answer.json"
+    answer.write_text(json.dumps(ANSWER_OK))
+    monkeypatch.setenv("ANSWER", str(answer))
     uv = tmp_path / "uv"
     uv.write_text("#!/bin/sh\n"
                   "if [ \"$1\" = venv ]; then\n"
                   "  for last; do :; done\n"
                   "  mkdir -p \"$last/bin\"\n"
-                  "  printf '#!/bin/sh\\necho {\\\\\"pymeshlab\\\\\": \\\\\"2099.1\\\\\", \\\\\"numpy\\\\\": \\\\\"2.0\\\\\"}\\n' "
-                  "> \"$last/bin/python\"\n"
+                  "  printf '#!/bin/sh\\ncat \"$ANSWER\"\\n' > \"$last/bin/python\"\n"
                   "  chmod +x \"$last/bin/python\"\n"
                   "  echo \"Creating virtual environment at: $last\"\n"
                   "  exit 0\n"
@@ -319,7 +338,7 @@ def test_the_environment_installed_with_uv(tmp_path, monkeypatch):
     seen = []
     assert environment.install(Progress(lambda f, m: seen.append((f, m))), uv=uv) == env
     assert environment.installed_info()["pymeshlab"] == "2099.1" and environment.is_installed()
-    assert environment.worker_python() == environment.env_python(env)
+    assert environment.worker_python() == environment.env_python(env) and environment.known_usable()
     assert environment.where() == ("environment", "2099.1") and "2099.1" in environment.status_text()
     assert seen[-1] == (1.0, "MeshLab pronto (pymeshlab 2099.1)")
     fractions = [f for f, _m in seen]
@@ -329,6 +348,67 @@ def test_the_environment_installed_with_uv(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="Installazione non riuscita"):
         environment.install(uv=uv)
     assert not environment.is_installed()
+    # installed on a Linux without libOpenGL: the environment stays, the installation says what to add
+    monkeypatch.delenv("FAIL")
+    answer.write_text(json.dumps(ANSWER_NO_GL))
+    monkeypatch.setattr(environment, "is_linux", lambda: True)
+    with pytest.raises(environment.MeshLabMissing, match="sudo apt install libopengl0"):
+        environment.install(uv=uv)
+    assert environment.is_installed() and not environment.known_usable()
+    assert "libglvnd-opengl" in environment.status_text()  # the pane says it too
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake Python is a shell script")
+def test_the_check_says_what_linux_lacks(tmp_path, monkeypatch):
+    monkeypatch.setattr(environment, "_CHECKED", {})
+    monkeypatch.setattr(environment, "unsupported", lambda *a: None)
+    python = _fake_python(tmp_path / "python")
+    monkeypatch.setattr(environment, "_python", lambda: python)
+    answer = tmp_path / "answer.json"
+    monkeypatch.setenv("ANSWER", str(answer))
+    answer.write_text(json.dumps(ANSWER_NO_GL))
+    assert environment.probe(python)["error"] == "Unknown format for load: ply"
+    assert environment.missing_libraries(ANSWER_NO_GL["warning"]) == ["libOpenGL.so.0"]
+    text = environment.problem_text(ANSWER_NO_GL, linux=True)
+    assert "non legge i modelli" in text and "(libOpenGL.so.0)" in text
+    assert "«sudo apt install libopengl0»" in text and "«sudo dnf install libglvnd-opengl»" in text
+    nothing_named = environment.problem_text({**ANSWER_NO_GL, "warning": ""}, linux=True)
+    assert "sudo apt install libopengl0 libgl1" in nothing_named and "libglvnd-opengl libglvnd-glx" in nothing_named
+    assert environment.problem_text(ANSWER_NO_GL, linux=False).endswith("Librerie mancanti: libOpenGL.so.0.")
+    lacking = {**ANSWER_OK, "missing_filters": ["meshing_close_holes"]}
+    assert not environment.usable(lacking) and "meshing_close_holes" in environment.problem_text(lacking, linux=False)
+    # before an operation: a failure stops it with the hint, and is looked at again the next time
+    calls = []
+    real = environment.probe
+    monkeypatch.setattr(environment, "probe", lambda p: calls.append(p) or real(p))
+    monkeypatch.setattr(environment, "is_linux", lambda: True)
+    with pytest.raises(environment.MeshLabMissing, match="sudo apt install libopengl0"):
+        environment.worker_python()
+    answer.write_text(json.dumps(ANSWER_OK))  # libopengl0 installed meanwhile
+    assert environment.worker_python() == python and environment.worker_python() == python
+    assert len(calls) == 2 and environment.known_usable()  # a working Python is checked once a session
+    # a Python that dies before answering
+    (tmp_path / "broken").write_text("#!/bin/sh\necho 'Segmentation fault' >&2\nexit 139\n")
+    (tmp_path / "broken").chmod(0o755)
+    broken = environment.probe(tmp_path / "broken")
+    assert "codice 139" in broken["error"] and "Segmentation fault" in broken["warning"]
+    assert not environment.usable(broken)
+
+
+def test_meshlab_without_its_modules_says_what_to_install(tmp_path, fake):
+    fake.setenv("PPG_MESH_TOOLS_FAKE", "nomodules")
+    fake.setattr(environment, "is_linux", lambda: True)
+    with pytest.raises(runner.WorkerError) as err:
+        runner.run(_job(tmp_path, grid_mesh(), [{"op": "decimate", "target_faces": 500}]), tmp_path)
+    assert "Unknown format for load: ply" in str(err.value)
+    assert "(libOpenGL.so.0)" in str(err.value) and "sudo apt install libopengl0" in str(err.value)
+    assert "libOpenGL.so.0: cannot open shared object file" in err.value.details  # MeshLab's lines in the details
+    fake.setattr(environment, "is_linux", lambda: False)
+    assert runner.hint_for("Unknown format for load: ply") == ("MeshLab non ha caricato i suoi moduli: installa di "
+                                                               "nuovo MeshLab (pymeshlab).")
+    fake.setattr(environment, "is_linux", lambda: True)  # a filter of a module that did not load
+    assert "libopengl0 libgl1" in runner.hint_for("'MeshSet' object has no attribute 'meshing_close_holes'")
+    assert "Ripara la topologia" in runner.hint_for("Mesh has some not 2-manifold edges")
 
 
 def test_command(tmp_path, fake, capsys):
@@ -443,6 +523,16 @@ def test_the_pane_in_the_window(tmp_path, fake):
         # repair: said, no version
         assert said == ["Nessun buco fino a 30 lati da chiudere: il modello non è cambiato.",
                         "Nessun difetto di topologia: il modello non è cambiato."]
+        # the first operation of a session checks MeshLab first: on a Linux without libOpenGL it stops there
+        fake.setattr(environment, "known_usable", lambda: False)
+        fake.setattr(environment, "check", lambda progress=None, **k: ANSWER_NO_GL)
+        fake.setattr(environment, "is_linux", lambda: True)
+        said.clear()
+        pane.buttons["decimate"].click()
+        w.runner.wait()
+        qapp.processEvents()
+        assert len(said) == 1 and "sudo apt install libopengl0" in said[0]
+        assert versions.active_info(ch, "model")["name"] == "MeshLab: levigatura Taubin, 10 passi"  # nothing ran
         # MeshLab missing: the installation is offered first; refused, nothing runs
         fake.setattr(environment, "where", lambda: (None, ""))
         offers = []

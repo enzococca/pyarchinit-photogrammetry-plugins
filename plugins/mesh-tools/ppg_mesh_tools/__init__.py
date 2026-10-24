@@ -191,13 +191,26 @@ class MeshToolsPlugin(Plugin):
         return chunk
 
     def _ready(self, then) -> bool:
-        """MeshLab can run now; when it is not installed, offer to install it and ``then()`` after."""
+        """MeshLab can run now. When it is not installed, offer to install it and ``then()`` after; the
+        first time in a session, check in the background that it works (on Linux it can lack system
+        libraries: the message names them) and ``then()`` after."""
         problem = environment.unsupported()
         if problem:
             self._message("warning", problem)
             return False
         if environment.where()[0] is not None:
-            return True
+            if environment.known_usable() or self.context.window is None:
+                return True  # the command line: the operation checks it by itself (worker_python)
+
+            def checked(info):
+                self.refresh_pane()
+                if environment.usable(info):
+                    then()
+                else:
+                    self._message("warning", environment.problem_text(info))
+
+            self.context.run(t("Prova di MeshLab", "Trying MeshLab"), lambda p: environment.check(p), checked)
+            return False
         window = self.context.window
         if window is None:
             print(environment.status_text())
@@ -528,9 +541,15 @@ class MeshToolsPlugin(Plugin):
         sub.add_parser("status", help="where MeshLab runs")
         args, project, label = self._project_args(args)
         ns = parser.parse_args(args)
-        if ns.what == "status":
+        if ns.what == "status":  # where MeshLab runs, and whether it works there
+            if environment.where()[0] is not None:
+                try:
+                    environment.check(again=True)
+                except environment.MeshLabMissing as exc:
+                    print(exc)
+                    return 1
             print(environment.status_text())
-            return 0 if environment.where()[0] else 1
+            return 0 if environment.known_usable() else 1
         if ns.what == "install":
             kind, _version = environment.where()
             if kind is not None and not ns.force:

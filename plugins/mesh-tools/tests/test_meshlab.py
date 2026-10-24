@@ -1,30 +1,43 @@
 """The operations with MeshLab itself (the real worker and pymeshlab), on synthetic models:
 the texture coordinates kept by the decimation, the measures of a sphere, the borders kept by the
 smoothing, the hole closed, a non-manifold model repaired, the edge of the remeshing, a filter that
-refuses a model. Skipped when pymeshlab is not installed for this Python."""
+refuses a model. Skipped when pymeshlab is not installed for this Python, or (not on CI, where it is
+a failure) when it does not work there - on a Linux without libOpenGL, say: the reason says why."""
 from __future__ import annotations
 
 import importlib.util
-import subprocess
+import os
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from mesh_samples import SCALE, grid_mesh, project, sphere_mesh
-from ppg_mesh_tools import model, runner
+from ppg_mesh_tools import environment, model, runner
 from pyarchinit_photogrammetry.core import versions
 from pyarchinit_photogrammetry.io.mesh_ply import MeshData, read_mesh
 
 
-def _pymeshlab_works() -> bool:
+def _why_not() -> str | None:
+    """Why the tests of MeshLab cannot run here, None when they can (the plugin's own check)."""
     if importlib.util.find_spec("pymeshlab") is None:
-        return False
-    out = subprocess.run([sys.executable, "-c", "import pymeshlab"], capture_output=True, close_fds=False, timeout=300)
-    return out.returncode == 0
+        return "pymeshlab is not installed for this Python"
+    info = environment.probe(Path(sys.executable))
+    if environment.usable(info) or os.environ.get("CI"):  # on CI a MeshLab that does not work is a failure
+        return None
+    return environment.problem_text(info)
 
 
-pytestmark = pytest.mark.skipif(not _pymeshlab_works(), reason="pymeshlab is not installed for this Python")
+WHY_NOT = _why_not()
+pytestmark = pytest.mark.skipif(WHY_NOT is not None, reason=WHY_NOT or "")
+
+
+def test_meshlab_works_here():
+    """pymeshlab imports, reads a PLY and has every filter of the worker: else the message of the plugin
+    (on Linux: the system packages to install) is the reason of the failure."""
+    info = environment.probe(Path(sys.executable))
+    assert environment.usable(info), environment.problem_text(info)
 
 
 def _non_manifold_sphere():

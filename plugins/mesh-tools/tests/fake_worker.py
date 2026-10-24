@@ -7,7 +7,8 @@ where pymeshlab is not installed. It runs as the real one does, in a process of 
 ``PPG_MESH_TOOLS_FAKE`` changes what it does: ``fail`` (the operation raises MeshLab's message
 on a non-manifold mesh), ``crash`` (the process dies as MeshLab does on a segmentation fault),
 ``sleep`` (the operation takes a minute: for cancelling), ``noise`` (MeshLab's own lines, also
-unfinished ones, among the messages).
+unfinished ones, among the messages), ``nomodules`` (pymeshlab on a Linux without libOpenGL: its
+plugins did not load, it prints which library each lacked and knows no file format).
 
 The operations, simple and predictable: decimate keeps the first faces; remesh reverses the order
 of the vertices and drops the texture; smooth raises every vertex by 0.01; close_holes adds a face
@@ -26,6 +27,11 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
+# what pymeshlab prints at its import when MeshLab's plugins do not load (Linux without libOpenGL)
+NO_MODULES = ("Warning:\nUnable to load the following plugins:\n\n\t/site-packages/pymeshlab/lib/plugins/libio_base.so: "
+              "/site-packages/pymeshlab/lib/plugins/libio_base.so does not seem to be a Qt Plugin.\n\nCannot load library "
+              "/site-packages/pymeshlab/lib/plugins/libio_base.so: (libOpenGL.so.0: cannot open shared object file: No such "
+              "file or directory)")
 _spec = importlib.util.spec_from_file_location("ppg_mesh_tools_worker", HERE.parent / "ppg_mesh_tools" / "worker.py")
 worker = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(worker)
@@ -40,6 +46,9 @@ class Fake:
         self.MeshData, self.read_mesh, self.write_mesh = MeshData, read_mesh, write_mesh
         self.mesh = None
         self.mode = os.environ.get("PPG_MESH_TOOLS_FAKE", "")
+        if self.mode == "nomodules":
+            sys.stderr.write(NO_MODULES + "\n")
+            sys.stderr.flush()
 
     def version(self) -> str:
         return "0.0-fake"
@@ -47,6 +56,8 @@ class Fake:
     def load(self, path):
         from pyarchinit_photogrammetry.io.mesh_ply import PlyMesh
 
+        if self.mode == "nomodules":
+            raise RuntimeError("Unknown format for load: ply")
         self.mesh = self.read_mesh(path)
         faces = PlyMesh(path)._faces
         self.marked = int((faces["quality"] > 0.5).sum()) if "quality" in faces.dtype.names else None

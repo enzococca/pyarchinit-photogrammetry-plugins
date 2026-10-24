@@ -73,6 +73,18 @@ errore); annullare lo ferma subito, un crash lascia il modello com'era e lo dice
 pymeshlab ha versioni per macOS (Apple Silicon e Intel), Linux (x86_64 e aarch64) e Windows x64;
 non per Windows su ARM, dove il plugin dice che non è disponibile.
 
+Su Linux pymeshlab ha bisogno di librerie di sistema che le sue wheel non portano con sé,
+soprattutto `libOpenGL.so.0`: senza, si importa ma non legge nessun file. Installale una volta:
+
+```bash
+sudo apt install libopengl0 libgl1                 # Debian, Ubuntu
+sudo dnf install libglvnd-opengl libglvnd-glx      # Fedora
+```
+
+Prima della prima operazione di una sessione il plugin prova MeshLab su un triangolo (`ppg plugin
+mesh-tools status` fa lo stesso) e, se manca qualcosa, dice quale libreria e quale pacchetto la
+contiene.
+
 ## Installazione
 
 * Nel programma: *Strumenti > Plugin...*, `mesh-tools`, *Installa / aggiorna*, *Riavvia ora*.

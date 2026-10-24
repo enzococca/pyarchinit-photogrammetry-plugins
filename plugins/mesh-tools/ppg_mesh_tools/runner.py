@@ -55,9 +55,20 @@ def phase_text(msg: dict) -> str:
     return "MeshLab: " + t(*PHASES.get(phase, (phase, phase)))
 
 
-def hint_for(text: str) -> str:
-    """A suggestion for a failure the user can do something about."""
+def hint_for(text: str, output=()) -> str:
+    """A suggestion for a failure the user can do something about. ``output``: MeshLab's own lines
+    (pymeshlab prints there the modules it could not load, with the library each one lacked)."""
     low = text.lower()
+    said = "\n".join(output)
+    libs = environment.missing_libraries(text + "\n" + said)
+    no_modules = bool(libs) or "unknown format for load" in low or (
+        "has no attribute" in low and any(k in low for k in ("'meshing_", "'apply_", "'get_", "'compute_")))
+    if no_modules:  # MeshLab's plugins did not load: on Linux a system library is missing
+        if environment.is_linux():
+            return environment.linux_hint(libs)
+        return t("MeshLab non ha caricato i suoi moduli{0}: installa di nuovo MeshLab (pymeshlab).",
+                 "MeshLab did not load its modules{0}: install MeshLab (pymeshlab) again.").format(
+            f" ({', '.join(libs)})" if libs else "")
     if "manifold" in low:
         return t("Il modello ha spigoli o vertici non-manifold: usa prima «Ripara la topologia».",
                  "The model has non-manifold edges or vertices: use 'Repair the topology' first.")
@@ -151,9 +162,9 @@ def run(job: dict, folder: Path, progress=None, python: Path | None = None, scri
         text = str(error.get("error") or "").strip()
         where = title(str(error["op"])) if error.get("op") else t(*PHASES.get(str(error.get("phase")), ("MeshLab", "MeshLab")))
         message = f"MeshLab ({where}): {text}"
-        hint = hint_for(text)
-        raise WorkerError(message + ("\n" + hint if hint else ""), error.get("phase"), error.get("op"), output,
-                          str(error.get("traceback") or ""))
+        hint = hint_for(text, output)
+        details = str(error.get("traceback") or "") + ("\n" + "\n".join(output) if output else "")
+        raise WorkerError(message + ("\n" + hint if hint else ""), error.get("phase"), error.get("op"), output, details)
     if result is None or code != 0:
         raise WorkerError(_crash_text(code, last), (last or {}).get("phase"), (last or {}).get("op"), output,
                           "\n".join(output))

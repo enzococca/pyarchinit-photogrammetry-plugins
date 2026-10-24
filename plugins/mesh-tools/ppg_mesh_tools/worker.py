@@ -72,8 +72,15 @@ class PyMeshLab:
     name = "pymeshlab"
 
     def __init__(self):
-        import pymeshlab
+        import contextlib
+        import io
 
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):  # the modules that did not load, printed at the import
+            import pymeshlab
+        if said.getvalue().strip():  # on stderr, beside the messages: the plugin names what is missing
+            sys.stderr.write(said.getvalue().strip() + "\n")
+            sys.stderr.flush()
         self.ml = pymeshlab
         self.ms = pymeshlab.MeshSet()
         # an absolute length: PureValue since pymeshlab 2023.12, AbsoluteValue before
