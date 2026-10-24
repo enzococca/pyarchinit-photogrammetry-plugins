@@ -24,7 +24,7 @@
     },
     {
       "name": "geophysics",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "title": "Geophysics",
       "description": "Geophysical grids - magnetometry, resistivity, GPR time slices, EM - imported from Surfer GRD, XYZ/CSV, GeoTIFF or folders of slices, georeferenced with the markers or the pegs' coordinates, filtered (despike, destripe, high-pass, clip, fill), overlaid on the orthomosaic and the DEM with opacity, exported as GeoTIFF, Surfer GRD and GeoPackage, into the QGIS project",
       "i18n": {
@@ -39,8 +39,8 @@
       "api": 1,
       "min_app": "1.3.3",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geophysics-v0.1.2/ppg_geophysics-0.1.2-py3-none-any.whl",
-      "sha256": "d29685244eeb35827a5887b89e4605b1334896fb96835cefd7c6b5cc406cb8c5"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geophysics-v0.1.3/ppg_geophysics-0.1.3-py3-none-any.whl",
+      "sha256": "4d0b5bdff4c1115bbdeecdc3d894d3bedd2706d184bec5b9657fdbfa1e0e4af0"
     },
     {
       "name": "gis-archive",
