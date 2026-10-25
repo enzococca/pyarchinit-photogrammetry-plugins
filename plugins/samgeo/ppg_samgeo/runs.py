@@ -63,12 +63,13 @@ def identity(chunk, text: str) -> tuple[str, str]:
     """A name for a new run of ``text`` (``pietre``, ``pietre 2``...) and its id for the files
     (``pietre``, ``pietre_2``), neither used by the runs of the chunk nor by a file there."""
     base = " ".join(text.split())[:60] or "samgeo"
+    base_id = slug(base)  # cut to its length before the number: a long text keeps the number
     names = {r.get("name") for r in records(chunk)}
     ids = {r.get("id") for r in records(chunk)}
     k = 1
     while True:
         name = base if k == 1 else f"{base} {k}"
-        rid = slug(name)
+        rid = base_id if k == 1 else f"{base_id}_{k}"
         taken = rid in ids or (folder(chunk) / f"{rid}.gpkg").exists() or (folder(chunk) / f"{rid}_mask.tif").exists()
         if name not in names and not taken:
             return name, rid

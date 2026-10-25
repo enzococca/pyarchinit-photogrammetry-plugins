@@ -247,6 +247,12 @@ def test_a_run_its_files_and_its_record(tmp_path, fake):
     second = _a_run(ch, resolution=0.02)
     assert (second["id"], second["name"], second["resolution"]) == ("pietre_2", "pietre 2", 0.02)
     assert second["colour"] != run["colour"]
+    # a long text: its id cut to a length, the number of a second run kept
+    long_text = "a long description of archaeological stones"
+    first_id = runs.identity(ch, long_text)[1]
+    runs.add(ch, {"id": first_id, "name": long_text})
+    assert runs.identity(ch, long_text) == (f"{long_text} 2", f"{first_id}_2") and len(first_id) == 40
+    runs.remove(ch, first_id)
     doc.save()
     import pyarchinit_photogrammetry as ppg
 
