@@ -13,7 +13,8 @@ Each message, both ways, is an 8-byte big-endian length followed by a pickle. Th
   "segmenter": "facebook/sam2.1-hiera-small", "device": None, "token": None}`` ->
   ``{"engine", "device", "versions"}``: the models loaded (downloaded from Hugging Face the first
   time) on the device asked, else CUDA, Apple's GPU (MPS, with ``PYTORCH_ENABLE_MPS_FALLBACK`` for
-  the few operations Metal lacks) or the processor;
+  the few operations Metal lacks) or the processor. While the weights are downloaded, before the
+  reply, ``{"download": True, "done", "total"}`` (bytes) comes every second;
 * ``{"op": "segment", "image": uint8 (H, W, 3), "prompt": "stone. brick.", "box_threshold": 0.3,
   "text_threshold": 0.25}`` -> ``{"shape": (H, W), "objects": [...]}``, each object
   ``{"box": [x0, y0, x1, y1], "score", "quality", "label", "mask": (row, col, height, width,
@@ -29,7 +30,7 @@ object is Grounding DINO's confidence in its box, ``quality`` SAM's own estimate
 ``PPG_SAMGEO_FAKE`` makes a fake engine without PyTorch, for the tests: the bright blobs of the
 image (grey above 200) are the objects, the score is their brightness. ``slow`` sleeps on every
 image, ``fail`` answers with an error, ``crash`` closes the process, ``xet`` fails to load the models
-unless ``HF_HUB_DISABLE_XET`` is set (a download broken off).
+unless ``HF_HUB_DISABLE_XET`` is set (a download broken off), ``download`` reports a download first.
 """
 from __future__ import annotations
 
@@ -37,6 +38,7 @@ import os
 import pickle
 import struct
 import sys
+import threading
 import time
 import traceback
 
@@ -51,11 +53,87 @@ def _read(stream):
     return pickle.loads(stream.read(n))
 
 
+_WRITING = threading.Lock()  # the replies and the reports of the download thread, one message at a time
+
+
 def _write(stream, obj) -> None:
     data = pickle.dumps(obj, protocol=4)
-    stream.write(struct.pack(">Q", len(data)))
-    stream.write(data)
-    stream.flush()
+    with _WRITING:
+        stream.write(struct.pack(">Q", len(data)))
+        stream.write(data)
+        stream.flush()
+
+
+def _files_size(folder: str) -> int:
+    """The bytes of the files under ``folder`` (the links of the snapshots left out)."""
+    total = 0
+    for root, _dirs, files in os.walk(folder):
+        for f in files:
+            path = os.path.join(root, f)
+            if not os.path.islink(path):
+                try:
+                    total += os.path.getsize(path)
+                except OSError:
+                    pass
+    return total
+
+
+def download(repos, report, token=None, every: float = 1.0) -> None:
+    """The files the models need, ``repos`` as ``(repo id, file patterns)``, downloaded from Hugging Face
+    into its cache before the models are loaded, ``report(done, total)`` in bytes every ``every`` seconds
+    while they come: the bytes huggingface_hub counts as they arrive, or those written into the cache
+    (Xet writes a file in blocks of 100 MB). What is in the cache already is not downloaded again;
+    without the internet, or with a huggingface_hub that cannot say the sizes beforehand, nothing is
+    reported and the models find their files as usual."""
+    from huggingface_hub import snapshot_download
+    from tqdm.auto import tqdm
+
+    extra = {"token": token} if token else {}
+    try:
+        planned = [(repo, patterns, snapshot_download(repo, allow_patterns=patterns, dry_run=True, **extra))
+                   for repo, patterns in repos]
+    except Exception:  # noqa: BLE001 - offline, or an older huggingface_hub without dry_run
+        return
+    total = sum(int(f.file_size or 0) for _r, _p, files in planned for f in files if f.will_download)
+    if total <= 0:
+        return  # all in the cache
+    folders = {os.path.dirname(os.path.dirname(os.path.dirname(files[0].local_path)))
+               for _r, _p, files in planned if files}
+    before = sum(_files_size(f) for f in folders)
+    arrived = [0]  # the bytes of huggingface_hub's bar "Downloading bytes"
+
+    class Bytes(tqdm):
+        def __init__(self, *args, **kwargs):
+            counted = kwargs.get("unit") == "B" and str(kwargs.get("desc") or "").startswith("Downloading")
+            kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
+            self.ppg_counted = counted
+
+        def update(self, n=1):
+            if self.ppg_counted and n:
+                arrived[0] += n
+            return super().update(n)
+
+    stop = threading.Event()
+
+    def watch():
+        while not stop.wait(every):
+            written = sum(_files_size(f) for f in folders) - before
+            report(min(total, max(0, arrived[0], written)), total)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    report(0, total)
+    try:
+        for repo, patterns, _files in planned:
+            try:
+                snapshot_download(repo, allow_patterns=patterns, tqdm_class=Bytes, **extra)
+            except TypeError:  # a huggingface_hub without tqdm_class: the cache alone says how far
+                snapshot_download(repo, allow_patterns=patterns, **extra)
+    finally:
+        stop.set()
+        watcher.join(timeout=every + 1)
+    report(total, total)
 
 
 def _cut(mask):
@@ -114,7 +192,15 @@ class Open:
 
     engine = "open"
 
-    def __init__(self, detector: str, segmenter: str, device: str | None, token: str | None):
+    def __init__(self, detector: str, segmenter: str, device: str | None, token: str | None, report=None):
+        try:  # the weights downloaded first, saying how far they are
+            from sam2.build_sam import HF_MODEL_ID_TO_FILENAMES
+
+            checkpoint = HF_MODEL_ID_TO_FILENAMES[segmenter][1]
+        except (ImportError, KeyError):
+            checkpoint = "*.pt"
+        if report is not None:
+            download([(detector, ["*.json", "*.txt", "model.safetensors"]), (segmenter, [checkpoint])], report, token)
         import torch
         import transformers
         from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -199,12 +285,18 @@ def main() -> int:
                 if fake == "xet" and not os.environ.get("HF_HUB_DISABLE_XET"):  # a download broken off
                     raise RuntimeError("Task error: File reconstruction error: CAS Client Error: Format error: I/O "
                                        "error: error decoding response body")
+                def report(done, total):
+                    _write(proto_out, {"download": True, "done": int(done), "total": int(total)})
+
+                if fake == "download":  # what a first run says while the weights come
+                    for k in range(4):
+                        report(k * 250_000_000, 1_000_000_000)
                 if fake:
                     engine = Fake(fake)
                 elif req.get("engine", "open") == "open":
                     engine = Open(req.get("detector") or "IDEA-Research/grounding-dino-base",
                                   req.get("segmenter") or "facebook/sam2.1-hiera-small", req.get("device"),
-                                  req.get("token"))
+                                  req.get("token"), report)
                 else:
                     raise ValueError(f"unknown engine {req.get('engine')!r}")
                 reply = {"engine": engine.engine, "device": engine.device, "versions": engine.versions}
