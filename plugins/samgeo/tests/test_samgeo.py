@@ -198,6 +198,19 @@ def test_failures_of_the_worker_and_cancelling(tmp_path, fake):
         client.Segmenter(engine="nothing")
 
 
+def test_a_download_broken_off_is_tried_again_without_xet(fake):
+    """Hugging Face's Xet storage broke off the weights (seen on a Mac): the worker is started again once with
+    plain HTTP downloads, and when that fails too the message says to try again."""
+    fake.setenv("PPG_SAMGEO_FAKE", "xet")
+    with client.Segmenter() as seg:
+        assert seg.engine == "fake"
+    assert client.download_failed("CAS Client Error: Format error: I/O error: error decoding response body")
+    assert "riprova" in client._hint("File reconstruction error") and not client.download_failed("unknown engine")
+    fake.setattr(client, "download_failed", lambda text: False)  # no second try: the error with its hint
+    with pytest.raises(client.WorkerError, match="CAS Client Error"):
+        client.Segmenter()
+
+
 def test_a_worker_that_cannot_start(tmp_path, monkeypatch):
     monkeypatch.setattr(environment, "where", lambda feature="samgeo": None)
     with pytest.raises(environment.EnvironmentMissing, match="ppg plugin samgeo install"):
