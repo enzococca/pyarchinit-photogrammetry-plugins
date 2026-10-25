@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-samgeo"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: what a text names (stones, walls, bricks, tiles...) found in the orthomosaic with Grounding DINO and SAM 2.1, as proposals to check, then stratigraphic units, classes of the dense cloud or a GeoPackage"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# PyTorch, transformers and sam2 run in an environment of their own, installed by the plugin with uv:
+# nothing beyond the program here
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/samgeo"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+samgeo = "ppg_samgeo:SamgeoPlugin"
+
+[tool.setuptools]
+packages = ["ppg_samgeo"]

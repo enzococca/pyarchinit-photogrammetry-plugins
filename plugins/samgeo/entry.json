@@ -1,0 +1,12 @@
+{
+  "title": "Samgeo",
+  "description": "What you write found in the orthomosaic or in another raster of the chunk - stones, walls, bricks, roof tiles, pottery sherds, trees, people - with Grounding DINO and SAM 2.1 (the recipe of segment-geospatial's LangSAM), in an environment of their own installed by the plugin: a layer of proposals to check on the view, then stratigraphic units, classes of the dense cloud or a GeoPackage, the mask for the raster calculator",
+  "i18n": {
+    "it": {
+      "title": "Samgeo",
+      "description": "Quello che scrivi trovato nell'ortofoto o in un altro raster del chunk - pietre, muri, mattoni, tegole e coppi, frammenti ceramici, alberi, persone - con Grounding DINO e SAM 2.1 (la ricetta di LangSAM di segment-geospatial), in un ambiente loro installato dal plugin: un layer di proposte da controllare nella vista, poi US, classi della nuvola densa o un GeoPackage, la maschera per il calcolatore raster"
+    }
+  },
+  "min_app": "1.5.0",
+  "requires": []
+}
