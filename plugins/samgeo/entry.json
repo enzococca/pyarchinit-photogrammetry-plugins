@@ -7,6 +7,6 @@
       "description": "Quello che scrivi trovato nell'ortofoto con Grounding DINO + SAM 2.1 o SAM 3 opzionale (richiede accesso Hugging Face approvato da Meta): proposte da controllare nella vista, poi US, classi della nuvola densa, un GeoPackage o una maschera"
     }
   },
-  "min_app": "1.5.0",
+  "min_app": "1.5.1",
   "requires": []
 }

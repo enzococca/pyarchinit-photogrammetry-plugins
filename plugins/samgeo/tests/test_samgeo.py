@@ -567,6 +567,10 @@ def test_the_pane_and_the_layer_of_a_run(window, monkeypatch, tmp_path):
 @pytest.mark.skipif(not _program_has("add_units"), reason="context.add_units comes with the program 1.5.0")
 def test_proposals_become_units(window, monkeypatch):
     from pyarchinit_photogrammetry.gui import dialogs
+    from ppg_samgeo import identity
+
+    # Keep coverage of the conversion dialog used by hosts without the new bulk-identity API.
+    monkeypatch.setattr(identity, "convert_dialog", lambda *args: False)
 
     w, plugin, ch, qapp, errors = window
     v = w.ortho_view

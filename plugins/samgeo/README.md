@@ -3,7 +3,7 @@
 *[Italiano](README.it.md)*
 
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.5.0 or later): what you write - *pietre*, *mattoni*, *tegole e coppi*, or any English phrase -
+(1.5.1 or later): what you write - *pietre*, *mattoni*, *tegole e coppi*, or any English phrase -
 found in the orthomosaic of the chunk, or in any raster the raster calculator reads. The default engine follows the
 recipe of `LangSAM` in [segment-geospatial](https://github.com/opengeos/segment-geospatial)
 (Qiusheng Wu): [Grounding DINO](https://huggingface.co/IDEA-Research/grounding-dino-base) (IDEA
@@ -148,3 +148,14 @@ PyTorch.
 
 Plugin license: GPL-2.0-or-later. Dependencies retain their own licenses; SAM 3 and its weights
 are subject to Meta's SAM license, separate from GPL (see above). Author: Enzo Cocca.
+
+## Identifiers, groups and survey units (app 1.5.1)
+
+Samgeo 0.3 integrates the app 1.5.1 identification preview: selected proposals or all proposals not
+yet converted can receive progressive identifiers, progressive names or a shared group name while
+retaining distinct identifiers and geometries. Occupied identifiers are skipped. Choose UT and a
+project for survey records: their TOC group is Topographic units, with the assigned group name.
+For existing units use Layers > Identify / group...; enable freehand/lasso selection in the Select
+menu. Shift/Cmd adds and Alt subtracts. One Edit > Undo restores the bulk edit. UT use ut_table and
+are excluded from US publication. Older hosts retain the original conversion dialog; update the
+application for the new workflow.

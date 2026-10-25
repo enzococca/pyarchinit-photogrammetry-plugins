@@ -3,7 +3,7 @@
 *[English](README.md)*
 
 Un plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.5.0 o successivo): quello che scrivi - *pietre*, *mattoni*, *tegole e coppi*, o una frase
+(1.5.1 o successivo): quello che scrivi - *pietre*, *mattoni*, *tegole e coppi*, o una frase
 qualsiasi in inglese - trovato nell'ortofoto del chunk, o in un raster qualsiasi che il calcolatore
 raster legge. Il motore predefinito segue la ricetta di `LangSAM` di
 [segment-geospatial](https://github.com/opengeos/segment-geospatial) (Qiusheng Wu):
@@ -152,3 +152,14 @@ finto del worker (le macchie chiare di un'ortofoto sintetica sono le pietre), se
 
 Licenza del plugin: GPL-2.0-or-later. Le dipendenze mantengono le proprie licenze; SAM 3 e i suoi
 pesi sono soggetti alla licenza SAM di Meta, distinta dalla GPL (vedi sopra). Autore: Enzo Cocca.
+
+## Identificativi, gruppi e ricognizione (app 1.5.1)
+
+Samgeo 0.3 integra l'anteprima di numerazione e nomi dell'app 1.5.1: le proposte selezionate o tutte
+quelle non ancora convertite possono ricevere numeri progressivi, nomi progressivi oppure un nome
+comune di gruppo, mantenendo identificativi e geometrie distinti. I numeri già occupati vengono saltati.
+Scegli UT per la ricognizione e indica il progetto: la TOC usa “Unità topografiche”, con il gruppo
+quando assegnato. Per le unità già create usa Layer > Identifica / raggruppa...; dal menu Seleziona
+attiva la selezione a mano libera (lazo). Maiusc/Cmd aggiunge, Alt sottrae. La modifica in blocco
+si annulla con una sola voce di Modifica > Annulla. Le UT usano ut_table e non sono pubblicate come US.
+Sulle app precedenti resta il dialogo originale; il nuovo flusso richiede l'aggiornamento dell'app.

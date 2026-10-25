@@ -239,7 +239,8 @@ def unit_rows(run: dict, rows) -> tuple[list, list[dict]]:
     """The polygons and the attributes of the units made of ``rows`` (objects of the run): the text and
     the score of each kept with the unit."""
     geoms = [g for g, _a in rows]
-    attrs = [{"samgeo_prompt": run.get("text", ""), "samgeo_score": round(float(a.get("score") or 0.0), 3)}
+    attrs = [{"samgeo_prompt": run.get("text", ""), "samgeo_score": round(float(a.get("score") or 0.0), 3),
+              "samgeo_run": run.get("id", ""), "samgeo_proposal": int(a.get("n") or 0)}
              for _g, a in rows]
     return geoms, attrs
 

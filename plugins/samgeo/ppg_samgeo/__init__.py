@@ -26,7 +26,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import model_text, number, plural, t
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 TEXT_THRESHOLD = 0.25  # how sure Grounding DINO must be that a phrase names a box
 
 
@@ -406,6 +406,10 @@ class SamgeoPlugin(Plugin):
 
     def units_dialog(self, run_id: str) -> None:
         """The proposals of a run (all, or those selected on the view) into stratigraphic units."""
+        from .identity import convert_dialog
+
+        if convert_dialog(self, run_id):
+            return
         from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
 
         from .runs import features
@@ -452,7 +456,7 @@ class SamgeoPlugin(Plugin):
             rows = left
         self.make_units(run_id, rows, v["tipo"])
 
-    def make_units(self, run_id: str, rows, tipo: str = "US") -> int:
+    def make_units(self, run_id: str, rows, tipo: str = "US", attributes=None) -> int:
         from .runs import layer, unit_rows
         from .view import draw
 
@@ -460,6 +464,11 @@ class SamgeoPlugin(Plugin):
         if run is None or not rows:
             return 0
         geoms, attrs = unit_rows(run, rows)
+        if attributes is not None:
+            if len(attributes) != len(attrs):
+                raise ValueError("One identity is required per proposal")
+            attrs = [{**old, **new} for old, new in zip(attrs, attributes)]
+        kinds = ", ".join(sorted({a.get("tipo") or tipo for a in attrs}))
         made = self.context.add_units(geoms, tipo=tipo, attributes=attrs, chunk=chunk)
         run["units"] = int(run.get("units") or 0) + made
         run["units_made"] = sorted(set(run.get("units_made") or []) | {int(a.get("n") or 0) for _g, a in rows})
@@ -469,7 +478,7 @@ class SamgeoPlugin(Plugin):
         self._changed(chunk)
         self._status(t("{0} US da «{1}» (tipo {2}); il layer «{3}» resta tra le ricerche",
                        "{0} units from '{1}' (kind {2}); the layer '{3}' stays among the runs").format(
-            made, run["name"], tipo, layer(run)))
+            made, run["name"], kinds, layer(run)))
         return made
 
     def classes(self, run_id: str) -> None:
