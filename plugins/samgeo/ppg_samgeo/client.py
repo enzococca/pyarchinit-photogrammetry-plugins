@@ -128,6 +128,9 @@ class Segmenter:
         while True:
             try:
                 reply = self._replies.get(timeout=POLL)
+                if reply is not None and reply.get("download"):  # the weights coming: how far, then wait on
+                    progress(min(1.0, reply["done"] / max(reply["total"], 1)), download_text(reply["done"], reply["total"]))
+                    continue
                 break
             except queue.Empty:
                 try:
@@ -185,6 +188,15 @@ class Segmenter:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def download_text(done: int, total: int) -> str:
+    """How far the download of the weights is, in a line of the progress window."""
+    from .texts import number
+
+    pct = 100.0 * done / max(total, 1)
+    return t("Download dei modelli: {0}% ({1} di {2} MB)", "Downloading the models: {0}% ({1} of {2} MB)").format(
+        number(pct, 0), number(done / 1e6, 0), number(total / 1e6, 0))
 
 
 DOWNLOAD_ERRORS = ("cas client", "file reconstruction", "error decoding response body", "xet", "connection reset",

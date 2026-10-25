@@ -211,6 +211,70 @@ def test_a_download_broken_off_is_tried_again_without_xet(fake):
         client.Segmenter()
 
 
+def test_the_download_of_the_weights_in_the_progress_window(fake):
+    """The first run downloads the weights: how far, in percent and megabytes, before the models answer."""
+    fake.setenv("PPG_SAMGEO_FAKE", "download")
+    said = []
+    with client.Segmenter(progress=lambda fraction, message: said.append((round(fraction, 2), message))) as seg:
+        assert seg.engine == "fake"
+    assert [f for f, _m in said] == [0.0, 0.25, 0.5, 0.75]
+    assert said[1][1] == "Download dei modelli: 25% (250 di 1.000 MB)"
+
+
+def test_the_files_downloaded_and_reported(tmp_path, monkeypatch):
+    """The worker's download: the sizes from a dry run, the bytes arriving in the cache reported while they
+    come, nothing when all is in the cache already or the sizes cannot be known."""
+    import types
+
+    sys.path.insert(0, str(Path(client.WORKER).parent))
+    try:
+        import worker
+    finally:
+        sys.path.pop(0)
+    blobs = tmp_path / "models--a--b" / "blobs"
+    blobs.mkdir(parents=True)
+    local = tmp_path / "models--a--b" / "snapshots" / "c" / "w.pt"
+
+    class Bar:  # tqdm, as huggingface_hub's bars are made
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def update(self, n=1):
+            pass
+
+    def snapshot_download(repo, allow_patterns=None, dry_run=False, tqdm_class=None, **kw):
+        if dry_run:
+            return [types.SimpleNamespace(file_size=3000, will_download=cached is None, local_path=str(local))]
+        bar = tqdm_class(unit="B", desc="Downloading bytes", total=0) if counted else None
+        for k in range(3):
+            if bar is not None:  # the bytes as they arrive
+                bar.update(1000)
+            else:  # the bytes written into the cache
+                with open(blobs / "w.incomplete", "ab") as f:
+                    f.write(b"x" * 1000)
+            time.sleep(0.3)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=snapshot_download))
+    monkeypatch.setitem(sys.modules, "tqdm.auto", types.SimpleNamespace(tqdm=Bar))
+    cached = None
+    for counted in (True, False):
+        said = []
+        worker.download([("a/b", ["*.pt"])], lambda done, total: said.append((done, total)), every=0.1)
+        assert said[0] == (0, 3000) and said[-1] == (3000, 3000) and any(0 < d < 3000 for d, _t in said)
+        assert all(total == 3000 for _d, total in said) and [d for d, _t in said] == sorted(d for d, _t in said)
+    said.clear()
+    cached = True
+    worker.download([("a/b", ["*.pt"])], lambda done, total: said.append((done, total)), every=0.1)
+    assert said == []
+
+    def offline(*a, **kw):
+        raise OSError("offline")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(snapshot_download=offline))
+    worker.download([("a/b", ["*.pt"])], lambda done, total: said.append((done, total)), every=0.1)
+    assert said == []
+
+
 def test_a_worker_that_cannot_start(tmp_path, monkeypatch):
     monkeypatch.setattr(environment, "where", lambda feature="samgeo": None)
     with pytest.raises(environment.EnvironmentMissing, match="ppg plugin samgeo install"):
