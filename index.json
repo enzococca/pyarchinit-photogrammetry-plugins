@@ -23,6 +23,26 @@
       "sha256": "c06ccef304d5690b8066e9f2b0ee611faef8c86351d2571492c4b24ac04c328b"
     },
     {
+      "name": "geoai",
+      "version": "0.1.0",
+      "title": "GeoAI",
+      "description": "Learn RGB segmentation classes from reviewed unit drawings, validate on a separate area, apply models as proposals, then export or create units",
+      "i18n": {
+        "it": {
+          "title": "GeoAI",
+          "description": "Impara le classi dai disegni US verificati, valuta su un'area separata e applica i modelli come proposte da controllare, poi esportare o convertire in US"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/geoai",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.5.0",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geoai-v0.1.0/ppg_geoai-0.1.0-py3-none-any.whl",
+      "sha256": "76c63f9b751fab6e1303fd123cb3267f87f3f6d367ea1a4ac4fc26e603690fbc"
+    },
+    {
       "name": "geoarchaeology",
       "version": "0.1.4",
       "title": "Geoarchaeology",
