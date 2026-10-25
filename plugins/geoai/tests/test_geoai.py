@@ -153,11 +153,10 @@ def test_registration_without_loading_ml(tmp_path):
     assert "torch" not in sys.modules and "geoai" not in sys.modules
 
 
-def test_pane_preserves_class_mapping_and_resets_reviewed_area_on_chunk_change(sample, monkeypatch):
-    from PySide6.QtWidgets import QApplication
+def test_pane_preserves_class_mapping_and_resets_reviewed_area_on_chunk_change(sample, monkeypatch, qt_app):
     from ppg_geoai.pane import GeoaiPane
 
-    app = QApplication.instance() or QApplication([])
+    app = qt_app
     chunk = SimpleNamespace(meta={"drawings": {"units": sample[1]}})
     active = [chunk]
     plugin = SimpleNamespace(context=SimpleNamespace(window=SimpleNamespace(runner=None)), chunk=lambda: active[0])

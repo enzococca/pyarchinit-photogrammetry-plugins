@@ -25,13 +25,6 @@ def rasters(tmp_path):
     return files
 
 
-@pytest.fixture
-def qt_app():
-    from PySide6.QtWidgets import QApplication
-
-    return QApplication.instance() or QApplication([])
-
-
 def pane_for(chunk, rasters):
     from ppg_geoai.pane import GeoaiPane
 
