@@ -24,13 +24,13 @@
     },
     {
       "name": "geoai",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "title": "GeoAI",
-      "description": "Learn RGB segmentation classes from reviewed unit drawings, validate on a separate area, apply models as proposals, then export or create units",
+      "description": "Learn segmentation from reviewed unit drawings with RGB and optional DEM, multispectral or thermal bands; validate on a separate area and apply models as proposals to review, export or turn into units",
       "i18n": {
         "it": {
           "title": "GeoAI",
-          "description": "Impara le classi dai disegni US verificati, valuta su un'area separata e applica i modelli come proposte da controllare, poi esportare o convertire in US"
+          "description": "Impara dai disegni US verificati con RGB e bande opzionali DEM, multispettrali o termiche; valuta su un'area separata e applica i modelli come proposte da controllare, esportare o convertire in US"
         }
       },
       "author": "Enzo Cocca",
@@ -39,8 +39,8 @@
       "api": 1,
       "min_app": "1.5.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geoai-v0.1.0/ppg_geoai-0.1.0-py3-none-any.whl",
-      "sha256": "76c63f9b751fab6e1303fd123cb3267f87f3f6d367ea1a4ac4fc26e603690fbc"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geoai-v0.2.0/ppg_geoai-0.2.0-py3-none-any.whl",
+      "sha256": "ba27058bb813a943e4b3f0ce17a1b6f5a7ee19036334f17719469e55cb3ea1f1"
     },
     {
       "name": "geoarchaeology",
