@@ -124,13 +124,13 @@
     },
     {
       "name": "samgeo",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "title": "Samgeo",
-      "description": "What you write found in the orthomosaic or another raster - stones, walls, bricks, roof tiles, sherds, trees, people - with Grounding DINO and SAM 2.1 in an environment the plugin installs: proposals to check on the view, then stratigraphic units, classes of the dense cloud, a GeoPackage or a mask",
+      "description": "What you write found in the orthomosaic with Grounding DINO + SAM 2.1 or optional SAM 3 (requires Meta-approved Hugging Face access): proposals to check on the view, then stratigraphic units, classes of the dense cloud, a GeoPackage or a mask",
       "i18n": {
         "it": {
           "title": "Samgeo",
-          "description": "Quello che scrivi trovato nell'ortofoto o in un altro raster - pietre, muri, mattoni, tegole, frammenti, alberi, persone - con Grounding DINO e SAM 2.1 in un ambiente installato dal plugin: proposte da controllare nella vista, poi US, classi della nuvola densa, un GeoPackage o una maschera"
+          "description": "Quello che scrivi trovato nell'ortofoto con Grounding DINO + SAM 2.1 o SAM 3 opzionale (richiede accesso Hugging Face approvato da Meta): proposte da controllare nella vista, poi US, classi della nuvola densa, un GeoPackage o una maschera"
         }
       },
       "author": "Enzo Cocca",
@@ -139,8 +139,8 @@
       "api": 1,
       "min_app": "1.5.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/samgeo-v0.1.0/ppg_samgeo-0.1.0-py3-none-any.whl",
-      "sha256": "5523980065a384117c52d1e6936751326e6303b08ee7a542193ef0c9da92fe93"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/samgeo-v0.2.0/ppg_samgeo-0.2.0-py3-none-any.whl",
+      "sha256": "c11da805f091b32b9c12817111d2a307119aa681caaa6cc0f1c79816a5a45c3f"
     },
     {
       "name": "sentinel2",
