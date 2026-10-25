@@ -1,10 +1,10 @@
 {
   "title": "Samgeo",
-  "description": "What you write found in the orthomosaic or another raster - stones, walls, bricks, roof tiles, sherds, trees, people - with Grounding DINO and SAM 2.1 in an environment the plugin installs: proposals to check on the view, then stratigraphic units, classes of the dense cloud, a GeoPackage or a mask",
+  "description": "What you write found in the orthomosaic with Grounding DINO + SAM 2.1 or optional SAM 3 (requires Meta-approved Hugging Face access): proposals to check on the view, then stratigraphic units, classes of the dense cloud, a GeoPackage or a mask",
   "i18n": {
     "it": {
       "title": "Samgeo",
-      "description": "Quello che scrivi trovato nell'ortofoto o in un altro raster - pietre, muri, mattoni, tegole, frammenti, alberi, persone - con Grounding DINO e SAM 2.1 in un ambiente installato dal plugin: proposte da controllare nella vista, poi US, classi della nuvola densa, un GeoPackage o una maschera"
+      "description": "Quello che scrivi trovato nell'ortofoto con Grounding DINO + SAM 2.1 o SAM 3 opzionale (richiede accesso Hugging Face approvato da Meta): proposte da controllare nella vista, poi US, classi della nuvola densa, un GeoPackage o una maschera"
     }
   },
   "min_app": "1.5.0",

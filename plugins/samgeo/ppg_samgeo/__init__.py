@@ -26,7 +26,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import model_text, number, plural, t
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 TEXT_THRESHOLD = 0.25  # how sure Grounding DINO must be that a phrase names a box
 
 
@@ -50,8 +50,8 @@ class SamgeoPlugin(Plugin):
         context.add_action(t("Pannello Samgeo", "Samgeo pane"), self.show_pane,
                            tip=t("Cerca con un testo nell'ortofoto; le ricerche del chunk",
                                  "Look for a text in the orthomosaic; the runs of the chunk"))
-        context.add_action(t("Installa i modelli (PyTorch, Grounding DINO, SAM 2.1)...",
-                             "Install the models (PyTorch, Grounding DINO, SAM 2.1)..."), self.install_dialog,
+        context.add_action(t("Installa i modelli del motore selezionato...",
+                             "Install the selected engine models..."), self.install_dialog,
                            processing=True,
                            tip=t("Python 3.12 e PyTorch in un ambiente dei plugin AI, con uv (circa 2 GB)",
                                  "Python 3.12 and PyTorch in an environment of the AI plugins, with uv (about 2 GB)"))
@@ -82,6 +82,8 @@ class SamgeoPlugin(Plugin):
                 if layer(run) in getattr(view, "layers", {}):
                     view.remove_layer(layer(run))
         self._hooked = set()  # the callbacks of on_features_deleted: the context disconnects them
+        if self.pane is not None:
+            self.pane.e_token.clear()
         self.pane = None
 
     def _install_pane(self, window) -> None:
@@ -91,6 +93,7 @@ class SamgeoPlugin(Plugin):
         self.context.add_pane(self.pane, "Samgeo", "sam", area="right")
         self.pane.find_requested.connect(self.find)
         self.pane.install_requested.connect(self.install_dialog)
+        self.pane.engine_changed.connect(self.refresh_pane)
         self.pane.visibility_changed.connect(self.set_visible)
         self.pane.zoom_requested.connect(self.zoom)
         self.pane.units_requested.connect(self.units_dialog)
@@ -117,7 +120,8 @@ class SamgeoPlugin(Plugin):
 
         if self.pane is None:
             return
-        self.pane.set_status(environment.status_text(), can_install=environment.where() is None)
+        feature = "sam3" if self.pane.engine() == "sam3" else "samgeo"
+        self.pane.set_status(environment.status_text(feature), can_install=environment.where(feature) is None)
         chunk = self._chunk()
         self.pane.set_rasters([(r["name"], r["label"]) for r in self._rasters(chunk)])
         self.pane.set_runs(records(chunk))
@@ -229,52 +233,58 @@ class SamgeoPlugin(Plugin):
                 run["name"], gone, run["count"]))
 
     # ------------------------------------------------------------------ the environment
-    def _ready(self, then) -> bool:
-        """The models can run now. When they are not installed, offer to install them and ``then()``
-        after."""
-        if environment.where() is not None:
+    def _selected_feature(self) -> str:
+        return "sam3" if self.pane is not None and self.pane.engine() == "sam3" else "samgeo"
+
+    def _ready(self, then, feature: str = "samgeo") -> bool:
+        """Offer the installation of the selected engine, then resume the pending run."""
+        if environment.where(feature) is not None:
             return True
         window = self.context.window
         if window is None:
-            print(environment.status_text())
+            print(environment.status_text(feature))
             return False
         from pyarchinit_photogrammetry.gui import dialogs
 
-        text = t("PyTorch e i modelli non sono installati. Il plugin li installa in un ambiente dei plugin AI, separato "
-                 "dal programma e condiviso con geoai: Python 3.12 e PyTorch con uv, circa 2 GB e qualche minuto; i "
-                 "pesi di Grounding DINO e SAM 2.1 (circa 1 GB) si scaricano alla prima ricerca. Installarli ora?",
-                 "PyTorch and the models are not installed. The plugin installs them in an environment of the AI "
-                 "plugins, apart from the program and shared with geoai: Python 3.12 and PyTorch with uv, about 2 GB "
-                 "and a few minutes; the weights of Grounding DINO and SAM 2.1 (about 1 GB) are downloaded at the "
-                 "first run. Install them now?")
+        text = t("I pacchetti del motore scelto non sono installati. Il plugin li installa con uv in un ambiente "
+                 "dei plugin AI, separato dal programma. Il download può richiedere diversi GB e alcuni minuti. "
+                 "I pesi si scaricano alla prima ricerca. Installare i pacchetti ora?",
+                 "The selected engine's packages are not installed. The plugin installs them with uv in an AI "
+                 "plugins environment, apart from the program. The download may take several GB and a few "
+                 "minutes. Weights are downloaded on the first run. Install the packages now?")
+        if feature == "sam3":
+            from .access import notice
+
+            text = notice() + "\n\n" + text
         if dialogs.choice(window, "question", self.title, text, [t("Installa", "Install")]) != 0:
             return False
-        self._install(then)
+        self._install(then, feature)
         return False
 
     def install_dialog(self) -> None:
-        kind = environment.where()
+        feature = self._selected_feature()
+        kind = environment.where(feature)
         if kind == "local":
-            self._message("info", environment.status_text())
+            self._message("info", environment.status_text(feature))
             return
         if kind == "environment" and self.context.window is not None:
             from pyarchinit_photogrammetry.gui import dialogs
 
-            text = t("I modelli sono già installati. Installarli di nuovo, alle ultime versioni?",
-                     "The models are already installed. Install them again, at the latest versions?")
+            text = t("I pacchetti del motore scelto sono già installati. Reinstallarli?",
+                     "The selected engine's packages are already installed. Reinstall them?")
             if dialogs.choice(self.context.window, "question", self.title, text, [t("Installa di nuovo", "Install again")]) != 0:
                 return
-        self._install(None)
+        self._install(None, feature)
 
-    def _install(self, then) -> None:
+    def _install(self, then, feature: str = "samgeo") -> None:
         def done(_env):
             self.refresh_pane()
-            self._status(environment.status_text())
+            self._status(environment.status_text(feature))
             if then is not None:
                 then()
 
-        self.context.run(t("Installazione dei modelli", "Installing the models"), lambda p: environment.install(p),
-                         done)
+        self.context.run(t("Installazione dei modelli", "Installing the models"),
+                         lambda p: environment.install(p, features=(feature,)), done)
 
     # ------------------------------------------------------------------ a run
     def find(self, params: dict) -> None:
@@ -289,7 +299,8 @@ class SamgeoPlugin(Plugin):
                                        "l'ortofoto.", "The chunk has no orthomosaic or raster to look in: build the "
                                                       "orthomosaic first."))
             return
-        if not self._ready(lambda: self.find(params)):
+        feature = "sam3" if params.get("engine") == "sam3" else "samgeo"
+        if not self._ready(lambda: self.find(params), feature):
             return
         area = params.get("area", "all")
         if area == "polygon":
@@ -326,8 +337,9 @@ class SamgeoPlugin(Plugin):
         self._status(t("Samgeo: «{0}» in {1} {2} a {3} cm/px", "Samgeo: '{0}' in {1} {2} at {3} cm/px").format(
             info["text"], len(the_plan.tiles), plural(len(the_plan.tiles), t("tassello", "tile"), t("tasselli", "tiles")),
             number(the_plan.resolution * 100, 1)))
+        token = self.pane.session_token() if self.pane is not None and info["engine"] == "sam3" else None
         self.context.run(t("Samgeo: «{0}»", "Samgeo: '{0}'").format(info["text"]),
-                         lambda p: run_job(chunk, the_plan, info, p), lambda run: self._found(chunk, run))
+                         lambda p: run_job(chunk, the_plan, info, p, token=token), lambda run: self._found(chunk, run))
 
     def _found(self, chunk, run: dict) -> None:
         """In the interface thread after a run: into the project, its layer on the view."""
@@ -570,11 +582,14 @@ class SamgeoPlugin(Plugin):
 
         parser = argparse.ArgumentParser(prog="ppg plugin samgeo",
                                          description="What a text names, found in the orthomosaic (or another raster) "
-                                                     "of a chunk with Grounding DINO and SAM 2.1; every run kept in the "
+                                                     "of a chunk with Grounding DINO + SAM 2.1 or SAM 3; every run kept in the "
                                                      "project, its objects in a GeoPackage and a mask.")
         sub = parser.add_subparsers(dest="what", required=True)
-        sub.add_parser("install", help="install PyTorch and the models in the environment of the AI plugins (uv)")
-        sub.add_parser("status", help="where the models run")
+        p = sub.add_parser("install", help="install packages in the AI plugins environment (uv)")
+        p.add_argument("--sam3", action="store_true", help="install the optional SAM 3 engine (separate Meta license)")
+        p = sub.add_parser("status", help="where the models run")
+        p.add_argument("--engine", choices=["open", "sam3"], default="open")
+        p = sub.add_parser("access", help="SAM 3 license, access approval and personal Hugging Face authentication")
         p = sub.add_parser("segment", help="look for TEXT in the orthomosaic of the chunk")
         p.add_argument("project")
         p.add_argument("text", help="what to look for (English works best; the ready entries of the pane are translated)")
@@ -585,7 +600,10 @@ class SamgeoPlugin(Plugin):
         p.add_argument("--threshold", type=float, default=0.3, help="the least confidence of a box (0-1)")
         p.add_argument("--min-area", type=float, default=0.0, help="m2")
         p.add_argument("--max-area", type=float, default=0.0, help="m2 (0: no limit)")
-        p.add_argument("--models", choices=["normal", "fast", "precise"], default="normal")
+        p.add_argument("--models", choices=["normal", "fast", "precise"], default="normal", help="open engine only")
+        p.add_argument("--engine", choices=["open", "sam3"], default="open",
+                       help="SAM 3 needs Meta access approval and HF_TOKEN or a saved Hugging Face login; see access")
+        p.add_argument("--device", choices=["cuda", "mps", "cpu"], help="worker device (SAM 3 on MPS is experimental)")
         p.add_argument("--units", action="store_true", help="the objects found become units of the chunk")
         p.add_argument("--json", action="store_true")
         for name, text in (("list", "the runs of the chunk"), ("export", "runs into a GeoPackage"),
@@ -601,16 +619,31 @@ class SamgeoPlugin(Plugin):
             if name == "list":
                 p.add_argument("--json", action="store_true")
         ns = parser.parse_args([str(a) for a in args])
+        if ns.what == "access":
+            from .access import SAM3_LICENSE_URL, SAM3_URL, notice
+
+            print(notice())
+            print(SAM3_URL)
+            print(SAM3_LICENSE_URL)
+            print("https://huggingface.co/settings/tokens")
+            print("hf auth login  # use the Hugging Face CLI in the worker environment; or set HF_TOKEN")
+            return 0
         if ns.what == "status":
-            print(environment.status_text())
-            return 0 if environment.where() is not None else 1
+            feature = "sam3" if ns.engine == "sam3" else "samgeo"
+            print(environment.status_text(feature))
+            return 0 if environment.where(feature) is not None else 1
         if ns.what == "install":
+            feature = "sam3" if ns.sam3 else "samgeo"
+            if ns.sam3:
+                from .access import notice
+
+                print(notice())
             try:
-                print(environment.install(_print_progress))
+                print(environment.install(_print_progress, features=(feature,)))
             except RuntimeError as exc:
                 print(exc)
                 return 1
-            print(environment.status_text())
+            print(environment.status_text(feature))
             return 0
         import pyarchinit_photogrammetry as ppg
 
@@ -664,11 +697,15 @@ class SamgeoPlugin(Plugin):
                 print("--area: X0,Y0,X1,Y1")
                 return 1
         params = {"text": ns.text, "prompt": model_text(ns.text), "threshold": ns.threshold, "min_area": ns.min_area,
-                  "max_area": ns.max_area, "models": ns.models, "area": "bounds" if bounds else "all"}
+                  "max_area": ns.max_area, "models": ns.models, "engine": ns.engine, "area": "bounds" if bounds else "all"}
+        if ns.engine == "sam3":
+            from .access import notice
+
+            print(notice())
         try:
             the_plan = segment.plan(raster["path"], bounds=bounds, resolution=ns.resolution)
             print(f"{len(the_plan.tiles)} tiles at {the_plan.resolution:g} m/px", flush=True)
-            run = run_job(chunk, the_plan, run_info(params, raster), _print_progress)
+            run = run_job(chunk, the_plan, run_info(params, raster), _print_progress, device=ns.device)
         except (environment.EnvironmentMissing, WorkerError, ValueError, RuntimeError) as exc:
             if isinstance(exc, Cancelled):
                 raise
@@ -696,17 +733,25 @@ def run_info(params: dict, raster: dict) -> dict:
     """What a run looked for and how, for its record."""
     from .client import MODELS
 
+    engine = params.get("engine") or "open"
+    if engine not in ("open", "sam3"):
+        raise ValueError("unknown Samgeo engine")
     models = params.get("models") or "normal"
     detector, segmenter = MODELS.get(models, MODELS["normal"])
+    from .access import SAM3_MODEL
+
+    model_info = ({"backend": "transformers", "model_id": SAM3_MODEL} if engine == "sam3" else
+                  {"models": models, "detector": detector, "segmenter": segmenter})
     return {"text": params.get("text") or params.get("prompt", ""), "prompt": params.get("prompt", ""),
-            "engine": "open", "models": models, "detector": detector, "segmenter": segmenter,
+            "engine": engine, **model_info,
             "raster": raster["name"], "raster_label": raster.get("label", raster["name"]),
             "threshold": float(params.get("threshold", 0.3)), "text_threshold": TEXT_THRESHOLD,
             "min_area": float(params.get("min_area") or 0.0), "max_area": float(params.get("max_area") or 0.0),
             "area": params.get("area", "all"), "plugin": __version__}
 
 
-def run_job(chunk, the_plan, info: dict, progress=None) -> dict:
+def run_job(chunk, the_plan, info: dict, progress=None, *, token: str | None = None,
+            device: str | None = None) -> dict:
     """A run, in the background in the window: the models in their process, the objects found, the
     files written. Returns the record of the run (into the project with :func:`.runs.add`)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
@@ -716,15 +761,15 @@ def run_job(chunk, the_plan, info: dict, progress=None) -> dict:
 
     progress = as_progress(progress)
     t0 = time.monotonic()
-    progress(0.0, t("Caricamento dei modelli (la prima volta si scaricano, circa 1 GB)",
-                    "Loading the models (the first time they are downloaded, about 1 GB)"))
+    progress(0.0, t("Caricamento dei modelli (download al primo uso)",
+                    "Loading the models (downloaded on first use)"))
     with Segmenter(info.get("engine", "open"), info.get("detector", "base"), info.get("segmenter", "small"),
-                   progress=progress) as seg:
+                   progress=progress, token=token, device=device) as seg:
         objects = segment.find(seg, the_plan, info["prompt"], threshold=info["threshold"],
                                text_threshold=info.get("text_threshold", TEXT_THRESHOLD), min_area=info["min_area"],
                                max_area=info["max_area"], progress=progress)
-        device = seg.device
-    run = runs.write(chunk, the_plan, objects, {**info, "device": device})
+        used_device, versions = seg.device, seg.versions
+    run = runs.write(chunk, the_plan, objects, {**info, "device": used_device, "versions": versions})
     run["seconds"] = round(time.monotonic() - t0, 1)
     return run
 

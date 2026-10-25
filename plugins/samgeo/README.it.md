@@ -5,7 +5,7 @@
 Un plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
 (1.5.0 o successivo): quello che scrivi - *pietre*, *mattoni*, *tegole e coppi*, o una frase
 qualsiasi in inglese - trovato nell'ortofoto del chunk, o in un raster qualsiasi che il calcolatore
-raster legge. Segue la ricetta di `LangSAM` di
+raster legge. Il motore predefinito segue la ricetta di `LangSAM` di
 [segment-geospatial](https://github.com/opengeos/segment-geospatial) (Qiusheng Wu):
 [Grounding DINO](https://huggingface.co/IDEA-Research/grounding-dino-base) (IDEA Research) trova i
 riquadri di quello che è scritto, [SAM 2.1](https://github.com/facebookresearch/sam2) (Meta) disegna
@@ -16,7 +16,7 @@ diventi altro:
 
 | Da una ricerca | Che cosa ottieni |
 |---|---|
-| **Il layer** `samgeo: <nome>` | Gli oggetti trovati, ciascuno con il suo numero, il testo, la frase che l'ha trovato, il punteggio (la confidenza di Grounding DINO) e l'area; disegnato di nuovo su ogni raster che la vista mostra; una proposta eliminata nella vista (*Seleziona* e Canc) esce anche dalla ricerca |
+| **Il layer** `samgeo: <nome>` | Gli oggetti trovati, ciascuno con il suo numero, il testo, la frase che l'ha trovato, il punteggio (la confidenza del motore selezionato) e l'area; disegnato di nuovo su ogni raster che la vista mostra; una proposta eliminata nella vista (*Seleziona* e Canc) esce anche dalla ricerca |
 | **US** | Le proposte (quelle selezionate nella vista, quelle non ancora US, o tutte) diventano unità stratigrafiche del chunk, del tipo scelto (US, USM...), con il testo e il punteggio come attributi (`samgeo_prompt`, `samgeo_score`): nel collegamento dal vivo con QGIS, numerate da *Proponi US e rapporti*, nelle schede US di PyArchInit; una sola voce di *Modifica > Annulla* per tutte. Le proposte già US restano nel layer con il solo contorno; quando lo sono tutte, il layer viene nascosto |
 | **Classi della nuvola densa** | I punti dentro le proposte (in pianta) prendono la classe `samgeo: <nome>` (codici da 150); i punti classificati a mano tengono la loro; rifatta, la classe segue le proposte rimaste |
 | **GeoPackage** | Le ricerche scelte, un layer ciascuna (`MULTIPOLYGON`: `n`, `prompt`, `label`, `score`, `quality`, `area_m2`) |
@@ -35,6 +35,39 @@ Una ricerca chiede:
 * la **confidenza minima** (0,30), l'**area minima** e **massima** in m², la **risoluzione** (quella
   del raster, non più fine di 1 cm/px - basta per le pietre; più grossolana è più veloce), i
   **modelli**: normali (Grounding DINO base, SAM 2.1 small), veloci (tiny, tiny), precisi (base, large).
+
+## SAM 3: licenza, accesso e token personale
+
+Dalla versione 0.2.0 il campo **Motore** permette di scegliere **SAM 3**. Il codice del plugin è
+GPL-2.0-or-later; **SAM 3 e i suoi pesi hanno la distinta [licenza SAM di Meta](https://github.com/facebookresearch/sam3/blob/main/LICENSE), non GPL**.
+Il plugin non include né redistribuisce questi pesi. Installare il plugin o i suoi pacchetti non
+concede accesso al modello e non equivale ad accettarne i termini per conto dell'utente.
+
+1. Accedi a Hugging Face e apri [facebook/sam3](https://huggingface.co/facebook/sam3).
+2. Leggi le condizioni, richiedi l'accesso a Meta e attendi l'approvazione.
+3. Crea un **[token personale Hugging Face](https://huggingface.co/settings/tokens)** con permesso di lettura del modello autorizzato.
+   Il token viene da Hugging Face: **avere un token non sostituisce l'approvazione di Meta**.
+4. Nel pannello scegli **SAM 3**, installa i pacchetti del motore e inserisci il token nel campo
+   protetto. Il plugin lo mantiene soltanto in memoria per la sessione; non lo salva nel progetto,
+   nei parametri delle ricerche o nei log. Lasciando il campo vuoto usa `HF_TOKEN` oppure il login
+   Hugging Face già presente sul computer.
+5. Prova prima una piccola area. Al primo uso i pesi vengono scaricati nella cache Hugging Face;
+   poi possono essere riutilizzati localmente. Restano soggetti alla licenza SAM.
+
+Per la riga di comando, usa `hf auth login` nell'ambiente dei modelli oppure configura `HF_TOKEN`
+nel tuo ambiente locale. Non inserire il token come argomento di `ppg` o in un file di progetto.
+
+```bash
+ppg plugin samgeo access
+ppg plugin samgeo install --sam3
+ppg plugin samgeo status --engine sam3
+ppg plugin samgeo segment scavo.ppg "stone wall" --engine sam3 --device cuda
+```
+
+I profili *Normali / Veloci / Precisi* valgono per Grounding DINO + SAM 2.1. Per SAM 3 viene usato
+`facebook/sam3` con backend `transformers`; modello, backend, versioni dei pacchetti e dispositivo
+sono registrati nella ricerca. I punteggi dei due motori non sono direttamente confrontabili.
+Tutte le uscite restano proposte da verificare prima della conversione in US.
 
 ## Come funziona una ricerca
 
@@ -100,8 +133,9 @@ decine di secondi; una GPU è molto più veloce.
   contrasto tra due terreni: quello è compito di geoai, che impara dai tuoi disegni.
 * Con un'area di un solo tassello (un poligono piccolo) Grounding DINO può rispondere con l'area
   intera: elimina quella proposta, o imposta un'area massima.
-* SAM 3 (un solo modello che trova ogni esemplare di un concetto) arriverà in una prossima versione,
-  per chi ha accesso ai suoi pesi.
+* SAM 3 usa il backend Transformers di SamGeo3. CUDA è il percorso da preferire; CPU e Metal
+  richiedono verifica sul proprio computer, e Metal è sperimentale. Il plugin non cambia motore
+  silenziosamente in caso di errore.
 
 ## Installazione
 
@@ -116,5 +150,5 @@ decine di secondi; una GPU è molto più veloce.
 Test: `pip install -e . pytest` nell'ambiente del programma, poi `pytest tests`; usano un motore
 finto del worker (le macchie chiare di un'ortofoto sintetica sono le pietre), senza PyTorch.
 
-Licenza: GPL-2.0-or-later. Grounding DINO, SAM 2.1, PyTorch e transformers (Apache-2.0 e BSD)
-girano nel loro ambiente. Autore: Enzo Cocca.
+Licenza del plugin: GPL-2.0-or-later. Le dipendenze mantengono le proprie licenze; SAM 3 e i suoi
+pesi sono soggetti alla licenza SAM di Meta, distinta dalla GPL (vedi sopra). Autore: Enzo Cocca.

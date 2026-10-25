@@ -42,6 +42,11 @@ import threading
 import time
 import traceback
 
+try:
+    from .access import redact
+except ImportError:
+    from access import redact
+
 SAM_BATCH = 16  # boxes given to SAM at once: the masks of a batch are full images until they are cut
 
 
@@ -297,6 +302,12 @@ def main() -> int:
                     engine = Open(req.get("detector") or "IDEA-Research/grounding-dino-base",
                                   req.get("segmenter") or "facebook/sam2.1-hiera-small", req.get("device"),
                                   req.get("token"), report)
+                elif req.get("engine") == "sam3":
+                    try:
+                        from .worker_sam3 import Sam3
+                    except ImportError:
+                        from worker_sam3 import Sam3
+                    engine = Sam3(req.get("device"), req.get("token"), report)
                 else:
                     raise ValueError(f"unknown engine {req.get('engine')!r}")
                 reply = {"engine": engine.engine, "device": engine.device, "versions": engine.versions}
@@ -311,7 +322,8 @@ def main() -> int:
                 raise ValueError(f"unknown op {op!r}")
             _write(proto_out, {"ok": True, **reply})
         except Exception as exc:  # noqa: BLE001 - every failure goes back to the plugin
-            _write(proto_out, {"ok": False, "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+            _write(proto_out, {"ok": False, "error": redact(f"{type(exc).__name__}: {exc}", req.get("token")),
+                                     "traceback": redact(traceback.format_exc(), req.get("token"))})
 
 
 if __name__ == "__main__":

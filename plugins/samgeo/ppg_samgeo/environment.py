@@ -17,6 +17,7 @@ The packaged application, which is not a Python and has no pip, always uses the 
 from __future__ import annotations
 
 import importlib.util
+import importlib.metadata
 import json
 import os
 import platform
@@ -26,6 +27,7 @@ import sys
 from pathlib import Path
 
 from .texts import t
+from .access import redact
 
 PYTHON = "3.12"
 MARKER = "ppg-env.json"
@@ -34,6 +36,11 @@ ENV_VAR = "PPG_GEOAI_ENV"
 FEATURES = {
     "samgeo": {"packages": ["torch", "torchvision", "transformers", "sam2", "huggingface_hub", "pillow", "numpy"],
                "modules": ["torch", "transformers", "sam2"]},
+    "sam3": {"packages": ["torch", "torchvision", "transformers>=5,<6", "segment-geospatial>=1.4.2,<2",
+                          "scikit-image", "scikit-learn", "huggingface_hub", "pillow", "numpy"],
+             "modules": ["torch", "transformers", "samgeo.samgeo3"]},
+    "geoai": {"packages": ["geoai-py", "segmentation-models-pytorch"],
+              "modules": ["torch", "geoai", "segmentation_models_pytorch"]},
 }
 # what a Python of the environment answers (one line of JSON): the versions and the device
 CHECK = r"""
@@ -42,7 +49,12 @@ out = {"python": platform.python_version(), "versions": {}}
 for name in __MODULES__:
     try:
         __import__(name)
-        out["versions"][name] = md.version(name)
+        dist = {"samgeo.samgeo3": "segment-geospatial", "geoai": "geoai-py",
+                "segmentation_models_pytorch": "segmentation-models-pytorch"}.get(name, name)
+        out["versions"][name] = md.version(dist)
+        if name == "samgeo.samgeo3":
+            from samgeo.samgeo3 import SamGeo3
+            from transformers import Sam3Model, Sam3Processor
     except Exception as exc:
         out.setdefault("errors", {})[name] = type(exc).__name__ + ": " + str(exc)
 try:
@@ -97,17 +109,35 @@ def local_available(feature: str = "samgeo") -> bool:
     if getattr(sys, "frozen", False):
         return False
     try:
-        return all(importlib.util.find_spec(m) is not None for m in FEATURES[feature]["modules"])
-    except (ImportError, ValueError):
+        available = all(importlib.util.find_spec(m.split(".")[0]) is not None for m in FEATURES[feature]["modules"])
+        if not available or feature != "sam3":
+            return available
+        versions = {"segment-geospatial": importlib.metadata.version("segment-geospatial"),
+                    "transformers": importlib.metadata.version("transformers")}
+        return _sam3_versions(versions)
+    except (ImportError, ValueError, importlib.metadata.PackageNotFoundError):
+        return False
+
+
+def _sam3_versions(versions: dict) -> bool:
+    """SamGeo3 with its Transformers backend requires recent SamGeo and Transformers 5."""
+    from packaging.version import Version, InvalidVersion
+
+    try:
+        samgeo = Version(versions.get("segment-geospatial", versions.get("samgeo.samgeo3", "0")))
+        transformers = Version(versions.get("transformers", "0"))
+        return Version("1.4.2") <= samgeo < Version("2") and Version("5") <= transformers < Version("6")
+    except InvalidVersion:
         return False
 
 
 def where(feature: str = "samgeo") -> str | None:
     """``"local"`` (this Python), ``"environment"`` or None."""
+    managed = installed_info()
+    if feature in (managed.get("features") or []) and (feature != "sam3" or _sam3_versions(managed.get("versions") or {})):
+        return "environment"
     if local_available(feature):
         return "local"
-    if feature in (installed_info().get("features") or []):
-        return "environment"
     return None
 
 
@@ -126,6 +156,11 @@ def status_text(feature: str = "samgeo") -> str:
         return t("Modelli: PyTorch {0} nell'ambiente dei plugin AI, su {1}.",
                  "Models: PyTorch {0} in the environment of the AI plugins, on the {1}.").format(
             (info.get("versions") or {}).get("torch", "?"), device_name(info.get("device")))
+    if feature == "sam3":
+        return t("Pacchetti SamGeo 3 e Transformers 5 non installati. Il plugin li installa nell'ambiente dei "
+                 "plugin AI; i pesi autorizzati di facebook/sam3 si scaricano alla prima ricerca.",
+                 "SamGeo 3 and Transformers 5 packages are not installed. The plugin installs them in the AI "
+                 "plugins environment; authorized facebook/sam3 weights download on the first search.")
     return t("PyTorch e i modelli non sono installati: «Installa i modelli» li scarica in un ambiente dei plugin "
              "AI (circa 2 GB, condiviso con geoai); i pesi dei modelli (circa 1 GB) arrivano al primo uso.",
              "PyTorch and the models are not installed: 'Install the models' downloads them into an environment "
@@ -141,9 +176,9 @@ def worker_python(feature: str = "samgeo") -> Path:
     if kind == "environment":
         return env_python()
     raise EnvironmentMissing(t("PyTorch e i modelli non sono installati: installali dal pannello Samgeo o con "
-                               "«ppg plugin samgeo install».",
+                               "«ppg plugin samgeo install{0}».",
                                "PyTorch and the models are not installed: install them from the Samgeo pane or with "
-                               "'ppg plugin samgeo install'."))
+                               "'ppg plugin samgeo install{0}'.").format(" --sam3" if feature == "sam3" else ""))
 
 
 def clean_environment(for_uv: bool = False) -> dict:
@@ -175,7 +210,7 @@ def _run(cmd: list[str], env: dict, progress, start: float, end: float) -> list[
     lines: list[str] = []
     try:
         for k, raw in enumerate(proc.stdout, 1):
-            line = raw.rstrip()
+            line = redact(raw.rstrip())
             lines.append(line)
             progress(min(end, start + (end - start) * (1 - 1 / (1 + k / 20))), line[-120:] or "...")
     except BaseException:
@@ -201,10 +236,10 @@ def probe(python: Path, modules) -> dict:
     for line in reversed((out.stdout or "").strip().splitlines()):
         if line.startswith("{"):
             try:
-                return json.loads(line)
+                return json.loads(redact(line))
             except ValueError:
                 break
-    return {"errors": {"python": ((out.stderr or "") + (out.stdout or "")).strip()[-1500:] or f"code {out.returncode}"}}
+    return {"errors": {"python": redact((out.stderr or "") + (out.stdout or "")).strip()[-1500:] or f"code {out.returncode}"}}
 
 
 def install(progress=None, features=("samgeo",), env: Path | None = None, uv: Path | None = None) -> Path:
@@ -217,8 +252,11 @@ def install(progress=None, features=("samgeo",), env: Path | None = None, uv: Pa
     progress = as_progress(progress)
     env = Path(env) if env is not None else env_dir()
     uv = Path(uv) if uv is not None else find_uv(progress)
+    unknown = set(features) - FEATURES.keys()
+    if unknown:
+        raise ValueError(f"Unknown AI features: {sorted(unknown)}")
     before = installed_info(env)
-    wanted = list(dict.fromkeys(list(before.get("features") or []) + [f for f in features if f in FEATURES]))
+    wanted = list(dict.fromkeys([f for f in (before.get("features") or []) if f in FEATURES] + list(features)))
     packages = list(dict.fromkeys(p for f in wanted for p in FEATURES[f]["packages"]))
     modules = list(dict.fromkeys(m for f in wanted for m in FEATURES[f]["modules"]))
     env.parent.mkdir(parents=True, exist_ok=True)

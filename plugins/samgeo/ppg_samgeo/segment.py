@@ -232,7 +232,7 @@ def find(segmenter, the_plan: Plan, prompt: str, threshold: float = 0.3, text_th
             geom = _polygons(mask, tr @ Affine.translation(c0, r0), res)
             if geom is not None:
                 found.append((k, {"geometry": geom, "score": float(obj.get("score", 0.0)),
-                                  "quality": float(obj.get("quality", 0.0)), "label": str(obj.get("label", ""))}))
+                                  "quality": float(obj["quality"]) if obj.get("quality") is not None else None, "label": str(obj.get("label", ""))}))
     progress(0.93, f"samgeo: {len(found)}")
     objects = merge(found, the_plan.tiles)
     kept = []
@@ -295,7 +295,8 @@ def merge(found, tiles) -> list[dict]:
             geom = geom.buffer(0)
         if geom.is_empty:
             continue
-        merged.append({**objs[best], "geometry": geom, "quality": max(objs[i]["quality"] for i in members)})
+        quality = max((objs[i]["quality"] for i in members if objs[i]["quality"] is not None), default=None)
+        merged.append({**objs[best], "geometry": geom, "quality": quality})
     merged.sort(key=lambda o: -o["score"])
     kept: list[dict] = []
     tree = STRtree([o["geometry"] for o in merged])

@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from . import environment
+from .access import redact
 from .texts import t
 
 WORKER = Path(__file__).with_name("worker.py")
@@ -54,7 +55,11 @@ class Segmenter:
 
     def __init__(self, engine: str = "open", detector: str = "base", segmenter: str = "small", device: str | None = None,
                  token: str | None = None, progress=None, python: Path | None = None, script: Path | None = None):
-        python = Path(python) if python is not None else environment.worker_python()
+        if engine not in ("open", "sam3"):
+            raise WorkerError(t("Modelli: unknown engine", "Models: unknown engine"))
+        self._token = token
+        feature = "sam3" if engine == "sam3" else "samgeo"
+        python = Path(python) if python is not None else environment.worker_python(feature)
         script = Path(script).absolute() if script is not None else WORKER.absolute()
         request = {"op": "init", "engine": engine, "detector": DETECTORS.get(detector, detector),
                    "segmenter": SEGMENTERS.get(segmenter, segmenter), "device": device, "token": token}
@@ -78,7 +83,7 @@ class Segmenter:
         self._said: deque = deque(maxlen=60)
         self._replies: queue.Queue = queue.Queue()
         # each thread bound to its own process and queue: those of a worker started again never mix
-        threading.Thread(target=self._drain, args=(self._proc, self._said), name="samgeo worker stderr",
+        threading.Thread(target=self._drain, args=(self._proc, self._said, self._token), name="samgeo worker stderr",
                          daemon=True).start()
         threading.Thread(target=self._pump, args=(self._proc, self._replies), name="samgeo worker replies",
                          daemon=True).start()
@@ -89,10 +94,10 @@ class Segmenter:
             raise
 
     @staticmethod
-    def _drain(proc, said) -> None:
+    def _drain(proc, said, token=None) -> None:
         try:
             for raw in proc.stderr:
-                line = raw.decode("utf-8", "replace").rstrip()
+                line = redact(raw.decode("utf-8", "replace").rstrip(), token)
                 if line:
                     said.append(line[-300:])
         except (OSError, ValueError):
@@ -150,9 +155,9 @@ class Segmenter:
         if reply.get("broken"):  # the conversation cannot go on
             self.close()
         if not reply.get("ok"):
-            text = str(reply.get("error") or "?")
+            text = redact(str(reply.get("error") or "?"), self._token)
             raise WorkerError(t("Modelli: {0}", "Models: {0}").format(text) + _hint(text + "\n" + "\n".join(self._said)),
-                              str(reply.get("traceback") or "") + "\n" + "\n".join(self._said))
+                              redact(str(reply.get("traceback") or ""), self._token) + "\n" + "\n".join(self._said))
         return reply
 
     def segment(self, image: np.ndarray, prompt: str, box_threshold: float = 0.3, text_threshold: float = 0.25,
@@ -212,6 +217,13 @@ def download_failed(text: str) -> bool:
 def _hint(text: str) -> str:
     """A suggestion for a failure the user can do something about."""
     low = text.lower()
+    if any(k in low for k in ("sam3_access_required", "gatedrepo", "gated repo", "401", "403", "unauthorized", "access to model")):
+        return "\n" + t("SAM 3: richiedi l'accesso a Meta e accetta le condizioni su https://huggingface.co/facebook/sam3. "
+                        "Dopo l'approvazione usa un token personale Hugging Face con lettura del modello "
+                        "(campo token, HF_TOKEN o hf auth login). Il token da solo non concede l'accesso.",
+                        "SAM 3: request Meta access and accept the terms at https://huggingface.co/facebook/sam3. "
+                        "After approval use your own Hugging Face token with model read access "
+                        "(token field, HF_TOKEN or hf auth login). A token alone does not grant access.")
     if download_failed(text):
         return "\n" + t("Il download dei pesi da Hugging Face si è interrotto: riprova, riprende da dove era arrivato. "
                         "Se si ripete, avvia il programma con HF_HUB_DISABLE_XET=1.",

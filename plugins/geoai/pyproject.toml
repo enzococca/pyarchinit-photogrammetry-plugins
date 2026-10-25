@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-geoai"
+version = "0.1.0"
+description = "Learn segmentation classes from reviewed archaeological drawings"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{name = "Enzo Cocca", email = "enzo.ccc@gmail.com"}]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/geoai"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+geoai = "ppg_geoai:GeoaiPlugin"
+
+[tool.setuptools]
+packages = ["ppg_geoai"]

@@ -87,7 +87,8 @@ def write(chunk, the_plan, objects: list[dict], info: dict) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     base = Path(chunk.data_dir)
     rows = [(_multi(o["geometry"]), {"n": k, "prompt": info.get("text", ""), "label": o.get("label", ""),
-                                      "score": round(float(o["score"]), 4), "quality": round(float(o.get("quality", 0.0)), 4),
+                                      "score": round(float(o["score"]), 4),
+                                      "quality": round(float(o["quality"]), 4) if o.get("quality") is not None else None,
                                       "area_m2": round(float(o["geometry"].area), 4)})
             for k, o in enumerate(objects, 1)]
     g = gpkg.write_table(out / f"{rid}.gpkg", TABLE, "MULTIPOLYGON", COLUMNS, rows, getattr(chunk, "crs", None),

@@ -1,0 +1,7 @@
+{
+  "title": "GeoAI",
+  "description": "Learn RGB segmentation classes from reviewed unit drawings, validate on a separate area, apply models as proposals, then export or create units",
+  "i18n": {"it": {"title": "GeoAI", "description": "Impara le classi dai disegni US verificati, valuta su un'area separata e applica i modelli come proposte da controllare, poi esportare o convertire in US"}},
+  "min_app": "1.5.0",
+  "requires": []
+}

@@ -4,7 +4,7 @@ with what to make of them - units, classes of the dense cloud, a GeoPackage."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDoubleSpinBox, QFormLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDoubleSpinBox, QFormLayout, QHeaderView, QLabel, QLineEdit,
                                QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
@@ -22,6 +22,7 @@ MODELS = (("normal", ("Normali (Grounding DINO base, SAM 2.1 small)", "Normal (G
 class SamgeoPane(QWidget):
     find_requested = Signal(dict)
     install_requested = Signal()
+    engine_changed = Signal()
     visibility_changed = Signal(str, bool)
     zoom_requested = Signal(str)
     units_requested = Signal(str)
@@ -54,6 +55,34 @@ class SamgeoPane(QWidget):
         self.form_holder = QWidget()
         form = QFormLayout(self.form_holder)
         form.setContentsMargins(0, 0, 0, 0)
+        self.c_engine = QComboBox()
+        self.c_engine.addItem("Grounding DINO + SAM 2.1", "open")
+        self.c_engine.addItem("SAM 3 (SamGeo3 / Transformers)", "sam3")
+        form.addRow(t("Motore", "Engine"), self.c_engine)
+        from .access import SAM3_LICENSE_URL, SAM3_URL, notice
+
+        self.sam3_holder = QWidget()
+        sam3_layout = QVBoxLayout(self.sam3_holder)
+        sam3_layout.setContentsMargins(0, 0, 0, 0)
+        self.l_access = QLabel(notice())
+        self.l_access.setTextFormat(Qt.TextFormat.PlainText)
+        self.l_access.setWordWrap(True)
+        sam3_layout.addWidget(self.l_access)
+        links = QLabel(f'<a href="{SAM3_URL}">{t("Richiedi accesso a Meta", "Request access from Meta")}</a>'
+                       f' · <a href="{SAM3_LICENSE_URL}">{t("Licenza SAM", "SAM license")}</a>'
+                       f' · <a href="https://huggingface.co/settings/tokens">{t("Crea token", "Create token")}</a>')
+        links.setOpenExternalLinks(True)
+        sam3_layout.addWidget(links)
+        self.e_token = QLineEdit()
+        self.e_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.e_token.setPlaceholderText(t("Token Hugging Face (solo questa sessione)",
+                                         "Hugging Face token (this session only)"))
+        self.e_token.setToolTip(t("Token personale con permesso di lettura per facebook/sam3. Se vuoto: HF_TOKEN "
+                                 "o autenticazione Hugging Face già salvata. Non viene salvato dal plugin.",
+                                 "Personal read token for facebook/sam3. If empty: HF_TOKEN or existing Hugging Face "
+                                 "login. The plugin does not save it."))
+        sam3_layout.addWidget(self.e_token)
+        form.addRow(self.sam3_holder)
         self.c_text = QComboBox()
         self.c_text.setEditable(True)
         for shown, model in presets():
@@ -150,6 +179,27 @@ class SamgeoPane(QWidget):
         self._filling = False
         self._holders = (self.form_holder, holder)
         self._selection_changed()
+        self.c_engine.currentIndexChanged.connect(self._engine_changed)
+        self._engine_changed()
+
+    def engine(self) -> str:
+        return self.c_engine.currentData() or "open"
+
+    def session_token(self) -> str | None:
+        """Credentials deliberately kept separate from :meth:`values` and run metadata."""
+        return (self.e_token.text().strip() or None) if self.engine() == "sam3" else None
+
+    def _engine_changed(self) -> None:
+        sam3 = self.engine() == "sam3"
+        self.sam3_holder.setVisible(sam3)
+        self.c_models.setEnabled(not sam3)
+        self.s_threshold.setToolTip(t("Confidenza del motore selezionato: i punteggi di SAM 3 e Grounding DINO "
+                                     "non sono direttamente confrontabili.",
+                                     "Confidence of the selected engine: SAM 3 and Grounding DINO scores are "
+                                     "not directly comparable."))
+        self.b_install.setToolTip(t("Installa i pacchetti del motore selezionato nell'ambiente dei plugin AI",
+                                   "Install packages for the selected engine in the AI plugins environment"))
+        self.engine_changed.emit()
 
     # ------------------------------------------------------------------ what to look for
     def values(self) -> dict:
@@ -163,7 +213,7 @@ class SamgeoPane(QWidget):
         return {"text": text, "prompt": model_text(text), "raster": self.c_raster.currentData(), "area": self.c_area.currentData(),
                 "threshold": round(self.s_threshold.value(), 3), "min_area": self.s_min.value(),
                 "max_area": self.s_max.value(), "resolution": cm / 100.0 if cm > 0 else None,
-                "models": self.c_models.currentData()}
+                "models": self.c_models.currentData(), "engine": self.engine()}
 
     def set_status(self, text: str, can_install: bool) -> None:
         self.l_status.setText(text)

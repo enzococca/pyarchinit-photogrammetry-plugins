@@ -52,7 +52,7 @@ def test_the_plugin_in_the_program(tmp_path):
     info = manager.get("samgeo")
     assert info is not None and info.active, info and info.error
     titles = [a.title for a in manager.actions if a.plugin == "samgeo"]
-    assert titles == ["Pannello Samgeo", "Installa i modelli (PyTorch, Grounding DINO, SAM 2.1)..."]
+    assert titles == ["Pannello Samgeo", "Installa i modelli del motore selezionato..."]
     assert "samgeo" in manager.commands
     manager.unload()
 
