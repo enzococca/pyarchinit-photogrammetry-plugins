@@ -30,7 +30,21 @@ def rows(chunk, run):
     return read_table(path(chunk, run, "gpkg"), "geoai")
 
 
-def predict(chunk, raster, model, min_area=0.0, device=None, progress=None, python=None):
+def check_reference(chunk, raster):
+    """Drawings and output proposals use chunk coordinates, so their reference must agree."""
+    import rasterio
+    from pyarchinit_photogrammetry.core.crs import is_local
+
+    if not hasattr(chunk, "crs"):
+        return  # Lightweight API consumers may supply geometries directly in raster coordinates.
+    chunk_crs = None if is_local(chunk.crs) else rasterio.crs.CRS.from_user_input(chunk.crs)
+    with rasterio.open(raster) as src:
+        if src.crs != chunk_crs:
+            raise ValueError("Reference raster must use the chunk's CRS because unit drawings use chunk coordinates; "
+                             "reproject the reference first. Additional inputs are aligned automatically.")
+
+
+def predict(chunk, raster, model, min_area=0.0, device=None, progress=None, python=None, inputs=None):
     import rasterio
     from rasterio.features import shapes
     from shapely.geometry import MultiPolygon, shape
@@ -41,12 +55,13 @@ def predict(chunk, raster, model, min_area=0.0, device=None, progress=None, pyth
 
     if min_area < 0:
         raise ValueError("min_area must be non-negative")
+    check_reference(chunk, raster)
     rid = dt.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
     folder = Path(chunk.data_dir) / "geoai"
     folder.mkdir(parents=True, exist_ok=True)
     mask = folder / f"{rid}_classes.tif"
     result = job({"op": "predict", "raster": str(raster), "model": str(model), "output": str(mask),
-                  "device": device}, progress=progress, python=python)
+                  "device": device, "inputs": inputs}, progress=progress, python=python)
     classes = {c["id"]: c for c in result["classes"]}
     features = []
     with rasterio.open(mask) as src:
@@ -66,6 +81,8 @@ def predict(chunk, raster, model, min_area=0.0, device=None, progress=None, pyth
                 "tipo": "TEXT", "area_m2": "REAL"}, features, getattr(chunk, "crs", None), f"GeoAI {rid}")
     return {"id": rid, "model": str(Path(model).resolve()), "count": len(features), "visible": True,
             "backend": result["backend"], "classes": result["classes"], "min_area": min_area,
+            "inputs": result.get("inputs", []), "channels": result.get("channels", 3),
+            "normalisation": result.get("normalisation", "uint8/255"),
             "files": {"gpkg": gpkg.relative_to(chunk.data_dir).as_posix(),
                       "mask": mask.relative_to(chunk.data_dir).as_posix()}}
 

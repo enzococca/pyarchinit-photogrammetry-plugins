@@ -12,7 +12,32 @@ from .texts import t
 
 from . import dataset, results
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+
+def input_config(path, fallback=None):
+    """Read source paths relative to their JSON file; fallback is the chunk's RGB raster."""
+    path = Path(path).resolve()
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(cfg, dict):
+        raise ValueError("The input configuration must be a JSON object")
+
+    def source_path(value):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Each raster needs a non-empty file path")
+        candidate = Path(value).expanduser()
+        return str((candidate if candidate.is_absolute() else path.parent / candidate).resolve())
+
+    sources = cfg.get("inputs")
+    if sources is not None:
+        if not isinstance(sources, list) or not sources or any(not isinstance(s, dict) for s in sources):
+            raise ValueError("inputs must be a non-empty list of raster source objects")
+        sources = [{**source, "path": source_path(source.get("path"))} for source in sources]
+    reference = (source_path(cfg["reference"]) if "reference" in cfg else
+                 sources[0]["path"] if sources is not None else fallback)
+    if reference is None:
+        raise ValueError("Choose raster inputs or build an RGB orthomosaic first")
+    return cfg, reference, sources
 
 
 class GeoaiPlugin(Plugin):
@@ -111,9 +136,9 @@ class GeoaiPlugin(Plugin):
         sub = p.add_subparsers(dest="op", required=True)
         sub.add_parser("install")
         sub.add_parser("status")
-        prep = sub.add_parser("prepare", help="prepare RGB tiles from reviewed drawings")
+        prep = sub.add_parser("prepare", help="prepare labelled raster tiles from reviewed drawings")
         prep.add_argument("project")
-        prep.add_argument("config", help="JSON: field, mapping, reviewed_area WKT, optional kinds and tile_size")
+        prep.add_argument("config", help="JSON: field, mapping, reviewed_area WKT; optional inputs, reference, kinds, tile_size")
         prep.add_argument("output")
         prep.add_argument("--chunk")
         train = sub.add_parser("train")
@@ -128,6 +153,7 @@ class GeoaiPlugin(Plugin):
         apply.add_argument("--chunk")
         apply.add_argument("--min-area", type=float, default=0.0)
         apply.add_argument("--device", choices=["cpu", "cuda", "mps"])
+        apply.add_argument("--inputs", help="JSON source mapping for a multi-raster model: inputs and optional reference")
         export = sub.add_parser("export")
         export.add_argument("project")
         export.add_argument("run")
@@ -153,11 +179,12 @@ class GeoaiPlugin(Plugin):
             if chunk is None:
                 raise ValueError("No matching chunk")
             if ns.op == "prepare":
-                cfg = json.loads(Path(ns.config).read_text(encoding="utf-8"))
-                manifest = dataset.prepare(chunk.orthomosaic_path, (chunk.meta.get("drawings") or {}).get("units", []),
+                cfg, reference, sources = input_config(ns.config, chunk.orthomosaic_path)
+                results.check_reference(chunk, reference)
+                manifest = dataset.prepare(reference, (chunk.meta.get("drawings") or {}).get("units", []),
                                            cfg["field"], cfg["mapping"], cfg["reviewed_area"], ns.output,
                                            tile_size=cfg.get("tile_size", 512), kinds=cfg.get("kinds"),
-                                           validation_fraction=cfg.get("validation_fraction", 0.2))
+                                           validation_fraction=cfg.get("validation_fraction", 0.2), inputs=sources)
                 print(f"{len(manifest['samples'])} tiles: {ns.output}")
             elif ns.op == "export":
                 run = next((r for r in results.records(chunk) if r["id"] == ns.run), None)
@@ -168,7 +195,18 @@ class GeoaiPlugin(Plugin):
                     shutil.copyfileobj(source, stream)
                 print(target)
             else:
-                run = results.predict(chunk, chunk.orthomosaic_path, ns.model, ns.min_area, ns.device)
+                meta = dataset.read_manifest(ns.model, "model.json")
+                if ns.inputs:
+                    _, reference, sources = input_config(ns.inputs, chunk.orthomosaic_path)
+                    if sources is None:
+                        raise ValueError("--inputs must define a non-empty inputs list")
+                else:
+                    reference, sources = chunk.orthomosaic_path, None
+                if meta["format"] == 2 and sources is None:
+                    raise ValueError("This model needs --inputs JSON mapping each trained source to a new raster")
+                if reference is None:
+                    raise ValueError("This model requires an RGB orthomosaic or --inputs JSON")
+                run = results.predict(chunk, reference, ns.model, ns.min_area, ns.device, inputs=sources)
                 results.add(chunk, run)
                 doc.save()
                 print(json.dumps(run, indent=2))

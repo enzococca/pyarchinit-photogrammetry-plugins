@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
                                QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 from . import environment
@@ -23,6 +23,7 @@ class GeoaiPane(QWidget):
         self._chunk = None
         self._refreshing = False
         self._class_key = None
+        self.input_sources = []
         layout = QVBoxLayout(self)
         intro = QLabel(t("Impara dai disegni US verificati. Delimita un'area completamente annotata: il terreno "
                          "senza US al suo interno sarà insegnato come sfondo. Le nuove segmentazioni sono proposte "
@@ -34,12 +35,25 @@ class GeoaiPane(QWidget):
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.custom_inputs = QCheckBox(t("Raster opzionali: DEM, multispettrale, termico",
+                                          "Optional rasters: DEM, multispectral, thermal"))
+        layout.addWidget(self.custom_inputs)
+        self.input_button = QPushButton(t("Scegli raster e bande...", "Choose rasters and bands..."))
+        self.input_button.setEnabled(False)
+        self.custom_inputs.toggled.connect(self.input_button.setEnabled)
+        self.custom_inputs.toggled.connect(self.input_summary)
+        self.input_button.clicked.connect(lambda: self.guard(self.choose_inputs))
+        layout.addWidget(self.input_button)
+        self.input_label = QLabel()
+        self.input_label.setWordWrap(True)
+        layout.addWidget(self.input_label)
+        self.input_summary()
         form = QFormLayout()
         self.field = QComboBox()
         self.field.currentTextChanged.connect(self.fill_classes)
         form.addRow(t("Campo delle US", "Unit field"), self.field)
         self.tile = QSpinBox()
-        self.tile.setRange(32, 2048)
+        self.tile.setRange(64, 2048)
         self.tile.setSingleStep(32)
         self.tile.setValue(512)
         form.addRow(t("Tassello (pixel)", "Tile (pixels)"), self.tile)
@@ -88,8 +102,54 @@ class GeoaiPane(QWidget):
             QMessageBox.warning(self, "GeoAI", str(exc))
 
     def busy(self, busy):
-        for control in [*self.controls, self.field, self.classes, self.tile, self.epochs]:
+        for control in [*self.controls, self.field, self.classes, self.tile, self.epochs, self.custom_inputs]:
             control.setEnabled(not busy)
+        self.input_button.setEnabled(not busy and self.custom_inputs.isChecked())
+
+    def available_rasters(self):
+        chunk = self.plugin.chunk()
+        provider = getattr(self.plugin.context, "rasters", None)
+        return provider(chunk) if provider is not None and chunk is not None else []
+
+    def input_summary(self):
+        if not self.custom_inputs.isChecked():
+            self.input_label.setText(t("Dati: ortofoto RGB", "Inputs: RGB orthomosaic"))
+        elif not self.input_sources:
+            self.input_label.setText(t("Scegli almeno un raster; il primo definisce la griglia.",
+                                      "Choose at least one raster; the first defines the grid."))
+        else:
+            self.input_label.setText(" + ".join(f"{s['name']} ({','.join(str(b) for b in s['bands'])})"
+                                                for s in self.input_sources))
+
+    def choose_inputs(self):
+        from .source_dialog import SourceDialog
+
+        chunk = self.plugin.chunk()
+        if chunk is None:
+            raise ValueError(t("Apri un progetto", "Open a project"))
+        sources = self.input_sources
+        ortho = getattr(chunk, "orthomosaic_path", None)
+        dem = getattr(chunk, "dem_path", None)
+        if not sources and ortho:
+            sources = [{"name": "RGB", "kind": "rgb", "path": str(ortho), "bands": [1, 2, 3]}]
+        elif not sources and dem:
+            sources = [{"name": "DEM", "kind": "dem", "path": str(dem), "bands": [1]}]
+        dialog = SourceDialog(self.available_rasters(), sources=sources, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.input_sources = dialog.sources()
+            self.input_summary()
+
+    def selected_inputs(self):
+        if self.custom_inputs.isChecked():
+            if not self.input_sources:
+                raise ValueError(t("Scegli prima raster e bande.", "Choose rasters and bands first."))
+            sources = [{**source, "bands": list(source["bands"])} for source in self.input_sources]
+            return sources[0]["path"], sources
+        ortho = getattr(self.plugin.chunk(), "orthomosaic_path", None)
+        if not ortho:
+            raise ValueError(t("Serve un'ortofoto RGB, oppure abilita i raster opzionali.",
+                               "An RGB orthomosaic is required, or enable optional rasters."))
+        return ortho, None
 
     def units_data(self):
         ch = self.plugin.chunk()
@@ -100,6 +160,9 @@ class GeoaiPane(QWidget):
         ch = self.plugin.chunk()
         if ch is not self._chunk:
             self._chunk, self.area = ch, None
+            self.input_sources = []
+            self.custom_inputs.setChecked(False)
+            self.input_summary()
             self.area_label.setText(t("Area verificata: da disegnare", "Reviewed area: draw it first"))
         units = self.units_data()
         fields = sorted({"tipo", "us", "area", "sito"} | {k for u in units for k in (u.get("attributes") or {})})
@@ -160,13 +223,15 @@ class GeoaiPane(QWidget):
                                          "Reviewed area ready. At least four tile columns are required."))
         if not self.plugin.context.request_polygon(done, hint=t("Delimita l'area completamente annotata",
                                                                  "Outline the fully annotated area")):
-            raise ValueError(t("Mostra prima l'ortofoto", "Display the orthomosaic first"))
+            raise ValueError(t("Mostra prima un raster nella vista 2D", "Display a raster in the 2D view first"))
 
     def prepare(self):
         ch = self.plugin.chunk()
         if ch is None or self.area is None:
             raise ValueError(t("Disegna prima l'area verificata", "Draw the reviewed area first"))
         self.plugin.context.store_drawings()
+        raster, sources = self.selected_inputs()
+        results.check_reference(ch, raster)
         mapping, kinds = {}, {}
         for row in range(self.classes.rowCount()):
             value, name, kind = [self.classes.item(row, c).text().strip() for c in range(3)]
@@ -180,8 +245,8 @@ class GeoaiPane(QWidget):
             return
         # Snapshot drawing data and UI settings before the background task starts.
         units, field, area, tile = self.units_data(), self.field.currentText(), self.area, self.tile.value()
-        self.plugin.context.run("GeoAI dataset", lambda p: dataset.prepare(ch.orthomosaic_path, units, field,
-                                mapping, area, target, tile_size=tile, kinds=kinds, progress=p),
+        self.plugin.context.run("GeoAI dataset", lambda p: dataset.prepare(raster, units, field,
+                                mapping, area, target, tile_size=tile, kinds=kinds, progress=p, inputs=sources),
                                 lambda m: QMessageBox.information(self, "GeoAI", f"{len(m['samples'])} tiles: {target}"))
 
     def train(self):
@@ -201,13 +266,27 @@ class GeoaiPane(QWidget):
                                     for k, v in m["metrics"]["iou"].items())))
 
     def apply(self):
+        from .source_dialog import SourceDialog
+
         ch = self.plugin.chunk()
-        if ch is None or not ch.orthomosaic_path:
-            raise ValueError(t("Costruisci prima l'ortofoto", "Build the orthomosaic first"))
+        if ch is None:
+            raise ValueError(t("Apri un progetto", "Open a project"))
         model = QFileDialog.getExistingDirectory(self, t("Modello .ppgseg", "Model .ppgseg"))
         if model:
-            dataset.read_manifest(model, "model.json")
-            self.plugin.context.run("GeoAI", lambda p: results.predict(ch, ch.orthomosaic_path, model, progress=p),
+            meta = dataset.read_manifest(model, "model.json")
+            sources = None
+            if meta["format"] == 2:
+                dialog = SourceDialog(self.available_rasters(), schema=meta["inputs"], parent=self)
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    return
+                sources = dialog.sources()
+                raster = sources[0]["path"]
+            else:
+                raster = getattr(ch, "orthomosaic_path", None)
+                if not raster:
+                    raise ValueError(t("Questo modello richiede un'ortofoto RGB.",
+                                       "This model requires an RGB orthomosaic."))
+            self.plugin.context.run("GeoAI", lambda p: results.predict(ch, raster, model, progress=p, inputs=sources),
                                     lambda run: self.plugin.found(ch, run))
 
     def units(self):

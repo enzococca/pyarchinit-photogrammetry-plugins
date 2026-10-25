@@ -14,6 +14,19 @@ from pathlib import Path
 import numpy as np
 
 from dataset import IGNORE, check_raster, read_manifest
+from inputs import RasterStack, channel_count, normalise
+
+
+def tile_image(data, meta, *, scaled=True):
+    """The saved training transform, with nodata neutral in the model's feature space."""
+    image = np.asarray(data["image"], dtype=np.float32)
+    if image.ndim != 3 or image.shape[0] != channel_count(meta):
+        raise ValueError("Training tile channels do not match the dataset")
+    if scaled:
+        image = normalise(image, meta)
+    if "valid" in data:
+        image[:, ~data["valid"].astype(bool)] = 0
+    return np.ascontiguousarray(image)
 
 
 def scores(matrix: np.ndarray, classes: list) -> dict:
@@ -42,13 +55,16 @@ def train(req, report):
     val_rows = [s for s in meta["samples"] if s["split"] == "validation"]
     if not train_rows or not val_rows:
         raise ValueError("Both spatial training and validation sets are required")
+    if os.environ.get("PPG_GEOAI_FAKE") != "1" and meta["tile_size"] < 64:
+        raise ValueError("U-Net/ResNet34 training requires tiles of at least 64 pixels; "
+                         "prepare a new dataset with tile_size >= 64")
     out.mkdir(parents=True, exist_ok=False)
     nclasses = len(meta["classes"])
     if os.environ.get("PPG_GEOAI_FAKE") == "1":
-        sums, counts = np.zeros((nclasses, 3)), np.zeros(nclasses)
+        sums, counts = np.zeros((nclasses, channel_count(meta))), np.zeros(nclasses)
         for sample in train_rows:
             with np.load(source / sample["file"], allow_pickle=False) as d:
-                image = np.moveaxis(d["image"], 0, -1)
+                image = np.moveaxis(tile_image(d, meta, scaled=meta["format"] == 2), 0, -1)
                 for cid in range(nclasses):
                     pix = image[d["label"] == cid]
                     sums[cid] += pix.sum(axis=0)
@@ -60,7 +76,7 @@ def train(req, report):
         matrix = np.zeros((nclasses, nclasses), np.int64)
         for sample in val_rows:
             with np.load(source / sample["file"], allow_pickle=False) as d:
-                image = np.moveaxis(d["image"], 0, -1)
+                image = np.moveaxis(tile_image(d, meta, scaled=meta["format"] == 2), 0, -1)
                 pred = ((image[..., None, :] - centers) ** 2).sum(axis=-1).argmin(axis=-1)
                 y = d["label"]
                 known = y != IGNORE
@@ -86,11 +102,12 @@ def train(req, report):
 
             def __getitem__(self, idx):
                 with np.load(source / self.rows[idx]["file"], allow_pickle=False) as data:
-                    return (torch.from_numpy(data["image"].astype(np.float32) / 255),
+                    return (torch.from_numpy(tile_image(data, meta)),
                             torch.from_numpy(data["label"].astype(np.int64)))
 
-        model = get_smp_model(architecture="unet", encoder_name="resnet34", encoder_weights="imagenet",
-                              in_channels=3, classes=nclasses).to(device)
+        encoder_weights = "imagenet" if meta["format"] == 1 else None
+        model = get_smp_model(architecture="unet", encoder_name="resnet34", encoder_weights=encoder_weights,
+                              in_channels=channel_count(meta), classes=nclasses).to(device)
         loader = DataLoader(Tiles(train_rows), batch_size=batch_size, shuffle=True, num_workers=0)
         validation = DataLoader(Tiles(val_rows), batch_size=batch_size, shuffle=False, num_workers=0)
         optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -128,7 +145,10 @@ def train(req, report):
         backend = "geoai-unet"
     model_meta = {k: meta[k] for k in ("format", "classes", "mapping", "field", "bands", "normalisation",
                                       "resolution", "tile_size", "ignore_index", "split", "class_pixels")}
+    if meta["format"] == 2:
+        model_meta.update({k: meta[k] for k in ("inputs", "channels")})
     model_meta.update({"architecture": "unet", "encoder": "resnet34", "backend": backend,
+                       "encoder_weights": "imagenet" if meta["format"] == 1 else None,
                        "device": str(device), "versions": versions, "metrics": result,
                        "dataset": str(source.resolve()), "epochs": epochs, "batch_size": batch_size})
     (out / "model.json").write_text(json.dumps(model_meta, indent=2), encoding="utf-8")
@@ -145,14 +165,25 @@ def predict(req, report):
     meta = read_manifest(folder, "model.json")
     if output.exists():
         raise FileExistsError(f"Output already exists: {output}")
+    custom = meta["format"] == 2
+    if custom and not req.get("inputs"):
+        raise ValueError("Choose the input rasters required by this model; training paths are not reused")
+    if not custom and req.get("inputs"):
+        raise ValueError("This RGB model needs the original three-band RGB input")
     fake = meta["backend"] == "fake-colour-centroids"
     if fake and os.environ.get("PPG_GEOAI_FAKE") != "1":
         raise ValueError("This is a test model, not a trained GeoAI model")
     if fake:
         centers = np.load(folder / "fake.npy", allow_pickle=False)
 
-        def infer(rgb):
-            image = np.moveaxis(rgb, 0, -1)
+        if centers.shape != (len(meta["classes"]), channel_count(meta)):
+            raise ValueError("Test model channels do not match its metadata")
+
+        def infer(image, valid):
+            if custom:
+                image = normalise(image, meta)
+                image[:, ~valid] = 0
+            image = np.moveaxis(image, 0, -1)
             return ((image[..., None, :] - centers) ** 2).sum(axis=-1).argmin(axis=-1).astype(np.uint8)
     else:
         import torch
@@ -160,19 +191,26 @@ def predict(req, report):
 
         device = device_for(req.get("device"))
         model = get_smp_model(architecture=meta["architecture"], encoder_name=meta["encoder"],
-                              encoder_weights=None, in_channels=3, classes=len(meta["classes"]))
+                              encoder_weights=None, in_channels=channel_count(meta), classes=len(meta["classes"]))
         model.load_state_dict(torch.load(folder / "weights.pt", map_location="cpu", weights_only=True))
         model.to(device).eval()
 
-        def infer(rgb):
+        def infer(image, valid):
             with torch.inference_mode():
-                image = torch.from_numpy(rgb.astype(np.float32) / 255).unsqueeze(0).to(device)
-                return model(image).argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
+                image = normalise(image, meta)
+                image[:, ~valid] = 0
+                tensor = torch.from_numpy(np.ascontiguousarray(image)).unsqueeze(0).to(device)
+                return model(tensor).argmax(dim=1)[0].cpu().numpy().astype(np.uint8)
     tile = int(meta["tile_size"])
     halo = min(32, tile // 4)
     core = tile - 2 * halo
-    with rasterio.open(req["raster"]) as src:
-        resolution = check_raster(src)
+    from contextlib import ExitStack
+
+    with ExitStack() as opened:
+        src = opened.enter_context(rasterio.open(req["raster"]))
+        stack = (opened.enter_context(RasterStack(req["raster"], req["inputs"], schema=meta["inputs"]))
+                 if custom else None)
+        resolution = stack.resolution if custom else check_raster(src)
         if not math.isclose(resolution, meta["resolution"], rel_tol=1e-4):
             raise ValueError(f"Model resolution is {meta['resolution']:g} m/px; resample the raster before applying")
         profile = src.profile.copy()
@@ -187,14 +225,18 @@ def predict(req, report):
                     x, y = col * core, row * core
                     w, h = min(core, src.width - x), min(core, src.height - y)
                     win = Window(x - halo, y - halo, tile, tile)
-                    rgb = src.read([1, 2, 3], window=win, boundless=True, fill_value=0)
-                    pred = infer(rgb)[halo:halo + h, halo:halo + w].copy()
-                    valid = (src.read_masks([1, 2, 3], window=Window(x, y, w, h)) > 0).all(axis=0)
-                    pred[~valid] = IGNORE
+                    if custom:
+                        image, valid = stack.read(win)
+                    else:
+                        image = src.read([1, 2, 3], window=win, boundless=True, fill_value=0)
+                        valid = (src.read_masks([1, 2, 3], window=win, boundless=True) > 0).all(axis=0)
+                    pred = infer(image, valid)[halo:halo + h, halo:halo + w].copy()
+                    pred[~valid[halo:halo + h, halo:halo + w]] = IGNORE
                     dst.write(pred, 1, window=Window(x, y, w, h))
                 report((row + 1) / nrows, f"GeoAI: {row + 1}/{nrows} tile rows")
     return {"model": str(folder.resolve()), "classes": meta["classes"], "resolution": meta["resolution"],
-            "backend": meta["backend"], "output": str(output)}
+            "backend": meta["backend"], "output": str(output), "inputs": meta.get("inputs", []),
+            "channels": channel_count(meta), "normalisation": meta["normalisation"]}
 
 
 def main():

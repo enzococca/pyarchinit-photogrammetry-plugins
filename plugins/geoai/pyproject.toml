@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-geoai"
-version = "0.1.0"
-description = "Learn segmentation classes from reviewed archaeological drawings"
+version = "0.2.0"
+description = "Learn segmentation from reviewed drawings using RGB, DEM, multispectral and thermal rasters"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 authors = [{name = "Enzo Cocca", email = "enzo.ccc@gmail.com"}]
