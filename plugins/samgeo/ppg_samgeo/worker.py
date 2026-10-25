@@ -28,7 +28,8 @@ object is Grounding DINO's confidence in its box, ``quality`` SAM's own estimate
 
 ``PPG_SAMGEO_FAKE`` makes a fake engine without PyTorch, for the tests: the bright blobs of the
 image (grey above 200) are the objects, the score is their brightness. ``slow`` sleeps on every
-image, ``fail`` answers with an error, ``crash`` closes the process.
+image, ``fail`` answers with an error, ``crash`` closes the process, ``xet`` fails to load the models
+unless ``HF_HUB_DISABLE_XET`` is set (a download broken off).
 """
 from __future__ import annotations
 
@@ -195,6 +196,9 @@ def main() -> int:
             op = req["op"]
             if op == "init":
                 fake = os.environ.get("PPG_SAMGEO_FAKE")
+                if fake == "xet" and not os.environ.get("HF_HUB_DISABLE_XET"):  # a download broken off
+                    raise RuntimeError("Task error: File reconstruction error: CAS Client Error: Format error: I/O "
+                                       "error: error decoding response body")
                 if fake:
                     engine = Fake(fake)
                 elif req.get("engine", "open") == "open":

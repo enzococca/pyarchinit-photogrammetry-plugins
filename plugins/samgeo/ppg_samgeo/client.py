@@ -56,47 +56,64 @@ class Segmenter:
                  token: str | None = None, progress=None, python: Path | None = None, script: Path | None = None):
         python = Path(python) if python is not None else environment.worker_python()
         script = Path(script).absolute() if script is not None else WORKER.absolute()
+        request = {"op": "init", "engine": engine, "detector": DETECTORS.get(detector, detector),
+                   "segmenter": SEGMENTERS.get(segmenter, segmenter), "device": device, "token": token}
+        try:
+            reply = self._start(python, script, request, progress, {})
+        except WorkerError as exc:
+            if not download_failed(str(exc)):
+                raise
+            # the weights broke off while they came through Hugging Face's Xet storage: once more by plain
+            # HTTP, which takes up the files already in the cache
+            reply = self._start(python, script, request, progress, {"HF_HUB_DISABLE_XET": "1"})
+        self.engine, self.device, self.versions = reply["engine"], reply["device"], reply.get("versions") or {}
+
+    def _start(self, python: Path, script: Path, request: dict, progress, extra: dict) -> dict:
+        """The worker started and its models loaded: the reply to ``init``."""
         env = environment.clean_environment()
         env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # Apple GPU, the processor for the few operations it lacks
+        env.update(extra)
         self._proc = subprocess.Popen([str(python), "-u", str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE, env=env, close_fds=False)
         self._said: deque = deque(maxlen=60)
         self._replies: queue.Queue = queue.Queue()
-        threading.Thread(target=self._drain, name="samgeo worker stderr", daemon=True).start()
-        threading.Thread(target=self._pump, name="samgeo worker replies", daemon=True).start()
+        # each thread bound to its own process and queue: those of a worker started again never mix
+        threading.Thread(target=self._drain, args=(self._proc, self._said), name="samgeo worker stderr",
+                         daemon=True).start()
+        threading.Thread(target=self._pump, args=(self._proc, self._replies), name="samgeo worker replies",
+                         daemon=True).start()
         try:
-            reply = self._call({"op": "init", "engine": engine, "detector": DETECTORS.get(detector, detector),
-                                "segmenter": SEGMENTERS.get(segmenter, segmenter), "device": device, "token": token},
-                               progress)
+            return self._call(request, progress)
         except BaseException:
             self.close()
             raise
-        self.engine, self.device, self.versions = reply["engine"], reply["device"], reply.get("versions") or {}
 
-    def _drain(self) -> None:
+    @staticmethod
+    def _drain(proc, said) -> None:
         try:
-            for raw in self._proc.stderr:
+            for raw in proc.stderr:
                 line = raw.decode("utf-8", "replace").rstrip()
                 if line:
-                    self._said.append(line[-300:])
+                    said.append(line[-300:])
         except (OSError, ValueError):
             pass
 
-    def _pump(self) -> None:
+    @staticmethod
+    def _pump(proc, replies) -> None:
         """The replies of the worker into the queue; None when its output ends, a reply with
         ``broken`` when it cannot be read (the worker is then stopped by :meth:`_call`)."""
-        stream = self._proc.stdout
+        stream = proc.stdout
         try:
             while True:
                 head = stream.read(8)
                 if len(head) < 8:
                     break
                 (n,) = struct.unpack(">Q", head)
-                self._replies.put(pickle.loads(stream.read(n)))
+                replies.put(pickle.loads(stream.read(n)))
         except Exception as exc:  # noqa: BLE001 - the pipe closed under it, or a reply not readable here
-            self._replies.put({"ok": False, "broken": True, "error": f"{type(exc).__name__}: {exc}"})
+            replies.put({"ok": False, "broken": True, "error": f"{type(exc).__name__}: {exc}"})
             return
-        self._replies.put(None)
+        replies.put(None)
 
     def _call(self, request: dict, progress=None) -> dict:
         from pyarchinit_photogrammetry.core.progress import as_progress
@@ -170,9 +187,24 @@ class Segmenter:
         self.close()
 
 
+DOWNLOAD_ERRORS = ("cas client", "file reconstruction", "error decoding response body", "xet", "connection reset",
+                   "incompleteread", "chunkedencodingerror")
+
+
+def download_failed(text: str) -> bool:
+    """The text of a failure says the download of the weights broke off."""
+    low = text.lower()
+    return any(k in low for k in DOWNLOAD_ERRORS)
+
+
 def _hint(text: str) -> str:
     """A suggestion for a failure the user can do something about."""
     low = text.lower()
+    if download_failed(text):
+        return "\n" + t("Il download dei pesi da Hugging Face si è interrotto: riprova, riprende da dove era arrivato. "
+                        "Se si ripete, avvia il programma con HF_HUB_DISABLE_XET=1.",
+                        "The download of the weights from Hugging Face broke off: try again, it goes on from where it "
+                        "stopped. If it happens again, start the program with HF_HUB_DISABLE_XET=1.")
     if any(k in low for k in ("connection", "resolve", "offline", "timed out", "max retries", "huggingface.co")):
         return "\n" + t("I pesi dei modelli si scaricano da Hugging Face al primo uso: serve la connessione a internet.",
                         "The weights of the models are downloaded from Hugging Face at the first use: an internet "
