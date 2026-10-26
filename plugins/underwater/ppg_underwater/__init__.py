@@ -91,6 +91,11 @@ def colour_text(chunk) -> str:
         s["copies"], method, t("le corrette", "the corrected ones") if s["using"] else t("le originali", "the originals"))
     info = (chunk.meta.get("underwater") or {}).get("colour") or {}
     coeffs = info.get("coefficients")
+    if info.get("attenuation"):
+        text += " " + (t("Attenuazione dai punti visti due volte.", "Attenuation from the points seen twice.")
+                       if str(info["attenuation"]).startswith("multiview")
+                       else t("Attenuazione dall'illuminante (poche foto in comune).",
+                              "Attenuation from the illuminant (few photos in common)."))
     if coeffs and info.get("per") == "survey":
         unit = "/m" if (info.get("model") or {}).get("metric") else ""
         parts = [f"{c}: βD {number(v['beta_D'], 3)}{unit}, βB {number(v['beta_B'], 3)}{unit}" for c, v in coeffs.items()]

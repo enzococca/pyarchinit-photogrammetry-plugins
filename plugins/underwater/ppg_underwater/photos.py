@@ -252,29 +252,39 @@ def fit(chunk, cams=None, source=None, per: str = "survey", sample: int = 30, pr
                            "(Flusso di lavoro > Mappe di profondità).",
                            "No photo with a depth map: build the depth maps first (Workflow > Depth maps)."))
     picked = _spread(cams, sample)
-    samples = []
+    samples, used = [], []
     for i, cam in enumerate(picked):
-        progress(i / len(picked), t("Campioni dell'acqua {0}/{1}", "Samples of the water {0}/{1}").format(i + 1, len(picked)))
+        progress(0.8 * i / len(picked), t("Campioni dell'acqua {0}/{1}", "Samples of the water {0}/{1}").format(
+            i + 1, len(picked)))
         s = _sample(cam, source)
         if s is not None and s[3].mean() > 0.05:
             samples.append(s)
+            used.append(cam)
     if not samples:
         raise ValueError(t("Le mappe di profondità non coprono le foto.", "The depth maps do not cover the photos."))
-    progress(0.95, t("Coefficienti dell'acqua", "Coefficients of the water"))
-    return colour.fit_model(samples, per=per, metric=bool(getattr(source, "metric", False)))
+    progress(0.85, t("Coefficienti dell'acqua", "Coefficients of the water"))
+    return colour.fit_model(samples, per=per, metric=bool(getattr(source, "metric", False)), pairs=neighbour_pairs(used))
+
+
+def neighbour_pairs(cams, neighbours: int = 4) -> list[tuple[int, int]]:
+    """Pairs of photos likely to see the same scene: the nearest by their centres when they are aligned,
+    else those next to each other in the list (a sequence, a video)."""
+    import numpy as np
+
+    n = len(cams)
+    if n < 2:
+        return []
+    if all(c.transform is not None for c in cams):
+        centres = np.array([c.center for c in cams])
+        d = np.linalg.norm(centres[:, None] - centres[None], axis=-1)
+        pairs = {tuple(sorted((a, int(b)))) for a in range(n) for b in np.argsort(d[a])[1:neighbours + 1]}
+    else:
+        pairs = {(a, b) for a in range(n) for b in range(a + 1, min(n, a + 1 + neighbours))}
+    return sorted(pairs)
 
 
 def _exposure(lin, rng, valid, model: colour.Model, amplitude: float) -> float:
-    z = np.clip(rng, model.zmin, model.zmax)
-    direct = np.maximum(lin - colour.backscatter(z, model.backscatter, model.zref, amplitude), 1e-4)
-    light = colour.local_illuminant(direct, z, valid)
-    ok = valid & np.all(light > 1e-3, axis=-1)
-    if ok.sum() < 50:
-        return 0.0
-    zn = z[ok] / model.zref
-    att = np.column_stack([colour.beta_model(zn, model.beta[c]) * zn for c in range(3)])
-    r = np.log(light[ok]) + att - np.asarray(model.white)[None, :]
-    return float(np.median(r))
+    return colour.exposure_of(lin, rng, valid, model, amplitude)
 
 
 def restore(chunk, cams=None, per: str = "survey", source=None, sample: int = 30, model: colour.Model | None = None,
@@ -293,11 +303,13 @@ def restore(chunk, cams=None, per: str = "survey", source=None, sample: int = 30
                            "(Flusso di lavoro > Mappe di profondità).",
                            "No photo with a depth map: build the depth maps first (Workflow > Depth maps)."))
     start = time.time()
-    if per == "survey" and model is None:
-        model = fit(chunk, cams, source, per, sample, progress.sub(0.0, 0.3))
+    if model is None:
+        # one photo at a time too takes from the survey the differences between the channels
+        model = fit(chunk, cams, source, "survey", sample, progress.sub(0.0, 0.3))
+    delta = model.differences()
     names = relative_names(chunk, cams)
     done = [0]
-    sub = progress.sub(0.3 if per == "survey" else 0.0, 0.7 if per == "survey" else 1.0)
+    sub = progress.sub(0.3, 0.7)
     per_photo = {}
 
     def one(cam):
@@ -307,7 +319,7 @@ def restore(chunk, cams=None, per: str = "survey", source=None, sample: int = 30
             return cam.key, None
         _k, lin_s, rng_s, valid_s = small
         if per == "photo":
-            m = colour.fit_model([small], per="photo", metric=bool(getattr(source, "metric", False)))
+            m = colour.fit_model([small], per="photo", metric=bool(getattr(source, "metric", False)), delta=delta)
             amp, exp_ = 1.0, m.exposures.get(cam.key, 0.0)
         else:
             m = model
@@ -324,12 +336,9 @@ def restore(chunk, cams=None, per: str = "survey", source=None, sample: int = 30
         rng = cv2.resize(rng_s, (w, h), interpolation=cv2.INTER_LINEAR)
         lin = colour.to_linear(bgr)
         out = colour.restore_linear(lin, rng, m, amp, exp_)
-        if img.dtype == np.uint16:
-            enc = colour.to_srgb(out).astype(np.uint16) * 257
-        else:
-            enc = colour.to_srgb(out)
+        enc = colour.to_srgb(out, 16 if img.dtype == np.uint16 else 8)
         if grey:
-            enc = cv2.cvtColor(enc, cv2.COLOR_BGR2GRAY) if enc.dtype == np.uint8 else enc[..., 1]
+            enc = enc[..., 1]  # the three channels of a monochrome photo are restored alike
         _store(chunk, cam, enc, names[cam.key], "seathru")
         info = {"amplitude": round(float(amp), 4), "exposure": round(float(exp_), 4),
                 "covered": round(float(valid_s.mean()), 3)}
@@ -347,9 +356,10 @@ def restore(chunk, cams=None, per: str = "survey", source=None, sample: int = 30
     result = {"method": "seathru", "per": per, "photos": len(per_photo), "skipped": skipped,
               "seconds": round(time.time() - start, 1), "time": time.strftime("%Y-%m-%d %H:%M:%S"),
               "ranges": "file" if source.__class__.__name__ == "FileRanges" else "depth_maps"}
-    if model is not None:
+    if per == "survey":
         result["model"] = model.to_dict()
         result["coefficients"] = model.coefficients()
+    result["attenuation"] = model.method
     chunk.meta.setdefault("underwater", {})["colour"] = result
     return result
 
@@ -370,12 +380,14 @@ def preview(chunk, cam, method: str = "quick", params: colour.QuickParams | None
         raise ValueError(t("Questa foto non ha una mappa di profondità.", "This photo has no depth map."))
     small = _sample(cam, source, side)
     _k, lin, rng, valid = small
+    stored = ((chunk.meta.get("underwater") or {}).get("colour") or {}).get("model")
+    survey = colour.Model.from_dict(stored) if stored else fit(chunk, None, source, "survey", 8)
     if per == "photo":
-        m = colour.fit_model([small], per="photo", metric=bool(getattr(source, "metric", False)))
+        m = colour.fit_model([small], per="photo", metric=bool(getattr(source, "metric", False)),
+                             delta=survey.differences())
         amp, exp_ = 1.0, m.exposures.get(cam.key, 0.0)
     else:
-        stored = ((chunk.meta.get("underwater") or {}).get("colour") or {}).get("model")
-        m = colour.Model.from_dict(stored) if stored else fit(chunk, None, source, "survey", 8)
+        m = survey
         amp = m.amplitudes.get(cam.key) or colour._amplitude(lin, rng, valid, m) or 1.0
         exp_ = m.exposures.get(cam.key)
         if exp_ is None:

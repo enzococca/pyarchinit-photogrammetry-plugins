@@ -37,13 +37,19 @@ def is_metric(chunk) -> bool:
 
 
 def fill_nearest(values: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    """``values`` with the invalid cells taken from the nearest valid one."""
+    """``values`` with the invalid cells taken from the nearest valid one, smoothed away from the valid
+    ones (the nearest value alone draws the edges of a Voronoi diagram in a wide hole: the water above
+    the horizon would get seams of colour)."""
     if valid.all() or not valid.any():
         return values
     from scipy.ndimage import distance_transform_edt
 
-    _, (ri, ci) = distance_transform_edt(~valid, return_indices=True)
-    return values[ri, ci]
+    dist, (ri, ci) = distance_transform_edt(~valid, return_indices=True)
+    near = values[ri, ci].astype(np.float32)
+    sigma = 0.03 * max(values.shape)
+    smooth = cv2.GaussianBlur(near, (0, 0), sigma)
+    w = np.clip(dist / (2.0 * sigma), 0.0, 1.0).astype(np.float32)
+    return np.where(valid, values, (1.0 - w) * near + w * smooth).astype(values.dtype)
 
 
 class RangeMaps:

@@ -172,3 +172,30 @@ def test_corrected_copies_and_the_photos_in_use(tmp_path):
     res = photos.use(chunk, "original")
     assert res["switched"] == 3 and cams[0].path == str(folder / "IMG_0.JPG")
     assert chunk.meta["sfm"]["image_root"] == str(folder) and photos.status(chunk)["using"] == 0
+
+
+def test_the_points_seen_twice_give_the_differences_of_attenuation():
+    """Four photos of the same bottom from different ranges: the points they share give the difference of
+    attenuation between red, green and blue whatever the colours of the scene."""
+    import cv2
+
+    h, w = 220, 300
+    grey = samples.blobs(h, w + 150, seed=11).astype(np.float32) / 255.0
+    tint = cv2.resize(np.random.default_rng(4).uniform(0.4, 1.0, (4, 6, 3)).astype(np.float32), (w + 150, h))
+    scene = np.clip(grey[..., None] * tint, 0.01, 0.95)
+    holes = cv2.dilate((np.random.default_rng(5).uniform(size=grey.shape) < 0.004).astype(np.uint8),
+                       np.ones((3, 3), np.uint8)) > 0
+    scene[holes] = 0.004  # the shadows a real bottom has
+    data = []
+    for k, (shift, near) in enumerate(((0, 1.2), (50, 2.8), (100, 1.6), (150, 3.4))):
+        j = scene[:, shift:shift + w]
+        z = (near + 0.6 * np.linspace(0, 1, h)[:, None] * np.ones((1, w))).astype(np.float32)
+        lin = colour.to_linear(samples.srgb(samples.underwater(j, z, seed=k)))
+        data.append((k, lin, z, np.ones(z.shape, bool)))
+    pairs = [(a, b) for a in range(4) for b in range(a + 1, 4)]
+    model = colour.fit_model(data, pairs=pairs)
+    assert model.method == "multiview" and model.observations > 150
+    beta = np.array([colour.beta_model(1.0, model.beta[c]) for c in range(3)]) / model.zref
+    diff = beta - beta[1]
+    true = samples.BETA_D - samples.BETA_D[1]
+    assert np.allclose(diff, true, atol=0.06), (diff, true)
