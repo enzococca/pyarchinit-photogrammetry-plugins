@@ -79,6 +79,20 @@ def match_depths(chunk, log, offset: float = 0.0, tolerance: float = 2.0) -> dic
     return {"matched": len(found), "timed": timed, "photos": len(chunk.cameras)}
 
 
+LOW_COVERAGE = 0.4  # below it, most ranges of the restoration are guessed from the nearest surface
+
+
+def low_coverage_text(covered: float) -> str:
+    return t("Le mappe di profondità coprono solo il {0} % di ogni foto (mediana): dove mancano, la distanza viene "
+             "dalla superficie più vicina e i colori sono solo plausibili. Con foto ravvicinate costruiscile con il "
+             "motore «PatchMatch multi-vista» (Flusso di lavoro > Costruisci nuvola densa..., «Solo le mappe di "
+             "profondità») e ripristina di nuovo.",
+             "The depth maps cover only {0} % of each photo (median): where they are missing, the range comes from "
+             "the nearest surface and the colours are only plausible. For close-range photos build them with the "
+             "\"PatchMatch multi-view\" engine (Workflow > Build dense cloud..., \"Depth maps only\") and restore "
+             "again.").format(number(100 * covered, 0))
+
+
 # ------------------------------------------------------------------ summaries
 def colour_text(chunk) -> str:
     from . import photos
@@ -553,10 +567,11 @@ class UnderwaterPlugin(Plugin):
                 RangeMaps(chunk)
             except RuntimeError:
                 self._message("warning", t("Il ripristino fisico vuole le mappe di profondità: allinea le foto e "
-                                           "costruisci le mappe di profondità (o la nuvola densa), oppure usa la "
-                                           "correzione rapida.",
+                                           "costruiscile (Flusso di lavoro > Costruisci nuvola densa..., «Solo le "
+                                           "mappe di profondità»), oppure usa la correzione rapida.",
                                            "The physics-based restoration needs the depth maps: align the photos and "
-                                           "build the depth maps (or the dense cloud), or use the quick correction."))
+                                           "build them (Workflow > Build dense cloud..., \"Depth maps only\"), or use "
+                                           "the quick correction."))
                 return
 
             def job(progress):
@@ -572,6 +587,8 @@ class UnderwaterPlugin(Plugin):
             self._status(t("{0} foto corrette in {1} s: «Usa le foto corrette» le dà a ortofoto e texture.",
                            "{0} photos corrected in {1} s: 'Use the corrected photos' gives them to the orthomosaic "
                            "and the texture.").format(info["photos"], number(info.get("seconds", 0), 0)))
+            if info.get("method") == "seathru" and info.get("covered", 1.0) < LOW_COVERAGE:
+                self._message("warning", low_coverage_text(info["covered"]))
 
         self.context.run(t("Colori delle foto", "Colours of the photos"), job, done)
 
@@ -876,6 +893,8 @@ class UnderwaterPlugin(Plugin):
                 source = photos.range_source(chunk, a.depth_folder, fov=a.fov)
                 info = photos.restore(chunk, per=a.per, source=source, sample=a.sample, progress=print_progress)
                 print(f"{info['photos']} photos restored in {info['seconds']} s ({info['skipped']} without ranges)")
+                if info.get("covered", 1.0) < LOW_COVERAGE:
+                    print(low_coverage_text(info["covered"]))
                 if info.get("coefficients"):
                     print(json.dumps(info["coefficients"], indent=1))
                 if a.use:

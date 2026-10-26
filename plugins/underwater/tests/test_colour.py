@@ -232,6 +232,7 @@ def test_photos_restored_with_depth_images_made_elsewhere(tmp_path):
     source = FileRanges(depths, kind="range")
     info = photos.restore(chunk, source=source)
     assert info["photos"] == 5 and info["attenuation"].startswith("multiview") and "R" in info["coefficients"]
+    assert info["covered"] > 0.95
     before = colour.colour_cast(cv2.imread(str(cams[3].path)))
     after = colour.colour_cast(cv2.imread(str(photos.corrected(chunk, cams[3]))))
     assert before["r_g"] < 0.6 and abs(after["r_g"] - 1.0) < abs(before["r_g"] - 1.0) / 2, (before, after)
@@ -241,3 +242,32 @@ def test_photos_restored_with_depth_images_made_elsewhere(tmp_path):
     info = photos.restore(chunk, per="photo", source=source)
     assert info["photos"] == 5 and "seathru" in cams[0].meta["underwater"] and \
         cams[0].meta["underwater"]["seathru"]["model"]["method"] == "multiview (survey)"
+
+
+def test_depth_maps_that_cover_little_are_told(tmp_path):
+    """Depth images that reach a fifth of each photo (stereo from pairs on close-range photos): the
+    restoration says how much they cover, and the pane warns to build them with PatchMatch."""
+    import cv2
+
+    import pyarchinit_photogrammetry as ppg
+    from ppg_underwater import LOW_COVERAGE, low_coverage_text, photos
+    from ppg_underwater.ranges import FileRanges
+
+    folder, depths = tmp_path / "foto", tmp_path / "depth"
+    folder.mkdir()
+    depths.mkdir()
+    scene = np.clip(samples.blobs(160, 240, seed=3).astype(np.float32)[..., None] / 255.0 * [0.9, 0.7, 0.5], 0.01, 0.95)
+    for k in range(4):
+        z = np.full((160, 240), 2.0 + 0.3 * k, np.float32)
+        cv2.imwrite(str(folder / f"IMG_{k}.png"), samples.srgb(samples.underwater(scene, z, seed=k)))
+        z[:, :] = 0.0
+        z[60:120, 80:200] = 2.0 + 0.3 * k  # a fifth of the photo
+        cv2.imwrite(str(depths / f"depthIMG_{k}.tif"), z)
+    doc = ppg.Document()
+    chunk = doc.add_chunk()
+    doc.chunk = chunk
+    doc.save(tmp_path / "p.ppg")
+    chunk.add_photos(sorted(folder.iterdir()))
+    info = photos.restore(chunk, source=FileRanges(depths, kind="range"))
+    assert info["covered"] == pytest.approx(0.1875, abs=0.03) and info["covered"] < LOW_COVERAGE
+    assert "PatchMatch" in low_coverage_text(info["covered"]) and "19 %" in low_coverage_text(info["covered"])

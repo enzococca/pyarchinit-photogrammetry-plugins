@@ -249,8 +249,8 @@ def fit(chunk, cams=None, source=None, per: str = "survey", sample: int = 30, pr
     cams = [c for c in _cams(chunk, cams) if source.available(c)]
     if not cams:
         raise ValueError(t("Nessuna foto con una mappa di profondità: costruisci prima le mappe di profondità "
-                           "(Flusso di lavoro > Mappe di profondità).",
-                           "No photo with a depth map: build the depth maps first (Workflow > Depth maps)."))
+                           "(Flusso di lavoro > Costruisci nuvola densa..., con «Solo le mappe di profondità»).",
+                           "No photo with a depth map: build the depth maps first (Workflow > Build dense cloud..., with \"Depth maps only\")."))
     picked = _clustered(cams, sample)
     samples, used = [], []
     for i, cam in enumerate(picked):
@@ -326,8 +326,8 @@ def restore(chunk, cams=None, per: str = "survey", source=None, sample: int = 30
     skipped = len(_cams(chunk, cams)) - len(cams)
     if not cams:
         raise ValueError(t("Nessuna foto con una mappa di profondità: costruisci prima le mappe di profondità "
-                           "(Flusso di lavoro > Mappe di profondità).",
-                           "No photo with a depth map: build the depth maps first (Workflow > Depth maps)."))
+                           "(Flusso di lavoro > Costruisci nuvola densa..., con «Solo le mappe di profondità»).",
+                           "No photo with a depth map: build the depth maps first (Workflow > Build dense cloud..., with \"Depth maps only\")."))
     start = time.time()
     if model is None:
         # one photo at a time too takes from the survey the differences between the channels
@@ -381,7 +381,8 @@ def restore(chunk, cams=None, per: str = "survey", source=None, sample: int = 30
             sub(done[0] / len(cams), t("Colori ripristinati {0}/{1}", "Colours restored {0}/{1}").format(done[0], len(cams)))
     result = {"method": "seathru", "per": per, "photos": len(per_photo), "skipped": skipped,
               "seconds": round(time.time() - start, 1), "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-              "ranges": "file" if source.__class__.__name__ == "FileRanges" else "depth_maps"}
+              "ranges": "file" if source.__class__.__name__ == "FileRanges" else "depth_maps",
+              "covered": round(float(np.median([i["covered"] for i in per_photo.values()])), 3) if per_photo else 0.0}
     if per == "survey":
         result["model"] = model.to_dict()
         result["coefficients"] = model.coefficients()
