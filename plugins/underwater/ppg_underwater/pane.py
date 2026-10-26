@@ -6,7 +6,7 @@ import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
-                               QHBoxLayout, QHeaderView, QLabel, QPushButton, QScrollArea, QTableWidget,
+                               QHBoxLayout, QHeaderView, QLabel, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
@@ -28,6 +28,15 @@ def _label(text: str = "") -> QLabel:
     lab.setWordWrap(True)
     lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     return lab
+
+
+def _combo() -> QComboBox:
+    """A combo box that does not widen the pane to its longest entry."""
+    c = QComboBox()
+    c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    c.setMinimumContentsLength(10)
+    c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    return c
 
 
 def _spin(lo: float, hi: float, value: float, step: float = 0.05, decimals: int = 2, suffix: str = "") -> QDoubleSpinBox:
@@ -81,6 +90,7 @@ class UnderwaterPane(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # the texts wrap, the pane stays narrow
         outer.addWidget(scroll)
         body = QWidget()
         scroll.setWidget(body)
@@ -154,8 +164,9 @@ class UnderwaterPane(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.table.setMinimumHeight(120)
         self.table.setMaximumHeight(220)
         lay.addWidget(self.table)
@@ -170,7 +181,7 @@ class UnderwaterPane(QWidget):
             s.setValue(float(limits.get(k, s.value())))
             s.blockSignals(False)
 
-    def set_photos(self, rows: list[dict], text: str) -> None:
+    def set_photos(self, rows: list[dict], text: str) -> None:  # noqa: C901
         """``rows``: the flagged photos, ``{"label", "quality", "contrast", "veil", "why", "enabled"}``."""
         self.l_photos.setText(text)
         self.table.setRowCount(len(rows))
@@ -182,19 +193,21 @@ class UnderwaterPane(QWidget):
                 if not row.get("enabled", True):
                     item.setForeground(Qt.GlobalColor.gray)
                 self.table.setItem(r, c, item)
+        if rows:
+            self.table.resizeColumnsToContents()
 
     # ------------------------------------------------------------------ colours
     def _colour_box(self) -> QGroupBox:
         box = QGroupBox(t("2. Colori", "2. Colours"))
         lay = QVBoxLayout(box)
         form = QFormLayout()
-        self.c_method = QComboBox()
+        self.c_method = _combo()
         self.c_method.addItem(t("Ripristino fisico (Sea-thru, con le mappe di profondità)",
                                 "Physics-based restoration (Sea-thru, with the depth maps)"), "seathru")
         self.c_method.addItem(t("Correzione rapida (anche prima dell'allineamento)",
                                 "Quick correction (also before the alignment)"), "quick")
         form.addRow(t("Metodo", "Method"), self.c_method)
-        self.c_per = QComboBox()
+        self.c_per = _combo()
         self.c_per.addItem(t("uno per il rilievo (foto uniformi)", "one for the survey (photos alike)"), "survey")
         self.c_per.addItem(t("uno per ogni foto", "one for every photo"), "photo")
         self.c_per.setToolTip(t("I coefficienti dell'acqua: uno per il rilievo dà a tutte le foto la stessa "
@@ -212,21 +225,19 @@ class UnderwaterPane(QWidget):
         self.s_blue.setToolTip(t("Per l'acqua verde (laghi, porti): anche il blu ricostruito dal verde",
                                  "For green water (lakes, harbours): the blue rebuilt from the green too"))
         form.addRow(t("Compensazione del blu", "Blue compensation"), self.s_blue)
-        self.k_balance = QCheckBox(t("bilanciamento del bianco (mondo grigio)", "white balance (grey world)"))
+        self.k_balance = QCheckBox(t("bilanciamento del bianco", "white balance"))
+        self.k_balance.setToolTip(t("A mondo grigio, con le medie di un campione del rilievo",
+                                    "Grey world, with the means of a sample of the survey"))
         self.k_balance.setChecked(True)
-        self.k_clahe = QCheckBox(t("contrasto locale (CLAHE)", "local contrast (CLAHE)"))
-        self.k_clahe.setToolTip(t("Aiuta l'allineamento di foto scure o torbide; altera i colori",
-                                  "Helps the alignment of dark or turbid photos; alters the colours"))
-        quick = QWidget()
-        ql = QHBoxLayout(quick)
-        ql.setContentsMargins(0, 0, 0, 0)
-        ql.addWidget(self.k_balance)
-        ql.addWidget(self.k_clahe)
-        form.addRow("", quick)
+        self.k_clahe = QCheckBox("CLAHE")
+        self.k_clahe.setToolTip(t("Contrasto locale: aiuta l'allineamento di foto scure o torbide; altera i colori",
+                                  "Local contrast: helps the alignment of dark or turbid photos; alters the colours"))
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         lay.addLayout(form)
+        _buttons(lay, self.k_balance, self.k_clahe)
         self.c_method.currentIndexChanged.connect(self._method_changed)
         prev = QHBoxLayout()
-        self.c_photo = QComboBox()
+        self.c_photo = _combo()
         self.c_photo.setToolTip(t("La foto dell'anteprima", "The photo of the preview"))
         self.b_preview = QPushButton(t("Anteprima", "Preview"))
         self.b_preview.clicked.connect(lambda: self.preview_requested.emit(self.colour_values()))
@@ -238,7 +249,7 @@ class UnderwaterPane(QWidget):
         self.l_after = QLabel()
         for lab in (self.l_before, self.l_after):
             lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lab.setMinimumWidth(120)
+            lab.setMinimumWidth(80)
             pics.addWidget(lab)
         lay.addLayout(pics)
         self.b_correct = QPushButton(t("Correggi le foto", "Correct the photos"))
@@ -277,7 +288,7 @@ class UnderwaterPane(QWidget):
         self.c_photo.blockSignals(False)
 
     def set_preview(self, before, after) -> None:
-        w = max(120, (self.width() - 40) // 2)
+        w = max(80, (self.width() - 40) // 2)
         self.l_before.setPixmap(pixmap(before, w))
         self.l_after.setPixmap(pixmap(after, w))
         self.l_before.setToolTip(t("Prima", "Before"))
@@ -291,7 +302,7 @@ class UnderwaterPane(QWidget):
         box = QGroupBox(t("3. Profondità invece del GPS", "3. Depth instead of GPS"))
         lay = QVBoxLayout(box)
         form = QFormLayout()
-        self.c_water = QComboBox()
+        self.c_water = _combo()
         self.c_water.addItem(t("mare (1025 kg/m³)", "sea (1025 kg/m³)"), 1025.0)
         self.c_water.addItem(t("acqua dolce (1000 kg/m³)", "fresh water (1000 kg/m³)"), 1000.0)
         self.c_water.setToolTip(t("Per i registri di pressione: la densità che trasforma la pressione in "
@@ -303,7 +314,7 @@ class UnderwaterPane(QWidget):
                                    "What to add to the clock of the camera to read the clock of the log (a camera "
                                    "an hour ahead: -3600)"))
         form.addRow(t("Scarto di tempo", "Time offset"), self.s_offset)
-        self.c_scale = QComboBox()
+        self.c_scale = _combo()
         self.c_scale.addItem(t("dalle profondità", "from the depths"), "depths")
         self.c_scale.addItem(t("dalle barre di scala", "from the scale bars"), "bars")
         self.c_scale.setToolTip(t("Le profondità danno la scala quando cambiano abbastanza; con un rilievo a "
