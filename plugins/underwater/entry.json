@@ -1,0 +1,12 @@
+{
+  "title": "Underwater",
+  "description": "Underwater surveys: colours restored with the range of every pixel from the depth maps (Sea-thru) or a quick correction before the alignment; blurred, hazy and flat photos flagged; sharp frames of videos and fast ROV sequences chosen by motion; depth logs (ROV, dive computer CSV, UDDF) matched by time that level and scale the chunk",
+  "i18n": {
+    "it": {
+      "title": "Subacqueo",
+      "description": "Rilievi sott'acqua: colori ripristinati con la distanza di ogni pixel dalle mappe di profondità (Sea-thru) o una correzione rapida prima dell'allineamento; foto mosse, velate e piatte segnalate; fotogrammi nitidi da video e sequenze ROV scelti per movimento; registri di profondità (ROV, CSV del computer subacqueo, UDDF) che mettono in bolla e in scala il chunk"
+    }
+  },
+  "min_app": "1.3.4",
+  "requires": []
+}
