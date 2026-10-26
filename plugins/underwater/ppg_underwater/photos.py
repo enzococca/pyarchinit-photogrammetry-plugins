@@ -251,7 +251,7 @@ def fit(chunk, cams=None, source=None, per: str = "survey", sample: int = 30, pr
         raise ValueError(t("Nessuna foto con una mappa di profondità: costruisci prima le mappe di profondità "
                            "(Flusso di lavoro > Mappe di profondità).",
                            "No photo with a depth map: build the depth maps first (Workflow > Depth maps)."))
-    picked = _spread(cams, sample)
+    picked = _clustered(cams, sample)
     samples, used = [], []
     for i, cam in enumerate(picked):
         progress(0.8 * i / len(picked), t("Campioni dell'acqua {0}/{1}", "Samples of the water {0}/{1}").format(
@@ -264,6 +264,32 @@ def fit(chunk, cams=None, source=None, per: str = "survey", sample: int = 30, pr
         raise ValueError(t("Le mappe di profondità non coprono le foto.", "The depth maps do not cover the photos."))
     progress(0.85, t("Coefficienti dell'acqua", "Coefficients of the water"))
     return colour.fit_model(samples, per=per, metric=bool(getattr(source, "metric", False)), pairs=neighbour_pairs(used))
+
+
+def _clustered(cams, n: int) -> list:
+    """``n`` photos spread over the survey in small groups that see the same scene (every group a photo and
+    its nearest ones, by their centres when aligned, else the next ones in the list): the points seen
+    twice need overlapping photos, a sample spread one by one over a large survey would have none."""
+    if len(cams) <= n:
+        return list(cams)
+    import numpy as np
+
+    seeds = _spread(cams, max(1, n // 3))
+    aligned = all(c.transform is not None for c in cams)
+    centres = np.array([c.center for c in cams]) if aligned else None
+    index = {c.key: k for k, c in enumerate(cams)}
+    chosen, seen = [], set()
+    for seed in seeds:
+        k = index[seed.key]
+        if aligned:
+            order = np.argsort(np.linalg.norm(centres - centres[k], axis=1))[:3]
+        else:
+            order = range(k, min(len(cams), k + 3))
+        for j in order:
+            if cams[j].key not in seen:
+                seen.add(cams[j].key)
+                chosen.append(cams[j])
+    return chosen
 
 
 def neighbour_pairs(cams, neighbours: int = 4) -> list[tuple[int, int]]:

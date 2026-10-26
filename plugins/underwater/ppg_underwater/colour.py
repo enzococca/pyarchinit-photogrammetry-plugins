@@ -362,8 +362,15 @@ def fit_attenuation_multiview(obs: dict, params, zref: float, amps, photos: int,
         w = np.where(np.abs(res) <= 1.345 * sigma, 1.0, 1.345 * sigma / np.maximum(np.abs(res), 1e-12))
         w[-1] = 1e3
     beta = sol[photos:]  # the differences between the channels are what the photos decide; the level goes with the exposures
+    # standard errors of the differences from green (the exposures cancel in them)
+    sw = np.sqrt(w)
+    try:
+        cov = sigma ** 2 * np.linalg.pinv((a * sw[:, None]).T @ (a * sw[:, None]))[photos:, photos:]
+        se = [float(np.sqrt(max(cov[c, c] + cov[1, 1] - 2 * cov[c, 1], 0.0))) for c in range(3)]
+    except np.linalg.LinAlgError:
+        se = [float("inf")] * 3
     return {"beta": [[float(b), 0.0, 0.0, 0.0] for b in beta], "exposure": [float(e) for e in sol[:photos]],
-            "observations": int(n), "sigma": float(sigma), "two_terms": False}
+            "observations": int(n), "sigma": float(sigma), "two_terms": False, "difference_se": se}
 
 
 # ------------------------------------------------------------------ the model of a survey
@@ -388,6 +395,7 @@ class Model:
     method: str = "illuminant"  # how the attenuation was found: "multiview" or "illuminant"
     reference: list = field(default_factory=list)  # the light levels exposures are measured against
     observations: int = 0  # points seen twice the multiview attenuation was fitted on
+    difference_se: list = field(default_factory=list)  # standard errors of the differences from green, per unit
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -505,7 +513,7 @@ def fit_model(samples, per: str = "survey", metric: bool = False, two_terms: boo
     # 1. backscatter: pooled, then the strength of every photo, then pooled again on the normalised samples
     dz, dv, dk = [], [], []
     for i, (_key, lin, rng, valid) in enumerate(samples):
-        z, v = dark_samples(lin, rng, valid, lo=zmin, hi=zmax)
+        z, v = dark_samples(lin, rng, _surface(valid), lo=zmin, hi=zmax)
         dz.append(z)
         dv.append(v)
         dk.append(np.full(len(z), i))
@@ -549,7 +557,14 @@ def fit_model(samples, per: str = "survey", metric: bool = False, two_terms: boo
         if multi is not None:
             raw = [b[0] for b in multi["beta"]]
             green = float(beta_model(1.0, att["beta"][1]))
-            model.beta = [[max(0.0, green + raw[c] - raw[1]), 0.0, 0.0, 0.0] for c in range(3)]
+            # a difference the points cannot tell from noise is taken towards none (only the colour of the
+            # light is then corrected): d * d^2 / (d^2 + se^2)
+            diff = []
+            for c in range(3):
+                d, se = raw[c] - raw[1], multi["difference_se"][c]
+                diff.append(d * d * d / (d * d + se * se) if d * d + se * se > 0 else 0.0)
+            model.beta = [[max(0.0, green + diff[c]), 0.0, 0.0, 0.0] for c in range(3)]
+            model.difference_se = [se / zref for se in multi["difference_se"]]
             model.two_terms = False
             model.method = "multiview"
             model.observations = multi["observations"]
@@ -568,16 +583,24 @@ def fit_model(samples, per: str = "survey", metric: bool = False, two_terms: boo
     # 5. the colour of the light, from the edges of the photos without the water
     restored = [restore_linear(lin, rng, model, model.amplitudes[int(key)], model.exposures[int(key)])
                 for (key, lin, rng, valid) in samples]
-    model.white = [float(v) for v in np.log(grey_edge(restored, [v for *_r, v in samples]))]
+    model.white = [float(v) for v in np.log(grey_edge(restored, [_surface(v) for *_r, v in samples]))]
     return _with_gain(model, samples)
 
 
+def _surface(valid: np.ndarray) -> np.ndarray:
+    """The pixels of the surfaces: those with a range and those close to them (shadows and dark crevices,
+    where depth maps fail first), not the open water far from any."""
+    k = max(3, int(0.05 * max(valid.shape)) | 1)
+    return cv2.dilate(valid.astype(np.uint8), np.ones((k, k), np.uint8)) > 0
+
+
 def _with_gain(model: Model, samples) -> Model:
-    """3. The output gain: the median grey of the survey to a middle grey (linear 0.18)."""
+    """The output gain: the median grey of the surfaces of the survey to a middle grey (linear 0.18)."""
     greys = []
     for (key, lin, rng, valid) in samples:
         j = restore_linear(lin, rng, model, model.amplitudes[int(key)], model.exposures[int(key)])
-        greys.append(np.median(j[valid].mean(axis=1)) if valid.any() else np.nan)
+        surface = _surface(valid)
+        greys.append(np.median(j[surface].mean(axis=1)) if surface.any() else np.nan)
     g = float(np.nanmedian(greys)) if np.isfinite(np.nanmedian(greys)) else 1.0
     model.gain = 0.18 / max(g, 1e-6)
     return model

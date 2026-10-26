@@ -15,7 +15,7 @@ subacqueo o le immagini di un ROV. Non chiede niente oltre al programma (numpy, 
 | *Calibrazione (Kalibr)...* | La calibrazione della camera di un ROV da Kalibr (radtan: OPENCV, equidistant: OPENCV_FISHEYE), il punto principale spostato di mezzo pixel alla convenzione di COLMAP, tenuta fissa nell'allineamento |
 | *Valuta le foto* | Tre punteggi per foto: **qualità** (la nitidezza del programma rispetto a quella delle foto più nitide del chunk: foto mosse o sfocate), **contrasto** (estensione della luminosità, 2°-98° percentile: acqua lattiginosa, foto troppo scure) e **velo** (la mediana del canale scuro di verde e blu sulla luce massima: torbidità, retrodiffusione). Soglie nel pannello (0,5, 0,12, 0,6), le foto segnate in una tabella con il perché; *Escludi le segnate* le disattiva (allineamento e prodotti le lasciano fuori), *Riattiva le escluse* le riporta; una tabella CSV |
 | **2. Colori** | |
-| *Ripristino fisico (Sea-thru)* | Con la **distanza di ogni pixel** dalle mappe di profondità del programma (*Flusso di lavoro > Mappe di profondità*; le mappe sono delle foto senza distorsione: ogni pixel della foto è portato al suo raggio con il modello della camera e alla mappa, `distanza = z * sqrt(1 + x² + y²)`, in metri quando lo è il chunk) il modello di formazione dell'immagine di Sea-thru (Akkaynak e Treibitz, CVPR 2019), scritto qui a partire dall'articolo: la **retrodiffusione** di ogni canale stimata sui pixel più scuri di ogni fascia di distanza, `B(z) = B∞ (1 - e^(-βB z))`, e tolta; l'**illuminante** - la media locale fra i pixel a distanza simile - descritta da `log E = w + e_foto - βD(z) z`, con `βD(z)` le due esponenziali dell'articolo; i colori `J = D e^(βD(z) z)`. I coefficienti **una volta per il rilievo** (le foto di un'immersione hanno la stessa correzione: niente cuciture di colore in ortofoto e texture; l'esposizione e l'intensità della retrodiffusione di ogni foto restano sue) o **per ogni foto** |
+| *Ripristino fisico (Sea-thru)* | Con la **distanza di ogni pixel** dalle mappe di profondità del programma (*Flusso di lavoro > Mappe di profondità*; le mappe sono delle foto senza distorsione: ogni pixel della foto è portato al suo raggio con il modello della camera e alla mappa, `distanza = z * sqrt(1 + x² + y²)`, in metri quando lo è il chunk) il modello di formazione dell'immagine di Sea-thru (Akkaynak e Treibitz, CVPR 2019), scritto qui a partire dall'articolo: la **retrodiffusione** di ogni canale stimata sui pixel più scuri di ogni fascia di distanza, `B(z) = B∞ (1 - e^(-βB z))`, e tolta; l'**illuminante** - la media locale fra i pixel a distanza simile - descritta da `log E = w + e_foto - βD(z) z`; dove più foto vedono la stessa scena, i **punti visti due volte** da due distanze danno le differenze di attenuazione fra i canali senza i colori della scena né le esposizioni (`log D_i - log D_j = (e_i - e_j) - β (z_i - z_j)`), l'illuminante solo quella del verde; i colori `J = D e^(βD z)`, il colore della luce dai **bordi grigi** (van de Weijer et al. 2007) delle foto ripristinate. I coefficienti **una volta per il rilievo** (le foto di un'immersione hanno la stessa correzione: niente cuciture di colore in ortofoto e texture; l'esposizione e l'intensità della retrodiffusione di ogni foto restano sue) o **per ogni foto** |
 | *Correzione rapida* | Senza distanze: prima dell'allineamento, o senza mappe di profondità. Rosso (e, in acqua verde, blu) compensato con il verde (Ancuti et al., IEEE TIP 2018), bilanciamento del bianco a mondo grigio, estensione della luminosità, CLAHE facoltativo (contrasto locale: può rendere possibile l'allineamento di foto scure e torbide). Medie e guadagni da un campione del rilievo insieme |
 | *Anteprima*, *Correggi le foto* | Prima e dopo di una foto; poi le copie di tutte, stessi nomi, dimensioni e formato, l'EXIF conservato, in `<dati del chunk>/underwater/colour/` (gli originali non vengono mai toccati) |
 | *Usa le foto corrette*, *Usa le originali* | Le camere puntate alle copie o di nuovo agli originali (quello che fa *Ricollega le foto* del programma, nei due sensi): ortofoto, texture, mappe di profondità e un nuovo allineamento leggono le foto dove puntano le camere |
@@ -60,14 +60,27 @@ riferimento; dopo una similitudine le posizioni delle camere stanno a **5,8 cm**
 riferimento su 38 m. Il riferimento stesso chiede una scala di 1,065 per accordarsi con le stesse profondità (la
 nostra scala è quella delle profondità). Un orologio della camera spostato di 7,3 s: lo scarto trovato è 7,33 s.
 
+**Sea-thru D3** (D. Akkaynak, T. Treibitz, CVPR 2019): foto RAW di una formazione di corallo nel Mar Rosso a 1-3 m
+con una tabella dei colori, e mappe di profondità in metri fatte con Metashape. Sviluppate con il bilanciamento del
+bianco della camera e senza matrice di colore (una che porta il rosso a zero non lascia niente da ripristinare), 23
+foto ripristinate con le loro mappe (stimate sulle 23 insieme, 2,9 minuti): la scala dei grigi della tabella (5 tasselli
+a 0,9 m) ha una saturazione media (CIELAB a*b*) di **3,4** (0,9-4,7) contro 16,9 nelle foto come sviluppate e 6,1 con
+la correzione rapida; un modello per foto 3,2. Attenuazione trovata (al metro): rosso 0,149, verde 0,120, blu 0,094
+(l'illuminante da solo, prima dei punti visti due volte, dava blu 0,51 e una tabella a 19). Gli stessi punti visti da
+distanze diverse almeno del 25 % (91 abbinamenti, mediana 0,38 m di differenza) differiscono di un ΔE a*b* mediano di
+1,56 nelle foto sviluppate, 1,74 ripristinate, 1,41 con la correzione rapida: in D3 la camera resta a 1-3 m dalla
+scena e i colori cambiano poco con la distanza; il guadagno è nel colore della luce.
+
 ## Riferimenti
 
 - D. Akkaynak, T. Treibitz, *Sea-thru: A Method for Removing Water From Underwater Images*, CVPR 2019 (il modello
   del ripristino; il codice qui è scritto a partire dall'articolo).
 - C. O. Ancuti, C. Ancuti, C. De Vleeschouwer, P. Bekaert, *Color Balance and Fusion for Underwater Image and
   Video Enhancement*, IEEE Transactions on Image Processing 27(1), 2018 (la compensazione del rosso).
+- J. van de Weijer, T. Gevers, A. Gijsenij, *Edge-Based Color Constancy*, IEEE Transactions on Image Processing
+  16(9), 2007 (il colore della luce dai bordi).
 - P. Drews Jr., E. do Nascimento, F. Moraes, S. Botelho, M. Campos, *Transmission Estimation in Underwater Single
   Images*, ICCV Workshops 2013 (il canale scuro subacqueo del punteggio del velo).
-- AQUALOC (sopra): usato per le prove su questo computer; non è distribuito con il plugin.
+- AQUALOC e Sea-thru (sopra): usati per le prove su questo computer; non sono distribuiti con il plugin.
 
 Licenza: GPL-2.0-or-later, come il programma in cui gira il plugin.
