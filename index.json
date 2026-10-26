@@ -241,6 +241,26 @@
       "requires": [],
       "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/terrio-v0.2.0/ppg_terrio-0.2.0-py3-none-any.whl",
       "sha256": "03d0c1bdc0d7234f11a9964ceb2974981937561c43f37805a36c838a900f32a9"
+    },
+    {
+      "name": "underwater",
+      "version": "0.1.0",
+      "title": "Underwater",
+      "description": "Underwater surveys: colours restored with the range of every pixel from the depth maps (Sea-thru) or a quick correction before the alignment; blurred, hazy and flat photos flagged; sharp frames of videos and fast ROV sequences chosen by motion; depth logs (ROV, dive computer CSV, UDDF) matched by time that level and scale the chunk",
+      "i18n": {
+        "it": {
+          "title": "Subacqueo",
+          "description": "Rilievi sott'acqua: colori ripristinati con la distanza di ogni pixel dalle mappe di profondità (Sea-thru) o una correzione rapida prima dell'allineamento; foto mosse, velate e piatte segnalate; fotogrammi nitidi da video e sequenze ROV scelti per movimento; registri di profondità (ROV, CSV del computer subacqueo, UDDF) che mettono in bolla e in scala il chunk"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/underwater",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.3.4",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/underwater-v0.1.0/ppg_underwater-0.1.0-py3-none-any.whl",
+      "sha256": "d0c6eee2ca33b18d45060d7c14f93d197fd0760be6e8a8850f578e001d56a4d0"
     }
   ]
 }
