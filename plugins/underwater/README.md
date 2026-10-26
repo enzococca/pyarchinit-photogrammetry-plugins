@@ -63,13 +63,20 @@ scale is the depths'). A camera clock shifted by 7.3 s: the offset found is 7.33
 **Sea-thru D3** (D. Akkaynak, T. Treibitz, CVPR 2019): RAW photos of a coral head in the Red Sea at 1-3 m with a
 colour chart, and depth maps in metres made with Metashape. Developed with the camera white balance and no colour
 matrix (one that clips the red to zero leaves nothing to restore), 23 photos restored with their depth maps (fitted
-on the 23 together, 2.9 minutes): the grey scale of the chart (5 patches at 0.9 m) has a mean chroma (CIELAB a*b*)
-of **3.4** (0.9-4.7) against 16.9 in the photos as developed and 6.1 with the quick correction; one model per photo
-3.2. Attenuation found (per metre): red 0.149, green 0.120, blue 0.094 (the illuminant alone, before the points seen
-twice, gave blue 0.51 and a chart at 19). The same points seen from ranges at least 25 % apart (91 matches, median
-0.38 m apart) differ by a median ΔE a*b* of 1.56 in the developed photos, 1.74 restored, 1.41 with the quick
-correction: in D3 the camera stays 1-3 m from the scene and the colours hardly change with the range; the gain is in
-the colour of the light.
+on the 23 together, 2.8 minutes): the grey scale of the chart (5 patches at 0.9 m) has a mean chroma (CIELAB a*b*)
+of **3.7** (1.0-5.3) against 16.9 in the photos as developed and 6.1 with the quick correction; one model per photo
+4.0. The illuminant alone, before the points seen twice and the grey edges, gave blue an attenuation of 0.51/m and a
+chart at 19: in D3 the colours of the scene change with the range (the yellow coral near, the sand far). In D3 the
+points seen twice are at most a few tens of centimetres apart in range: the differences between the channels are
+within their errors and shrink to nothing (attenuation 0.12/m in the three channels), the colour of the light does
+the work. The same points seen from ranges at least 25 % apart (91 matches, median 0.38 m apart) differ by a median
+ΔE a*b* of 1.56 as developed, 1.67 restored, 1.41 with the quick correction: the colours hardly change with the range
+at 1-3 m. The whole chain in the program on 20 of the photos: aligned 20/20 in 26 s, depth maps (medium) 3.4 s; our
+depth maps and Metashape's agree up to the scale with a spread of 0.4 % (Metashape's are depths along the optical
+axis); restored with our ranges, the grey scale has a mean chroma of 7.4 (2.4-12.1), with Metashape's maps on the
+same 20 photos 4.2: on our maps 3.7 thousand points seen twice leave the difference red-green within its error (it
+shrinks to 0.01/m), on Metashape's 8.3 thousand give 0.09/m, and the dark greys keep more of the cast (depth maps of
+high quality: 7.8, the same).
 
 ## References
 

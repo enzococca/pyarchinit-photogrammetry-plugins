@@ -64,13 +64,21 @@ nostra scala è quella delle profondità). Un orologio della camera spostato di 
 **Sea-thru D3** (D. Akkaynak, T. Treibitz, CVPR 2019): foto RAW di una formazione di corallo nel Mar Rosso a 1-3 m
 con una tabella dei colori, e mappe di profondità in metri fatte con Metashape. Sviluppate con il bilanciamento del
 bianco della camera e senza matrice di colore (una che porta il rosso a zero non lascia niente da ripristinare), 23
-foto ripristinate con le loro mappe (stimate sulle 23 insieme, 2,9 minuti): la scala dei grigi della tabella (5 tasselli
-a 0,9 m) ha una saturazione media (CIELAB a*b*) di **3,4** (0,9-4,7) contro 16,9 nelle foto come sviluppate e 6,1 con
-la correzione rapida; un modello per foto 3,2. Attenuazione trovata (al metro): rosso 0,149, verde 0,120, blu 0,094
-(l'illuminante da solo, prima dei punti visti due volte, dava blu 0,51 e una tabella a 19). Gli stessi punti visti da
-distanze diverse almeno del 25 % (91 abbinamenti, mediana 0,38 m di differenza) differiscono di un ΔE a*b* mediano di
-1,56 nelle foto sviluppate, 1,74 ripristinate, 1,41 con la correzione rapida: in D3 la camera resta a 1-3 m dalla
-scena e i colori cambiano poco con la distanza; il guadagno è nel colore della luce.
+foto ripristinate con le loro mappe (stimate sulle 23 insieme, 2,8 minuti): la scala dei grigi della tabella (5
+tasselli a 0,9 m) ha una saturazione media (CIELAB a*b*) di **3,7** (1,0-5,3) contro 16,9 nelle foto come sviluppate e
+6,1 con la correzione rapida; un modello per foto 4,0. L'illuminante da solo, prima dei punti visti due volte e dei
+bordi grigi, dava al blu un'attenuazione di 0,51/m e una tabella a 19: in D3 i colori della scena cambiano con la
+distanza (il corallo giallo vicino, la sabbia lontano). In D3 i punti visti due volte sono al più a qualche decina di
+centimetri di distanza in più o in meno: le differenze fra i canali stanno dentro i loro errori e si riducono a
+niente (attenuazione 0,12/m nei tre canali), il lavoro lo fa il colore della luce. Gli stessi punti visti da distanze
+diverse almeno del 25 % (91 abbinamenti, mediana 0,38 m di differenza) differiscono di un ΔE a*b* mediano di 1,56 come
+sviluppati, 1,67 ripristinati, 1,41 con la correzione rapida: a 1-3 m i colori cambiano poco con la distanza. La
+catena intera nel programma su 20 delle foto: allineate 20 su 20 in 26 s, mappe di profondità (medie) 3,4 s; le
+nostre mappe e quelle di Metashape si accordano a meno della scala con uno scarto dello 0,4 % (quelle di Metashape
+sono profondità lungo l'asse ottico); ripristinate con le nostre distanze, la scala dei grigi ha una saturazione
+media di 7,4 (2,4-12,1), con le mappe di Metashape sulle stesse 20 foto 4,2: sulle nostre mappe 3,7 mila punti visti
+due volte lasciano la differenza rosso-verde dentro il suo errore (si riduce a 0,01/m), su quelle di Metashape 8,3
+mila danno 0,09/m, e i grigi scuri tengono più dominante (mappe di qualità alta: 7,8, lo stesso).
 
 ## Riferimenti
 
