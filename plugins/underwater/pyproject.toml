@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-underwater"
-version = "0.1.0"
+version = "0.1.1"
 description = "pyarchinit-photogrammetry plugin: underwater surveys - colours restored with the range of every pixel from the depth maps (Sea-thru) or a quick correction before the alignment, blurred, hazy and low-contrast photos flagged, sharp and well-spaced frames from videos and fast image sequences, depth logs (ROV pressure sensor, dive computer CSV, UDDF) that level and scale the chunk"
 readme = "README.md"
 license = "GPL-2.0-or-later"

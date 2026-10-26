@@ -29,7 +29,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import number, t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def _uw(chunk) -> dict:
