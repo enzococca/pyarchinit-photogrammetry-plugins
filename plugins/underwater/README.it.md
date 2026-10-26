@@ -38,6 +38,7 @@ ppg plugin underwater calibration scavo.ppg archaeo_camera_calib.yaml
 ppg plugin underwater score scavo.ppg --quality 0.5 --contrast 0.12 --veil 0.6 --exclude
 ppg plugin underwater quick scavo.ppg --clahe --alpha 0 --no-balance --use     # prima dell'allineamento
 ppg plugin underwater restore scavo.ppg --per survey --use                       # dopo le mappe di profondità
+ppg plugin underwater restore scavo.ppg --depth-folder depthMaps --fov 76       # mappe di profondità in metri fatte altrove (Metashape)
 ppg plugin underwater use scavo.ppg original
 ppg plugin underwater depth scavo.ppg depth_sequence_6.csv --offset 0
 ppg plugin underwater offset scavo.ppg --span 900

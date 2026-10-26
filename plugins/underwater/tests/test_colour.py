@@ -199,3 +199,45 @@ def test_the_points_seen_twice_give_the_differences_of_attenuation():
     diff = beta - beta[1]
     true = samples.BETA_D - samples.BETA_D[1]
     assert np.allclose(diff, true, atol=0.06), (diff, true)
+
+
+def test_photos_restored_with_depth_images_made_elsewhere(tmp_path):
+    """The restoration of the photos of a chunk with depth images in metres beside them (as the Sea-thru
+    dataset gives them): copies written, the water taken away, the model kept in the project."""
+    import cv2
+
+    import pyarchinit_photogrammetry as ppg
+    from ppg_underwater import photos
+    from ppg_underwater.ranges import FileRanges
+
+    folder, depths = tmp_path / "foto", tmp_path / "depth"
+    folder.mkdir()
+    depths.mkdir()
+    grey = samples.blobs(160, 420, seed=21).astype(np.float32) / 255.0
+    tint = cv2.resize(np.random.default_rng(6).uniform(0.4, 1.0, (4, 8, 3)).astype(np.float32), (420, 160))
+    scene = np.clip(grey[..., None] * tint, 0.01, 0.95)
+    holes = cv2.dilate((np.random.default_rng(7).uniform(size=grey.shape) < 0.004).astype(np.uint8),
+                       np.ones((3, 3), np.uint8)) > 0
+    scene[holes] = 0.004
+    for k, (shift, near) in enumerate(((0, 1.5), (40, 3.0), (80, 2.0), (120, 3.5), (160, 1.8))):
+        j = scene[:, shift:shift + 240]
+        z = (near + 0.8 * np.linspace(1, 0, 160)[:, None] * np.ones((1, 240))).astype(np.float32)
+        cv2.imwrite(str(folder / f"IMG_{k}.png"), samples.srgb(samples.underwater(j, z, seed=k)))
+        cv2.imwrite(str(depths / f"depthIMG_{k}.tif"), z)
+    doc = ppg.Document()
+    chunk = doc.add_chunk()
+    doc.chunk = chunk
+    doc.save(tmp_path / "p.ppg")
+    cams = chunk.add_photos(sorted(folder.iterdir()))
+    source = FileRanges(depths, kind="range")
+    info = photos.restore(chunk, source=source)
+    assert info["photos"] == 5 and info["attenuation"].startswith("multiview") and "R" in info["coefficients"]
+    before = colour.colour_cast(cv2.imread(str(cams[3].path)))
+    after = colour.colour_cast(cv2.imread(str(photos.corrected(chunk, cams[3]))))
+    assert before["r_g"] < 0.6 and abs(after["r_g"] - 1.0) < abs(before["r_g"] - 1.0) / 2, (before, after)
+    model = colour.Model.from_dict(chunk.meta["underwater"]["colour"]["model"])
+    assert model.method == "multiview" and len(model.reference) == 3
+    # one model per photo, the differences between the channels from the survey
+    info = photos.restore(chunk, per="photo", source=source)
+    assert info["photos"] == 5 and "seathru" in cams[0].meta["underwater"] and \
+        cams[0].meta["underwater"]["seathru"]["model"]["method"] == "multiview (survey)"
