@@ -196,6 +196,24 @@ def test_the_time_offset_is_found(tmp_path):
     assert res["offset"] == pytest.approx(-12.5, abs=0.2) and res["rms"] < 0.02
 
 
+def test_the_offset_is_not_taken_where_the_log_is_flat(tmp_path):
+    """A diver hovering before and after the photos: offsets that put most photos on the flat parts of
+    the log give nearly equal depths, fitted closely by a tiny scale. The right offset explains the
+    changes of depth, not the smallest residual in metres."""
+    rs = np.random.default_rng(11)
+    times = np.sort(rs.uniform(0, 110, 30))
+    world = np.column_stack([np.cos(times / 20.0) * 1.5, np.sin(times / 20.0) * 1.5,
+                             -(8.0 + 0.35 * np.sin(times / 11.0) + 0.15 * np.cos(times / 4.0))])
+    tl = np.arange(-40.0, 151.0, 1.0)
+    inside = np.interp(np.clip(tl, times[0], times[-1]), times, -world[:, 2])  # flat outside the photos
+    log = depthlog.DepthLog(tl + 7.0 + 5000.0, inside + 0.015 * rs.standard_normal(len(tl)), absolute=True)
+    doc, chunk, _ = _chunk(tmp_path, world)
+    for cam, tt in zip(chunk.cameras, times):
+        cam.meta["underwater"]["time"] = 5000.0 + tt  # the log clock 7 s ahead of the camera
+    res = levelling.offset_search(chunk, log, span=120.0)
+    assert res["offset"] == pytest.approx(7.0, abs=0.5) and res["cameras"] == 30
+
+
 def test_known_positions_place_the_chunk(tmp_path):
     world = _survey(30, seed=4)
     doc, chunk, _ = _chunk(tmp_path, world)

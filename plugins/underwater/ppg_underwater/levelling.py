@@ -317,8 +317,12 @@ def offset_search(chunk, log, around: float = 0.0, span: float = 600.0, step: fl
                   tolerance: float = 2.0, progress=None) -> dict:
     """The time offset (seconds added to the camera clock) that fits the depths of the log best to
     the aligned cameras: for every offset tried, the cameras' depths are matched and the levelling
-    solved; its residual RMS is the measure. Coarse then fine. Returns ``{"offset", "rms",
-    "curve"}`` (``curve``: offset, rms, cameras matched)."""
+    solved. The measure is the part of the changes of depth the cameras do not explain - the
+    residual RMS (per degree of freedom) over the spread of the matched depths - not the residual in
+    metres: an offset that puts the photos on a flat part of the log (a diver hovering, the bottom)
+    gives nearly equal depths, fitted closely by a tiny scale. Coarse then fine. Returns
+    ``{"offset", "rms", "misfit", "cameras", "curve"}`` (``rms`` in metres; ``curve``: offset, rms,
+    cameras matched, misfit)."""
     from . import depthlog
 
     cams = chunk.aligned_cameras
@@ -327,41 +331,57 @@ def offset_search(chunk, log, around: float = 0.0, span: float = 600.0, step: fl
         raise ValueError(t_("Servono almeno cinque foto allineate con l'ora.", "At least five aligned photos with a time are needed."))
     by_key = {c.key: c for c in cams}
     stamps = np.array([v[0] for v in times.values()])
-    step = step or max(0.5, float(np.ptp(stamps)) / max(len(stamps), 1))
+    # finer than the time between photos: the depths change between two photos, and the right offset is a narrow
+    # minimum a coarse grid steps over
+    step = step or max(0.25, min(1.0, float(np.ptp(stamps)) / max(len(stamps), 1) / 4))
     curve = []
 
-    def rms_at(off: float):
+    def fit_at(off: float):
+        """``(misfit, rms, cameras)`` at the offset ``off``."""
         m = depthlog.match(cams, log, off, tolerance=tolerance, times=times)
         keys = [k for k in m if k in by_key]
         if len(keys) < max(5, len(times) // 2):
-            return math.inf, len(keys)
+            return math.inf, math.inf, len(keys)
+        depths = np.array([m[k] for k in keys])
         try:
-            sol = solve(np.array([by_key[k].center for k in keys]), np.array([m[k] for k in keys]))
+            sol = solve(np.array([by_key[k].center for k in keys]), depths)
         except ValueError:
-            return math.inf, len(keys)
-        return sol["rms"], len(keys)
+            return math.inf, math.inf, len(keys)
+        good = sol["inliers"]
+        n = int(good.sum())
+        spread = float(np.std(depths[good], ddof=1)) if n > 4 else 0.0
+        if n <= 4 or spread <= 0:
+            return math.inf, sol["rms"], len(keys)
+        return sol["rms"] * math.sqrt(n / (n - 4)) / spread, sol["rms"], len(keys)
 
     grid = np.arange(around - span, around + span + step / 2, step)
-    best = (math.inf, around)
     for i, off in enumerate(grid):
         if progress is not None and i % 10 == 0:
             progress(i / len(grid) * 0.8, t_("Scarto di tempo: {0} s", "Time offset: {0} s").format(round(off, 1)))
-        r, k = rms_at(float(off))
-        curve.append((float(off), r, k))
-        if r < best[0]:
-            best = (r, float(off))
+        f, r, k = fit_at(float(off))
+        curve.append((float(off), r, k, f))
+    # only the offsets that match (nearly) as many photos as the best: near the ends of the log a few photos
+    # left are fitted closely by anything
+    most = max((k for _, _, k, f in curve if math.isfinite(f)), default=0)
+    least = max(5, math.ceil(0.9 * most))
+
+    def score(off: float) -> float:
+        f, _, k = fit_at(off)
+        return f if k >= least else math.inf
+
+    best = min(((f, off) for off, _, k, f in curve if k >= least and math.isfinite(f)), default=(math.inf, around))
     # golden refinement around the best
     lo, hi = best[1] - step, best[1] + step
     for _ in range(25):
         a, b2 = lo + 0.382 * (hi - lo), lo + 0.618 * (hi - lo)
-        if rms_at(a)[0] <= rms_at(b2)[0]:
+        if score(a) <= score(b2):
             hi = b2
         else:
             lo = a
     off = 0.5 * (lo + hi)
-    r, k = rms_at(off)
-    if r > best[0]:
-        off, r = best[1], best[0]
+    if score(off) > best[0]:
+        off = best[1]
+    f, r, k = fit_at(off)
     if progress is not None:
         progress(1.0, "")
-    return {"offset": off, "rms": r, "cameras": k, "curve": curve}
+    return {"offset": off, "rms": r, "misfit": f, "cameras": k, "curve": curve}
