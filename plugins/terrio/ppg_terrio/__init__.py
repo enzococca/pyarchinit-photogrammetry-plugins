@@ -31,7 +31,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import class_label, dec, num, signed, t  # noqa: F401 (the plugin's texts, for its modules too)
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 METHOD_LABELS = [("smrf", "SMRF (Simple Morphological Filter)"), ("csf", "CSF (Cloth Simulation Filter)"),
                  ("pmf", "PMF (Progressive Morphological Filter)")]

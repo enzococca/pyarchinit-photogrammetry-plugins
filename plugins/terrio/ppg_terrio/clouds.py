@@ -81,6 +81,20 @@ def _same_crs(a: str, b: str) -> bool:
         return False
 
 
+def _to_chunk_crs(xyz, source_crs: str, chunk, name: str):
+    """The points of the file ``name`` from ``source_crs`` into the CRS of ``chunk``. From the program 1.6.1 they carry
+    no frame epoch for it: between two European frames (ETRF2014 or ETRF2020 and ETRF2000 - RDN2008, ETRS89 -) they go
+    through ITRF2020 at the epoch of the survey of the chunk, and from or to ITRF2020 as the program converts the points
+    of a chunk, with its warning; an older program converts them as before."""
+    from pyarchinit_photogrammetry.core import crs as crs_mod
+
+    try:
+        from pyarchinit_photogrammetry.gnss.frames import Legacy
+    except ImportError:  # a program before the reference frames and epochs (1.6.1)
+        return crs_mod.transform_points(xyz, source_crs, chunk.crs)
+    return crs_mod.transform_points(xyz, source_crs, chunk.crs, legacy=Legacy(f"the points of {name}", chunk))
+
+
 def import_cloud(doc, source, chunk=None, label: str | None = None, crs: str | None = None,
                  max_points: int | None = None, classes=None, progress=None):
     """The cloud of ``source`` as the dense cloud of a new chunk (its CRS the one of the file, or
@@ -112,7 +126,7 @@ def import_cloud(doc, source, chunk=None, label: str | None = None, crs: str | N
                              "import it into a new chunk")
         if source_crs and not _same_crs(source_crs, chunk.crs):
             progress(0.75, f"Reprojecting from {source_crs} to {chunk.crs}")
-            xyz = crs_mod.transform_points(xyz, source_crs, chunk.crs)
+            xyz = _to_chunk_crs(xyz, source_crs, chunk, name)
         old = chunk.product_path("point_cloud")
         if old is not None and old.exists():
             versions.keep_active(chunk, "point_cloud", move=True)

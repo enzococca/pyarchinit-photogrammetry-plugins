@@ -129,6 +129,39 @@ def test_import_reprojects_into_the_chunk_crs(tmp_path):
         clouds.import_cloud(doc, geo, chunk=local)
 
 
+def test_import_between_european_frames_goes_at_the_epoch_of_the_survey(tmp_path):
+    """A cloud in ETRF2014 into a chunk in ETRS89 / UTM 33N (ETRF2000): through ITRF2020 at the epoch of the survey of
+    the chunk, as the program converts points that carry no epoch (from 1.6.1), not by PROJ's null shift through the
+    ETRS89 ensemble (8-9 cm off in Italy in 2026); with an older program the plain conversion of before."""
+    import pyarchinit_photogrammetry as ppg
+    from pyarchinit_photogrammetry.core import crs as crs_mod
+    from pyarchinit_photogrammetry.core.pointcloud import PointCloud
+
+    frames = pytest.importorskip("pyarchinit_photogrammetry.gnss.frames")
+    if not hasattr(frames, "Legacy"):
+        pytest.skip("the program has no reference frames and epochs (before 1.6.1)")
+    doc = ppg.Document()
+    chunk = doc.add_chunk("Roma")
+    chunk.crs = "EPSG:25833"
+    chunk.transform = np.eye(4)
+    chunk.transform[:3, 3] = [291000.0, 4640000.0, 50.0]
+    rng = np.random.default_rng(1)
+    chunk.point_cloud = PointCloud(rng.uniform(0, 30, (300, 3)), rng.integers(0, 255, (300, 3)).astype(np.uint8))
+    world = chunk.to_world(chunk.point_cloud.xyz)
+    epoch = frames.survey_epoch(chunk)
+    etrf2014 = crs_mod.transform_points(world, chunk.crs, "EPSG:8403", epoch=epoch)
+    cloud = tmp_path / "etrf2014.las"
+    terrio.PointCloud.from_dict({"x": etrf2014[:, 0], "y": etrf2014[:, 1], "z": etrf2014[:, 2]},
+                                crs="EPSG:8403").write(str(cloud))
+    clouds.import_cloud(doc, cloud, chunk=chunk)
+    stored = terrio.read_points(str(cloud)).to_dict()  # degrees kept to 1e-7 in the file: up to 6 mm
+    stored = np.column_stack([stored["x"], stored["y"], stored["z"]])
+    expected = crs_mod.transform_points(stored, "EPSG:8403", chunk.crs, epoch=epoch)
+    assert np.abs(chunk.to_world(chunk.point_cloud.xyz) - expected).max() < 0.001
+    null = crs_mod.by_proj(stored, "EPSG:8403", chunk.crs)
+    assert np.linalg.norm((null - expected)[:, :2], axis=1).min() > 0.03  # what the plain conversion would have given
+
+
 def test_export_e57_and_ept(tmp_path):
     doc = _project(tmp_path)
     chunk = doc.chunk
