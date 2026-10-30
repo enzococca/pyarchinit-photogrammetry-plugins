@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-landscape"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: how the surveyed surface changes over time with Landlab - hillslope diffusion and running water (SPACE erosion and deposition) on the DEM of the chunk, final surface, erosion/deposition, drainage area, snapshots and the mass balance"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# Landlab runs in a process of its own: with this Python when installed here, else in an environment
+# the plugin installs on request with uv; never imported by the program
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/landscape"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+landscape = "ppg_landscape:LandscapePlugin"
+
+[tool.setuptools]
+packages = ["ppg_landscape"]
