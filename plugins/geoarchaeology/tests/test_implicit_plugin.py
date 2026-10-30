@@ -365,14 +365,59 @@ def test_a_cell_finer_than_the_surfaces_is_built_as_asked(tmp_path, fake):
     with rasterio.open(ch.data_dir / e["file"]) as src:
         assert src.width == 4 * g.width and np.isfinite(src.read(3)).any()  # band 3 resampled onto it
     rows = {r["unit"]: r for r in model.registry(ch)["units"]}
-    assert rows["US 2"]["kriging_m3"] == pytest.approx(next(  # from the kriging's own grid: exact whatever the cell
-        t["volume_m3"] for t in sf.registry(ch)["thickness"] if t["unit"] == "US 2"))
+    assert rows["US 2"]["kriging_m3"] == pytest.approx(next(  # the whole area of the kriging: it has the DEM's cells
+        t["volume_m3"] for t in sf.registry(ch)["thickness"] if t["unit"] == "US 2"), rel=0.02)
 
 
 def test_the_volumes_compare_with_the_kriging_on_the_cells_with_a_dem(tmp_path):
     doc, ch = pit_site(tmp_path)
     _job, plan = job_of(ch, tmp_path, cell=1.0)
     assert plan.has_dem.sum() * plan.grid.cell ** 2 == 100.0 * 80.0  # not a cell around it
+
+
+def test_the_volumes_of_the_two_methods_are_on_the_same_cells(tmp_path, fake):
+    """The kriging stops at its margin around the boreholes, the implicit model has every cell with a DEM: here
+    the boreholes are in the western half of the DEM."""
+    rows = ["sondaggio;x;y;da;a;us"]
+    for i, (x, y) in enumerate((5.0 + 11 * a, 5.0 + 20 * b) for a in range(4) for b in range(4)):
+        rows += [f"S{i};{X0 + x};{Y0 + y};0;1;US 1", f"S{i};{X0 + x};{Y0 + y};1;2;US 2", f"S{i};{X0 + x};{Y0 + y};2;4;US 3"]
+    doc, ch = project(tmp_path)
+    bh.import_files(ch, [write(tmp_path, "t.csv", "\n".join(rows) + "\n")])
+    sf.build(ch, buffer=2.0)
+    job, plan = job_of(ch, tmp_path, cell=2.0)
+    common = implicit._common_cells(ch, plan)
+    assert 0 < common.sum() < plan.has_dem.sum()
+    volumes = implicit._kriging_volumes(ch, plan, common, job["zmin"])
+    area = float(common.sum()) * plan.grid.cell ** 2
+    assert volumes["US 2"] == pytest.approx(area, rel=0.05)  # 1 m thick
+    assert volumes["US 3"] / area > 2.0  # the last one down to the base of this model
+    implicit.build(ch, cell=2.0, folds=None)
+    rows = {r["unit"]: r for r in model.registry(ch)["units"]}
+    assert rows["US 2"]["kriging_m3"] == pytest.approx(volumes["US 2"])
+    assert rows["US 2"]["same_cells_m3"] < rows["US 2"]["volume_m3"]  # the DEM goes on past the boreholes
+
+
+def test_the_boreholes_vote_for_a_layer_and_a_cut_takes_no_vote(tmp_path):
+    doc, ch = pit_site(tmp_path, surfaces=False)
+    implicit.mark_fill(ch, "US 7", "T1")
+    assert not job_of(ch, tmp_path)[0]["absent"]  # the holes in the pit do not have US 2: the cut took it away
+    rows = (tmp_path / "t.csv").read_text(encoding="utf-8").splitlines()
+    bh.import_files(ch, [write(tmp_path, "u.csv", "\n".join(r for r in rows if not (r.startswith("S1;") and "US 2" in r)) + "\n")],
+                    replace=True)
+    job, plan = job_of(ch, tmp_path)
+    assert list(job["absent"]) == ["US 2"]
+    mask = np.load(job["absent"]["US 2"], allow_pickle=False)
+    s1 = bh.get(ch, "S1")
+    assert mask[int((plan.grid.y0 - s1.y) / plan.grid.cell), int((s1.x - plan.grid.x0) / plan.grid.cell)]
+    assert 0 < mask.mean() < 0.3  # around that hole only
+
+
+def test_spot_heights_left_out_are_told(tmp_path, fake):
+    doc, ch = pit_site(tmp_path)
+    ch.meta.setdefault("drawings", {"units": [], "quote": []})["quote"] = [
+        {"x": X0 + 5.0, "y": Y0 + 5.0, "quota_q": 99.0, "us_q": "99", "unita_tipo_q": "US"}]
+    implicit.build(ch, folds=None)
+    assert "Quote lasciate fuori, su US che non sono unità del modello: 1." in implicit.summary_text(ch)
 
 
 # ------------------------------------------------------------------ what comes back
@@ -417,7 +462,7 @@ def test_the_results(tmp_path, fake):
     rows = {r["unit"]: r for r in m["units"]}
     assert rows["US 2"]["ply"] and (ch.data_dir / rows["US 2"]["ply"]).exists()
     assert rows["US 2"]["kriging_m3"] == pytest.approx(next(
-        e for e in sf.registry(ch)["thickness"] if e["unit"] == "US 2")["volume_m3"])
+        e for e in sf.registry(ch)["thickness"] if e["unit"] == "US 2")["volume_m3"], rel=0.02)
     assert rows["T1"]["kind"] == "cut" and not rows["T1"].get("ply")
     assert (rows["T1"]["range_min"], rows["T1"]["range_max"]) == (50.0, 100.0) and rows["T1"]["volume_m3"] == 80.0
     json.dumps(ch.meta["geoarchaeology"])  # all of it goes in the project file
@@ -687,6 +732,28 @@ def _tilted(tmp_path: Path):
     bh.import_files(ch, [write(tmp_path, "t.csv", "\n".join(rows) + "\n")])
     sf.build(ch)
     return doc, ch
+
+
+def test_a_rare_unit_covers_about_what_the_kriging_gives(tmp_path, real):
+    """US 3 in 4 holes of 25, on one side of the site."""
+    rows = ["sondaggio;x;y;da;a;us"]
+    for i, (a, b) in enumerate((a, b) for a in range(5) for b in range(5)):
+        x, y = X0 + 8 + 21 * a, Y0 + 6 + 17 * b
+        rare = a < 2 and b < 2
+        rows += [f"S{i};{x};{y};0;0,5;US 1"]
+        rows += [f"S{i};{x};{y};0,5;1;US 2", f"S{i};{x};{y};1;1,5;US 3"] if rare else [f"S{i};{x};{y};0,5;1,5;US 2"]
+        rows += [f"S{i};{x};{y};1,5;5;US 4"]
+    doc, ch = project(tmp_path)
+    bh.import_files(ch, [write(tmp_path, "t.csv", "\n".join(rows) + "\n")])
+    sf.build(ch)
+    reg = implicit.build(ch, cell=2.0, folds=None)
+    rows = {r["unit"]: r for r in model.registry(ch)["units"]}
+    thick = sf.read_band(ch.data_dir / next(e for e in sf.registry(ch)["thickness"] if e["unit"] == "US 3")["file"], 1)[0]
+    grid = sf.grid_of(ch)
+    kriging_area = float(((thick > 0.01) & np.isfinite(sf.dem_on_grid(ch, grid))).sum() * grid.cell ** 2)
+    assert rows["US 3"]["area_m2"] == pytest.approx(kriging_area, rel=0.25)
+    assert reg["absent"]["US 3"] == rows["US 3"]["absent_cells"] > 0
+    assert "i sondaggi senza l'unità prevalgono" in implicit.summary_text(ch)
 
 
 def test_a_dip_against_the_contact_does_not_turn_the_model_over(tmp_path, real):

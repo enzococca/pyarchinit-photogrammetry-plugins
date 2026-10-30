@@ -89,7 +89,7 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   (una fossa o un fossato attraversano gli strati, con il contorno della US disegnata, un fondo che passa per ogni
   base misurata, il volume come intervallo fra fondo piatto, a conca e a V), pareti sottosquadro dalle righe segnate
   `wall`, contatti visti in pochi sondaggi che prendono la forma degli strati intorno, contatti e giaciture da file
-  CSV, le quote del programma con il numero di una US. Superfici, solidi, volumi accanto a quelli del kriging,
+  CSV, le quote del programma con il numero di una US. Dove i sondaggi senza un'unità prevalgono su quelli che l'hanno, l'unità non c'è, con la stessa regola del kriging. Superfici, solidi, volumi accanto a quelli del kriging sulle stesse celle,
   sezioni, esportazioni e QGIS passano per gli stessi prodotti. Il kriging resta il metodo predefinito: sugli strati
   semplici è buono come l'implicito o migliore, e il leave-one-out dei due metodi è mostrato affiancato. Scheda
   *Implicito* del pannello.

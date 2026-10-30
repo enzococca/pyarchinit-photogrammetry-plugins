@@ -31,7 +31,8 @@ The results (:func:`build`)
     Nothing is touched until the worker has finished: ``implicit/`` and ``model/`` are written aside and
     swapped at the end, so a failure or a cancel leaves them as they were. ``implicit/top_<k>_<unit>.tif``:
     float32, band 1 the elevation, band 2 the jackknife variance (m²), band 3 implicit minus kriging where a
-    kriging surface exists. ``model/``: the same files and registry as :mod:`.model`, with ``"method":
+    kriging surface exists. Where the boreholes without a layer outweigh those with it, the layer is not in the
+    model (:func:`absent_masks`): the rule of the kriging. ``model/``: the same files and registry as :mod:`.model`, with ``"method":
     "implicit"``. A kriging :func:`model.build` afterwards replaces the model; the implicit surfaces stay.
     The numbers are an interpretation of the data, and the pane and the figures say so.
 """
@@ -68,7 +69,7 @@ OUTLINE_KEPT = 0.95  # a plan with less than this share of the polygon drawn is 
 OUTLINE_BUMPS = 0.05  # share of a plan that may be narrower than the width told: the bumps of the line
 VOXEL_SHARE = 0.1  # a voxel is at most this share of the thinnest unit and of the shallowest cut
 TOLERANCE = bh.TOLERANCE
-VOLUME_COLUMNS = (*model_mod.VOLUME_COLUMNS, "method", "kriging_m3", "range_min", "range_max")
+VOLUME_COLUMNS = (*model_mod.VOLUME_COLUMNS, "absent_cells", "same_cells_m3", "method", "kriging_m3", "range_min", "range_max")
 WORKER: tuple | None = None  # (python, script) of another worker: the tests
 WALL_WORDS = {"wall", "walls", "parete", "pareti", "muro", "side"}
 DIP_NAMES = {"dip", "inclinazione", "angolo", "pendenza", "dip_angle"}
@@ -726,6 +727,54 @@ def ground_on(chunk, frame: Frame, holes) -> tuple[np.ndarray, np.ndarray | None
     return ground.astype(np.float32), has_dem
 
 
+def _kriged_absence(chunk, frame: Frame, pres: dict, layers: list) -> dict:
+    """The rule of the kriging on its own surfaces (:func:`surfaces._missing_units`), layer against layer: the
+    fills, which the kriging takes for layers, are not between them. ``{unit: boolean raster of the job}``."""
+    entries = {e["unit"]: e for e in sf.registry(chunk).get("contacts", [])}
+    known = [u for u in layers if u in entries]
+    raws, variances = [], []
+    for unit in known:
+        path = Path(chunk.data_dir) / entries[unit]["file"]
+        top, moved = sf.read_band(path, 1)[0].astype(np.float64), sf.read_band(path, 3)[0].astype(np.float64)
+        raws.append(top + np.nan_to_num(moved))  # band 3: how far the stack lowered it
+        variances.append(sf.read_band(path, 2)[0].astype(np.float64))
+    ties, _report = sf._missing_units([pres.get(u) for u in known], raws, variances, frame.base)
+    return {u: on_frame(tie.astype(np.float64), frame) > 0.5 for u, tie in zip(known, ties) if tie is not None}
+
+
+def absent_masks(chunk, holes, codes: list, column: list, frame: Frame, data: Data) -> dict:
+    """Where a layer is not. A field keeps a thickness everywhere, so a unit seen in a few boreholes would spread
+    over the whole site: the rule of the kriging applies. The boreholes vote for it by inverse distance
+    (:data:`surfaces.PRESENT`), those that pass it by against; on the surfaces of the kriging, a thickness it can
+    tell from none stays; past them the vote alone says. A borehole inside a cut does not vote against what the
+    cut took away, and neither the first layer (the ground) nor the last can be absent. ``{unit: boolean raster}``."""
+    layers = [e["unit"] for e in column if e["kind"] == "layer"]
+    opened = {tuple(p) for rows in data.inside.values() for p in rows}
+    pres = {}
+    for pr in bh.presence(holes, codes):
+        if pr.unit in layers:
+            cut_there = np.array([(float(x), float(y)) in opened for x, y in pr.xy], bool)
+            keep = pr.present | ~cut_there
+            pres[pr.unit] = bh.Presence(pr.k, pr.unit, [i for i, k in zip(pr.ids, keep) if k], pr.xy[keep], pr.present[keep])
+    grid = frame.grid
+    kriged, inside = {}, None
+    tops = sf.tops(chunk)
+    if tops and frame.on_surfaces:
+        kriged = _kriged_absence(chunk, frame, pres, layers)
+        inside = np.isfinite(on_frame(tops[0][1], frame))
+    out = {}
+    for unit in layers[1:-1]:
+        pr = pres.get(unit)
+        if pr is None or not pr.present.any() or pr.present.all():
+            continue
+        mask = kriging.idw(pr.xy, pr.present.astype(float), grid.centres()).reshape(grid.height, grid.width) < sf.PRESENT
+        if unit in kriged:
+            mask = np.where(inside, kriged[unit], mask)
+        if mask.any():
+            out[unit] = mask
+    return out
+
+
 def voxel_step(thinnest: float | None, shallowest: float | None, span: float, notes: list) -> float:
     """The height of a voxel: at most :data:`VOXEL_SHARE` of the thinnest unit (mean thickness, m) and of
     the shallowest cut, and no more than :data:`MAX_LEVELS` levels over ``span``, with a warning then.
@@ -812,10 +861,15 @@ def prepare(chunk, tmp: Path, cell: float | None = None, folds: int | None = FOL
             np.save(path, mask, allow_pickle=False)
         cuts[cut] = {"base": data.base.get(cut, []), "outline": path, "profile": marks[cut]["profile"],
                      "inside": data.inside.get(cut, []), "outside": data.outside.get(cut, [])}
+    absent = {}
+    for i, (unit, mask) in enumerate(absent_masks(chunk, holes, codes, column, frame, data).items()):
+        path = str((tmp / f"absent_{i}.npy").absolute())
+        np.save(path, mask, allow_pickle=False)
+        absent[unit] = path
     job = {"protocol": 1, "output": str((tmp / "run").absolute()), "dem": str((tmp / "dem.npy").absolute()),
            "grid": {"x0": grid.x0, "y0": grid.y0, "cell": grid.cell, "width": grid.width, "height": grid.height},
            "zmin": float(zmin), "zmax": top + dz, "dz": float(dz), "series": series, "contacts": data.contacts,
-           "orientations": data.orientations, "column": column,
+           "orientations": data.orientations, "column": column, "absent": absent,
            "fills": {u: m["fills"] for u, m in marks.items() if m["kind"] == "fill" and u in {e["unit"] for e in column}},
            "cuts": cuts, "options": {"vertical": None, "folds": min(int(folds), FOLDS) if folds else None}}
     if nelements:
@@ -852,17 +906,30 @@ def _span(values: np.ndarray, mask: np.ndarray) -> tuple[float | None, float | N
     return (float(v.min()), float(v.max())) if v.size else (None, None)
 
 
-def _kriging_volumes(chunk) -> dict:
-    """The volume of every unit by kriging: the isopachs, the model between the surfaces for the last
-    unit (or what the last implicit model kept of it)."""
+def _common_cells(chunk, plan: Plan) -> np.ndarray | None:
+    """The cells of the job's grid where both methods say something: the kriging stops at the margin around
+    the boreholes, the implicit model has every cell with a DEM. None without surfaces."""
+    tops = sf.tops(chunk)
+    if not tops or not plan.on_surfaces:
+        return None
+    known = np.isfinite(on_frame(tops[0][1], plan.frame))
+    return known if plan.has_dem is None else known & plan.has_dem
+
+
+def _kriging_volumes(chunk, plan: Plan, common: np.ndarray | None, zmin: float) -> dict:
+    """The volume of every unit by kriging on the cells ``common``: the isopachs, and the last unit down to the
+    base of this model."""
+    if common is None:
+        return {}
+    area = plan.grid.cell ** 2
     out = {}
-    previous = model_mod.registry(chunk)
-    for r in previous.get("units", []):
-        value = r.get("kriging_m3") if previous.get("method") == "implicit" else r.get("volume_m3")
-        if value is not None and r.get("cells"):
-            out[r["unit"]] = float(value)
     for e in sf.registry(chunk).get("thickness", []):
-        out[e["unit"]] = float(e.get("volume_m3", 0.0))
+        thick = on_frame(sf.read_band(Path(chunk.data_dir) / e["file"], 1)[0], plan.frame)
+        out[e["unit"]] = float(np.nansum(thick[common]) * area)
+    tops = sf.tops(chunk)
+    if tops:
+        top = on_frame(tops[-1][1], plan.frame)
+        out[tops[-1][0]] = float(np.nansum(np.maximum(top[common] - zmin, 0.0)) * area)
     return out
 
 
@@ -916,7 +983,9 @@ def _model(chunk, job: dict, result: dict, run: Path, plan: Plan, out: Path, exp
     index = {u: i for i, u in enumerate(units)}
     colours = bh.colours(chunk)
     descriptions = {u["code"]: u.get("description", "") for u in bh.units(chunk)}
-    kriging_m3 = _kriging_volumes(chunk)
+    common = _common_cells(chunk, plan)
+    kriging_m3 = _kriging_volumes(chunk, plan, common, float(job["zmin"]))
+    removed = (result.get("info") or {}).get("absent") or {}
     tops = {u: np.load(run / n, allow_pickle=False) for u, n in (result["files"].get("tops") or {}).items()}
     cuts = (result.get("info") or {}).get("cuts") or {}
     final = model_mod.folder(chunk)
@@ -939,6 +1008,8 @@ def _model(chunk, job: dict, result: dict, run: Path, plan: Plan, out: Path, exp
         row = {"unit": unit, "kind": entry["kind"], "description": descriptions.get(unit, ""), "method": "implicit",
                "kriging_m3": kriging_m3.get(unit), "clipped": False, "clipped_to": [], "cells": 0, "volume_m3": 0.0,
                "area_m2": 0.0, "to_floor": unit == units[-1]}
+        if unit in removed:
+            row["absent_cells"] = int(removed[unit])
         rows.append(row)
         solid = (result["files"].get("solids") or {}).get(unit)
         if unit not in index or solid is None:
@@ -962,6 +1033,8 @@ def _model(chunk, job: dict, result: dict, run: Path, plan: Plan, out: Path, exp
                    mesh_volume_m3=model_mod.signed_volume(verts, faces), mean_thickness_m=float(thick.mean()),
                    max_thickness_m=float(thick.max()), top_min=top_lo, top_max=top_hi, base_min=base_lo, base_max=base_hi,
                    faces=int(len(faces)), ply=str((final / f"{name}.ply").relative_to(chunk.data_dir)))
+        if common is not None:
+            row["same_cells_m3"] = float(counts[common].sum() * voxel)
         off = mask & ~on
         if off.any():
             row["outside_dem"] = {"cells": int(off.sum()), "area_m2": float(off.sum() * area),
@@ -1027,6 +1100,7 @@ def build(chunk, cell: float | None = None, folds: int | None = FOLDS, floor: fl
     info = result.get("info") or {}
     state = _state(chunk)
     state.update(made=time.strftime("%Y-%m-%d %H:%M"), stale=False, grid=plan.grid.to_dict(), series=job["series"],
+                 absent=dict(info.get("absent") or {}),
                  column=job["column"], surfaces=entries, cut_results=info.get("cuts") or {},
                  warnings=list(plan.notes) + list(info.get("warnings") or []), loo=_loo_rows(chunk, result),
                  versions=result.get("versions") or {}, vertical=info.get("vertical"), dz=job["dz"], zmin=job["zmin"],
@@ -1187,9 +1261,16 @@ def summary_text(chunk) -> str:
                                      num(r["volume_m3"], 1)))
             else:
                 line = f"{r['unit']}: {num(r['volume_m3'], 1)} m³"
-                if r.get("kriging_m3") is not None:
-                    line += t(" (kriging {0} m³)", " (kriging {0} m³)").format(num(r["kriging_m3"], 1))
+                if r.get("kriging_m3") is not None and r.get("same_cells_m3") is not None:
+                    line += t("; sulle celle del kriging {0} m³, kriging {1} m³", "; on the cells of the kriging {0} m³, kriging {1} m³") \
+                        .format(num(r["same_cells_m3"], 1), num(r["kriging_m3"], 1))
+                if r.get("absent_cells"):
+                    line += t("; tolta da {0} celle: i sondaggi senza l'unità prevalgono", "; taken from {0} cells: the "
+                              "boreholes without the unit prevail").format(r["absent_cells"])
                 lines.append(line)
+    if reg.get("spots_ignored"):
+        lines.append(t("Quote lasciate fuori, su US che non sono unità del modello: {0}.",
+                       "Spot heights left out, on US that are not units of the model: {0}.").format(reg["spots_ignored"]))
     warnings = reg.get("warnings") or []
     if warnings:
         lines.append(t("Avvisi:", "Warnings:"))

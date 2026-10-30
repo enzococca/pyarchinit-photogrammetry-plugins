@@ -86,7 +86,7 @@ DEM and the orthomosaic of the chunk).
   or a ditch crosses the layers, with the outline of the US drawn, a floor through every base measured, its
   volume as a range between a flat, bowl and V floor), undercut walls from rows marked `wall`, contacts seen in
   few boreholes shaped by the layers around them, contacts and orientations from CSV files, the program's
-  spot heights carrying a US. Surfaces, solids, volumes beside the kriging's, sections, exports and QGIS go through
+  spot heights carrying a US. Where the boreholes without a unit outweigh those with it, the unit is not there, by the same rule as the kriging. Surfaces, solids, volumes beside the kriging's on the same cells, sections, exports and QGIS go through
   the same products. Kriging stays the default: on plain layers it is as good or better, and the leave-one-out
   of the two methods is shown side by side. Tab *Implicito* of the pane.
 * The *Geoarcheologia* pane (with the program 1.3.4 a pane of its own beside the workspace, from *Vista > Pannelli*; before, a tab of the project dock): boreholes, surfaces and sections in three

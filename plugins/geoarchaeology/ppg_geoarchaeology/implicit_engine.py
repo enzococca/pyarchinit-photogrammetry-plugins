@@ -38,7 +38,9 @@ The painter (:func:`paint`)
     * a fill takes what is inside its cut and under its top: ``max(phi, min(s_fill, s_cut))``; the
       youngest fill of a cut with no layer over it takes all that is left of the cut;
     * the highest layer takes everything left under the DEM (its top is the ground, whatever its
-      contacts say; a fill over it stays inside its cut), and so does the unit at the top of the column.
+      contacts say; a fill over it stays inside its cut), and so does the unit at the top of the column;
+    * a field keeps a thickness where a unit is not: ``absent`` gives the columns without it, and there its
+      voxels go to the layer under it, the two with one top, as in the stack of the kriging.
 
     So no two units overlap by construction, and every voxel under the DEM belongs to one unit.
 
@@ -1102,12 +1104,26 @@ class Painted:
     units: list
     phi: list
     labels: np.ndarray
+    removed: dict = field(default_factory=dict)  # unit -> columns taken from it by ``absent``
 
 
-def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fill_fields: dict, xyz) -> Painted:
+def absent_rasters(job: dict, grid: Grid) -> dict:
+    """``job["absent"]``: unit -> a boolean raster (a ``.npy`` on the grid, or the array) of where the unit is not."""
+    out = {}
+    for unit, raster in (job.get("absent") or {}).items():
+        mask = np.load(raster, allow_pickle=False) if isinstance(raster, str) else np.asarray(raster)
+        if mask.shape != (grid.height, grid.width):
+            raise ValueError(f"the raster of {unit} is {mask.shape}, the grid {(grid.height, grid.width)}")
+        out[str(unit)] = mask.astype(bool)
+    return out
+
+
+def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fill_fields: dict, xyz,
+          absent: dict | None = None) -> Painted:
     """The units on the voxels (see the head of this file). ``series``: unit -> :class:`Fitted` of its
     series; ``cuts``: cut -> signed function at the evaluated voxels; ``fill_fields``: cut ->
-    :class:`FillTops` of its fills. Units without a function take no voxels."""
+    :class:`FillTops` of its fills; ``absent``: unit -> raster of the columns without it, where its voxels go
+    to the layer under it. Units without a function take no voxels."""
     x, y, z = xyz
     raw: dict = {}
 
@@ -1157,13 +1173,38 @@ def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fil
     stages[-1] = (stages[-1][0], np.full(len(x), BIG, dtype=np.float32))  # the top: all that is left
     stages.reverse()
     units = [u for u, _p in stages]
-    index = np.zeros(len(x), dtype=np.int16)
-    for i in range(1, len(stages)):
-        index[stages[i][1] > 0] = i
-    labels = np.full(frame.shape, -1, dtype=np.int16)
-    labels[frame.evaluated] = index
-    labels[~frame.under] = -1
-    return Painted(units, [p for _u, p in stages], labels)
+
+    def labelled() -> np.ndarray:
+        index = np.zeros(len(x), dtype=np.int16)
+        for i in range(1, len(stages)):
+            index[stages[i][1] > 0] = i
+        labels = np.full(frame.shape, -1, dtype=np.int16)
+        labels[frame.evaluated] = index
+        labels[~frame.under] = -1
+        return labels
+
+    labels = labelled()
+    removed = {}
+    kinds = dict(column)
+    if absent:
+        before = labels
+        for i, (unit, top) in enumerate(stages):
+            if unit not in absent or kinds.get(unit) != "layer":
+                continue
+            below = i + 1
+            while below < len(stages) and kinds.get(units[below]) == "fill":  # the space of a pit is its own
+                cut = fills[units[below]]
+                if cut in cuts:
+                    top = np.minimum(top, -cuts[cut])
+                below += 1
+            if below == len(stages):
+                continue
+            mask = absent[unit]
+            at = Dem(frame.grid, mask.astype(np.float64)).at(x, y) > 0.5
+            stages[below] = (units[below], np.where(at, np.maximum(stages[below][1], top), stages[below][1]))
+            removed[unit] = int(((before == i).any(axis=2) & mask).sum())
+        labels = labelled()
+    return Painted(units, [p for _u, p in stages], labels, removed)
 
 
 def top_of(frame: Frame, phi: np.ndarray) -> np.ndarray:
@@ -1411,7 +1452,7 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
             told = {c[0] for c in contacts}
             warnings.extend({"code": "fill_without_contact", "unit": u, "cut": cut} for u in own if u not in told)
     say(0.35, "paint")
-    painted = paint(frame, column, fills, fields, cuts, fill_fields, xyz)
+    painted = paint(frame, column, fills, fields, cuts, fill_fields, xyz, absent_rasters(job, frame.grid))
     say(0.5, "tops")
     tops = {u: top_of(frame, p) for u, p in zip(painted.units, painted.phi)}
     say(0.55, "solids")
@@ -1435,6 +1476,6 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
                                       FOLDS if folds is True else int(folds), int(options.get("seed", SEED)),
                                       lambda f: say(0.7 + 0.28 * f, "loo"))
     info = {"vertical": k, "voxel": [frame.grid.cell, frame.grid.cell, frame.dz], "shape": list(frame.shape),
-            "voxels_under_dem": int(frame.under.sum()), "cuts": cut_info, "warnings": warnings,
+            "voxels_under_dem": int(frame.under.sum()), "cuts": cut_info, "warnings": warnings, "absent": painted.removed,
             "contact_values": {u: f.values[u] for u, f in fields.items() if u in f.values}}
     return Result(painted.units, painted.labels, tops, variance, meshes, volumes, loo, info)

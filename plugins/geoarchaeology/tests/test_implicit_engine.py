@@ -1292,3 +1292,27 @@ def test_two_fills_under_a_layer_follow_their_holes_across_the_pit():
     middle = np.hypot(ground.X - 30, ground.Y - 30) < 5.0
     top = (result.labels == index["T"]).sum(axis=2) * job["dz"]
     assert top[middle].min() >= 0.35 and top[middle].max() <= 0.45  # the 0.4 m of the three holes
+
+
+@loop
+def test_a_layer_is_not_where_the_job_says_and_the_one_under_it_takes_its_place():
+    ground = Ground(40, 1.0)
+    dem = np.full((40, 40), 10.0)
+    holes = ground.holes(4, 0.1)
+    contacts = [[u, x, y, z, 1.0, f"H{i}"] for i, (x, y) in enumerate(holes) for u, z in (("B", 8.0), ("C", 6.0), ("D", 4.0))]
+    job = layers_job(ground, dem, contacts, ["A", "B", "C", "D"], zmin=0.0, zmax=11.0, dz=0.1)
+    whole = engine.run(job, dem)
+    mask = ground.X > 20.0
+    result = engine.run({**job, "absent": {"B": mask}}, dem)
+    index = {u: i for i, u in enumerate(result.units)}
+    for unit, array in (("whole", whole.labels), ("result", result.labels)):
+        assert (array >= 0).sum() == (whole.labels >= 0).sum(), unit
+    assert not (result.labels[mask] == index["B"]).any()
+    assert np.allclose(result.volumes["B"], whole.volumes["B"] * (~mask).mean(), rtol=0.05)
+    assert result.volumes["C"] == pytest.approx(whole.volumes["C"] + whole.volumes["B"] * mask.mean(), rel=0.05)
+    assert result.volumes["A"] == pytest.approx(whole.volumes["A"], rel=0.02)  # nothing changes above it
+    assert sum(result.volumes.values()) == pytest.approx(sum(whole.volumes.values()))
+    assert result.info["absent"]["B"] == int(mask.sum())
+    assert np.nanmax(np.abs((result.tops["B"] - result.tops["C"])[mask])) < 1e-3  # one top, as in the stack of the kriging
+    for unit, (vertices, faces) in result.solids.items():
+        assert len(faces), unit
