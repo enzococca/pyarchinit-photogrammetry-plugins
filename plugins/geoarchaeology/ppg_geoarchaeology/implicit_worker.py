@@ -68,15 +68,16 @@ Every message is one line on stdout, the prefix ``@ppg-geoarch`` and a JSON obje
 * ``{"type": "error", "error": "...", "phase": "...", "exception": "...", "traceback": "..."}``
 
 ``info["cuts"][cut]`` has ``edge`` (``drawn``, ``estimated``, ``none``: the only key of a cut left out),
-``profile``, ``plan_area`` (m2), ``volume_range`` (m3 of its fills by profile, the same floor up to what
-covers them; the chosen profile is the voxels of the fills, so they lie inside it; an undercut is not in
-it), ``cut_volume_range`` (m3 by profile of the empty cut, from the ground),
+``profile``, ``plan_area`` (m2), ``volume_range`` (m3 of its fills by profile; the chosen profile is the
+voxels of the fills, so they lie inside it; an undercut is not in it), ``cut_volume_range`` (m3 by profile
+of the empty cut, from where it opens: the top of its youngest fill under a cover, else the ground),
 ``field`` (true for a cut with walls), ``base_miss`` (metres between the floor and each row of the
 base, in order; for a field the nearest zero along the column of each row of the job, null without one)
 and ``base_capped`` (true for the rows the floor does not reach).
 ``info["warnings"]`` are dictionaries with a ``code``: ``edge_estimated`` (with ``limit``; the text must
 say that the volume may be overstated), ``base_near_edge`` (with ``rows``: the floor does not reach them,
-they are next to the edge), ``base_outside_outline`` (with ``x``, ``y``, ``distance``), ``cut_reaches_zmin``,
+they are next to the edge), ``floor_past_measure`` (with ``floor``, ``measure``), ``plan_part_unmeasured`` (with
+``parts``), ``base_outside_outline`` (with ``x``, ``y``, ``distance``), ``cut_reaches_zmin``,
 ``fill_without_contact`` (with ``cut``), ``cut_without_data``, ``series_without_data``,
 ``unit_without_contact``, ``contact_leaves_box``, ``contact_shares_no_hole``, ``few_holes``,
 ``normal_turned_up``, ``orientation_dropped`` (with ``x``, ``y``), ``column_contradicted`` (with ``holes``): the

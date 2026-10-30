@@ -254,15 +254,89 @@ def test_a_hole_by_the_edge_is_held_by_the_limits():
         assert depths[profile].max() <= 2.0 + 1e-6
 
 
-def test_p_min_acts_alone_when_a_deep_hole_is_elsewhere():
+def test_a_row_by_the_edge_gives_no_scale_when_a_deep_hole_is_elsewhere():
     ground = Ground(40, 1.0)
     mask = np.hypot(ground.X - 20, ground.Y - 20) < 12
-    base = np.array([[31.5, 20.5, 9.0], [20.5, 20.5, 6.0]])
-    plan, table, depths, held = _floor_on(mask, base, ground)
-    assert list(held["v"]) == [True, False]
-    wanted = table.depth[0] / engine.P_MIN
-    row, col = table.rows[0], table.cols[0]
-    assert depths["v"][row, col] == pytest.approx(wanted * plan.cell_t[row, col], rel=0.1)
+    alone = _floor_on(mask, np.array([[20.5, 20.5, 6.0]]), ground)[2]
+    base = np.array([[31.5, 20.5, 9.95], [20.5, 20.5, 6.0]])  # the row by the edge is shallower than the profile
+    _plan, table, depths, held = _floor_on(mask, base, ground)
+    assert held["bowl"][0] and not held["bowl"][1]
+    assert table.t[0] < engine.RIM_T
+    assert np.allclose(depths["bowl"], alone["bowl"]) and np.allclose(depths["v"], alone["v"])
+    away = np.ones(mask.shape, dtype=bool)
+    away[table.rows[0], table.cols[0]] = False  # flat is over P_MIN there: only its own cell is met
+    assert np.allclose(depths["flat"][away], alone["flat"][away])
+
+
+@pytest.mark.parametrize("profile", ["bowl", "flat"])
+@pytest.mark.parametrize("layout", [[(0, 0), (7.5, 0)], [(-4, 0), (7.5, 0)], [(0, 0), (8.7, 0)], [(0, 0), (7, 0), (-7, 0), (0, 7)],
+                                    [(0, 0), (7.5, 0), (-7.5, 0), (0, 7.5), (0, -7.5)]])
+def test_holes_beside_a_vertical_wall_do_not_dig_the_middle(layout, profile):
+    ground = Ground(60, 1.0)
+    mask = polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0))
+    grid = engine.Grid(ground.grid)
+    dem = engine.Dem(grid, np.full(mask.shape, 10.0))
+    plan = engine.Plan.of(mask, 1.0, "drawn")
+    base = np.array([[30.0 + a, 30.0 + b, 7.5] for a, b in layout])
+    depths, _held = engine.floors(plan, engine.base_rows(base, plan, grid, dem), grid, dem, base)
+    assert depths[profile].max() <= 2.5 + 1e-9
+    assert depths[profile].sum() == pytest.approx(2.5 * mask.sum(), rel=0.25)
+
+
+def test_heights_on_the_edge_of_a_cut_do_not_crush_its_floor():
+    ground = Ground(60, 1.0)
+    mask = polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0))
+    grid = engine.Grid(ground.grid)
+    dem = engine.Dem(grid, np.full(mask.shape, 10.0))
+    plan = engine.Plan.of(mask, 1.0, "drawn")
+    ring = [[30 + 7.9 * np.cos(a), 30 + 7.9 * np.sin(a), 10.0] for a in np.arange(8) * np.pi / 4]
+    base = np.array([[30.0, 30.0, 7.2]] + ring)
+    depths, held = engine.floors(plan, engine.base_rows(base, plan, grid, dem), grid, dem, base)
+    alone = engine.base_rows(base[:1], plan, grid, dem)
+    assert held["bowl"][1:].all()
+    assert depths["bowl"].sum() == pytest.approx(engine.floors(plan, alone, grid, dem, base[:1])[0]["bowl"].sum(), rel=0.02)
+
+
+@loop
+def test_a_floor_past_every_measure_is_said():
+    ground = Ground(60, 1.0)
+    dem = np.full((60, 60), 10.0)
+    outside = [[5.0, 5.0], [55.0, 55.0], [5.0, 55.0]]
+    job = _pit_job(ground, dem, {"A": 10.0, "B": 9.0, "C": 8.0}, [[37.5, 30.0]], outside, [[37.5, 30.0, 9.5]],
+                   polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0)))
+    job["cuts"]["P"]["profile"] = "bowl"
+    said = {w["code"]: w for w in engine.run(job, dem).info["warnings"]}
+    assert "floor_unmeasured" in said
+    assert said["floor_past_measure"]["measure"] == pytest.approx(0.5)
+    assert said["floor_past_measure"]["floor"] > 1.5
+
+
+def test_a_part_of_a_plan_without_rows_is_said():
+    ground = Ground(60, 1.0)
+    mask = polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0)) | polygon_mask(ground, circle((10.0, 10.0), 4.0, 10.0))
+    frame = engine.Frame({"grid": ground.grid, "zmin": 0.0, "zmax": 12.0, "dz": 0.5}, np.full((60, 60), 10.0))
+    notes: list = []
+    spec = {"base": [[30.0, 30.0, 7.0]], "outline": mask, "profile": "bowl"}
+    assert engine.build_cut(frame, "P", spec, [], 1000, frame.points(), notes) is not None
+    assert {"code": "plan_part_unmeasured", "unit": "P", "parts": 1} in notes
+
+
+def test_the_spread_is_the_same_by_blocks(monkeypatch):
+    rng = np.random.default_rng(1)
+    x, y = rng.uniform(0, 50, (2, 500))
+    at_x, at_y = rng.uniform(0, 50, (2, 7))
+    weights, values = rng.uniform(0.1, 1, (7, 2)), rng.uniform(0, 3, (7, 2))
+    whole = engine._spread(x, y, at_x, at_y, weights, values)
+    monkeypatch.setattr(engine, "IDW_BATCH", 33)
+    assert np.array_equal(engine._spread(x, y, at_x, at_y, weights, values), whole)
+
+
+def test_the_column_check_counts_fills_and_not_rows_without_a_hole():
+    column = [("A", "layer"), ("F", "fill"), ("G", "fill"), ("P", "cut"), ("B", "layer")]
+    against = [["F", 0, 0, 8.0, 1.0, "S1"], ["G", 0, 0, 9.0, 1.0, "S1"]]
+    assert engine.column_contradictions(against, column) == 1
+    spots = [["F", 0, 0, 8.0, 1.0, None], ["G", 9, 9, 9.0, 1.0, None]]
+    assert engine.column_contradictions(spots, column) == 0
 
 
 def test_the_wall_of_a_plan_is_on_the_edge_of_its_cells():
@@ -1192,21 +1266,21 @@ def test_a_dip_against_the_contact_never_turns_the_model_over():
 
 
 def _covered_pit(profile: str, truth: str):
-    """A pit of radius 8 under 0.4 m of topsoil, floor of shape ``truth``, built with ``profile``: its
-    fill is seen from 0.4 m down to the floor, at three holes."""
+    """A pit of radius 8 sealed by 0.4 m of topsoil, floor of shape ``truth`` 2.1 m under where it opens,
+    built with ``profile``: its fill is seen from 0.4 m down to the floor, at three holes."""
     ground = Ground(60, 1.0)
     dem = np.full((60, 60), 10.0)
     r = np.hypot(ground.X - 30, ground.Y - 30)
     mask = r < 8.0
     plan = engine.Plan.of(mask, 1.0, "drawn")
-    depth = 2.5 * np.where(mask, engine.PROFILES[truth](plan.cell_t), 0.0)
+    depth = 2.1 * np.where(mask, engine.PROFILES[truth](plan.cell_t), 0.0)
     holes = [(30.0, 30.0), (33.0, 30.0), (27.0, 28.0)]
     contacts = [["L", x, y, 8.5, 1.0, f"O{i}"] for i, (x, y) in enumerate(ground.holes(4, 0.1))]
     base = []
     rows = lambda x, y: (int(60 - y), int(x))  # noqa: E731
     for i, (x, y) in enumerate(holes):
         contacts.append(["F", x, y, 9.6, 1.0, f"H{i}"])
-        base.append([x, y, 10.0 - float(depth[rows(x, y)])])
+        base.append([x, y, 9.6 - float(depth[rows(x, y)])])
     job = {"grid": ground.grid, "zmin": 2.0, "zmax": 11.0, "dz": 0.05, "contacts": contacts, "orientations": [],
            "series": [{"name": "l", "space": "elevation", "units": ["L"]}],
            "column": [{"unit": "T", "kind": "layer"}, {"unit": "F", "kind": "fill"}, {"unit": "P", "kind": "cut"},
@@ -1215,7 +1289,7 @@ def _covered_pit(profile: str, truth: str):
            "options": {}}
     job["contacts"] += [["N", x, y, 4.0, 1.0, f"O{i}"] for i, (x, y) in enumerate(ground.holes(4, 0.1))]
     job["series"].append({"name": "n", "space": "elevation", "units": ["N"]})
-    return job, dem, float((np.maximum(depth - 0.4, 0.0)).sum())
+    return job, dem, float(depth.sum())
 
 
 @loop
@@ -1229,8 +1303,10 @@ def test_the_range_of_a_covered_fill_holds_the_fill(profile):
     assert min(span.values()) <= fill <= max(span.values())
     assert span[profile] == pytest.approx(fill)
     assert fill == pytest.approx(truth, rel=0.15)  # three holes do not tell a V to better than that
-    assert cut["cut_volume_range"][profile] > span[profile] + 0.5 * cut["plan_area"] * 0.4  # the topsoil is not in it
-    assert max(span.values()) < max(cut["cut_volume_range"].values())
+    for other in engine.PROFILES:  # the same place of opening, not the ground: the topsoil is in neither
+        if other != profile:
+            assert span[other] == pytest.approx(cut["cut_volume_range"][other])
+    assert max(cut["cut_volume_range"].values()) < 2.1 * cut["plan_area"]
 
 
 @loop
@@ -1353,3 +1429,80 @@ def test_a_layer_absent_around_a_pit_gives_the_fills_nothing():
             assert not (result.labels[~plan] == index[fill]).any(), fill
             assert result.volumes[fill] == pytest.approx(whole.volumes[fill], rel=0.02), fill
         assert (result.labels >= 0).sum() == (whole.labels >= 0).sum()
+
+
+def _sealed(truth: str, holes: list):
+    """A pit opening 1.5 m under the ground, 1 m deep, radius 8, more cover than depth."""
+    ground = Ground(60, 1.0)
+    dem = np.full((60, 60), 10.0)
+    mask = polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0))
+    t = engine.Plan.of(mask, 1.0, "drawn").cell_t
+    outside = [(x, y) for y in (6.0, 30.0, 54.0) for x in (6.0, 30.0, 54.0) if np.hypot(x - 30, y - 30) > 9]
+    contacts = []
+    for i, (x, y) in enumerate(outside):
+        contacts += [["C", x, y, 8.5, 1.0, f"S{i}"], ["E", x, y, 6.0, 1.0, f"S{i}"]]
+    base = []
+    for i, (x, y) in enumerate(holes):
+        share = float(engine.PROFILES[truth](np.array(1 - np.hypot(x - 30, y - 30) / 8)))
+        base.append([x, y, 8.5 - share])
+        contacts.append(["F", x, y, 8.5, 1.0, f"P{i}"])
+    job = {"grid": ground.grid, "zmin": 0.0, "zmax": 12.0, "dz": 0.05, "contacts": contacts, "orientations": [],
+           "series": [{"name": "s", "space": "elevation", "units": ["C", "E"]}], "options": {},
+           "column": [{"unit": "A", "kind": "layer"}, {"unit": "F", "kind": "fill"}, {"unit": "P", "kind": "cut"},
+                      {"unit": "C", "kind": "layer"}, {"unit": "E", "kind": "layer"}],
+           "fills": {"F": "P"}, "cuts": {"P": {"base": base, "outline": mask, "profile": truth,
+                                               "inside": [b[:2] for b in base], "outside": outside}}}
+    return job, dem, mask, float(engine.PROFILES[truth](t)[mask].sum())
+
+
+@loop
+@pytest.mark.parametrize("truth", ["flat", "bowl", "v"])
+@pytest.mark.parametrize("holes", [[(30.0, 30.0), (34.0, 30.0), (26.0, 30.0)],
+                                   [(30.0, 30.0), (34.0, 30.0), (26.0, 30.0), (30.0, 34.0), (30.0, 26.0)]])
+def test_a_sealed_pit_hangs_from_where_it_opens(truth, holes):
+    job, dem, mask, volume = _sealed(truth, holes)
+    result = engine.run(job, dem)
+    fill = result.labels == result.units.index("F")
+    cut = result.info["cuts"]["P"]
+    assert result.volumes["F"] == pytest.approx(volume, rel=0.15)
+    assert min(cut["volume_range"].values()) * 0.97 <= volume <= max(cut["volume_range"].values()) * 1.03
+    assert fill.any(axis=2).sum() == pytest.approx(mask.sum(), rel=0.02)
+    assert not fill.any(axis=2)[~mask].any()
+    assert max(cut["base_miss"]) < 1e-9
+
+
+@loop
+def test_an_uncovered_pit_still_hangs_from_the_ground():
+    job, dem, _mask, _volume = _sealed("bowl", [(30.0, 30.0), (34.0, 30.0)])
+    job["column"] = job["column"][1:]
+    job["cuts"]["P"]["base"] = [[x, y, z - 1.5] for x, y, z in job["cuts"]["P"]["base"]]
+    job["contacts"] = [c for c in job["contacts"] if c[0] != "F"]
+    result = engine.run(job, dem)
+    assert result.info["cuts"]["P"]["volume_range"]["bowl"] > 2.0 * result.info["cuts"]["P"]["plan_area"] * 0.5
+    assert max(result.info["cuts"]["P"]["base_miss"]) < 1e-9
+
+
+@loop
+def test_an_absent_unit_passing_through_a_fill_leaves_no_solid_there():
+    ground = Ground(60, 1.0)
+    dem = np.full((60, 60), 10.0)
+    contacts = []
+    for i, (x, y) in enumerate((x, y) for y in (10.0, 30.0, 50.0) for x in (10.0, 30.0, 50.0)):
+        contacts += [["U", x, y, 9.5, 1.0, f"S{i}"], ["B", x, y, 8.0, 1.0, f"S{i}"], ["C", x, y, 6.0, 1.0, f"S{i}"]]
+    contacts.append(["F", 30.0, 30.0, 9.5, 1.0, "Q"])
+    mask = polygon_mask(ground, circle((30.0, 30.0), 6.0, 10.0))
+    band = np.zeros((60, 60), dtype=bool)
+    band[:, 42:52] = True
+    job = {"grid": ground.grid, "zmin": 0.0, "zmax": 12.0, "dz": 0.1, "contacts": contacts, "orientations": [],
+           "series": [{"name": "U", "space": "elevation", "units": ["U"]},
+                      {"name": "BC", "space": "elevation", "units": ["B", "C"]}],
+           "column": [{"unit": u, "kind": k} for u, k in (("A", "layer"), ("U", "layer"), ("F", "fill"), ("P", "cut"),
+                                                          ("B", "layer"), ("C", "layer"))],
+           "fills": {"F": "P"}, "options": {}, "absent": {"U": band},
+           "cuts": {"P": {"base": [[30.0, 30.0, 7.5]], "outline": mask, "profile": "flat", "inside": [[30.0, 30.0]],
+                          "outside": []}}}
+    result = engine.run(job, dem)
+    for unit, (vertices, faces) in result.solids.items():
+        assert engine.mesh_volume(vertices, faces) == pytest.approx(result.volumes[unit], rel=0.03), unit
+    vertices = result.solids["U"][0]
+    assert not ((vertices[:, 0] > 43) & (vertices[:, 0] < 51)).any()

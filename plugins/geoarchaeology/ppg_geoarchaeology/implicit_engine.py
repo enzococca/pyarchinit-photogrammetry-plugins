@@ -21,12 +21,15 @@ The fields
 
 Cuts
     A cut is not a field: a smooth field cannot draw a thin shape from one to three measures. It is a
-    plan, a boolean raster (:func:`cut_plan`), and an explicit floor on it, ``z = ground - s(x, y) P(t)``
-    (:func:`floors`): ``t`` the distance from the edge of the plan over the local half width, ``P`` the
+    plan, a boolean raster (:func:`cut_plan`), and an explicit floor on it, ``z = opening - s(x, y) P(t)``
+    (:func:`floors`): ``opening`` where the cut opens, the ground or, under a cover, the top of its
+    youngest fill; ``t`` the distance from the edge of the plan over the local half width, ``P`` the
     profile of the cut, ``s`` the measured depths over ``P``, spread by inverse distance, so the floor
-    passes through its measures. Few holes cannot tell the shape of a floor: the volume of a cut comes
-    with the three profiles (``volume_range``). Only a cut with rows marked ``wall``, which bends back
-    under the ground, is a field of LoopStructural in a box of its own (:func:`wall_field`).
+    passes through its measures. A row by the edge says how steep the wall is, not how deep the middle
+    goes: it takes no part in ``s`` as soon as another row stands away from the edge. Few holes cannot
+    tell the shape of a floor: the volume of a cut comes with the three profiles (``volume_range``). Only
+    a cut with rows marked ``wall``, which bends back under the ground, is a field of LoopStructural in a
+    box of its own (:func:`wall_field`).
 
 The painter (:func:`paint`)
     LoopStructural's stratigraphic column is not used. The column is walked from the bottom up
@@ -76,8 +79,8 @@ CUT_ELEMENTS = 120_000  # at most these many elements for the field of a cut wit
 PROFILES = {"flat": lambda t: 1.0 - (1.0 - np.minimum(t / 0.25, 1.0)) ** 2,  # steep walls, flat floor
             "bowl": lambda t: 1.0 - (1.0 - t) ** 3,
             "v": lambda t: t}
-RIM_T = 0.25  # holes all nearer the edge than this share of the half width: the floor's depth was never measured
-P_MIN = 0.25  # the profile at a hole next to the edge counts as this much: its depth at most x4 in the middle
+RIM_T = 0.25  # rows nearer the edge than this share of the half width do not tell the depth of the floor
+P_MIN = 0.25  # with only such rows, the profile at a row counts as this much: its depth at most x4 in the middle
 IDW_BATCH = 100_000  # cells of a plan at a time
 
 
@@ -300,7 +303,7 @@ def column_contradictions(contacts: list, column: list) -> int:
     order = {u: i for i, (u, _k) in enumerate(column)}
     holes: dict = {}
     for unit, _x, _y, z, _w, hole in contacts:
-        if unit in order:
+        if unit in order and hole is not None:  # a spot height or a row of a file stands alone
             holes.setdefault(hole, []).append((order[unit], z))
     count = 0
     for rows in holes.values():
@@ -790,7 +793,8 @@ class BaseRows:
     past: np.ndarray
 
 
-def base_rows(base: np.ndarray, plan: Plan, grid: Grid, dem: Dem) -> BaseRows:
+def base_rows(base: np.ndarray, plan: Plan, grid: Grid, opening: Dem) -> BaseRows:
+    """The rows on the plan; their depth is under ``opening``, the surface the cut hangs from."""
     from scipy import ndimage
 
     x, y = base[:, 0].copy(), base[:, 1].copy()
@@ -801,38 +805,65 @@ def base_rows(base: np.ndarray, plan: Plan, grid: Grid, dem: Dem) -> BaseRows:
     lat_r = np.clip(np.rint(2 * (grid.y0 - y) / grid.cell).astype(int), 0, plan.t.shape[0] - 1)
     lat_c = np.clip(np.rint(2 * (x - grid.x0) / grid.cell).astype(int), 0, plan.t.shape[1] - 1)
     t = np.where(in_plan, plan.t[lat_r, lat_c], plan.cell_t[near_r, near_c])
-    depth = np.maximum(dem.at(x, y) - base[:, 2], 0.0)
+    depth = np.maximum(opening.at(x, y) - base[:, 2], 0.0)
     cx, cy = grid.xs[near_c], grid.ys[near_r]
     past = np.where(in_plan, 0.0, np.maximum(np.hypot(x - cx, y - cy) - 0.5 * grid.cell, 0.0))
     return BaseRows(np.where(in_plan, x, cx), np.where(in_plan, y, cy), near_r, near_c, t, depth, past)
 
 
-def floors(plan: Plan, table: BaseRows, grid: Grid, dem: Dem, base: np.ndarray) -> tuple[dict, dict]:
-    """The depth (m, raster) of the floor for every profile, and which rows it does not reach.
+def _spread(x: np.ndarray, y: np.ndarray, at_x: np.ndarray, at_y: np.ndarray, weights: np.ndarray,
+            values: np.ndarray) -> np.ndarray:
+    """``values`` (rows, n) spread by inverse distance on the points ``x, y``, one row per point, ``weights``
+    (rows, n) the share of every row. By blocks: holes x columns is too much at once."""
+    out = np.empty((len(x), values.shape[1]))
+    for start in range(0, len(x), IDW_BATCH):
+        here_x, here_y = x[start:start + IDW_BATCH], y[start:start + IDW_BATCH]
+        near = 1.0 / np.maximum((here_x[:, None] - at_x) ** 2 + (here_y[:, None] - at_y) ** 2, 1e-9)
+        out[start:start + IDW_BATCH] = (near @ (weights * values)) / (near @ weights)
+    return out
 
-    ``depth = s(x, y) P(t)``: the scale of a row is its depth over the profile at its place, with the
-    profile counted as at least :data:`P_MIN` (a hole beside the edge says little of the middle: the
-    floor there is a guess and ``base_near_edge`` says so); between the rows it is spread by inverse
-    distance. A row not held by that limit is met exactly at its cell."""
+
+def floors(plan: Plan, table: BaseRows, grid: Grid, opening: Dem, base: np.ndarray) -> tuple[dict, dict]:
+    """The depth (m, raster, under ``opening``) of the floor for every profile, and which rows are held:
+    those the floor does not come to.
+
+    ``depth = s(x, y) P(t)``: the scale of a row is its depth over the profile at its place; between the
+    rows it is spread by inverse distance, a row weighing ``P(t)^2``, for a small P blows up an error of
+    the drawing. A row by the edge (``t`` under :data:`RIM_T`) does not count when another one stands away
+    from the edge: where a wall stands is what it says, not how deep the middle goes, and a height taken
+    on the edge says nothing at all. If it is deeper than the profile the wall is steeper than the profile:
+    what it wants more is spread around it, so the floor comes to it without touching the rows that do
+    count. With a row away from the edge no floor goes deeper than the deepest measure of the cut.
+
+    With only rows by the edge the depth is a guess (``floor_unmeasured``): each counts, its profile at
+    least :data:`P_MIN`. A row that is not held is met exactly at its cell."""
     shares = {name: profile(table.t) for name, profile in PROFILES.items()}
-    wanted = {name: table.depth / np.maximum(share, P_MIN) for name, share in shares.items()}
     held = {name: shares[name] < P_MIN for name in PROFILES}
-    scales = np.column_stack([wanted[name] for name in PROFILES])
+    by_edge = table.t < RIM_T
+    measured = bool((~by_edge).any())
     rows, cols = np.nonzero(plan.mask)
-    s = np.empty((len(rows), len(PROFILES)))
-    for start in range(0, len(rows), IDW_BATCH):
-        r, c = rows[start:start + IDW_BATCH], cols[start:start + IDW_BATCH]
-        d2 = (grid.xs[c][:, None] - table.x) ** 2 + (grid.ys[r][:, None] - table.y) ** 2
-        weight = 1.0 / np.maximum(d2, 1e-9)
-        s[start:start + IDW_BATCH] = (weight @ scales) / weight.sum(axis=1, keepdims=True)
+    x, y = grid.xs[cols], grid.ys[rows]
+    scales = np.column_stack([table.depth / np.maximum(shares[name], P_MIN) for name in PROFILES])
+    trust = np.column_stack([np.where(by_edge, 0.0, shares[name] ** 2) if measured else np.ones(len(by_edge))
+                             for name in PROFILES])
+    s = _spread(x, y, table.x, table.y, trust, scales)
     t = plan.cell_t[rows, cols]
     out = {}
     met = table.past == 0.0
+    scale_of = np.empty(plan.mask.shape)
     for i, (name, profile) in enumerate(PROFILES.items()):
+        here = s[:, i] * profile(t)
+        if measured:
+            scale_of[rows, cols] = s[:, i]
+            steeper = np.where(by_edge, table.depth - scale_of[table.rows, table.cols] * shares[name], 0.0).clip(0.0)
+            if steeper.any():
+                here = here + _spread(x, y, table.x, table.y, np.ones((len(by_edge), 1)), steeper[:, None])[:, 0]
+            held[name] = held[name] & (steeper == 0.0)
+            here = np.minimum(here, table.depth.max())
         depth = np.zeros(plan.mask.shape)
-        depth[rows, cols] = s[:, i] * profile(t)
+        depth[rows, cols] = here
         exact = met & ~held[name]
-        depth[table.rows[exact], table.cols[exact]] = (dem.filled[table.rows, table.cols] - base[:, 2])[exact]
+        depth[table.rows[exact], table.cols[exact]] = (opening.filled[table.rows, table.cols] - base[:, 2])[exact]
         out[name] = np.maximum(depth, 0.0)
     return out, held
 
@@ -855,9 +886,10 @@ class Box:
     elements: int
 
 
-def plan_function(frame: Frame, plan: Plan, depth: np.ndarray) -> np.ndarray:
-    """The signed function of a cut at the evaluated voxels: positive inside the plan above the floor."""
-    floor = np.where(plan.mask, frame.dem.filled - depth, -BIG)  # past the edge only the edge counts: a wall stands on it
+def plan_function(frame: Frame, plan: Plan, floor: np.ndarray) -> np.ndarray:
+    """The signed function of a cut at the evaluated voxels: positive inside the plan above the ``floor``
+    (raster of heights)."""
+    floor = np.where(plan.mask, floor, -BIG)  # past the edge only the edge counts: a wall stands on it
     cube = (frame.zc[None, None, :] - floor[:, :, None]).astype(np.float32)
     cube[cube == 0] = -1e-6  # a voxel exactly on the floor is under it: zero would belong to nobody
     return np.minimum(cube, plan.signed[:, :, None])[frame.evaluated]
@@ -974,21 +1006,27 @@ def wall_function(frame: Frame, fitted: Fitted, box: Box, seeds: np.ndarray, xyz
 
 @dataclass
 class Cut:
-    """What a cut gives the painter: its signed function, its report, the depth
-    (m, raster) of its floor for every profile and the cells of its plan under the DEM."""
+    """What a cut gives the painter: its signed function, its report."""
 
     function: np.ndarray
     info: dict
-    depths: dict = field(default_factory=dict)
-    within: np.ndarray | None = None
+
+
+def _parts_without_rows(plan: Plan, table: BaseRows) -> int:
+    """The separate parts of a plan that no row of the floor stands on."""
+    from scipy import ndimage
+
+    labels, count = ndimage.label(plan.mask, structure=np.ones((3, 3)))
+    return count - len(set(labels[table.rows, table.cols].tolist()) - {0})
 
 
 def build_cut(frame: Frame, name: str, spec: dict, orientations: list, nelements: int,
-              xyz, notes: list) -> Cut | None:
+              xyz, notes: list, opening: np.ndarray | None = None) -> Cut | None:
     """A cut from its entry in the job, None when there is not enough to place it. The floor is explicit
     on the plan (:func:`floors`) unless rows marked ``wall`` ask for a field (:func:`wall_field`). ``notes``
-    collects the warnings."""
+    collects the warnings; ``opening``: the raster of where the cut opens, the ground without it."""
     grid, dem = frame.grid, frame.dem
+    surface = dem if opening is None else Dem(grid, opening)
     points, walls = split_base(spec.get("base"))
     if not len(points):
         return None
@@ -1000,14 +1038,14 @@ def build_cut(frame: Frame, name: str, spec: dict, orientations: list, nelements
     if not len(inside):
         inside = np.unique(base[:, :2], axis=0)
     outside = _rows(spec.get("outside"), 2)
-    deepest = max(float((dem.at(base[:, 0], base[:, 1]) - base[:, 2]).max()), frame.dz)
+    deepest = max(float((surface.at(base[:, 0], base[:, 1]) - base[:, 2]).max()), frame.dz)
     plan, limit = cut_plan(spec, grid, inside, outside, deepest)
     if not plan.mask.any():
         return None
     if plan.edge == "estimated":
         notes.append({"code": "edge_estimated", "unit": name, "limit": limit, "effect": "the volume may be overstated"})
-    table = base_rows(base, plan, grid, dem)
-    depths, held = floors(plan, table, grid, dem, base)
+    table = base_rows(base, plan, grid, surface)
+    depths, held = floors(plan, table, grid, surface, base)
     for x, y, distance in zip(base[:, 0], base[:, 1], table.past):
         if distance > 0:
             notes.append({"code": "base_outside_outline", "unit": name, "x": float(x), "y": float(y),
@@ -1016,24 +1054,30 @@ def build_cut(frame: Frame, name: str, spec: dict, orientations: list, nelements
         notes.append({"code": "base_near_edge", "unit": name, "rows": int(held[profile].sum())})
     if float(table.t.max()) < RIM_T:
         notes.append({"code": "floor_unmeasured", "unit": name})
-    room = np.maximum(dem.filled - frame.zmin, 0.0)
+        reached, measure = float(depths[profile].max()), float(table.depth.max())
+        if reached > measure + frame.dz:  # with a row away from the edge the deepest measure stops it
+            notes.append({"code": "floor_past_measure", "unit": name, "floor": reached, "measure": measure})
+    parts = _parts_without_rows(plan, table)
+    if parts:
+        notes.append({"code": "plan_part_unmeasured", "unit": name, "parts": parts})
+    room = np.maximum(surface.filled - frame.zmin, 0.0)
     if np.any((depths[profile] > room + 1e-9) & plan.mask & dem.mask):
         notes.append({"code": "cut_reaches_zmin", "unit": name})
     within = plan.mask & dem.mask
     depths = {p: np.minimum(depth, room) for p, depth in depths.items()}
     info = {"edge": plan.edge, "profile": profile, "plan_area": float(plan.mask.sum() * grid.cell ** 2),
             "volume_range": {p: float(depth[within].sum() * grid.cell ** 2) for p, depth in depths.items()}}
-    info["cut_volume_range"] = dict(info["volume_range"])  # fill_ranges() makes the other one that of the fills
+    info["cut_volume_range"] = dict(info["volume_range"])  # run() puts the painted fills in the other one
     if walls.any():
         fitted, box, seeds = wall_field(frame, name, plan, points, inside, orientations, nelements)
         span = max(float(np.ptp(points[:, 2])), 4 * frame.dz, 1.0)
         info.update(field=True, vertical=box.k, elements=box.elements, base_miss=wall_misses(fitted, points, span),
                     base_capped=[False] * len(points))
-        return Cut(wall_function(frame, fitted, box, seeds, xyz), info, depths, within)
-    floor = dem.filled - depths[profile]
+        return Cut(wall_function(frame, fitted, box, seeds, xyz), info)
+    floor = surface.filled - depths[profile]
     miss = np.abs(floor[table.rows, table.cols] - base[:, 2])
     info.update(field=False, base_miss=[float(v) for v in miss], base_capped=[bool(v) for v in held[profile]])
-    return Cut(plan_function(frame, plan, depths[profile]), info, depths, within)
+    return Cut(plan_function(frame, plan, floor), info)
 
 
 class FillTops:
@@ -1064,7 +1108,7 @@ def fit_fills(frame: Frame, fills: list, contacts: list, covered: bool = False) 
     if not rows:
         return None
     grid = frame.grid
-    gx, gy = np.meshgrid(grid.xs, grid.ys)
+    gx, gy = (a.ravel() for a in np.meshgrid(grid.xs, grid.ys))
     depths, last = {}, None
     for unit in fills:
         own = [r for r in rows if r[0] == unit]
@@ -1072,29 +1116,11 @@ def fit_fills(frame: Frame, fills: list, contacts: list, covered: bool = False) 
             continue
         x, y = np.array([r[1] for r in own], float), np.array([r[2] for r in own], float)
         depth = np.maximum(frame.dem.at(x, y) - np.array([r[3] for r in own], float), 0.0)
-        squared = np.maximum((gx[..., None] - x) ** 2 + (gy[..., None] - y) ** 2, 1e-6)
-        weight = np.array([r[4] for r in own], float) / squared
-        raster = (weight * depth).sum(axis=2) / weight.sum(axis=2)
+        weight = np.array([r[4] for r in own], float)[:, None]
+        raster = _spread(gx, gy, x, y, weight, depth[:, None])[:, 0].reshape(grid.height, grid.width)
         depths[unit] = raster if last is None else np.maximum(raster, last + 0.1 * frame.dz)
         last = depths[unit]
     return FillTops(frame.dem, depths)
-
-
-def fill_ranges(frame: Frame, cut: Cut, ceiling: np.ndarray | None, painted_volume: float | None) -> dict:
-    """The volume of what fills a cut for every profile: between its floor and ``ceiling``, the top of its
-    youngest fill under what covers it (raster; None: the ground), so a pit under the topsoil does
-    not count the topsoil. ``painted_volume``: the voxels of its fills, which are the value of the chosen
-    profile: they are the fill the model has, so it lies inside its own range. None for a cut with walls:
-    its range is that of its plan, an undercut is not in it."""
-    top = frame.dem.filled if ceiling is None else np.where(np.isfinite(ceiling), ceiling, frame.dem.filled)
-    area = frame.grid.cell ** 2
-    out = {}
-    for profile, depth in cut.depths.items():
-        floor = frame.dem.filled - depth
-        out[profile] = float(np.maximum(top - floor, 0.0)[cut.within].sum() * area)
-    if painted_volume is not None:
-        out[cut.info["profile"]] = float(painted_volume)
-    return out
 
 
 # ---------------------------------------------------------------------- the painter
@@ -1205,15 +1231,16 @@ def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fil
     for i, (unit, top) in enumerate(stages):
         if unit not in to_below or not to_below[unit].any():
             continue
+        at = on_points(to_below[unit])
         below = i + 1
-        while below < len(stages) and kinds.get(units[below]) == "fill":  # the space of a pit is its own
-            cut = fills[units[below]]
+        while below < len(stages):  # the space of a pit is its own, and every set on the way holds what is passed on
+            cut = fills.get(units[below]) if kinds.get(units[below]) == "fill" else None
             if cut in cuts:
                 top = np.minimum(top, -cuts[cut])
-            below += 1
-        if below < len(stages):
-            at = on_points(to_below[unit])
             stages[below] = (units[below], np.where(at, np.maximum(stages[below][1], top), stages[below][1]))
+            if cut is None:
+                break
+            below += 1
     index = np.zeros(len(x), dtype=np.int16)
     for i in range(1, len(stages)):
         index[stages[i][1] > 0] = i
@@ -1419,7 +1446,7 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
         if wrong:
             raise ValueError(f"series {spec.get('name')}: {wrong} are not layers of the column")
     warnings: list = []
-    contradicted = column_contradictions([c for c in contacts if c[0] not in fills], column)
+    contradicted = column_contradictions(contacts, column)
     if contradicted:
         warnings.append({"code": "column_contradicted", "holes": contradicted})
     x0, y0, x1, y1 = frame.grid.bounds
@@ -1452,7 +1479,11 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
     for cut, spec in (job.get("cuts") or {}).items():
         cut = str(cut)
         own = [u for u, _kind in column if fills.get(u) == cut]
-        built = build_cut(frame, cut, spec, orientations, nelements, xyz, warnings)
+        covered = bool(own) and any(kind == "layer" for u, kind in column[:order.index(own[0])])
+        ordered = fit_fills(frame, own, contacts, covered)
+        sealed = covered and ordered is not None and own[0] in ordered.values
+        built = build_cut(frame, cut, spec, orientations, nelements, xyz, warnings,
+                          ordered.raster(own[0]) if sealed else None)
         if built is None:
             warnings.append({"code": "cut_without_data", "unit": cut})
             cut_info[cut] = {"edge": "none"}
@@ -1460,8 +1491,6 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
         cuts[cut] = built.function
         built_cuts[cut] = built
         cut_info[cut] = built.info
-        covered = bool(own) and any(kind == "layer" for u, kind in column[:order.index(own[0])])
-        ordered = fit_fills(frame, own, contacts, covered)
         if ordered is not None:
             fill_fields[cut] = ordered
         if len(own) > 1 or covered:
@@ -1477,12 +1506,8 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
     volumes = {u: float((painted.labels == i).sum() * volume_of_voxel) for i, u in enumerate(painted.units)}
     for cut, built in built_cuts.items():
         own = [u for u, _kind in column if fills.get(u) == cut]
-        ceiling = None
-        ordered = fill_fields.get(cut)
-        if own and ordered is not None and own[0] in ordered.values:
-            ceiling = ordered.raster(own[0])
-        painted_volume = sum(volumes.get(u, 0.0) for u in own) if own and not built.info.get("field") else None
-        built.info["volume_range"] = fill_ranges(frame, built, ceiling, painted_volume)
+        if own and not built.info.get("field"):  # the fill the model has: it lies inside its own range
+            built.info["volume_range"][built.info["profile"]] = sum(volumes.get(u, 0.0) for u in own)
     loo: dict = {}
     variance: dict = {}
     folds = options.get("folds")
