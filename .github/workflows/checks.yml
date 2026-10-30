@@ -38,8 +38,8 @@ jobs:
       fail-fast: false
       matrix:
         plugin: [plugins/blender-em, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/mesh-tools,
-                 plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/sentinel2, plugins/spirula, plugins/terrain, plugins/terrio, plugins/underwater,
-                 template]
+                 plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/landscape, plugins/sentinel2, plugins/spirula,
+                 plugins/terrain, plugins/terrio, plugins/underwater, template]
     services:
       postgis:
         image: postgis/postgis:17-3.5
@@ -73,6 +73,18 @@ jobs:
           uv venv -p 3.13 "$RUNNER_TEMP/bpy"
           VIRTUAL_ENV="$RUNNER_TEMP/bpy" uv pip install "bpy==5.2.*"
           echo "PPG_TEST_BLENDER=$RUNNER_TEMP/bpy/bin/python" >> "$GITHUB_ENV"
+      - name: Landlab for the tests of landscape (its other tests run without it)
+        # Landlab, richdem and netCDF4 in an environment of their own, made by uv, as the plugin makes it: the
+        # program never imports them; PPG_TEST_LANDLAB names its Python for the tests of the real worker
+        if: matrix.plugin == 'plugins/landscape'
+        run: |
+          python -m pip install uv
+          uv venv -p 3.12 "$RUNNER_TEMP/landlab"
+          VIRTUAL_ENV="$RUNNER_TEMP/landlab" uv pip install "landlab>=2.9,<3" numpy pytest
+          echo "PPG_TEST_LANDLAB=$RUNNER_TEMP/landlab/bin/python" >> "$GITHUB_ENV"
+      - name: The simulations of landscape, in the Python that has Landlab
+        if: matrix.plugin == 'plugins/landscape'
+        run: '"$PPG_TEST_LANDLAB" -m pytest -q -p no:cacheprovider plugins/landscape/tests'
       - name: s3dgraphy for the em.json test of blender-em
         if: matrix.plugin == 'plugins/blender-em'
         run: python -m pip install --pre "s3dgraphy>=1.6.0.dev40"
