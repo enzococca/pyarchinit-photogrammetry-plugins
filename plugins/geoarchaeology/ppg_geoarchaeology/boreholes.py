@@ -236,6 +236,8 @@ def save(chunk, boreholes: list[Borehole]) -> None:
     _refresh_units(chunk, boreholes)
     if m.get("surfaces"):
         m["surfaces"]["stale"] = True  # built from other logs: to build again
+    if (m.get("implicit") or {}).get("made"):
+        m["implicit"]["stale"] = True
 
 
 # ------------------------------------------------------------------ reading the tables: the columns
@@ -588,14 +590,17 @@ def parse_number(text, decimal: str | None = None) -> float | None:
     return v if np.isfinite(v) else None
 
 
-def read_table(path: str | Path, notes: list | None = None) -> tuple[list[dict], dict]:
+def read_table(path: str | Path, notes: list | None = None, extra: dict | None = None) -> tuple[list[dict], dict]:
     """The rows of a table as dictionaries of fields (numbers parsed in the context of the file,
     lengths in metres, ``_line`` the line of the file, ``_bad`` the cells that are not numbers)
     and the fields found (``{"id": "Sondaggio", ...}``: field -> column). ``notes`` receives what
-    was guessed or put back together."""
+    was guessed or put back together. ``extra``: numeric fields of this table, ``{field: names}``
+    with the column names normalised."""
     notes = notes if notes is not None else []
     header, rows, lines, delimiter = _read_rows(path)
-    cands = [_field_candidates(h) for h in header]
+    extra = extra or {}
+    cands = [_field_candidates(h) + [(f, 3, 1.0, False) for f, known in extra.items() if normalise(h) in known]
+             for h in header]
     short = {normalise(h) for h in header}
     if not {"e", "n"} <= short:  # E and N alone are a guess, together the coordinates
         cands = [[(f, 1 if normalise(h) in ("e", "n") else p, fa, a) for f, p, fa, a in cs]
@@ -603,7 +608,8 @@ def read_table(path: str | Path, notes: list | None = None) -> tuple[list[dict],
     _depth_or_elevation(header, cands, rows, notes)
     columns, names = _assign(header, cands, notes)
     rows, lines = _repair(columns, len(header), rows, lines, delimiter, notes)
-    decimal = decimal_mark(row[k] for f, (k, _fa) in columns.items() if f in NUMERIC for row in rows if k < len(row))
+    decimal = decimal_mark(row[k] for f, (k, _fa) in columns.items() if f in NUMERIC or f in extra
+                           for row in rows if k < len(row))
     out = []
     for row, line in zip(rows, lines):
         rec: dict = {"_line": line}
@@ -1092,6 +1098,8 @@ def set_order(chunk, codes) -> list[str]:
     m["order_manual"] = True
     if m.get("surfaces") and codes != have:
         m["surfaces"]["stale"] = True  # built in another order
+    if (m.get("implicit") or {}).get("made") and codes != have:
+        m["implicit"]["stale"] = True
     return codes
 
 

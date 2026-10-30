@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from . import boreholes as bh
+from . import implicit
 from . import surfaces as sf
 from .figures import save
 from .texts import signed, t
@@ -89,7 +90,9 @@ def project(p: np.ndarray, xy) -> tuple[np.ndarray, np.ndarray]:
 # ------------------------------------------------------------------ the profile
 def profile(chunk, coords, step: float | None = None) -> dict:
     """The ground and the top of every unit along the trace: ``{"distance", "x", "y", "ground",
-    "tops": [(unit, values)], "length"}`` (NaN where a surface has no value)."""
+    "tops": [(unit, values)], "length"}`` (NaN where a surface has no value). When the model of the
+    chunk is the implicit one the tops are its surfaces (a section across a pit shows the pit) and
+    ``"method"`` says so."""
     p = polyline(coords)
     length = float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum())
     grid = sf.grid_of(chunk)
@@ -100,14 +103,18 @@ def profile(chunk, coords, step: float | None = None) -> dict:
     dem = bh.dem_path(chunk)
     ground = bh.raster_values(dem, xy[:, 0], xy[:, 1]) if dem is not None else np.full(len(d), np.nan)
     tops = []
-    for e in sf.registry(chunk).get("contacts", []):
+    implicit_tops = implicit.active_surfaces(chunk)
+    for e in implicit_tops or sf.registry(chunk).get("contacts", []):
         path = Path(chunk.data_dir) / e["file"]
         values = bh.raster_values(path, xy[:, 0], xy[:, 1]) if path.exists() else np.full(len(d), np.nan)
         tops.append((e["unit"], values))
     if dem is None and tops:  # no DEM: the top of the first unit stands for the ground
         ground = tops[0][1].copy()
-    return {"distance": d, "x": xy[:, 0], "y": xy[:, 1], "ground": ground, "tops": tops, "length": length,
-            "vertices": p}
+    out = {"distance": d, "x": xy[:, 0], "y": xy[:, 1], "ground": ground, "tops": tops, "length": length,
+           "vertices": p}
+    if implicit_tops:
+        out["method"] = "implicit"
+    return out
 
 
 def near(chunk, coords, distance: float) -> list[dict]:
@@ -181,6 +188,8 @@ def build(chunk, coords, name: str | None = None, distance: float | None = None,
              "boreholes": [{"id": h["borehole"].id, "station": round(h["station"], 3),
                             "offset": round(h["offset"], 3) + 0.0} for h in holes],
              "made": time.strftime("%Y-%m-%d %H:%M")}
+    if prof.get("method"):
+        entry["method"] = prof["method"]
     m["sections"] = [s for s in sections if s["id"] != stem] + [entry]
     try:
         from .export import write_layers
@@ -295,6 +304,8 @@ def figure(chunk, prof: dict, holes: list[dict], name: str, svg: Path | None, pn
     title = f"{name} - 1:{scale:g}"
     if exaggeration != 1:
         title += t(", esagerazione verticale x{0:g}", ", vertical exaggeration x{0:g}").format(exaggeration)
+    if prof.get("method") == "implicit":
+        title += " - " + t("modello implicito: un'interpretazione dei dati", "implicit model: an interpretation of the data")
     fig.text(m_left / W, 1 - 6 / H, title, fontsize=8, va="top")
     if handles:
         fig.legend(handles=handles, loc="upper left", bbox_to_anchor=((m_left + aw + 4) / W, 1 - m_top / H),

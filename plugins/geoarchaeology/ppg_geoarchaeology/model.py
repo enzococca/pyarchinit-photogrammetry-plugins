@@ -304,20 +304,26 @@ VOLUME_COLUMNS = ("unit", "description", "volume_m3", "area_m2", "mean_thickness
                   "outside_dem_area_m2")
 
 
-def write_volumes(path: Path, rows: list[dict]) -> Path:
-    """The volumes per unit (on the cells with a DEM; the cells without one in the last columns)."""
+def write_volumes(path: Path, rows: list[dict], columns: tuple = VOLUME_COLUMNS) -> Path:
+    """The volumes per unit (on the cells with a DEM; the cells without one in the last columns of
+    :data:`VOLUME_COLUMNS`, then the other ``columns`` asked for)."""
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(VOLUME_COLUMNS)
+        w.writerow(columns)
         for r in rows:
             out = r.get("outside_dem") or {}
             r = dict(r, outside_dem_volume_m3=out.get("volume_m3", 0.0), outside_dem_area_m2=out.get("area_m2", 0.0))
-            w.writerow([round(r[c], 4) if isinstance(r.get(c), float) else r.get(c, "") for c in VOLUME_COLUMNS])
+            w.writerow([round(r[c], 4) if isinstance(r.get(c), float) else r.get(c, "") for c in columns])
     return path
 
 
 def registry(chunk) -> dict:
     return (chunk.meta.get("geoarchaeology") or {}).get("model") or {}
+
+
+def method(chunk) -> str:
+    """How the model of the chunk was built: ``kriging`` (between the surfaces) or ``implicit``."""
+    return str(registry(chunk).get("method", "kriging"))
 
 
 def has_model(chunk) -> bool:
@@ -326,13 +332,13 @@ def has_model(chunk) -> bool:
 
 
 # ------------------------------------------------------------------ the units in the 3D view of the program
-def write_display(chunk, meshes, explode: float | None = None) -> Path | None:
+def write_display(chunk, meshes, explode: float | None = None, out: Path | None = None) -> Path | None:
     """All the solids of ``meshes`` (``(unit, vertices in the world, faces, rgb)``, from the top
     unit down) in one PLY for the program's 3D view, ``model/unita_vista.ply``: the vertices in the
     internal frame of the chunk, as the model of the survey is kept (the view takes them to the
     world with the chunk's transform), in double precision, every unit in its colour. ``explode``:
-    metres between the units, the upper ones raised (None or 0: as they lie). None without
-    solids."""
+    metres between the units, the upper ones raised (None or 0: as they lie); ``out``: another
+    folder. None without solids."""
     from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
 
     if not meshes:
@@ -347,7 +353,7 @@ def write_display(chunk, meshes, explode: float | None = None) -> Path | None:
         F.append(np.asarray(faces, np.int64) + n)
         C.append(np.tile(np.asarray(rgb, np.uint8).reshape(1, 3), (len(world), 1)))
         n += len(world)
-    out = folder(chunk)
+    out = Path(out) if out is not None else folder(chunk)
     out.mkdir(parents=True, exist_ok=True)
     return write_mesh_ply(out / DISPLAY, np.vstack(V), np.vstack(F), np.vstack(C), double=True)
 
