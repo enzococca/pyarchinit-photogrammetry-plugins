@@ -11,9 +11,9 @@ nothing, and it does not fair a line away from the model.
 
 | Step | What it does |
 |---|---|
-| **Ship frame** | x along the keel from a start point (0 at the stem or at a chosen station), y to port, z up: from a line traced on the raster or from two markers. Up is the world's vertical, the keel line is levelled and its slope kept as a number. You say which end is the bow: the model does not show it, and it decides which side is port. |
-| **Stations** | regular, from a table `name, x` with the field's names, or from the frames of the catalogue. |
-| **Sections** | cross-sections at the stations, longitudinals at given y, horizontals at given z, cut from the mesh in double precision; `<chunk data>/shipwreck/sections.json`. |
+| **Ship frame** | x along the keel from a start point (0 at the stem or at a chosen station), y to port, z up: from a line traced on the raster or from two markers. Up is the world's vertical, the keel line is levelled and its slope kept as a number. You say which end is the bow (*The bow is the other end*, which exchanges port and starboard): the model does not show it. *x from the other end* only turns x round: the bow, y and the sides stay. |
+| **Stations** | regular, from a table `name, x` with the field's names, or from the frames of the catalogue. Separated by commas a table takes decimal points; by semicolons or tabs also decimal commas. A row with too many cells is refused. |
+| **Sections** | cross-sections at the stations, longitudinals at given y, horizontals at given z, cut from the mesh in double precision, as far across the keel as the model goes unless you say otherwise; `<chunk data>/shipwreck/sections.json`. Stale sections and drawings are said: a change of frame, model, georeference or system. |
 | **Water** | a level and an index (1.34): under the level a point is drawn at `level - (level - z) * n`. Off by default. A first approximation for a nadir view: oblique rays and a moving surface are not modelled. The raw and the corrected line are both kept and each drawing says which it shows. |
 | **Drawings** | body plan (seen from aft, port on the left), half-breadth plan, profile, plan with the stations over the orthophoto: a scale, automatic or chosen, a scale bar, the north, a title block; SVG, PDF, PNG and DXF with a layer per kind. Plans are never mirror images, whichever way x runs. |
 | **Timbers** | keel, keelson, frames, planks, ceiling, stringers, fastenings: drawn on the raster or from a CSV; length along the timber over the model, width across, heights above a datum, room and space; a table, a layer of the raster view, CSV, XLSX and GeoPackage. |
@@ -32,7 +32,8 @@ The transform, the model and the products of the chunk are never changed. Everyt
 ```bash
 ppg plugin shipwreck frame PROJECT.ppg --start X,Y[,Z] --end X,Y[,Z] [--bow start|end] [--z0 H] [--x0 X]
 ppg plugin shipwreck frame PROJECT.ppg --markers --start A --end B
-ppg plugin shipwreck frame PROJECT.ppg --flip
+ppg plugin shipwreck frame PROJECT.ppg --flip        # x from the other end; the sides stay
+ppg plugin shipwreck frame PROJECT.ppg --other-bow   # the bow is the other end; port and starboard are exchanged
 ppg plugin shipwreck stations PROJECT.ppg --spacing 1 --count 11 --first 1      # or --table FILE, --from-catalogue
 ppg plugin shipwreck sections PROJECT.ppg --longitudinals "0;1;-1" --horizontals "-0.2;-0.5" --half-width 4.5
 ppg plugin shipwreck water PROJECT.ppg --level -0.1 --n 1.34 --on
@@ -47,4 +48,4 @@ A table of timbers has a header: `kind`, `side`, `name`, `station`, `notes` and 
 
 ## License
 
-GPL-3.0-or-later.
+GPL-2.0-or-later.

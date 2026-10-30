@@ -7,6 +7,9 @@ keeps it as the number ``slope``. When the bow is at the start, x runs aft and p
 of who walks along x, so the frame is a mirror image of a right-handed one (``sign`` -1): plans are
 drawn with this in mind, nothing else notices. The frame only reads the chunk: its transform, model
 and products are never changed.
+
+:meth:`Frame.flipped` is about x alone: it runs from the other end, the bow stays where it is, y and
+the sides do not change. :meth:`Frame.other_bow` is the one that exchanges port and starboard.
 """
 from __future__ import annotations
 
@@ -94,6 +97,16 @@ class Frame:
         return -1 if self.bow == "start" else 1
 
     @property
+    def direction(self) -> tuple:
+        """The unit vector of x in the plan."""
+        return (self.end[0] - self.start[0]) / self.length, (self.end[1] - self.start[1]) / self.length
+
+    @property
+    def bow_x(self) -> float:
+        """The ship x of the bow's end of the keel line."""
+        return self.x0 if self.bow == "start" else self.x0 + self.length
+
+    @property
     def heading(self) -> float:
         """The direction of x, degrees clockwise from the world's north (+Y of the chunk)."""
         return float(np.degrees(np.arctan2(self.end[0] - self.start[0], self.end[1] - self.start[1])) % 360.0)
@@ -101,8 +114,7 @@ class Frame:
     @property
     def matrix(self) -> np.ndarray:
         """4 x 4 from world to ship coordinates (a mirror when ``sign`` is -1)."""
-        dx = (self.end[0] - self.start[0]) / self.length
-        dy = (self.end[1] - self.start[1]) / self.length
+        dx, dy = self.direction
         m = np.eye(4)
         m[0, :2] = dx, dy
         m[1, :2] = -dy * self.sign, dx * self.sign  # the left of x, or its right
@@ -131,9 +143,13 @@ class Frame:
                                 self.start[1] + m[0, 1] * x + m[1, 1] * s[:, 1], s[:, 2] + self.z0])
 
     def flipped(self) -> "Frame":
-        """The ends swapped: x starts from the other end, the bow is said to be at the new start
-        as it was at the old one, the datum stays."""
-        return Frame(self.end, self.start, self.bow, self.z0, self.x0)
+        """x from the other end. The bow stays where it is, so y and the sides do not change, and so
+        does the datum."""
+        return Frame(self.end, self.start, "end" if self.bow == "start" else "start", self.z0, self.x0)
+
+    def other_bow(self) -> "Frame":
+        """The bow at the other end of the keel line: x stays, y and the sides are exchanged."""
+        return Frame(self.start, self.end, "end" if self.bow == "start" else "start", self.z0, self.x0)
 
     def to_dict(self) -> dict:
         return {**asdict(self), "start": list(self.start), "end": list(self.end), "length": self.length,
@@ -153,7 +169,22 @@ def need_frame(chunk) -> Frame:
     frame = frame_of(chunk)
     if frame is None:
         raise NotReady(t("Imposta prima il sistema della nave.", "Set the ship frame first."))
+    stored = chunk.meta[KEY]["frame"].get("crs", chunk.crs)
+    if stored != chunk.crs:
+        raise NotReady(t(f"Il sistema del chunk è cambiato ({stored} -> {chunk.crs}) dopo aver impostato il sistema della "
+                         "nave, che è ancora nelle coordinate vecchie, come i legni disegnati: traccia di nuovo la "
+                         "chiglia e ridisegna i legni.",
+                         f"The system of the chunk changed ({stored} -> {chunk.crs}) after the ship frame was set, which "
+                         "is still in the old coordinates, as the timbers drawn are: trace the keel again and draw the "
+                         "timbers again."))
     return frame
+
+
+def keeping_bow(old: Frame | None, new: Frame) -> Frame:
+    """``new``, a keel line traced again, with the bow at the end where ``old`` had it, whichever way it was traced."""
+    if old is None or old.direction[0] * new.direction[0] + old.direction[1] * new.direction[1] >= 0:
+        return new
+    return new.other_bow()
 
 
 def set_frame(chunk, frame: Frame) -> Frame:
@@ -232,27 +263,43 @@ def number(text) -> float:
     return float(str(text).strip().replace(",", "."))
 
 
-def rows_of(path) -> tuple[list[str], list[list[str]]]:
-    """Header (lower case, empty when the first line is data) and rows of a table; separator
-    ``;``, tab or comma."""
-    text = Path(path).read_text(encoding="utf-8-sig")
-    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
-    if not lines:
-        return [], []
-    sep = next((s for s in (";", "\t") if s in lines[0]), ",")
-    rows = [[c.strip() for c in r] for r in csv.reader(lines, delimiter=sep)]
+def _read_text(path) -> str:
+    """A table as saved by a text editor or by Excel: UTF-8, else Windows Latin-1."""
     try:
-        number(rows[0][-1])
-        return [], rows
-    except (ValueError, IndexError):
-        pass
-    if len(rows[0]) > 1:
-        try:
-            number(rows[0][1])
-            return [], rows
-        except ValueError:
-            pass
-    return [c.lower() for c in rows[0]], rows[1:]
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise NotReady(t(f"Non riesco a leggere {path}: {exc}", f"Cannot read {path}: {exc}")) from None
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("latin-1")
+
+
+def rows_of(path) -> tuple[list[str], list[tuple[int, list[str]]]]:
+    """Header (lower case, empty when the first line is data) and rows of a table, each with the number of
+    its line; separator ``;``, tab or comma. In a table separated by commas a comma is never a decimal
+    one: a row with more cells than the header is refused, not read short. No header: at most ``name, x``."""
+    numbered = [(i, ln) for i, ln in enumerate(_read_text(path).splitlines(), 1)
+                if ln.strip() and not ln.lstrip().startswith("#")]
+    if not numbered:
+        return [], []
+    sep = next((s for s in (";", "\t") if s in numbered[0][1]), ",")
+    cells = [[c.strip() for c in r] for r in csv.reader([ln for _i, ln in numbered], delimiter=sep, skipinitialspace=True)]
+    rows = [(i, row) for (i, _ln), row in zip(numbered, cells)]
+    header: list[str] = []
+    try:
+        number(cells[0][1] if len(cells[0]) > 1 else cells[0][-1])
+    except ValueError:
+        header = [c.lower() for c in cells[0]]
+        rows = rows[1:]
+    width = len(header) or 2
+    for i, row in rows:
+        if len(row) > width:
+            hint = t(" In una tabella separata da virgole i decimali vanno col punto." if sep == "," else "",
+                     " In a table separated by commas decimals take a point." if sep == "," else "")
+            raise NotReady(t(f"Riga {i} della tabella: {len(row)} celle, ne sono attese {width}.{hint}",
+                             f"Line {i} of the table: {len(row)} cells, {width} expected.{hint}"))
+    return header, rows
 
 
 def regular(spacing: float, count: int, start: float = 0.0, prefix: str = "S") -> list[dict]:
@@ -270,7 +317,7 @@ def stations_from_table(path) -> list[dict]:
     name_col = next((header.index(k) for k in ("name", "nome", "stazione", "station") if k in header), 0)
     x_col = next((header.index(k) for k in ("x", "dist", "distanza") if k in header), 1)
     out = []
-    for i, row in enumerate(rows, 2 if header else 1):
+    for i, row in rows:
         try:
             out.append({"name": row[name_col], "x": number(row[x_col])})
         except (ValueError, IndexError):

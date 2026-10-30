@@ -6,6 +6,9 @@ Plans are drawn from above: x to the right and the left of x upwards, so that a 
 (``sign`` -1, y to the right of x) is not mirrored; the body plan is seen from aft, port on the left."""
 from __future__ import annotations
 
+import hashlib
+import json
+import textwrap
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -28,7 +31,7 @@ LAYERS = {"STATIONS": "#111111", "LONGITUDINALS": "#111111", "HORIZONTALS": "#11
 WEIGHTS = {"STATIONS": 0.35, "LONGITUDINALS": 0.35, "HORIZONTALS": 0.35, "RAW": 0.13, "KEEL": 0.35, "LEVEL": 0.35,
            "TIMBERS": 0.5, "GRID": 0.18}  # millimetres of paper
 MARGIN = 12.0  # mm of paper around the lines
-TITLE_BLOCK = 46.0  # mm of paper under the lines
+TITLE_BLOCK = 30.0  # mm of paper under the lines, at least
 MIN_SHEET = 210.0  # mm: the title block needs a sheet at least this wide
 MAX_RASTER = 6000  # px of the orthophoto on the plan
 
@@ -82,17 +85,38 @@ def _block(chunk, frame: ship.Frame) -> dict:
     block = {t("Sito", "Site"): f["site"], t("Relitto", "Wreck"): f["vessel"], t("Rilievo", "Survey"): f["surveyed"],
              t("Disegno", "Drawn by"): f["drawn"], t("Data", "Date"): f["date"],
              t("Chiglia", "Keel"): t(f"{num(frame.length, 2)} m, pendenza {num(frame.slope * 100, 1)} %",
-                                     f"{num(frame.length, 2)} m, slope {num(frame.slope * 100, 1)} %")}
+                                     f"{num(frame.length, 2)} m, slope {num(frame.slope * 100, 1)} %"),
+             t("Prua", "Bow"): t(f"a x = {num(frame.bow_x, 2)} m; babordo a y positive",
+                                 f"at x = {num(frame.bow_x, 2)} m; port at positive y"),
+             "Datum": t(f"z = 0 a quota {num(frame.z0, 3)} m del chunk", f"z = 0 at height {num(frame.z0, 3)} m of the chunk")}
     return {k: v for k, v in block.items() if v}
 
 
-def _notes(chunk, data: dict, frame: ship.Frame) -> list[str]:
-    notes = [t("Linee misurate sul modello 3D, senza carenatura; niente di ciò che manca è ricostruito.",
-               "Lines measured on the 3D model, not faired; nothing missing is reconstructed."),
-             lines.note(data)]
+SHOWS = {"body_plan": "station", "half_breadth": "horizontal", "profile": "longitudinal", "plan": "station"}
+
+
+def _notes(chunk, data: dict, frame: ship.Frame, kind: str) -> list[str]:
+    half = num(data["half_width"], 2)
+    notes = [t("Linee di sezione misurate sul modello 3D, senza carenatura; niente di ciò che manca è ricostruito. Tratteggio: "
+               "asse del sistema della nave e livello dell'acqua. Legni: dal catalogo, disegnati o importati, non tagliati dal modello.",
+               "Section lines measured on the 3D model, not faired; nothing missing is reconstructed. Dashed: the axis of the "
+               "ship frame and the water level. Timbers: from the catalogue, drawn or imported, not cut from the model."),
+             lines.note(data, raw_layer=kind in ("body_plan", "profile")),
+             t(f"Disegno entro ±{half} m dalla linea di chiglia.", f"Drawn within ±{half} m of the keel line.")]
+    shown = [s for s in data["sections"] if s["kind"] == SHOWS[kind]]
+    empty = lines.without_line(shown)
+    if empty:
+        notes.append(t(f"Senza linea, fuori dal modello: {', '.join(empty)}.", f"With no line, off the model: {', '.join(empty)}."))
+    reached = lines.at_window(shown)
+    if reached and kind != "plan":
+        notes.append(t(f"Arrivano al limite del disegno, il modello continua oltre: {', '.join(reached)}.",
+                       f"They reach the limit of the drawing, the model goes on beyond: {', '.join(reached)}."))
     if not ship.is_scaled(chunk):
         notes.append(t("Modello senza scala nota: le misure non sono metri veri.",
                        "A model without a known scale: the measures are not true metres."))
+    if crs_mod.is_local(chunk.crs):
+        notes.append(t("Sistema locale: l'alto è l'asse z del modello, non verificato come verticale.",
+                       "Local frame: up is the z axis of the model, not verified as vertical."))
     extra = title_fields(chunk)["notes"]
     return notes + ([extra] if extra else [])
 
@@ -218,8 +242,9 @@ def ortho_in_ship(chunk, frame: ship.Frame, x_range, y_range, resolution: float)
     image = np.moveaxis(image, 0, -1).astype(np.uint8)
     if image.shape[2] == 3:
         image = np.dstack([image, np.full(image.shape[:2], 255, np.uint8)])
-    map_x = ((cols - c0) * shape[1] / (c1 - c0)).astype(np.float32).reshape(gx.shape)
-    map_y = ((rows - r0) * shape[0] / (r1 - r0)).astype(np.float32).reshape(gx.shape)
+    # continuous raster coordinates (a pixel's centre at .5) to cv2's (at the integer)
+    map_x = ((cols - c0) * shape[1] / (c1 - c0) - 0.5).astype(np.float32).reshape(gx.shape)
+    map_y = ((rows - r0) * shape[0] / (r1 - r0) - 0.5).astype(np.float32).reshape(gx.shape)
     out = cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
     return out, (x_range[0], x_range[0] + width * resolution, y_range[1] - height * resolution, y_range[1])
 
@@ -265,12 +290,14 @@ def make(chunk, kind: str, scale: int | None = None) -> Drawing:
     if data is None:
         raise ship.NotReady(t("Calcola prima le sezioni.", "Compute the sections first."))
     if lines.is_stale(chunk, data):
-        raise ship.NotReady(t("Le sezioni vengono da un altro sistema della nave o da un altro modello: ricalcolale.",
-                              "The sections come from another ship frame or another model: compute them again."))
+        raise ship.NotReady(t("Le sezioni vengono da un altro sistema della nave, da un altro modello o da un'altra "
+                              "georeferenziazione: controlla che la chiglia sia ancora al suo posto e ricalcolale.",
+                              "The sections come from another ship frame, another model or another georeference: check "
+                              "that the keel is still in its place and compute them again."))
     d = plan(chunk, data, frame, scale) if kind == "plan" else MAKERS[kind](chunk, data, frame)
     if not any(layer not in ("KEEL", "GRID", "LEVEL") for layer, _p, _c in d.lines) and d.raster is None:
         raise Empty(t(f"Nessuna linea per il disegno «{d.title}».", f"No lines for the drawing '{d.title}'."))
-    d.notes = _notes(chunk, data, frame) + d.notes
+    d.notes = _notes(chunk, data, frame, kind) + d.notes
     d.block = _block(chunk, frame)
     x0, x1, y0, y1 = d.extent
     d.scale = int(scale or drawing_scale(x1 - x0, y1 - y0))
@@ -293,10 +320,13 @@ def figure(d: Drawing):
     k = 1000.0 / d.scale  # mm of paper per metre
     draw_w, draw_h = (x1 - x0) * k, (y1 - y0) * k
     width = max(draw_w + 2 * MARGIN, MIN_SHEET)
-    height = draw_h + MARGIN + 6.0 + TITLE_BLOCK
+    # the notes in the left part of the block, the scale bar and the north in the right one: about a mm for a letter
+    wrapped = [row for note in d.notes for row in textwrap.wrap(note, int(0.62 * (width - 2 * MARGIN)))]
+    block_h = max(TITLE_BLOCK, 9.0 + 3.4 * len(d.block) + 3.0 * len(wrapped))
+    height = draw_h + MARGIN + 6.0 + block_h
     fig = Figure(figsize=(width / 25.4, height / 25.4))
     FigureCanvasAgg(fig)
-    ax = fig.add_axes([(width - draw_w) / 2 / width, TITLE_BLOCK / height, draw_w / width, draw_h / height])
+    ax = fig.add_axes([(width - draw_w) / 2 / width, block_h / height, draw_w / width, draw_h / height])
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
     ax.axis("off")
@@ -321,16 +351,16 @@ def figure(d: Drawing):
         ax.annotate(d.axes[1], (x1, y1), xytext=(0, 9), textcoords="offset points", fontsize=6, ha="right", annotation_clip=False)
     # the title block
     left = MARGIN / width
-    y = (TITLE_BLOCK - 7.0) / height
+    y = (block_h - 7.0) / height
     for label, value in d.block.items():
         fig.text(left, y, f"{label}: {value}", fontsize=6.5)
         y -= 3.4 / height
-    for line in d.notes:
+    for line in wrapped:
         fig.text(left, y, line, fontsize=5.5, color="#333333")
         y -= 3.0 / height
     # the scale bar, exact on the paper
     bar = _bar_length(x1 - x0)
-    bx, by = 1 - (MARGIN + 3 * bar * k) / width, (TITLE_BLOCK - 12.0) / height
+    bx, by = 1 - (MARGIN + 3 * bar * k) / width, (block_h - 12.0) / height
     for i in range(3):
         fig.add_artist(Rectangle((bx + i * bar * k / width, by), bar * k / width, 1.6 / height, transform=fig.transFigure,
                                  facecolor="black" if i % 2 == 0 else "white", edgecolor="black", linewidth=0.4))
@@ -339,7 +369,7 @@ def figure(d: Drawing):
     fig.text(bx + 3 * bar * k / width, by + 2.4 / height, f"{num(3 * bar, 2 if bar < 1 else 0 if bar == int(bar) else 1)} m",
              fontsize=5, ha="center")
     if d.north is not None:
-        cx, cy = 1 - (MARGIN + 6.0) / width, 16.0 / height
+        cx, cy = bx - 12.0 / width, (block_h - 13.0) / height  # beside the scale bar
         tip = (cx + d.north[0] * 7.0 / width, cy + d.north[1] * 7.0 / height)
         tail = (cx - d.north[0] * 7.0 / width, cy - d.north[1] * 7.0 / height)
         fig.add_artist(FancyArrowPatch(tail, tip, transform=fig.transFigure, arrowstyle="-|>", mutation_scale=8,
@@ -374,6 +404,25 @@ def write_dxf(d: Drawing, path) -> Path:
     return Path(path)
 
 
+def _signature(chunk, kind: str) -> dict:
+    """What a drawing was made from: the sections (with their water and what they were cut from), and for the plan the
+    catalogue. It is out of date when any of these changes."""
+    data = lines.load(chunk) or {}
+    frame = ship.frame_of(chunk)
+    out = {"built": data.get("built"), "water": data.get("water"),
+           "source": lines.fingerprint(chunk, frame) if frame is not None else None}
+    if kind == "plan":
+        text = json.dumps(timbers.timbers_of(chunk), sort_keys=True)
+        out["timbers"] = hashlib.sha256(text.encode()).hexdigest()
+    return out
+
+
+def out_of_date(chunk) -> list[str]:
+    """The drawings written that no longer say what the chunk says."""
+    made = chunk.meta.get(ship.KEY, {}).get("drawings") or {}
+    return [k for k, v in made.items() if v.get("signature") != _signature(chunk, k)]
+
+
 def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progress=None) -> list[Path]:
     """Each drawing in ``<chunk data>/shipwreck/drawings`` (or ``folder``) as SVG, PDF, PNG and DXF; a kind with no lines
     is left out when others are made. The drawings written are noted in ``chunk.meta``."""
@@ -396,7 +445,8 @@ def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progres
             fig.savefig(p, dpi=150 if p.suffix == ".png" else None)
         names.append(write_dxf(d, out / f"{kind}.dxf"))
         written += names
-        kept[kind] = {"scale": d.scale, "files": [p.name for p in names], "water": lines.is_on(chunk)}
+        kept[kind] = {"scale": d.scale, "files": [p.name for p in names], "water": lines.is_on(chunk),
+                      "signature": _signature(chunk, kind)}
     if not written:
         raise ship.NotReady(" ".join(skipped.values()) or t("Nessun disegno.", "No drawing."))
     if folder is None:

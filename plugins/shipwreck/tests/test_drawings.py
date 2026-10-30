@@ -124,6 +124,123 @@ def test_the_drawings_are_written_with_their_notes(tmp_path):
     assert ch.meta[ship.KEY]["drawings"]["profile"]["water"] is True
 
 
+def _sheet_text(ch, kind) -> str:
+    fig = drawings.figure(drawings.make(ch, kind))
+    return " ".join(x.get_text() for x in fig.texts)
+
+
+def test_a_sheet_says_what_it_shows(tmp_path):
+    _doc, ch, frame = _ready(tmp_path, bow="start")
+    text = _sheet_text(ch, "body_plan")
+    assert "±3,00 m" in text and "Prua" in text and "x = 0,00" in text and "Datum" in text
+    assert "Tratteggio" in text and "non tagliati dal modello" in text
+    assert "layer RAW" not in text and "verticale" not in text
+    lines.set_water(ch, -0.5, on=True)
+    assert "layer RAW" in _sheet_text(ch, "body_plan") and "layer RAW" not in _sheet_text(ch, "half_breadth")
+    ch.crs = "LOCAL"
+    ship.state(ch)["frame"]["crs"] = "LOCAL"
+    lines.build(ch, half_width=1.0)
+    ship.set_stations(ch, [{"name": "F99", "x": 40.0}, {"name": "S", "x": 6.0}])
+    lines.build(ch, longitudinals=[0.0], horizontals=[-0.5], half_width=1.0)
+    text = _sheet_text(ch, "body_plan").replace("\n", " ")
+    assert "F99" in text and "non verificato come verticale" in text and "continua oltre: S" in text
+    assert drawings.make(ch, "body_plan").north is None
+
+
+def test_long_notes_stay_on_the_sheet(tmp_path):
+    _doc, ch, frame = _ready(tmp_path)
+    ship.state(ch)["title"] = {"notes": "parola " * 80}
+    fig = drawings.figure(drawings.make(ch, "body_plan"))
+    width = fig.get_size_inches()[0] * fig.dpi
+    renderer = fig.canvas.get_renderer()
+    assert all(x.get_window_extent(renderer).x1 <= width for x in fig.texts)
+
+
+def test_drawings_out_of_date_are_said(tmp_path):
+    from ppg_shipwreck import ShipwreckPlugin
+
+    _doc, ch, frame = _ready(tmp_path)
+    drawings.write_all(ch)
+    assert drawings.out_of_date(ch) == [] and "Da rifare" not in ShipwreckPlugin.states(ch)["drawings"]
+    lines.set_water(ch, -0.5, on=True)  # the water
+    assert set(drawings.out_of_date(ch)) == set(drawings.KINDS) and "Da rifare" in ShipwreckPlugin.states(ch)["drawings"]
+    lines.set_water(ch, -0.5, on=False)
+    assert drawings.out_of_date(ch) == []
+    timbers.add(ch, "frame", "port", "F", timbers.geometry("point", _world(frame, (6.0, 0.5))))  # the plan only
+    assert drawings.out_of_date(ch) == ["plan"]
+    drawings.write_all(ch)
+    ship.set_frame(ch, frame.flipped())  # the frame
+    assert set(drawings.out_of_date(ch)) == set(drawings.KINDS)
+    ship.set_frame(ch, frame)
+    lines.build(ch, half_width=2.5)  # sections cut again
+    assert set(drawings.out_of_date(ch)) == set(drawings.KINDS)
+
+
+def test_a_side_against_its_y_is_said(tmp_path):
+    from ppg_shipwreck import ShipwreckPlugin
+
+    _doc, ch, frame = _ready(tmp_path)
+    timbers.add(ch, "frame", "port", "F1", timbers.geometry("point", _world(frame, (6.0, 0.5))))
+    assert timbers.measure(ch)[0]["warning"] == ""
+    ship.set_frame(ch, frame.flipped())  # x from the other end: the sides stay
+    assert timbers.measure(ch)[0]["warning"] == ""
+    ship.set_frame(ch, frame.other_bow())  # the bow at the other end: they change
+    assert "babordo" in timbers.measure(ch)[0]["warning"]
+    assert "F1" in ShipwreckPlugin.states(ch)["timbers"]
+    path = timbers.export_any(ch, tmp_path / "a.csv")
+    assert "dall'altro lato" in path.read_text()
+
+
+def test_a_catalogue_without_a_model(tmp_path):
+    from ppg_shipwreck import ShipwreckPlugin
+
+    _doc, ch, frame = _ready(tmp_path)
+    timbers.add(ch, "frame", "port", "F1", timbers.geometry("line", _world(frame, (6.0, 0.5), (6.0, 1.0))))
+    (ch.data_dir / "model.ply").unlink()
+    row = timbers.measure(ch)[0]
+    assert row["x"] == pytest.approx(6.0) and row["length"] == pytest.approx(0.5) and row["z_max"] is None
+    assert timbers.stations_from_catalogue(ch) == [{"name": "F1", "x": pytest.approx(6.0)}]
+    assert ShipwreckPlugin.states(ch)["timbers"].startswith("1 legno.")
+
+
+def test_a_kind_gone_from_the_catalogue_leaves_the_geopackage(tmp_path):
+    from pyarchinit_photogrammetry.io import gpkg
+
+    _doc, ch, frame = _ready(tmp_path)
+    first = timbers.add(ch, "fastening", "port", "N", timbers.geometry("point", _world(frame, (6.0, 0.5))))
+    timbers.add(ch, "frame", "port", "F1", timbers.geometry("line", _world(frame, (6.0, 0.5), (6.0, 1.0))))
+    path = timbers.export_any(ch, tmp_path / "a.gpkg")
+    assert len(gpkg.read_table(path, "timbers_point")) == 1
+    timbers.remove(ch, [first["id"]])
+    timbers.export_any(ch, path)
+    assert gpkg.read_table(path, "timbers_point") == [] and len(gpkg.read_table(path, "timbers_line")) == 1
+
+
+def test_the_orthophoto_on_the_plan_lands_on_its_pixels(tmp_path):
+    """One bright pixel of a coarse orthophoto: on the sheet its centre is where its world position is."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    _doc, ch, frame = _ready(tmp_path, heading=90.0, bow="end")
+    centre = frame.to_world(np.array([[6.0, 0.0, 0.0]]))[0]
+    cell, n = 0.1, 41
+    x0, y1 = centre[0] - (n / 2) * cell, centre[1] + (n / 2) * cell  # the pixel n // 2 has its centre on the point
+    image = np.zeros((3, n, n), np.uint8)
+    image[:, n // 2, n // 2] = 255
+    path = ch.data_dir / "orthomosaic.tif"
+    with rasterio.open(path, "w", driver="GTiff", width=n, height=n, count=3, dtype="uint8", crs=ch.crs,
+                       transform=from_origin(x0, y1, cell, cell)) as dst:
+        dst.write(image)
+    ch._set_product("orthomosaic", path)
+    rgba, (a, b, c, e) = drawings.ortho_in_ship(ch, frame, (4.0, 8.0), (-2.0, 2.0), 0.01)
+    weight = rgba[..., 0].astype(float)
+    rows, cols = np.indices(weight.shape)
+    x = a + (cols + 0.5) * (b - a) / rgba.shape[1]
+    y = e - (rows + 0.5) * (e - c) / rgba.shape[0]
+    assert (weight * x).sum() / weight.sum() == pytest.approx(6.0, abs=0.006)
+    assert (weight * y).sum() / weight.sum() == pytest.approx(0.0, abs=0.006)
+
+
 def test_the_scale_is_exact_on_the_paper(tmp_path):
     _doc, ch, frame = _ready(tmp_path)
     d = drawings.make(ch, "body_plan", scale=50)
@@ -229,6 +346,12 @@ def test_command_line(tmp_path, monkeypatch):
     run("export", "--out", str(out))
     assert out.exists()
     assert "sezioni" in run("status")
+    # the commands of the guide, with lists and coordinates that begin with a minus
+    run("sections", "--longitudinals", "0;1;-1", "--horizontals", "-0.2;-0.5", "--half-width", "3")
+    assert len(lines.sections_of(ppg.Document.open(p).chunk, "horizontal")) == 2
+    local = ship.Frame.from_dict(ppg.Document.open(p).chunk.meta["shipwreck"]["frame"])
+    run("frame", "--start", f"-1.5,2,{local.z0}", "--end", f"-3.5,9,{local.z0}")
+    assert ship.frame_of(ppg.Document.open(p).chunk).start[:2] == (-1.5, 2.0)
     again = ppg.Document.open(p).chunk
     assert len(ship.stations_of(again)) == 5 and lines.is_on(again) and len(timbers.timbers_of(again)) == 1
     assert (again.data_dir / "shipwreck" / "drawings" / "body_plan.pdf").exists()
@@ -275,6 +398,13 @@ def test_the_pane_in_the_window(tmp_path):
         frame = ship.frame_of(ch)
         assert frame.length == pytest.approx(8.0)
         assert "Chiglia 8,00 m" in pane.states["frame"].text()
+        pane.requested.emit("frame_flip")  # the bow stays
+        assert ship.frame_of(ch).flipped().start == frame.start and ship.frame_of(ch).bow != frame.bow
+        pane.requested.emit("frame_bow")  # the sides change
+        assert ship.frame_of(ch).bow == frame.bow
+        pane.requested.emit("frame_flip")
+        pane.requested.emit("frame_bow")
+        assert ship.frame_of(ch) == frame
         answers["next"] = {"spacing": 2.0, "count": 3, "start": 0.0}
         pane.requested.emit("stations_regular")
         assert "3 stazioni" in pane.states["stations"].text()

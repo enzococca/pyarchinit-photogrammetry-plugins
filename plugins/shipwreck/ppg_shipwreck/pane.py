@@ -12,11 +12,17 @@ from . import timbers
 from .texts import num, t
 
 STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
-          (("frame_pick", ("Traccia la chiglia...", "Trace the keel..."), "x da dove inizi a tracciare (la prua, se non dici altro)",
-            "x from where you start tracing (the bow, unless you say otherwise)"),
+          (("frame_pick", ("Traccia la chiglia...", "Trace the keel..."),
+            "x parte da dove inizi a tracciare. La prua è lì la prima volta, poi resta dov'era",
+            "x starts from where you start tracing. The bow is there the first time, then it stays where it was"),
            ("frame_markers", ("Da due marker...", "From two markers..."), "", ""),
-           ("frame_options", ("Prua, origine, datum...", "Bow, origin, datum..."), "", ""),
-           ("frame_flip", ("Scambia gli estremi", "Swap the ends"), "", ""))),
+           ("frame_options", ("Origine, datum...", "Origin, datum..."), "", ""),
+           ("frame_flip", ("x dall'altro capo", "x from the other end"),
+            "x corre nell'altro verso: la prua resta dov'è, y e i lati non cambiano",
+            "x runs the other way: the bow stays where it is, y and the sides do not change"),
+           ("frame_bow", ("La prua è l'altro capo", "The bow is the other end"),
+            "Scambia babordo e tribordo su tutti i disegni: dal modello non si vede quale capo è la prua",
+            "Exchanges port and starboard on every drawing: the model does not show which end is the bow"))),
          ("stations", ("2. Stazioni", "2. Stations"),
           (("stations_regular", ("Regolari...", "Regular..."), "", ""),
            ("stations_table", ("Da tabella...", "From a table..."), "nome, x: i nomi sono quelli del cantiere", "name, x: the names are the field's"),
@@ -32,7 +38,7 @@ STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
            ("timber_remove", ("Rimuovi selezionati", "Remove selected"), "", ""),
            ("timber_export", ("Esporta...", "Export..."), "CSV, XLSX o GeoPackage", "CSV, XLSX or GeoPackage"))))
 COLUMNS = (("Id", "Id"), ("Tipo", "Kind"), ("Lato", "Side"), ("Nome", "Name"), ("x (m)", "x (m)"), ("Lungh. (m)", "Length (m)"),
-           ("Largh. (m)", "Width (m)"), ("z max (m)", "z max (m)"))
+           ("Largh. (m)", "Width (m)"), ("z max (m)", "z max (m)"), ("Avviso", "Warning"))
 
 
 class ShipwreckPane(QWidget):
@@ -85,10 +91,10 @@ class ShipwreckPane(QWidget):
                 return "" if v is None else num(v, 2)
 
             cells = (r["id"], timbers.kind_title(r["kind"]), timbers.side_title(r["side"]), r["name"], value(r["x"]),
-                     value(r["length"]), value(r["width"]), value(r["z_max"]))
+                     value(r["length"]), value(r["width"]), value(r["z_max"]), r["warning"])
             for j, text in enumerate(cells):
                 item = QTableWidgetItem(str(text))
-                if j >= 4:
+                if 4 <= j <= 7:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(i, j, item)
 

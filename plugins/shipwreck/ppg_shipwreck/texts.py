@@ -19,6 +19,12 @@ def t(it: str, en: str) -> str:
     return it if _italian() else en
 
 
+def plural(n: int, it: tuple, en: tuple) -> str:
+    """``n`` with its noun, ``(one, many)`` in each language: 1 legno, 2 legni."""
+    one, many = it if _italian() else en
+    return f"{n} {one if n == 1 else many}"
+
+
 def num(value, decimals: int = 2) -> str:
     """``value`` as the interface writes it: ``1.234,56`` in Italian, ``1,234.56`` in English."""
     value = float(value)

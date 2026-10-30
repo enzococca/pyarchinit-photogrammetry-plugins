@@ -7,7 +7,7 @@ name = "ppg-shipwreck"
 version = "0.1.0"
 description = "pyarchinit-photogrammetry plugin: the technical drawing of an excavated hull from its 3D model - ship frame, stations, sections cut from the model, a stated water correction, body plan, half-breadth plan, profile, plan, timber catalogue"
 readme = "README.md"
-license = "GPL-3.0-or-later"
+license = "GPL-2.0-or-later"
 authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = []  # all it uses comes with the program

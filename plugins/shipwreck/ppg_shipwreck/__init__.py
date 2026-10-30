@@ -20,9 +20,10 @@ import numpy as np
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-from .texts import NAME, num, t
+from .texts import NAME, num, plural, t
 
 __version__ = "0.1.0"
+NEGATIVE_VALUES = ("--start", "--end", "--longitudinals", "--horizontals")  # may begin with a minus: "-0.2;-0.5", "-1.5,2"
 LAYER = "Legni del relitto"
 SIDE_COLOURS = {"port": "#e04040", "starboard": "#30a040", "centre": "#ffd000"}
 
@@ -140,7 +141,7 @@ class ShipwreckPlugin(Plugin):
     @staticmethod
     def states(chunk) -> dict:
         """The state of each step, in words."""
-        from . import lines, ship, timbers
+        from . import drawings, lines, ship, timbers
 
         frame = ship.frame_of(chunk)
         stations = ship.stations_of(chunk)
@@ -149,7 +150,7 @@ class ShipwreckPlugin(Plugin):
                "sections": t("Non calcolate.", "Not computed."), "water": t("Correzione spenta.", "Correction off."),
                "drawings": t("Nessun disegno.", "No drawings."), "timbers": t("Catalogo vuoto.", "The catalogue is empty.")}
         if frame is not None:
-            bow = t("prua all'inizio", "bow at the start") if frame.bow == "start" else t("prua alla fine", "bow at the end")
+            bow = t(f"prua a x = {num(frame.bow_x)}", f"bow at x = {num(frame.bow_x)}")
             out["frame"] = t(f"Chiglia {num(frame.length)} m, rotta {num(frame.heading, 1)}°, pendenza "
                              f"{num(frame.slope * 100, 1)} %, {bow}.",
                              f"Keel {num(frame.length)} m, heading {num(frame.heading, 1)}°, slope "
@@ -157,14 +158,14 @@ class ShipwreckPlugin(Plugin):
             if chunk.meta.get(ship.KEY, {}).get("frame", {}).get("crs") != chunk.crs:
                 out["frame"] += " " + t("Il sistema del chunk è cambiato: rifallo.", "The system of the chunk changed: set it again.")
         if stations:
-            out["stations"] = t(f"{len(stations)} stazioni, da {stations[0]['name']} a {stations[-1]['name']}.",
-                                f"{len(stations)} stations, from {stations[0]['name']} to {stations[-1]['name']}.")
+            count = plural(len(stations), ("stazione", "stazioni"), ("station", "stations"))
+            out["stations"] = t(f"{count}, da {stations[0]['name']} a {stations[-1]['name']}.",
+                                f"{count}, from {stations[0]['name']} to {stations[-1]['name']}.")
         if data is not None:
-            count = len(data["sections"])
-            out["sections"] = t(f"{count} sezioni dal modello.", f"{count} sections from the model.")
+            out["sections"] = lines.state_text(data)
             if lines.is_stale(chunk, data):
-                out["sections"] += " " + t("Da ricalcolare: sistema o modello cambiati.",
-                                           "To compute again: frame or model changed.")
+                out["sections"] += " " + t("Da ricalcolare: sistema della nave, modello o georeferenziazione cambiati.",
+                                           "To compute again: ship frame, model or georeference changed.")
         water = lines.water_of(chunk)
         if water:
             on = t("correzione accesa", "correction on") if water["on"] else t("correzione spenta", "correction off")
@@ -172,10 +173,22 @@ class ShipwreckPlugin(Plugin):
                              f"Level z {num(water['level'], 3)} m, n {num(water['n'], 2)}, {on}.")
         made = chunk.meta.get(ship.KEY, {}).get("drawings")
         if made:
-            out["drawings"] = t(f"{len(made)} disegni in shipwreck/drawings.", f"{len(made)} drawings in shipwreck/drawings.")
+            count = plural(len(made), ("disegno", "disegni"), ("drawing", "drawings"))
+            out["drawings"] = t(f"{count} in shipwreck/drawings.", f"{count} in shipwreck/drawings.")
+            old = drawings.out_of_date(chunk)
+            if old:
+                out["drawings"] += " " + t(f"Da rifare, non corrispondono più alle sezioni, all'acqua o ai legni: {', '.join(old)}.",
+                                           f"To make again, they no longer match the sections, the water or the timbers: {', '.join(old)}.")
         records = timbers.timbers_of(chunk)
         if records:
-            out["timbers"] = t(f"{len(records)} legni.", f"{len(records)} timbers.")
+            out["timbers"] = plural(len(records), ("legno", "legni"), ("timber", "timbers")) + "."
+            try:
+                wrong = [r for r in timbers.measure(chunk) if r["warning"]]
+            except ship.NotReady:
+                wrong = []
+            if wrong:
+                out["timbers"] += " " + t(f"Lato in disaccordo con y: {', '.join(r['name'] or r['id'] for r in wrong)}.",
+                                          f"Side against y: {', '.join(r['name'] or r['id'] for r in wrong)}.")
         return out
 
     def _requested(self, name: str) -> None:
@@ -200,7 +213,8 @@ class ShipwreckPlugin(Plugin):
         from . import ship
 
         old = ship.frame_of(chunk)
-        ship.set_frame(chunk, ship.frame_from_picks(chunk, xy[0], xy[-1], old.bow if old else "start"))
+        new = ship.frame_from_picks(chunk, xy[0], xy[-1], old.bow if old else "start", old.z0 if old else None)
+        ship.set_frame(chunk, ship.keeping_bow(old, new))
         self._changed()
 
     def _do_frame_markers(self) -> None:
@@ -218,7 +232,8 @@ class ShipwreckPlugin(Plugin):
             Field("b", t("Altro estremo", "Other end"), names[1][0], choices=names)])
         if v:
             old = ship.frame_of(chunk)
-            ship.set_frame(chunk, ship.frame_from_markers(chunk, v["a"], v["b"], old.bow if old else "start"))
+            new = ship.frame_from_markers(chunk, v["a"], v["b"], old.bow if old else "start", old.z0 if old else None)
+            ship.set_frame(chunk, ship.keeping_bow(old, new))
             self._changed()
 
     def _do_frame_options(self) -> None:
@@ -229,16 +244,12 @@ class ShipwreckPlugin(Plugin):
         chunk = self._need_chunk()
         frame = ship.need_frame(chunk)
         v = self._ask(t("Sistema della nave", "Ship frame"), [
-            Field("bow", t("La prua è", "The bow is"), frame.bow, choices=[("start", t("all'inizio di x", "at the start of x")),
-                                                                            ("end", t("alla fine di x", "at the end of x"))],
-                  tip=t("Determina quale lato è babordo. Non si vede dal modello: lo dici tu.",
-                        "It decides which side is port. The model does not show it: you say it.")),
             Field("x0", t("x del primo estremo (m)", "x of the first end (m)"), frame.x0, minimum=-1e4, maximum=1e4, decimals=3,
                   tip=t("0 alla prua o a una stazione scelta", "0 at the stem or at a chosen station")),
             Field("z0", t("Quota del datum z = 0 (quota del chunk, m)", "Height of the datum z = 0 (height of the chunk, m)"),
                   frame.z0, minimum=-1e4, maximum=1e5, decimals=3)])
         if v:
-            ship.set_frame(chunk, ship.Frame(frame.start, frame.end, v["bow"], v["z0"], v["x0"]))
+            ship.set_frame(chunk, ship.Frame(frame.start, frame.end, frame.bow, v["z0"], v["x0"]))
             self._changed()
 
     def _do_frame_flip(self) -> None:
@@ -246,6 +257,15 @@ class ShipwreckPlugin(Plugin):
 
         chunk = self._need_chunk()
         ship.set_frame(chunk, ship.need_frame(chunk).flipped())
+        self._changed()
+
+    def _do_frame_bow(self) -> None:
+        from . import ship
+
+        chunk = self._need_chunk()
+        ship.set_frame(chunk, ship.need_frame(chunk).other_bow())
+        self._status(t("Babordo e tribordo scambiati: rifai sezioni e disegni.",
+                       "Port and starboard exchanged: make the sections and drawings again."))
         self._changed()
 
     # ------------------------------------------------------------------ 2 the stations
@@ -289,12 +309,12 @@ class ShipwreckPlugin(Plugin):
         from . import ship
 
         chunk = self._need_chunk()
-        frame = ship.need_frame(chunk)
+        ship.need_frame(chunk)
         v = self._ask(t("Sezioni", "Sections"), [
             Field("longitudinals", t("Longitudinali, y (m)", "Longitudinals, y (m)"), "0", kind="text"),
             Field("horizontals", t("Orizzontali, z (m)", "Horizontals, z (m)"), "", kind="text"),
-            Field("half_width", t("Metà larghezza disegnata (m)", "Half width drawn (m)"), round(0.3 * frame.length, 2),
-                  minimum=0.01, maximum=1e4, decimals=2)],
+            Field("half_width", t("Metà larghezza (m, 0 = fin dove arriva il modello)", "Half width (m, 0 = as far as the model goes)"),
+                  0.0, minimum=0.0, maximum=1e4, decimals=2)],
             intro=t("Valori separati da spazi o punto e virgola.", "Values separated by spaces or semicolons."))
         if v:
             self.sections(chunk, parse_values(v["longitudinals"]), parse_values(v["horizontals"]), v["half_width"])
@@ -431,7 +451,8 @@ class ShipwreckPlugin(Plugin):
         chunk = self._need_chunk()
         path, _ = QFileDialog.getOpenFileName(self.context.window, t("Legni", "Timbers"), "", "CSV (*.csv *.txt *.tsv)")
         if path:
-            self._status(t(f"{timbers.import_csv(chunk, path)} legni importati", "Timbers imported"))
+            count = timbers.import_csv(chunk, path)
+            self._status(t(f"Legni importati: {count}", f"Timbers imported: {count}"))
             self._changed()
 
     def _do_timber_remove(self) -> None:
@@ -525,11 +546,12 @@ class ShipwreckPlugin(Plugin):
                              "icon": "plugin", "activate": self.show_pane})
         made = chunk.meta.get(ship.KEY, {}).get("drawings") or {}
         if made:
-            from .drawings import KIND_TITLES
+            from .drawings import KIND_TITLES, out_of_date
 
             folder = ship.folder(chunk) / "drawings"
-            kids = [{"label": t(*KIND_TITLES[k]), "icon": "plugin", "activate": lambda f=folder / f"{k}.pdf": self._open(f)}
-                    for k in made]
+            old = out_of_date(chunk)
+            kids = [{"label": t(*KIND_TITLES[k]) + (t(" (da rifare)", " (to make again)") if k in old else ""), "icon": "plugin",
+                     "activate": lambda f=folder / f"{k}.pdf": self._open(f)} for k in made]
             children.append({"label": t("Disegni", "Drawings"), "icon": "plugin", "children": kids})
         records = timbers.timbers_of(chunk)
         if records:
@@ -557,7 +579,8 @@ class ShipwreckPlugin(Plugin):
         parser.add_argument("--end", help="frame: other end of the keel")
         parser.add_argument("--markers", action="store_true", help="frame: --start and --end are markers")
         parser.add_argument("--bow", choices=["start", "end"], default="start", help="frame: the end where the bow is")
-        parser.add_argument("--flip", action="store_true", help="frame: swap the ends")
+        parser.add_argument("--flip", action="store_true", help="frame: x from the other end; the bow, y and the sides stay")
+        parser.add_argument("--other-bow", action="store_true", help="frame: the bow is the other end; port and starboard are exchanged")
         parser.add_argument("--z0", type=float, help="frame: the world height of ship z = 0")
         parser.add_argument("--x0", type=float, default=0.0, help="frame: ship x of the first end")
         parser.add_argument("--spacing", type=float, help="stations: regular, metres")
@@ -573,7 +596,7 @@ class ShipwreckPlugin(Plugin):
         parser.add_argument("--on", action="store_true", help="water: correct the heights under the level")
         parser.add_argument("--scale", type=int, help="drawings: 1:SCALE (default: automatic)")
         parser.add_argument("--out", help="drawings: a folder; export: the file (.csv, .xlsx, .gpkg)")
-        ns = parser.parse_args([str(a) for a in args])
+        ns = parser.parse_args(joined_values([str(a) for a in args]))
         import pyarchinit_photogrammetry as ppg
 
         doc = ppg.Document.open(ns.project)
@@ -585,13 +608,15 @@ class ShipwreckPlugin(Plugin):
             if ns.what == "frame":
                 if ns.flip:
                     ship.set_frame(chunk, ship.need_frame(chunk).flipped())
+                elif ns.other_bow:
+                    ship.set_frame(chunk, ship.need_frame(chunk).other_bow())
                 elif ns.markers:
                     ship.set_frame(chunk, ship.frame_from_markers(chunk, ns.start, ns.end, ns.bow, ns.z0, ns.x0))
                 elif ns.start and ns.end:
                     a, b = (np.array([float(v) for v in s.split(",")]) for s in (ns.start, ns.end))
                     ship.set_frame(chunk, ship.frame_from_picks(chunk, a, b, ns.bow, ns.z0, ns.x0))
                 else:
-                    raise ship.NotReady("--start and --end, or --flip")
+                    raise ship.NotReady("--start and --end, --flip or --other-bow")
             elif ns.what == "stations":
                 if ns.table:
                     stations = ship.stations_from_table(ns.table)
@@ -629,6 +654,18 @@ class ShipwreckPlugin(Plugin):
             return 1
         doc.save()
         return 0
+
+
+def joined_values(args: list[str]) -> list[str]:
+    """``--horizontals -0.2;-0.5`` as ``--horizontals=-0.2;-0.5``: argparse takes for an option anything that begins with
+    a minus and is not one negative number."""
+    out: list[str] = []
+    for a in args:
+        if out and out[-1] in NEGATIVE_VALUES and a[:1] == "-" and a[1:2] in tuple("0123456789."):
+            out[-1] = f"{out[-1]}={a}"
+        else:
+            out.append(a)
+    return out
 
 
 def parse_values(text) -> list[float]:

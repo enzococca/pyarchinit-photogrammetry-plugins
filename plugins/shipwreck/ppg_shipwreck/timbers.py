@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from . import lines, ship
-from .texts import t
+from .texts import num, t
 
 KINDS = ("keel", "keelson", "frame", "plank", "ceiling", "stringer", "fastening", "other")
 SIDES = ("port", "starboard", "centre")
@@ -20,9 +20,10 @@ KIND_TITLES = {"keel": ("chiglia", "keel"), "keelson": ("paramezzale", "keelson"
                "other": ("altro", "other")}
 SIDE_TITLES = {"port": ("babordo", "port"), "starboard": ("tribordo", "starboard"), "centre": ("centro", "centre")}
 COLUMNS = ("id", "kind", "side", "name", "station", "x", "y", "length", "width", "z_min", "z_max", "z_min_water",
-           "z_max_water", "notes")
+           "z_max_water", "notes", "warning")
 SAMPLE = 0.02  # metres between the points read along a timber
 MAX_SAMPLES = 2000
+SIDE_TOLERANCE = 0.05  # metres from the keel line within which a timber lies on neither side
 
 
 def kind_title(kind: str) -> str:
@@ -87,7 +88,7 @@ def import_csv(chunk, path) -> int:
     if not header:
         raise ship.NotReady(t("La tabella dei legni ha bisogno dell'intestazione.", "The table of timbers needs a header."))
     parsed = []
-    for i, row in enumerate(rows, 2):
+    for i, row in rows:
         try:
             parsed.append(_record(row, header, frame))
         except (ValueError, IndexError, ship.NotReady, KeyError) as exc:
@@ -154,6 +155,15 @@ def _polygon_sides(geom: dict, frame: ship.Frame) -> tuple[float, float]:
     return float(max(a, b)), float(min(a, b))
 
 
+def _side_warning(side: str, y: float) -> str:
+    """Words when a record said port or starboard lies on the other side of the frame."""
+    wrong = (side == "port" and y < -SIDE_TOLERANCE) or (side == "starboard" and y > SIDE_TOLERANCE)
+    if not wrong:
+        return ""
+    return t(f"segnato {side_title(side)} ma sta dall'altro lato (y {num(y, 2)})",
+             f"said {side_title(side)} but lies on the other side (y {num(y, 2)})")
+
+
 def _length_over(s: np.ndarray, z: np.ndarray, ok: np.ndarray, reach: float) -> float:
     """The length of a line over the model, with the heights read ``reach`` apart (a few edges of the mesh):
     read closer, the noise of the surface adds up as length. Plan length where the model is not under it."""
@@ -168,26 +178,29 @@ def measure(chunk, datum: float | None = None, progress=None) -> list[dict]:
     """A row for each record, ``COLUMNS``: ``x``, ``y`` the mean position in ship coordinates; ``length`` along the
     timber over the model (for a polygon: the long side of the rectangle around it, as ``width`` the short one; a
     line has no width); ``z_min``, ``z_max`` the heights of the model on it above ``datum`` (ship z; default 0); with
-    the water on, ``z_min_water``, ``z_max_water`` with the correction. Empty where the model is not under it."""
+    the water on, ``z_min_water``, ``z_max_water`` with the correction. Empty where the model is not under it, and
+    all the heights without a model (lengths in plan). ``warning``: the record's side against the sign of its y."""
     frame = ship.need_frame(chunk)
     records = timbers_of(chunk)
     if not records:
         return []
-    surface = ship.Surface(lines.ship_mesh(chunk, frame).vertices)
+    model = chunk.product_path("model")
+    surface = ship.Surface(lines.ship_mesh(chunk, frame).vertices) if model is not None and model.exists() else None
     water = lines.water_of(chunk) if lines.is_on(chunk) else None
     datum = float(datum or 0.0)
     rows = []
     for r in records:
         s, kind = _samples(r["geometry"], frame)
-        z = surface.at(s)
+        z = surface.at(s) if surface is not None else np.full(len(s), np.nan)
         ok = np.isfinite(z)
         row = {k: r.get(k, "") for k in ("id", "kind", "side", "name", "station", "notes")}
+        row["warning"] = _side_warning(r["side"], float(s[:, 1].mean()))
         row.update(x=float(s[:, 0].mean()), y=float(s[:, 1].mean()), length=None, width=None, z_min=None, z_max=None,
                    z_min_water=None, z_max_water=None)
         if kind == "polygon":
             row["length"], row["width"] = _polygon_sides(r["geometry"], frame)
         elif kind == "line":
-            row["length"] = _length_over(s, z, ok, surface.reach)
+            row["length"] = _length_over(s, z, ok, surface.reach if surface is not None else SAMPLE)
         if ok.any():
             row["z_min"], row["z_max"] = float(z[ok].min()) - datum, float(z[ok].max()) - datum
             if water:
@@ -267,6 +280,18 @@ def export_xlsx(chunk, path, datum: float | None = None) -> Path:
     return Path(path)
 
 
+def _has_table(path, table: str) -> bool:
+    from pyarchinit_photogrammetry.io import gpkg
+
+    if not gpkg.is_geopackage(path):
+        return False
+    con = gpkg.connect(path)
+    try:
+        return con.execute("SELECT 1 FROM gpkg_contents WHERE table_name = ?", (table,)).fetchone() is not None
+    finally:
+        con.close()
+
+
 def export_gpkg(chunk, path, datum: float | None = None) -> Path:
     """A table per kind of geometry, in the coordinates of the chunk, with the measures as columns."""
     import shapely
@@ -285,6 +310,8 @@ def export_gpkg(chunk, path, datum: float | None = None) -> Path:
         chosen = [(make(r["geometry"]["xy"]), rows[r["id"]]) for r in records if r["geometry"]["type"] == kind]
         if chosen:
             gpkg.write_table(path, f"timbers_{kind}", geometry_type, columns, chosen, chunk.crs)
+        elif _has_table(path, f"timbers_{kind}"):  # an earlier export: a kind no longer in the catalogue is emptied
+            gpkg.write_table(path, f"timbers_{kind}", geometry_type, columns, [], chunk.crs)
     return Path(path)
 
 

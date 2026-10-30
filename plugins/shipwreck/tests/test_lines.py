@@ -83,6 +83,15 @@ def test_port_is_port(tmp_path):
     flipped = frame.flipped()
     assert flipped.start == frame.end and flipped.to_ship(ends[1])[0, 0] == pytest.approx(0.0)
     assert flipped.z0 == frame.z0
+    # x from the other end: the bow stays, y and the sides do not change
+    assert flipped.bow == "end" and flipped.to_ship(left)[0, 1] == pytest.approx(frame.to_ship(left)[0, 1])
+    # the bow at the other end: the sides are exchanged, x stays
+    other = frame.other_bow()
+    assert other.to_ship(left)[0, 1] == pytest.approx(-frame.to_ship(left)[0, 1])
+    assert other.to_ship(left)[0, 0] == pytest.approx(frame.to_ship(left)[0, 0])
+    # a keel traced again the other way keeps the bow where it was
+    assert ship.keeping_bow(frame, ship.Frame(ends[1], ends[0], "start")).bow == "end"
+    assert ship.keeping_bow(frame, ship.Frame(ends[0], ends[1], "start")).bow == "start"
 
 
 def test_the_keel_is_levelled_and_its_slope_kept(tmp_path):
@@ -150,6 +159,81 @@ def test_a_cancelled_series_leaves_the_old_sections(tmp_path):
     with pytest.raises(Cancelled):
         lines.build(ch, progress=progress)
     assert lines.load(ch) == first
+
+
+def test_a_change_of_the_georeference_or_the_system_makes_the_sections_stale(tmp_path):
+    _doc, ch, ends = project(tmp_path)
+    _frame(ch, ends)
+    ship.set_stations(ch, [{"name": "S", "x": 6.0}])
+    lines.build(ch)
+    assert not lines.is_stale(ch)
+    original = ch.transform.copy()
+    ch.transform = ch.transform.copy()
+    ch.transform[:3, :3] *= 1.10
+    assert lines.is_stale(ch)
+    ch.transform = original
+    assert not lines.is_stale(ch)
+    ch.crs = "EPSG:3857"
+    assert lines.is_stale(ch)
+    with pytest.raises(ship.NotReady, match="traccia di nuovo"):
+        lines.build(ch)
+
+
+def test_a_section_cut_short_or_empty_is_known(tmp_path):
+    _doc, ch, ends = project(tmp_path)
+    _frame(ch, ends)
+    ship.set_stations(ch, [{"name": "F30", "x": 6.0}, {"name": "F99", "x": 40.0}])
+    data = lines.build(ch, half_width=1.0)
+    assert lines.without_line(data["sections"]) == ["F99"] and lines.at_window(data["sections"]) == ["F30"]
+    assert "F99" in lines.state_text(data) and "1 stazione arriva" in lines.state_text(data)
+    data = lines.build(ch)  # by default the sections go as far as the model
+    assert data["half_width"] >= 2.0 and lines.at_window(data["sections"]) == []
+    assert np.ptp(np.vstack(data["sections"][0]["lines"])[:, 0]) == pytest.approx(2 * half_breadth(6.0), abs=0.01)
+
+
+def test_a_short_hull_is_not_cut_by_the_default_width(tmp_path):
+    """A fragment 3 m long and 4 m wide: 30 % of the keel would stop at 0.9 m."""
+    _doc, ch, _ends = project(tmp_path)
+    a, b = ch.to_world(np.array([[2.25, 0.0, 0.0], [3.75, 0.0, 0.0]]))
+    ship.set_frame(ch, ship.Frame(a, b, "end"))
+    ship.set_stations(ch, [{"name": "S", "x": 1.5}])
+    data = lines.build(ch)
+    assert data["half_width"] >= 2.0
+
+
+def test_a_comma_table_refuses_a_decimal_comma(tmp_path):
+    table = tmp_path / "st.csv"
+    table.write_text("nome, x\nF30, 12,4\n", encoding="utf-8")
+    with pytest.raises(ship.NotReady, match="Riga 2.*col punto"):
+        ship.stations_from_table(table)
+    table.write_text("F30,12,4\n", encoding="utf-8")
+    with pytest.raises(ship.NotReady, match="Riga 1"):
+        ship.stations_from_table(table)
+    table.write_text("# note\nnome, x\n\nF30, 12.4\nF31, 13.1,9\n", encoding="utf-8")
+    with pytest.raises(ship.NotReady, match="Riga 5"):  # the number of the line in the file
+        ship.stations_from_table(table)
+    table.write_text("nome\tx\nF30\t12,4\n", encoding="utf-8")
+    assert ship.stations_from_table(table)[0]["x"] == 12.4
+
+
+def test_a_table_saved_by_excel_is_read(tmp_path):
+    table = tmp_path / "st.csv"
+    table.write_bytes("nome;x\nordinata più;3,5\n".encode("latin-1"))
+    assert ship.stations_from_table(table) == [{"name": "ordinata più", "x": 3.5}]
+    with pytest.raises(ship.NotReady, match="Non riesco"):
+        ship.stations_from_table(tmp_path / "manca.csv")
+
+
+def test_the_local_chain_of_segments_agrees_with_the_program():
+    from pyarchinit_photogrammetry.archaeo.sections import _join_segments
+
+    t_ = np.linspace(0.0, 6.0, 200)
+    points = np.column_stack([t_, np.sin(t_)])
+    segments = np.stack([points[:-1], points[1:]], axis=1)[np.random.default_rng(1).permutation(199)]
+    segments[::3] = segments[::3, ::-1]
+    ours, theirs = lines._chain(segments, 1e-6), _join_segments(segments, 1e-6)
+    assert len(ours) == len(theirs) == 1 and len(ours[0]) == 200
+    assert np.abs(ours[0] - points).max() < 1e-12 or np.abs(ours[0][::-1] - points).max() < 1e-12
 
 
 def test_a_table_of_stations_keeps_the_names_of_the_field(tmp_path):
