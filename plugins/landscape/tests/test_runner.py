@@ -89,6 +89,11 @@ def test_a_lake_without_an_outlet_stops_the_run(tmp_path, fake):
     with pytest.raises(runner.WorkerError, match="non trova uno sbocco") as err:
         runner.run(_job(tmp_path), tmp_path / "work", python=Path(sys.executable), script=FAKE)
     assert time.monotonic() - t0 < 30 and runner.STUCK_LAKE in err.value.details
+    assert "bordo aperto" in str(err.value)  # the edge was closed: the open edge is a way out
+    _nothing_left(tmp_path)
+    with pytest.raises(runner.WorkerError, match="isola di dati") as err:
+        runner.run(_job(tmp_path, boundary="open"), tmp_path / "work", python=Path(sys.executable), script=FAKE)
+    assert "Prova il bordo aperto" not in str(err.value)  # it is open already: the hint names another cell
     _nothing_left(tmp_path)
 
 

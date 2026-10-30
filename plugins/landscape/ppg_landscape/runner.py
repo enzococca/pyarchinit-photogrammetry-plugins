@@ -80,6 +80,24 @@ def hint_for(text: str, output=()) -> str:
     return ""
 
 
+def lake_text(boundary) -> str:
+    """Why a run with a lake without an outlet was stopped and what to try: the islands of data and the
+    groups of cells cut off by a closed edge have their own outlets, so what is left is a part of the data
+    the simulation grid cuts off in another way (a thin strip, cells joined only at a corner)."""
+    if boundary == "closed":
+        return t("Landlab non trova uno sbocco per un lago della superficie (un'isola di dati o un'area chiusa senza "
+                 "uscita) e non finirebbe mai: la simulazione è stata fermata. Prova il bordo aperto o un'altra "
+                 "cella.",
+                 "Landlab finds no outlet for a lake of the surface (an island of data or a closed area with no way "
+                 "out) and would never end: the simulation was stopped. Try the open edge or another cell.")
+    return t("Landlab non trova uno sbocco per un lago della superficie (un'isola di dati o un'area chiusa senza "
+             "uscita, anche con il bordo aperto) e non finirebbe mai: la simulazione è stata fermata. Prova un'altra "
+             "cella di simulazione: cambia il modo in cui la griglia divide i dati.",
+             "Landlab finds no outlet for a lake of the surface (an island of data or a closed area with no way out, "
+             "even with the open edge) and would never end: the simulation was stopped. Try another simulation "
+             "cell: it changes the way the grid parts the data.")
+
+
 def _crash_text(code: int, last: dict | None) -> str:
     where = t(" durante «{0}»", " during '{0}'").format(phase_text(last)[len("Landlab: "):]) if last else ""
     return t("Landlab si è chiuso inaspettatamente{0} (codice {1}): nessun risultato è stato scritto.",
@@ -151,13 +169,8 @@ def run(job: dict, folder: Path, progress=None, python: Path | None = None, scri
                     if STUCK_LAKE in line:
                         proc.kill()
                         proc.wait()
-                        raise WorkerError(t(
-                            "Landlab non trova uno sbocco per un lago della superficie (una parte dei dati senza "
-                            "uscita) e non finirebbe mai: la simulazione è stata fermata. Prova il bordo aperto o "
-                            "un'altra cella.",
-                            "Landlab finds no outlet for a lake of the surface (a part of the data with no way out) "
-                            "and would never end: the simulation was stopped. Try the open edge or another cell."),
-                            (last or {}).get("phase", "run"), output_lines, "\n".join(output_lines))
+                        raise WorkerError(lake_text(job.get("boundary")), (last or {}).get("phase", "run"),
+                                          output_lines, "\n".join(output_lines))
                     continue
                 kind = msg.get("type")
                 if kind == "progress":

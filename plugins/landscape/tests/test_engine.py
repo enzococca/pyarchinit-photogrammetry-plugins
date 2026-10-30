@@ -347,3 +347,33 @@ def test_a_closed_edge_gives_every_separate_part_of_the_data_an_outlet():
     b = res.balance
     assert b["router"] == "depression_finder" and b["outlets"] == 2
     assert b["fluvial_out_m3"] > 0 and abs(b["closure_percent"]) < 1
+
+
+@landlab
+@pytest.mark.parametrize("boundary", ["open", "closed"])
+@pytest.mark.parametrize("side", [2, 10])
+def test_an_island_inside_a_hole_has_its_own_outlet(boundary, side):
+    # a DEM surrounded by nodata with a hole inside (a pool, a tarpaulin, a shadow) that holds a few valid
+    # cells: those cells touch no edge of the data, and without an outlet of their own they were a lake the
+    # DepressionFinder never drained - Landlab printed "Unable to find drainage outlet" for ever, also with
+    # the open edge
+    z, *_ = notched_slope()
+    z = z.copy()
+    z[:, :4] = np.nan
+    z[:, -4:] = np.nan
+    z[-3:, :] = np.nan
+    z[18:46, 30:60] = np.nan  # the hole
+    top = 32 - side // 2
+    rows = np.arange(side, dtype=float)[:, None].repeat(side, 1)
+    z[top:top + side, 40:40 + side] = 12.0 + 0.2 * (side - rows) + 1e-3 * np.random.default_rng(3).random((side, side))
+    job = {"cell": CELL, "years": 20, "boundary": boundary, "diffusion": {"D": 0.01},
+           "fluvial": {"K_sed": 0.01, "K_br": 0.002, "runoff": 1.0, "soil_depth": 0.2, "F_f": 0.3}}
+    res = engine.run(job, z)  # it ends
+    b = res.balance
+    assert b["router"] == "depression_finder" and b["island_outlets"] == 1
+    assert abs(b["closure_percent"]) < 1
+    island = res.dz[top:top + side, 40:40 + side]
+    assert np.isfinite(island).all()
+    assert (island == 0).sum() >= 1  # the outlet, fixed
+    if side == 10:
+        assert (island < 0).any()  # the slope of the island is worked by the water too

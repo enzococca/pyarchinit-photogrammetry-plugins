@@ -37,7 +37,10 @@ the data (the grid's edge or nodata reaching it) are fixed-value nodes - water a
 there; holes of nodata inside the DEM stay closed. ``closed``: those cells are closed too; with
 running water the lowest of them beside a cell inside stays open as ONE artificial outlet for each
 separate part of the data (else every drop would stay in the model as a lake); with diffusion only
-nothing leaves and the volume is conserved.
+nothing leaves and the volume is conserved. In both modes (with running water; with the open edge
+always) a group of valid cells that touches no outer edge - an island of data inside a hole - has
+its own outlet, its lowest cell beside the hole (balance key ``island_outlets``): without it the
+group is a lake with no way out and the DepressionFinder loops for ever.
 """
 from __future__ import annotations
 
@@ -139,6 +142,8 @@ def estimate(shape, cell: float, years: float, params: dict, lang: str = "it") -
         n = fluvial["n_sp"]
         if n > 1:
             slope = min(max(relief / cell, 1e-3), 10.0) if relief > 0 else 10.0
+        elif n < 1:  # the wave is fastest where the slope is least: the run's floor of 1e-6 (flat and lake cells)
+            slope = 1e-6
         else:
             slope = max(relief / (max(rows, cols) * cell), 1e-3) if relief > 0 else 1e-3
         limit = fluvial_dt_limit(cell, max(fluvial["K_sed"], fluvial["K_br"]), [q], [slope], fluvial["m_sp"], n,
@@ -324,6 +329,22 @@ def _to_soil(H: np.ndarray, br: np.ndarray, dz: np.ndarray, nodes: np.ndarray) -
     H[thin] = 0.0
 
 
+def _island_outlets(groups: np.ndarray, inside: np.ndarray, ok: np.ndarray, z: np.ndarray, drained) -> list[int]:
+    """The outlet (a node) of every group of ``groups`` (labels in raster order) not in ``drained``: its
+    lowest cell beside a cell without a value (4-connected), else its lowest cell."""
+    rows, cols = groups.shape
+    wanted = inside & (groups > 0) & ~np.isin(groups, np.fromiter(drained, int, len(drained)))
+    if not wanted.any():
+        return []
+    pad = np.pad(~ok, 1, constant_values=False)
+    beside_hole = pad[:-2, 1:-1] | pad[2:, 1:-1] | pad[1:-1, :-2] | pad[1:-1, 2:]
+    r, c = np.nonzero(wanted)
+    label = groups[r, c]
+    order = np.lexsort((z[r, c], ~beside_hole[r, c], label))  # per group: beside the hole first, then the lowest
+    first = order[np.r_[True, label[order][1:] != label[order][:-1]]]
+    return sorted(int((rows - 1 - r[k]) * cols + c[k]) for k in first)
+
+
 def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progress=None) -> Result:
     """Simulate ``job`` on ``elevation`` (raster order, NaN = no value; ``valid``: another mask of
     the cells to use). ``progress(fraction, phase, **info)`` is called on the way (phases ``grid``,
@@ -388,32 +409,46 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     z = grid.add_field("topographic__elevation", to_nodes(filled).astype(np.float64), at="node")
     outlet = None
     outlets: list[int] = []
-    if boundary == "closed" and fluvial is not None:
-        # running water needs a way out: one artificial outlet for each separate group of cells inside the edge
-        # (8-connected, as the water flows from cell to cell): the lowest edge cell beside a cell of the group
-        # (a corner touches only other edge cells: water would reach it diagonally, creep never). The closed
-        # edge cells part the inside wherever the data narrow to a neck one or two cells wide, and a real DEM
-        # has islands of a few cells beside its main body: a group without an outlet is a lake the
-        # DepressionFinder never drains - it loops for ever
+    islands: list[int] = []
+    if fluvial is not None or boundary == "open":
         from scipy import ndimage
 
-        groups = to_nodes(ndimage.label(ok & ~edge, structure=np.ones((3, 3), bool))[0])
+        # the cells inside the edge in separate groups (8-connected, as the water flows from cell to cell)
+        inside = ok & ~edge
+        groups_r = ndimage.label(inside, structure=np.ones((3, 3), bool))[0]
+        groups = to_nodes(groups_r)
         best: dict[int, int] = {}
-        for i in np.flatnonzero(to_nodes(edge)):
-            for j in grid.adjacent_nodes_at_node[i]:
-                g = int(groups[j]) if j >= 0 else 0
-                if g and (g not in best or z[i] < z[best[g]]):
-                    best[g] = int(i)
+        if boundary == "closed" and fluvial is not None:
+            # running water needs a way out: one artificial outlet for each group, the lowest edge cell beside
+            # a cell of the group (a corner touches only other edge cells: water would reach it diagonally,
+            # creep never). The closed edge cells part the inside wherever the data narrow to a neck one or
+            # two cells wide, and a real DEM has islands of a few cells beside its main body: a group without
+            # an outlet is a lake the DepressionFinder never drains - it loops for ever
+            for i in np.flatnonzero(to_nodes(edge)):
+                for j in grid.adjacent_nodes_at_node[i]:
+                    g = int(groups[j]) if j >= 0 else 0
+                    if g and (g not in best or z[i] < z[best[g]]):
+                        best[g] = int(i)
+            drained = set(best)
+        else:  # an open edge drains every group that touches it, diagonally too
+            near_edge = ndimage.binary_dilation(edge, structure=np.ones((3, 3), bool))
+            drained = {int(g) for g in np.unique(groups_r[near_edge & inside]) if g}
+        # a group that touches no edge of the data - an island of data inside a hole of nodata (a pool, a
+        # tarpaulin, a shadow; on a coarse grid a few stray cells) - is a lake with no way out in both modes:
+        # its lowest cell beside the hole is its outlet, water and sediment leave there
+        islands = _island_outlets(groups_r, inside, ok, filled, drained)
         outlets = sorted(set(best.values()))
-        if not outlets and edge.any():
-            on_edge = np.flatnonzero(to_nodes(edge))
-            outlets = [int(on_edge[np.argmin(z[on_edge])])]
+        if boundary == "closed" and fluvial is not None:
+            if not outlets and not islands and edge.any():
+                on_edge = np.flatnonzero(to_nodes(edge))
+                outlets = [int(on_edge[np.argmin(z[on_edge])])]
+            if best:  # the outlet of the largest group
+                sizes = np.bincount(groups[groups > 0])
+                outlet = best[max(best, key=lambda g: sizes[g])]
+            elif outlets:
+                outlet = outlets[0]
+        outlets = sorted(set(outlets) | set(islands))
         status[outlets] = NodeStatus.FIXED_VALUE
-        if best:  # the outlet of the largest group
-            sizes = np.bincount(groups[groups > 0])
-            outlet = best[max(best, key=lambda g: sizes[g])]
-        elif outlets:
-            outlet = outlets[0]
     grid.status_at_node = status  # all at once: perimeter nodes must never be core, not even for a moment
     core = grid.core_nodes
     if core.size == 0:
@@ -520,7 +555,8 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
         closure = eroded_solid - deposited_solid - (from_flow or 0.0) - (diffusion_out_solid if ld is not None else 0.0)
     balance = {
         "years": years, "cell": dx, "cell_area_m2": cell_area, "cells": int(ok.sum()), "core_cells": int(core.size),
-        "boundary": boundary, "outlet_node": outlet, "outlets": len(outlets), "steps": steps,
+        "boundary": boundary, "outlet_node": outlet, "outlets": len(outlets), "island_outlets": len(islands),
+        "steps": steps,
         "smallest_step": smallest if steps else None,
         "diffusion_substeps": diffusion_substeps, "diffusion_dt_limit": None if ld is None else d_limit,
         "eroded_m3": float(-d[d < 0].sum() * cell_area), "deposited_m3": float(d[d > 0].sum() * cell_area),
