@@ -85,6 +85,25 @@ jobs:
       - name: The simulations of landscape, in the Python that has Landlab
         if: matrix.plugin == 'plugins/landscape'
         run: '"$PPG_TEST_LANDLAB" -m pytest -q -p no:cacheprovider plugins/landscape/tests'
+      - name: LoopStructural for the tests of geoarchaeology (its other tests run without it)
+        # the environment the plugin makes for the user, by the plugin's own two commands: the libraries, then
+        # LoopStructural with --no-deps, no VTK; the program never imports it; PPG_TEST_LOOP names its Python
+        if: matrix.plugin == 'plugins/geoarchaeology'
+        run: |
+          python -m pip install uv
+          uv venv -p 3.12 "$RUNNER_TEMP/loop"
+          python - <<'PY'
+          import os, shutil, subprocess
+          from pathlib import Path
+          from ppg_geoarchaeology.environment import commands
+          for command in commands(Path(shutil.which("uv")), Path(os.environ["RUNNER_TEMP"]) / "loop/bin/python"):
+              subprocess.run(command, check=True)
+          PY
+          VIRTUAL_ENV="$RUNNER_TEMP/loop" uv pip install pytest
+          echo "PPG_TEST_LOOP=$RUNNER_TEMP/loop/bin/python" >> "$GITHUB_ENV"
+      - name: The engine of geoarchaeology, in the Python that has LoopStructural
+        if: matrix.plugin == 'plugins/geoarchaeology'
+        run: '"$PPG_TEST_LOOP" -m pytest -q -p no:cacheprovider plugins/geoarchaeology/tests/test_implicit_engine.py'
       - name: s3dgraphy for the em.json test of blender-em
         if: matrix.plugin == 'plugins/blender-em'
         run: python -m pip install --pre "s3dgraphy>=1.6.0.dev40"

@@ -312,7 +312,8 @@ def _top_down(ground, raws, is_ground) -> tuple[list, list, list]:
     return out, corr, counts
 
 
-def write_tif(path: Path, bands: list[np.ndarray], grid: Grid, descriptions: list[str]) -> Path:
+def write_tif(path: Path, bands: list[np.ndarray], grid: Grid, descriptions: list[str], **options) -> Path:
+    """A float32 GeoTIFF of ``bands`` on ``grid``; ``options``: more of its creation options."""
     import rasterio
 
     from pyarchinit_photogrammetry.core import crs as crs_mod
@@ -324,6 +325,7 @@ def write_tif(path: Path, bands: list[np.ndarray], grid: Grid, descriptions: lis
         profile.update(tiled=True, blockxsize=256, blockysize=256)
     if grid.crs:
         profile["crs"] = crs_mod.to_pyproj(grid.crs).to_wkt()
+    profile.update(options)
     tmp = path.with_suffix(".tmp.tif")
     with rasterio.open(tmp, "w", **profile) as dst:
         for k, (b, d) in enumerate(zip(bands, descriptions), start=1):
@@ -681,9 +683,11 @@ def registry(chunk) -> dict:
 
 
 def entries(chunk) -> list[dict]:
-    """The contacts and the thicknesses of the chunk, for the pane and the exports."""
+    """The contacts and the thicknesses of the chunk, then the surfaces of the implicit model
+    (:mod:`.implicit`), for the pane and the exports."""
     reg = registry(chunk)
-    return list(reg.get("contacts", [])) + list(reg.get("thickness", []))
+    implicit = ((chunk.meta.get("geoarchaeology") or {}).get("implicit") or {}).get("surfaces", [])
+    return list(reg.get("contacts", [])) + list(reg.get("thickness", [])) + list(implicit)
 
 
 def entry(chunk, pid: str) -> dict | None:

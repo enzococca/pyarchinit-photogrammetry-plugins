@@ -84,6 +84,15 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   unità il modello di un nuovo chunk del progetto (*Apri come modello di un nuovo chunk*), dove il
   pulsante *Taglia* della vista 3D del programma le taglia e chiude ogni unità sul taglio nel suo
   colore.
+* **Il modello implicito, su richiesta** (LoopStructural, MIT, in un processo separato; vedi sotto): il terreno come
+  campi scalari in 3D invece che superfici z(x, y). Che cosa aggiunge: tagli e riempimenti come documenti di scavo
+  (una fossa o un fossato attraversano gli strati, con il contorno della US disegnata, un fondo che passa per ogni
+  base misurata, il volume come intervallo fra fondo piatto, a conca e a V), pareti sottosquadro dalle righe segnate
+  `wall`, contatti visti in pochi sondaggi che prendono la forma degli strati intorno, contatti e giaciture da file
+  CSV, le quote del programma con il numero di una US. Dove i sondaggi senza un'unità prevalgono su quelli che l'hanno, l'unità non c'è, con la stessa regola del kriging. Superfici, solidi, volumi accanto a quelli del kriging sulle stesse celle,
+  sezioni, esportazioni e QGIS passano per gli stessi prodotti. Il kriging resta il metodo predefinito: sugli strati
+  semplici è buono come l'implicito o migliore, e il leave-one-out dei due metodi è mostrato affiancato. Scheda
+  *Implicito* del pannello.
 * Il pannello *Geoarcheologia* (con il programma 1.3.4 un pannello a sé accanto all'area di lavoro, da *Vista > Pannelli*; prima una scheda del dock del progetto): sondaggi, superfici e sezioni in tre
   tabelle, i sondaggi come layer di punti della vista (id, quota, profondità, unità), una superficie
   (la quota, la varianza o la correzione - questa su una rampa divergente attorno a zero, celle
@@ -92,7 +101,7 @@ fotogrammetrico (il DEM e l'ortofoto del chunk).
   (sondaggi e tracce ridisegnati su ogni raster che la vista mostra),
   le esportazioni, il progetto QGIS (superfici, sondaggi e sezioni; anche per un chunk in un sistema
   locale). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
-* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|export|remove PROGETTO ...`;
+* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|implicit|implicit-data|implicit-status|implicit-install|export|remove PROGETTO ...`;
   `ppg plugin geoarchaeology help` stampa le opzioni di ogni comando.
 
 ```bash
@@ -123,7 +132,28 @@ S1;1,6;4,2;3;argilla grigia;2.5Y 5/2
 
 Tutto sta in `chunk.meta["geoarchaeology"]` e in `<dati del chunk>/geoarchaeology/` (`sources/`
 le tabelle lette, `sondaggi.gpkg` sondaggi, intervalli e sezioni, `surfaces/`, `sections/`,
-`logs/`, `model/`). Nessuna dipendenza oltre a quelle del programma (NumPy, SciPy, rasterio,
+`logs/`, `model/`, `implicit/`). Nessuna dipendenza oltre a quelle del programma (NumPy, SciPy, rasterio,
 shapely, ezdxf, matplotlib con l'interfaccia; colour-science per i colori Munsell quando c'è).
+
+## Come gira LoopStructural
+
+LoopStructural e quello che gli serve (pandas, scikit-image, scikit-learn) non vengono mai importati dal programma: ogni
+modello gira in un processo separato (`implicit_worker.py`, avviato per percorso), con i dati in una cartella di lavoro e i
+risultati sostituiti solo alla fine, così un errore o un annullamento lasciano il modello attuale com'è. Il Python che lo
+esegue è
+
+* il Python del programma, se LoopStructural vi è installato;
+* altrimenti un ambiente che il plugin crea su richiesta con [uv](https://github.com/astral-sh/uv) (Python 3.12, circa
+  300 MB, nella cartella dei dati del plugin, `PPG_GEOARCH_LOOP_ENV` per metterlo altrove): il pulsante *Installa
+  LoopStructural* o `ppg plugin geoarchaeology implicit-install`. L'applicazione impacchettata funziona così.
+
+VTK resta fuori (`--no-deps`): LoopStructural lo usa solo per disegnare, e il worker mette un segnaposto al posto di pyvista.
+
+```bash
+ppg plugin geoarchaeology implicit-install
+ppg plugin geoarchaeology implicit-data scavo.ppg --contacts contatti.csv --orientations giaciture.csv
+ppg plugin geoarchaeology implicit scavo.ppg
+ppg plugin geoarchaeology implicit-status scavo.ppg
+```
 
 Licenza: GPL-2.0-or-later.

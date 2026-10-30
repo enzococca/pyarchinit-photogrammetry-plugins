@@ -1,0 +1,1353 @@
+"""The implicit model of the deposits, on the side of the program: what the chunk knows (boreholes,
+surfaces, drawn units, spot heights, files of contacts and orientations) becomes the job of the worker
+(:mod:`.implicit_worker`, in a process of its own: :mod:`.implicit_runner`), and what comes back becomes
+surfaces, solids and volumes.
+
+This module runs in the program's process and imports neither LoopStructural nor pandas nor scikit-image.
+
+The data
+    * The *series* (:func:`series_of`): the contacts that follow the ground, by the modes of the kriging
+      surfaces, in one series in depth space; every other contact a series of its own. ``overrides`` sets
+      a unit by hand. With no surfaces yet the mode comes from :func:`surfaces.choose_mode` on the logs.
+    * *Cuts and fills* (:func:`cuts_of`): kept as marks in ``chunk.meta["geoarchaeology"]["implicit"]["cuts"]``,
+      ``{name: {"kind": "cut", "fills": [fills], "profile": "bowl"}}`` for a cut and ``{name: {"kind": "fill",
+      "fills": cut, "profile": None}}`` for a fill. A cut has no material: a unit found in the logs is a fill.
+      In a borehole through a fill the base of the deepest fill goes in the ``base`` of the cut and is *not*
+      a contact of the layer under it, whose top the cut took away; the holes crossing a fill are inside the
+      cut, the others that went as deep are outside. A fill moves up in the column to right under what the holes
+      through it see above it: whatever else the order of the logs put over it was cut.
+    * The plan of a cut: the US drawn for the cut, else for its fills (:func:`outline`).
+    * More data: :func:`read_contacts` (``unit, x, y, z[, kind]``, ``kind`` "wall" for a wall of a cut),
+      :func:`read_orientations` (``unit, x, y, z, dip, dip direction``), kept in the registry and copied
+      under ``implicit/data/``; the spot heights of the program with a US that is a unit are contacts of it.
+
+The frame
+    The grid is that of the surfaces, coarser up to :data:`MAX_COLUMNS` columns; a cell asked for is built as
+    asked, finer than the surfaces too, on a grid with their corner (:func:`model_frame`). Without surfaces
+    the grid holds the boreholes and the drawn outlines of the cuts. The voxels are at most a tenth of
+    the thinnest unit and of the shallowest cut, at most :data:`MAX_LEVELS` levels (:func:`voxel_step`).
+
+The results (:func:`build`)
+    Nothing is touched until the worker has finished: ``implicit/`` and ``model/`` are written aside and
+    swapped at the end, so a failure or a cancel leaves them as they were. ``implicit/top_<k>_<unit>.tif``:
+    float32, band 1 the elevation, band 2 the jackknife variance (m²), band 3 implicit minus kriging where a
+    kriging surface exists. Where the boreholes without a layer outweigh those with it, the layer is not in the
+    model (:func:`absent_masks`): the rule of the kriging. ``model/``: the same files and registry as :mod:`.model`, with ``"method":
+    "implicit"``. A kriging :func:`model.build` afterwards replaces the model; the implicit surfaces stay.
+    The numbers are an interpretation of the data, and the pane and the figures say so.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import shutil
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+
+from . import boreholes as bh
+from . import kriging
+from . import model as model_mod
+from . import surfaces as sf
+from .texts import num, plural, t
+
+FOLDER = "implicit"
+DATA = "data"  # the copies of the files of contacts and orientations
+PREFIX = "implicit_"  # of the ids of its products
+PROFILES = ("flat", "bowl", "v")
+DEFAULT_PROFILE = "bowl"
+FOLDS = 12
+MAX_COLUMNS = 120_000  # columns of the grid when no cell is given
+MAX_LEVELS = 200  # levels of voxels
+MIN_OUTLINE_CELLS = 3.0  # the narrowest part of a plan, in cells
+OUTLINE_KEPT = 0.95  # a plan with less than this share of the polygon drawn is said to be cut
+OUTLINE_BUMPS = 0.05  # share of a plan that may be narrower than the width told: the bumps of the line
+LOGS_MISSED = 0.25  # rmse (m) of the model at its own boreholes that deserves a warning
+VOXEL_SHARE = 0.1  # a voxel is at most this share of the thinnest unit and of the shallowest cut
+TOLERANCE = bh.TOLERANCE
+VOLUME_COLUMNS = (*model_mod.VOLUME_COLUMNS, "absent_cells", "same_cells_m3", "method", "kriging_m3", "range_min", "range_max")
+WORKER: tuple | None = None  # (python, script) of another worker: the tests
+WALL_WORDS = {"wall", "walls", "parete", "pareti", "muro", "side"}
+DIP_NAMES = {"dip", "inclinazione", "angolo", "pendenza", "dip_angle"}
+DIRECTION_NAMES = {"dip_direction", "dip_dir", "dipdir", "dip_azimuth", "immersione", "direzione_immersione", "azimut",
+                   "azimuth"}
+INTERPRETATION = ("Questo modello è un'interpretazione dei dati, non una misura: lontano dai sondaggi dice quello che "
+                  "i dati fanno supporre.",
+                  "This model is an interpretation of the data, not a measure: away from the boreholes it says what the "
+                  "data suggest.")
+# every warning of the engine and of this module; test_implicit_plugin checks that none is missing
+WARNINGS = {
+    "edge_estimated": ("{unit}: nessuno ha disegnato il contorno, stimato dai sondaggi (fino a {limit} m da quelli "
+                       "dentro): il volume può essere sovrastimato o sottostimato. Disegna la US del taglio.",
+                       "{unit}: nobody drew the outline, estimated from the boreholes (up to {limit} m from those "
+                       "inside): the volume may be overstated or understated. Draw the US of the cut."),
+    "floor_unmeasured": ("{unit}: tutti i sondaggi sono vicino al bordo, la profondità del fondo non è stata misurata: "
+                         "il volume è un'ipotesi, qualunque sia l'intervallo indicato.",
+                         "{unit}: all the boreholes are near the edge, the depth of the floor was not measured: the "
+                         "volume is a guess, whatever the range says."),
+    "base_near_edge": ("{unit}: {rows} misure del fondo vicino al bordo non sono usate per la sua profondità, oppure il "
+                       "fondo lì è trattenuto: il bordo non dice quanto scende il centro.",
+                       "{unit}: {rows} measures of the floor next to the edge were not used for its depth, or the "
+                       "floor there is held: the edge does not tell how deep the middle goes."),
+    "floor_past_measure": ("{unit}: il fondo arriva a {floor} m, la misura più profonda è {measure} m: tutte le misure "
+                           "sono vicino al bordo e nulla lo ferma.",
+                           "{unit}: the floor reaches {floor} m, the deepest measure is {measure} m: all the measures "
+                           "are next to the edge and nothing stops it."),
+    "rim_deeper": ("{unit}: una misura accanto al bordo arriva a {depth} m, più di ogni misura lontana dal bordo ({measure} "
+                   "m): nel modello quella profondità sta solo lì, una buca locale. Se è la parete, serve un sondaggio più "
+                   "all'interno; controlla anche il log.",
+                   "{unit}: a measure next to the edge reaches {depth} m, more than any measure away from the edge "
+                   "({measure} m): in the model that depth stands only there, a local sump. If it is the wall, a "
+                   "borehole further in is needed; check the log too."),
+    "plan_part_unmeasured": ("{unit}: {parts} parti separate del contorno non hanno alcuna misura del fondo: la loro "
+                             "profondità viene da sondaggi lontani.",
+                             "{unit}: {parts} separate parts of the outline have no measure of the floor: their depth "
+                             "comes from boreholes far away."),
+    "fill_thinned": ("{unit}: nel sondaggio {hole} i log danno {logged} m, il modello {modelled} m. I riempimenti sono "
+                     "una pila, uno sull'altro: riempimenti affiancati non si possono rappresentare. Il volume di "
+                     "questo riempimento è sbagliato, e può esserlo anche quello del taglio.",
+                     "{unit}: in borehole {hole} the logs give {logged} m, the model {modelled} m. Fills are a stack, "
+                     "one over the other: fills side by side cannot be drawn. The volume of this fill is wrong, and "
+                     "that of the cut may be too."),
+    "logs_missed": ("{unit}: il modello passa lontano dai log dei suoi stessi sondaggi (rmse {rmse} m, massimo {max} m): "
+                    "il leave-one-out da solo non lo mostra.",
+                    "{unit}: the model passes far from the logs of its own boreholes (rmse {rmse} m, maximum {max} m): "
+                    "leave-one-out alone does not show this."),
+    "base_outside_outline": ("{unit}: una misura del fondo ({x}, {y}) è {distance} m fuori dal contorno: vale come "
+                             "se fosse sul bordo.",
+                             "{unit}: a measure of the floor ({x}, {y}) is {distance} m outside the outline: it counts "
+                             "as if on the edge."),
+    "cut_reaches_zmin": ("{unit}: il fondo arriva sotto la base del modello, ed è fermato lì.",
+                         "{unit}: the floor goes below the base of the model and is stopped there."),
+    "cut_without_data": ("{unit}: nessun dato per collocare il taglio, che è stato lasciato fuori.",
+                         "{unit}: no data to place the cut, which was left out."),
+    "fill_without_contact": ("{unit}: riempimento di {cut} senza tetto misurato: non si sa fin dove arriva.",
+                             "{unit}: fill of {cut} with no measured top: how far it reaches is not known."),
+    "series_without_data": ("Serie {series}: senza dati, lasciata fuori.", "Series {series}: no data, left out."),
+    "unit_without_contact": ("{unit}: nessun contatto, l'unità non è nel modello.",
+                             "{unit}: no contact, the unit is not in the model."),
+    "contact_leaves_box": ("{unit}: il contatto esce dall'intervallo di quote del modello, dove manca il suo tetto.",
+                           "{unit}: the contact leaves the range of heights of the model, where its top is missing."),
+    "contact_shares_no_hole": ("{unit}: nessun sondaggio ha questo contatto insieme agli altri: la sua distanza da "
+                               "loro è stimata dai piani dei contatti.",
+                               "{unit}: no borehole has this contact with the others: its distance from them is "
+                               "estimated from the planes of the contacts."),
+    "few_holes": ("Serie {series}: i sondaggi non fanno un piano (pochi, o in fila): di traverso alla fila il contatto "
+                  "è preso il meno inclinato possibile.",
+                  "Series {series}: the boreholes do not make a plane (few, or in a line): across the line the contact "
+                  "is taken as level as possible."),
+    "normal_turned_up": ("{unit}: una giacitura era rivolta in basso ed è stata girata.",
+                         "{unit}: an orientation pointed down and was turned."),
+    "column_contradicted": ("{holes} sondaggi hanno due unità nell'ordine opposto alla colonna.",
+                            "{holes} boreholes have two units in the order opposite to the column."),
+    "outline_narrow": ("{unit}: il contorno è largo solo {width} m nel punto più stretto ({cells} celle da {cell} m): "
+                       "per disegnarlo serve una cella di {use} m al massimo.",
+                       "{unit}: the outline is only {width} m wide at its narrowest ({cells} cells of {cell} m): a "
+                       "cell of {use} m at most is needed to draw it."),
+    "outline_empty": ("{unit}: il contorno disegnato è più piccolo di una cella ed è stato ignorato: serve una cella "
+                      "minore.",
+                      "{unit}: the drawn outline is smaller than a cell and was ignored: a smaller cell is needed."),
+    "outline_outside": ("{unit}: il contorno disegnato è tutto fuori dalla griglia ed è stato ignorato: ricostruisci le "
+                        "superfici con un margine più grande.",
+                        "{unit}: the drawn outline is wholly outside the grid and was ignored: build the surfaces "
+                        "again with a larger margin."),
+    "outline_clipped": ("{unit}: il contorno disegnato misura {drawn} m², sulla griglia ne restano {kept} m²: esce dalla "
+                        "griglia, o la cella è grande per la sua forma. Il volume ne risente.",
+                        "{unit}: the drawn outline measures {drawn} m², {kept} m² are left on the grid: it leaves the "
+                        "grid, or the cell is large for its shape. The volume suffers."),
+    "orientation_dropped": ("{unit}: la giacitura in {x}, {y} contraddice il contatto e avrebbe rovesciato il modello: "
+                            "lasciata fuori.",
+                            "{unit}: the orientation at {x}, {y} contradicts the contact and would have turned the "
+                            "model over: left out."),
+    "voxels_clamped": ("Voxel di {used} m invece di {wanted} m: più di {levels} livelli non si possono fare; le "
+                       "unità sottili e i tagli poco profondi sono resi male.",
+                       "Voxels of {used} m instead of {wanted} m: no more than {levels} levels can be made; thin "
+                       "units and shallow cuts are poorly drawn."),
+    "base_at_hole_end": ("{unit}: i sondaggi {holes} finiscono dentro il riempimento: il fondo è più in basso e il volume "
+                         "è sottostimato.",
+                         "{unit}: the boreholes {holes} end inside the fill: the floor is deeper and the volume is "
+                         "understated."),
+    "cut_without_fill": ("{unit}: un taglio senza riempimento, lasciato fuori.",
+                         "{unit}: a cut without a fill, left out."),
+    "holes_without_elevation": ("I sondaggi {holes} non hanno una quota: lasciati fuori.",
+                                "The boreholes {holes} have no elevation: left out."),
+    "unknown_units": ("Unità sconosciute nei dati aggiunti, lasciate fuori: {units}.",
+                      "Unknown units in the added data, left out: {units}."),
+    "wall_without_cut": ("{unit}: una riga «wall» di un'unità che non è un taglio né un riempimento: usata come "
+                         "contatto.",
+                         "{unit}: a 'wall' row of a unit that is neither a cut nor a fill: used as a contact."),
+    "orientation_ignored": ("{unit}: giacitura di un riempimento, o di un taglio senza pareti: non serve al modello, "
+                            "lasciata fuori.",
+                            "{unit}: orientation of a fill, or of a cut without walls: of no use to the model, "
+                            "left out."),
+}
+PROFILE_NAMES = {"flat": ("fondo piatto", "flat floor"), "bowl": ("a conca", "bowl"), "v": ("a V", "V-shaped")}
+
+
+def registry(chunk) -> dict:
+    return (chunk.meta.get("geoarchaeology") or {}).get("implicit") or {}
+
+
+def _state(chunk) -> dict:
+    return bh.meta(chunk).setdefault("implicit", {})
+
+
+def folder(chunk) -> Path:
+    return bh.folder(chunk) / FOLDER
+
+
+def is_product(pid: str) -> bool:
+    return str(pid).startswith(PREFIX)
+
+
+def active_surfaces(chunk) -> list[dict]:
+    """The surfaces of the implicit model when it is the model of the chunk, from the top of the column
+    down, else nothing: the sections follow the model."""
+    if model_mod.method(chunk) != "implicit":
+        return []
+    return list(registry(chunk).get("surfaces", []))
+
+
+def _stale(chunk) -> None:
+    state = _state(chunk)
+    if state.get("made"):
+        state["stale"] = True
+
+
+def drawn_hash(chunk) -> str:
+    """A fingerprint of the drawn units and of the spot heights: they decide plans and contacts."""
+    d = chunk.meta.get("drawings") or {}
+    units = sorted((str(u.get("wkt")), str(u.get("us")), str(u.get("tipo"))) for u in d.get("units") or [])
+    spots = sorted((str(q.get("x")), str(q.get("y")), str(q.get("quota_q")), str(q.get("us_q")), str(q.get("unita_tipo_q")))
+                   for q in d.get("quote") or [])
+    return hashlib.sha1(json.dumps([units, spots]).encode("utf-8")).hexdigest()
+
+
+def is_stale(chunk) -> bool:
+    """The data of the last build changed: logs, order, marks, files, drawings or spot heights."""
+    reg = registry(chunk)
+    return bool(reg.get("made")) and (bool(reg.get("stale")) or reg.get("drawn") != drawn_hash(chunk))
+
+
+# ------------------------------------------------------------------ cuts and fills
+def _marks(chunk) -> dict:
+    return registry(chunk).get("cuts") or {}
+
+
+def cuts_of(chunk) -> dict:
+    """The marks of the chunk, whole: every cut with its fills and a profile, also the cut of a fill
+    marked before it. See the module."""
+    out: dict = {}
+    marks = _marks(chunk)
+    for name, mark in marks.items():
+        if mark.get("kind") == "cut":
+            out[name] = {"kind": "cut", "fills": [], "profile": mark.get("profile") or DEFAULT_PROFILE}
+    for name, mark in marks.items():
+        if mark.get("kind") == "fill":
+            cut = str(mark.get("fills"))
+            entry = out.setdefault(cut, {"kind": "cut", "fills": [], "profile": DEFAULT_PROFILE})
+            entry["fills"].append(name)
+            out[name] = {"kind": "fill", "fills": cut, "profile": None}
+    return out
+
+
+def _store(chunk, marks: dict) -> None:
+    _state(chunk)["cuts"] = marks
+    _stale(chunk)
+
+
+def _profile(profile: str) -> str:
+    if profile not in PROFILES:
+        raise ValueError(t("Forma del fondo sconosciuta: {0} ({1})", "Unknown shape of the floor: {0} ({1})")
+                         .format(profile, ", ".join(PROFILES)))
+    return profile
+
+
+def mark_cut(chunk, unit: str, profile: str = DEFAULT_PROFILE) -> str:
+    """``unit`` is a cut with the floor ``profile``; returns its name. A cut has no material: a unit found
+    in the logs is what fills it, and the cut takes the name ``Taglio <unit>``; a unit that is a fill
+    already sets the floor of its cut."""
+    _profile(profile)
+    codes = bh.order(chunk)
+    name = bh.resolve_unit(unit, codes) or str(unit).strip()
+    if not name:
+        raise ValueError(t("Un taglio vuole un nome", "A cut needs a name"))
+    marks = cuts_of(chunk)
+    if marks.get(name, {}).get("kind") == "fill":
+        cut = marks[name]["fills"]
+        marks[cut]["profile"] = profile
+        _store(chunk, marks)
+        return cut
+    if name in codes and not marks.get(name, {}).get("fills"):
+        cut = t("Taglio {0}", "Cut {0}").format(name)
+        marks[cut] = {"kind": "cut", "fills": [name], "profile": profile}
+        marks[name] = {"kind": "fill", "fills": cut, "profile": None}
+        _store(chunk, marks)
+        return cut
+    entry = marks.setdefault(name, {"kind": "cut", "fills": [], "profile": profile})
+    entry["profile"] = profile
+    _store(chunk, marks)
+    return name
+
+
+def mark_fill(chunk, fill: str, cut: str) -> str:
+    """``fill`` (a unit of the logs) fills ``cut``; returns the name of the unit."""
+    codes = bh.order(chunk)
+    name = bh.resolve_unit(fill, codes)
+    if name is None:
+        raise ValueError(t("Unità sconosciuta: {0} (le unità: {1})", "Unknown unit: {0} (the units: {1})")
+                         .format(fill, ", ".join(codes)))
+    marks = cuts_of(chunk)
+    known = codes + [u for u, m in marks.items() if m["kind"] == "cut" and u not in codes]
+    target = bh.resolve_unit(cut, known) or str(cut).strip()
+    if not target or target == name:
+        raise ValueError(t("{0} non può riempire {1}", "{0} cannot fill {1}").format(name, target or "?"))
+    if marks.get(target, {}).get("kind") == "fill":
+        raise ValueError(t("{0} è un riempimento, non un taglio", "{0} is a fill, not a cut").format(target))
+    if marks.get(name, {}).get("kind") == "cut":
+        raise ValueError(t("{0} è un taglio", "{0} is a cut").format(name))
+    old = marks.get(name)
+    if old and old["fills"] in marks:
+        marks[old["fills"]]["fills"].remove(name)
+    marks.setdefault(target, {"kind": "cut", "fills": [], "profile": DEFAULT_PROFILE})["fills"].append(name)
+    marks[name] = {"kind": "fill", "fills": target, "profile": None}
+    _store(chunk, marks)
+    return name
+
+
+def set_profile(chunk, cut: str, profile: str) -> None:
+    marks = cuts_of(chunk)
+    if marks.get(cut, {}).get("kind") != "cut":
+        raise ValueError(t("{0} non è un taglio", "{0} is not a cut").format(cut))
+    marks[cut]["profile"] = _profile(profile)
+    _store(chunk, marks)
+
+
+def unmark(chunk, name: str) -> None:
+    """Forget a mark: a fill is a layer again, a cut goes with the marks of its fills."""
+    marks = cuts_of(chunk)
+    mark = marks.pop(name, None)
+    if mark is None:
+        return
+    if mark["kind"] == "cut":
+        for fill in mark["fills"]:
+            marks.pop(fill, None)
+    elif mark["fills"] in marks:
+        marks[mark["fills"]]["fills"].remove(name)
+    _store(chunk, marks)
+
+
+# ------------------------------------------------------------------ what the logs say
+@dataclass
+class Data:
+    """What the job is made of: ``contacts`` rows of the job; for every cut its ``base`` rows, the
+    positions ``inside`` and ``outside``, the units seen ``above`` its fills; per unit the ``tables`` of
+    its contact and the thicknesses in the logs."""
+
+    contacts: list = field(default_factory=list)
+    orientations: list = field(default_factory=list)
+    base: dict = field(default_factory=dict)
+    inside: dict = field(default_factory=dict)
+    outside: dict = field(default_factory=dict)
+    above: dict = field(default_factory=dict)
+    tables: dict = field(default_factory=dict)
+    thick: dict = field(default_factory=dict)
+    depths: dict = field(default_factory=dict)  # cut -> the depths of its base at the holes
+    notes: list = field(default_factory=list)
+    spots_ignored: int = 0  # spot heights on a US that is not a unit of the model: not data of it
+
+
+def _stretches(b) -> list:
+    """The intervals of a log by unit, from the top: ``[unit, top, base]``, a repeated unit joined."""
+    out: list = []
+    for iv in sorted(b.intervals, key=lambda i: i.top):
+        if out and out[-1][0] == iv.unit:
+            out[-1][2] = max(out[-1][2], iv.base)
+        else:
+            out.append([iv.unit, iv.top, iv.base])
+    return out
+
+
+def _table(data: Data, unit: str, x: float, y: float, z: float, depth: float) -> None:
+    row = data.tables.setdefault(unit, {"xy": [], "z": [], "depth": []})
+    row["xy"].append((x, y))
+    row["z"].append(z)
+    row["depth"].append(depth)
+
+
+def gather(holes, marks: dict) -> Data:
+    """The logs as data of the job (see the module); a hole ending inside a fill has not found the floor:
+    its bottom is used only when no other hole of the cut did (:data:`WARNINGS` ``base_at_hole_end``)."""
+    data = Data()
+    fill_of = {u: m["fills"] for u, m in marks.items() if m["kind"] == "fill"}
+    cuts = [u for u, m in marks.items() if m["kind"] == "cut" and m["fills"]]
+    ended: dict = {cut: [] for cut in cuts}
+    tops: dict = {cut: [] for cut in cuts}
+    without = []
+    for cut in cuts:
+        data.base[cut], data.inside[cut], data.outside[cut], data.above[cut], data.depths[cut] = [], [], [], set(), []
+    for b in holes:
+        if not b.intervals:
+            continue
+        stretches = _stretches(b)
+        truncated = set()
+        if b.z is None:
+            without.append(b.id)
+        for cut in cuts:
+            own = [i for i, s in enumerate(stretches) if fill_of.get(s[0]) == cut or s[0] == cut]
+            if not own:
+                continue
+            data.inside[cut].append([b.x, b.y])  # also without an elevation: it says where the cut is
+            data.above[cut].update(s[0] for s in stretches[:own[0]])
+            tops[cut].append(stretches[own[0]][1])
+            if b.z is None:
+                continue
+            depth = stretches[own[-1]][2]
+            row = [b.x, b.y, b.z - depth]
+            if own[-1] == len(stretches) - 1 and depth >= b.bottom - TOLERANCE:
+                ended[cut].append((b.id, row, depth))
+            else:
+                data.base[cut].append(row)
+                data.depths[cut].append(depth)
+                truncated.add(own[-1] + 1)  # its top is the floor of the cut, not the top of that layer
+        if b.z is None:
+            continue
+        last = len(stretches) - 1
+        for i, (unit, top, base) in enumerate(stretches):
+            if i < last or base < b.bottom - TOLERANCE:
+                data.thick.setdefault(unit, []).append(base - top)
+            if marks.get(unit, {}).get("kind") == "cut" or i in truncated:
+                continue
+            d = top
+            if i > 0 and stretches[i - 1][2] < d - 1e-6:  # a gap in the log: its middle, as in boreholes.contact_data
+                d = 0.5 * (stretches[i - 1][2] + d)
+            data.contacts.append([unit, float(b.x), float(b.y), float(b.z - d), 1.0, b.id])
+            _table(data, unit, float(b.x), float(b.y), float(b.z - d), float(d))
+    for cut in cuts:
+        reached = min(tops[cut], default=None)
+        if reached is not None:
+            inside = {tuple(p) for p in data.inside[cut]}
+            data.outside[cut] = [[b.x, b.y] for b in holes if b.intervals and (b.x, b.y) not in inside
+                                 and b.bottom >= reached]
+        if ended[cut] and not data.base[cut]:
+            data.base[cut] = [row for _id, row, _d in ended[cut]]
+            data.depths[cut] = [d for _id, _row, d in ended[cut]]
+        if ended[cut]:
+            data.notes.append({"code": "base_at_hole_end", "unit": cut, "holes": ", ".join(i for i, _r, _d in ended[cut])})
+    if without:
+        data.notes.append({"code": "holes_without_elevation", "holes": ", ".join(without)})
+    return data
+
+
+def _spot_heights(chunk) -> list:
+    """The spot heights of the program with a US: ``(kind and US, US, x, y, elevation)``. They live in
+    ``chunk.meta["drawings"]["quote"]`` with the fields of ``pyarchinit_quote``; the coordinates are of
+    the chunk."""
+    out = []
+    for q in (chunk.meta.get("drawings") or {}).get("quote") or []:
+        us, z = q.get("us_q"), q.get("quota_q")
+        if "x" not in q or "y" not in q or us in (None, "") or z in (None, ""):
+            continue
+        try:
+            out.append((str(q.get("unita_tipo_q") or "US"), str(us), float(q["x"]), float(q["y"]), float(z)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def add_measures(chunk, data: Data, codes: list, marks: dict) -> None:
+    """The contacts and the orientations of the files and the spot heights of the chunk into ``data``. A
+    contact of a cut is a point of its floor, a row ``wall`` of a cut or of its fill a point of a wall."""
+    known = list(codes) + [u for u in marks if u not in codes]
+    unknown: list = []
+
+    def resolve(name):
+        unit = bh.resolve_unit(name, known)
+        if unit is None and str(name) not in unknown:
+            unknown.append(str(name))
+        return unit
+
+    def place(unit, x, y, z, wall=False):
+        mark = marks.get(unit, {})
+        cut = unit if mark.get("kind") == "cut" else mark.get("fills") if mark.get("kind") == "fill" else None
+        if cut is not None and (wall or mark.get("kind") == "cut"):
+            if cut in data.base:  # a cut without a fill is not in the model, and said so
+                data.base[cut].append([x, y, z, "wall"] if wall else [x, y, z])
+            return
+        if wall:
+            data.notes.append({"code": "wall_without_cut", "unit": unit})
+        data.contacts.append([unit, x, y, z, 1.0, None])
+        _table(data, unit, x, y, z, float("nan"))
+
+    stored = registry(chunk).get("data") or {}
+    for r in (stored.get("contacts") or {}).get("rows", []):
+        unit = resolve(r["unit"])
+        if unit is not None:
+            place(unit, float(r["x"]), float(r["y"]), float(r["z"]), r.get("kind") == "wall")
+    for kind, us, x, y, z in _spot_heights(chunk):
+        unit = bh.resolve_unit(f"{kind} {us}", known)
+        if unit is None and bh.normalise(kind) == "us":  # as model.polygons_for: USM 3 is only a USM
+            unit = bh.resolve_unit(us, known)
+        if unit is None:
+            data.spots_ignored += 1
+        else:
+            place(unit, x, y, z)
+    for r in (stored.get("orientations") or {}).get("rows", []):
+        unit = resolve(r["unit"])
+        if unit is None:
+            continue
+        mark = marks.get(unit, {})
+        walled = any(len(row) > 3 for row in data.base.get(unit, ()))
+        if mark.get("kind") == "fill" or (mark.get("kind") == "cut" and not walled):
+            data.notes.append({"code": "orientation_ignored", "unit": unit})
+            continue
+        x, y, z = float(r["x"]), float(r["y"]), float(r["z"])
+        n = dip_normal(float(r["dip"]), float(r["direction"]))
+        if marks.get(unit, {}).get("kind") == "cut" and data.inside.get(unit):
+            into = np.mean(np.asarray(data.inside[unit], float), axis=0) - (x, y)
+            if float(n[:2] @ into) < 0:  # the normal of a wall points into the cut
+                n = -n
+        data.orientations.append([unit, x, y, z, *(float(v) for v in n)])
+    if unknown:
+        data.notes.append({"code": "unknown_units", "units": ", ".join(unknown)})
+
+
+def dip_normal(dip: float, direction: float) -> np.ndarray:
+    """The upward normal of a plane dipping ``dip`` degrees towards ``direction`` (degrees clockwise
+    from north): east, north, up."""
+    d, a = math.radians(dip), math.radians(direction)
+    return np.array([math.sin(d) * math.sin(a), math.sin(d) * math.cos(a), math.cos(d)])
+
+
+def column_of(codes: list, marks: dict, data: Data) -> list:
+    """The column top-down, as the job wants it: the order of the units without the cuts, the fills of every
+    cut right under what the holes through them see above them, the cut right under its fills. The order of
+    the logs may put over a fill a layer that the holes through it do not have: that layer was cut."""
+    fill_of = {u: m["fills"] for u, m in marks.items() if m["kind"] == "fill"}
+    cuts = [u for u, m in marks.items() if m["kind"] == "cut" and any(f in codes for f in m["fills"])]
+    column = [u for u in codes if u not in cuts]
+    for cut in sorted(cuts, key=lambda c: max((codes.index(f) for f in marks[c]["fills"] if f in codes), default=0)):
+        own = [u for u in column if fill_of.get(u) == cut]
+        rest = [u for u in column if fill_of.get(u) != cut]
+        above = [rest.index(u) for u in data.above.get(cut, ()) if u in rest]
+        at = max(above) + 1 if above else 0
+        if at and fill_of.get(rest[at - 1]) in rest:  # a fill and its cut are one block: the younger pit stays whole
+            at = rest.index(fill_of[rest[at - 1]]) + 1
+        column = rest[:at] + own + [cut] + rest[at:]
+    return [{"unit": u, "kind": "cut" if u in cuts else "fill" if u in fill_of else "layer"} for u in column]
+
+
+def series_of(chunk, overrides: dict | None = None, data: Data | None = None) -> list[dict]:
+    """The series of the job, oldest first: the contacts by depth in one, each contact by elevation its
+    own (see the module). The top of the logs joins the series by depth (it is its zero) and is left out
+    otherwise: the highest layer takes all that is left under the ground whatever its contact says."""
+    holes = bh.load(chunk)
+    marks = cuts_of(chunk)
+    if data is None:
+        data = gather(holes, marks)
+        add_measures(chunk, data, bh.order(chunk), marks)
+    column = column_of(bh.order(chunk), marks, data)
+    layers = [e["unit"] for e in column if e["kind"] == "layer"]
+    given = {bh.resolve_unit(k, layers) or str(k): sf.mode_word(v) for k, v in (overrides or {}).items()}
+    given = {u: m for u, m in given.items() if m != "auto"}
+    known = sf.registry(chunk).get("modes") or {}
+    ground = bh.dem_path(chunk) is not None or any(b.z is not None for b in holes)
+    depth, own = [], []
+    for unit in layers:
+        table = data.tables.get(unit)
+        if table is None:
+            continue
+        mode = given.get(unit) or known.get(unit)
+        if mode is None:
+            cd = SimpleNamespace(xy=np.asarray(table["xy"], float).reshape(-1, 2), z=np.asarray(table["z"], float),
+                                 depth=np.asarray(table["depth"], float))
+            at_surface = bool(np.all(np.abs(cd.depth[np.isfinite(cd.depth)]) < 1e-3)) and np.isfinite(cd.depth).any()
+            mode = "ground" if at_surface else sf.choose_mode(cd, ground)[0]
+        if mode in ("depth", "ground"):
+            depth.append((unit, mode))
+        elif unit != layers[0]:
+            own.append(unit)
+    named = [u for u, mode in depth if mode == "depth" or u != layers[0]]
+    series = [{"name": u, "space": "elevation", "units": [u]} for u in own]
+    if named:
+        series.append({"name": "ground", "space": "depth", "units": [u for u, _m in depth]})
+    if not series:  # one layer: its contact is all there is
+        seen = [u for u in layers if u in data.tables]
+        if seen:
+            series = [{"name": seen[0], "space": "elevation", "units": seen[:1]}]
+    position = {u: i for i, u in enumerate(layers)}
+    return sorted(series, key=lambda s: -max(position[u] for u in s["units"]))
+
+
+# ------------------------------------------------------------------ the frame
+def _lattice(mask: np.ndarray) -> np.ndarray:
+    """A plan on half cells, cell centres at odd indices, the points between them true when they have only
+    cells of the plan around them: a width of n cells spans n half cells from the middle to the edge."""
+    out = np.zeros((2 * mask.shape[0] + 1, 2 * mask.shape[1] + 1), dtype=bool)
+    out[1::2, 1::2] = mask
+    out[1::2, 2:-1:2] = mask[:, :-1] & mask[:, 1:]
+    out[2:-1:2, 1::2] = mask[:-1, :] & mask[1:, :]
+    out[2:-1:2, 2:-1:2] = mask[:-1, :-1] & mask[:-1, 1:] & mask[1:, :-1] & mask[1:, 1:]
+    return out
+
+
+def _narrowest(mask: np.ndarray) -> float:
+    """The narrowest part of a plan, in cells: from the ridge of its distance transform on half cells, a
+    ridge point held by the circle of a wider one saying nothing, and the narrowest circles left out as long
+    as they hold less than :data:`OUTLINE_BUMPS` of the plan (the bumps of a hand-drawn line are ridges too,
+    and so a short neck goes unsaid)."""
+    from scipy import ndimage
+
+    lattice = _lattice(mask)
+    reach = ndimage.distance_transform_edt(lattice)
+    rows, cols = np.nonzero(lattice & (reach >= ndimage.maximum_filter(reach, size=3)))
+    covered = np.zeros(lattice.shape, dtype=bool)
+    held = []  # the radius of every circle and the points of the plan only it holds, widest first
+    for i in np.argsort(-reach[rows, cols], kind="stable"):
+        row, col = rows[i], cols[i]
+        if covered[row, col]:
+            continue
+        radius = float(reach[row, col])
+        n = int(radius)
+        top, left = max(row - n, 0), max(col - n, 0)
+        ys, xs = np.ogrid[top - row:min(row + n + 1, lattice.shape[0]) - row,
+                          left - col:min(col + n + 1, lattice.shape[1]) - col]
+        new = (ys ** 2 + xs ** 2 <= radius ** 2) & ~covered[top:top + ys.size, left:left + xs.size]
+        covered[top:top + ys.size, left:left + xs.size] |= new
+        held.append((radius, int((new & lattice[top:top + ys.size, left:left + xs.size]).sum())))
+    total = sum(n for _r, n in held)
+    so_far = 0
+    for radius, n in held:
+        so_far += n
+        if so_far >= (1.0 - OUTLINE_BUMPS) * total:
+            return radius
+    return held[-1][0]
+
+
+def _drawn_shape(chunk, cut: str, fills: list):
+    """The union of the US drawn for a cut, else for its fills; None when nobody drew them."""
+    from shapely.ops import unary_union
+
+    drawn = model_mod.drawn_units(chunk)
+    polygons = model_mod.polygons_for(cut, drawn) if drawn else []
+    if not polygons:
+        polygons = [p for f in fills for p in model_mod.polygons_for(f, drawn)]
+    return unary_union([p.geometry for p in polygons]) if polygons else None
+
+
+def outline(chunk, grid: sf.Grid, cut: str, fills: list) -> tuple[np.ndarray | None, list]:
+    """The plan of a cut on ``grid``, a boolean raster, from the US drawn for it or else for its fills
+    (a cell belongs to it when its centre does); None when nobody drew them. With the warnings."""
+    from rasterio.features import rasterize
+
+    shape = _drawn_shape(chunk, cut, fills)
+    if shape is None:
+        return None, []
+    mask = rasterize([(shape, 1)], out_shape=(grid.height, grid.width), transform=grid.transform, fill=0,
+                     all_touched=False, dtype="uint8").astype(bool)
+    if not mask.any():
+        x0, y0, x1, y1 = shape.bounds
+        off = x1 <= grid.x0 or x0 >= grid.x0 + grid.width * grid.cell or y0 >= grid.y0 or \
+            y1 <= grid.y0 - grid.height * grid.cell
+        return None, [{"code": "outline_outside" if off else "outline_empty", "unit": cut}]
+    notes = []
+    kept = float(mask.sum() * grid.cell ** 2)
+    if kept < OUTLINE_KEPT * shape.area:
+        notes.append({"code": "outline_clipped", "unit": cut, "drawn": float(shape.area), "kept": kept})
+    cells = _narrowest(mask)
+    if cells < MIN_OUTLINE_CELLS:
+        width = cells * grid.cell
+        notes.append({"code": "outline_narrow", "unit": cut, "width": width, "cells": cells, "cell": grid.cell,
+                      "use": width / MIN_OUTLINE_CELLS})
+    return mask, notes
+
+
+@dataclass
+class Frame:
+    """The grid of the job and how it stands to ``base``, the grid of the surfaces (or, without them, of
+    the boreholes): ``factor`` the whole number of its cells in one of the job, None when the job's cell is
+    another size and a raster has to be resampled."""
+
+    grid: sf.Grid
+    base: sf.Grid
+    factor: int | None
+    on_surfaces: bool
+
+
+def model_frame(chunk, holes, cell: float | None, marks: dict | None = None) -> Frame:
+    """The grid of the job: the grid of the surfaces, or one over the boreholes and the outlines drawn for
+    the cuts when there are no surfaces; coarser by a whole factor to stay within :data:`MAX_COLUMNS` when no
+    ``cell`` is given; ``cell`` as asked, finer than the surfaces too, from the same corner."""
+    base = sf.grid_of(chunk)
+    known = base is not None
+    if base is None:
+        xy = np.array([[b.x, b.y] for b in holes], float)
+        own = 0.0
+        dem = bh.dem_path(chunk)
+        if dem is not None:
+            import rasterio
+
+            with rasterio.open(dem) as src:
+                own = abs(src.transform.a)
+        buffer = sf.default_buffer(xy, own)
+        corners = [xy]
+        for name, mark in (marks or {}).items():
+            shape = _drawn_shape(chunk, name, mark["fills"]) if mark["kind"] == "cut" else None
+            if shape is not None:
+                x0, y0, x1, y1 = shape.bounds
+                corners.append(np.array([[x0 - buffer, y0 - buffer], [x1 + buffer, y1 + buffer]]))
+        base = sf.make_grid(chunk, np.vstack(corners), buffer, None)
+    if not cell:
+        cell = base.cell * max(1, int(np.ceil(np.sqrt(base.width * base.height / MAX_COLUMNS))))
+    ratio = float(cell) / base.cell
+    if ratio >= 1.0 - 1e-9 and abs(ratio - round(ratio)) < 1e-9:
+        grid, factor = model_mod.model_grid(base, cell)
+        return Frame(grid, base, factor, known)
+    grid = sf.Grid(base.x0, base.y0, float(cell), int(np.ceil(base.width / ratio - 1e-9)),
+                   int(np.ceil(base.height / ratio - 1e-9)), base.crs)
+    return Frame(grid, base, None, known)
+
+
+def on_frame(values: np.ndarray, frame: Frame) -> np.ndarray:
+    """A raster of the base grid on the grid of the job: block means, or bilinear for a cell of another size."""
+    from .overlay import resample_to
+
+    if frame.factor is not None:
+        return model_mod.coarsen(values, frame.factor)
+    return resample_to(values, frame.base.transform, frame.grid.transform,
+                       (frame.grid.height, frame.grid.width)).astype(np.float64)
+
+
+def ground_on(chunk, frame: Frame, holes) -> tuple[np.ndarray, np.ndarray | None]:
+    """The ground on the grid of ``frame`` and the cells with a DEM (None without one): the DEM, filled with
+    the surface of the collars where it has no cells, as :func:`surfaces.build` does. The cells with a DEM
+    come from the base grid, as in :func:`model.build`: the mean on a coarser grid spreads a cell around it."""
+    grid = frame.grid
+    dem = sf.dem_on_grid(chunk, grid)
+    collars = [b for b in holes if b.z is not None]
+    surface = None
+    if collars:
+        xy = np.array([[b.x, b.y] for b in collars], float)
+        z = np.array([b.z for b in collars], float)
+        params = sf.registry(chunk).get("params") or {}
+        buffer = params.get("buffer") or sf.default_buffer(xy, grid.cell)
+        mask = sf.hull_mask(grid, xy, float(buffer))
+        if dem is None or not np.isfinite(dem[mask]).all():
+            est, _v, _r = kriging.interpolate(xy, z, grid.centres(mask), variance=False, model="auto", nugget=None,
+                                              trend="auto", min_points=5)
+            surface = np.full((grid.height, grid.width), np.nan)
+            surface[mask] = est
+    if dem is None:
+        if surface is None:
+            raise RuntimeError(t("Serve un DEM o la quota dei sondaggi",
+                                 "A DEM or the elevations of the boreholes are needed"))
+        return surface.astype(np.float32), None
+    has_cells = np.isfinite(dem)
+    ground = dem if surface is None else np.where(has_cells, dem, surface)
+    fine = sf.dem_on_grid(chunk, frame.base)
+    has_dem = np.isfinite(on_frame(np.where(np.isfinite(fine), 1.0, np.nan), frame))
+    return ground.astype(np.float32), has_dem
+
+
+def _kriged_absence(chunk, frame: Frame, pres: dict, layers: list) -> dict:
+    """The rule of the kriging on its own surfaces (:func:`surfaces._missing_units`), layer against layer: the
+    fills, which the kriging takes for layers, are not between them. ``{unit: boolean raster of the job}``."""
+    entries = {e["unit"]: e for e in sf.registry(chunk).get("contacts", [])}
+    known = [u for u in layers if u in entries]
+    raws, variances = [], []
+    for unit in known:
+        path = Path(chunk.data_dir) / entries[unit]["file"]
+        top, moved = sf.read_band(path, 1)[0].astype(np.float64), sf.read_band(path, 3)[0].astype(np.float64)
+        raws.append(top + np.nan_to_num(moved))  # band 3: how far the stack lowered it
+        variances.append(sf.read_band(path, 2)[0].astype(np.float64))
+    ties, _report = sf._missing_units([pres.get(u) for u in known], raws, variances, frame.base)
+    return {u: on_frame(tie.astype(np.float64), frame) > 0.5 for u, tie in zip(known, ties) if tie is not None}
+
+
+def absent_masks(chunk, holes, codes: list, column: list, frame: Frame, data: Data) -> dict:
+    """Where a layer is not. A field keeps a thickness everywhere, so a unit seen in a few boreholes would spread
+    over the whole site: the rule of the kriging applies. The boreholes vote for it by inverse distance
+    (:data:`surfaces.PRESENT`), those that pass it by against; on the surfaces of the kriging, a thickness it can
+    tell from none stays; past them the vote alone says. A borehole inside a cut does not vote against what the
+    cut took away, and neither the first layer (the ground) nor the last can be absent. ``{unit: boolean raster}``."""
+    layers = [e["unit"] for e in column if e["kind"] == "layer"]
+    opened = {tuple(p) for rows in data.inside.values() for p in rows}
+    pres = {}
+    for pr in bh.presence(holes, codes):
+        if pr.unit in layers:
+            cut_there = np.array([(float(x), float(y)) in opened for x, y in pr.xy], bool)
+            keep = pr.present | ~cut_there
+            pres[pr.unit] = bh.Presence(pr.k, pr.unit, [i for i, k in zip(pr.ids, keep) if k], pr.xy[keep], pr.present[keep])
+    grid = frame.grid
+    kriged, inside = {}, None
+    tops = sf.tops(chunk)
+    if tops and frame.on_surfaces:
+        kriged = _kriged_absence(chunk, frame, pres, layers)
+        inside = np.isfinite(on_frame(tops[0][1], frame))
+    out = {}
+    for unit in layers[1:-1]:
+        pr = pres.get(unit)
+        if pr is None or not pr.present.any() or pr.present.all():
+            continue
+        mask = kriging.idw(pr.xy, pr.present.astype(float), grid.centres()).reshape(grid.height, grid.width) < sf.PRESENT
+        if unit in kriged:
+            mask = np.where(inside, kriged[unit], mask)
+        if mask.any():
+            out[unit] = mask
+    return out
+
+
+def voxel_step(thinnest: float | None, shallowest: float | None, span: float, notes: list) -> float:
+    """The height of a voxel: at most :data:`VOXEL_SHARE` of the thinnest unit (mean thickness, m) and of
+    the shallowest cut, and no more than :data:`MAX_LEVELS` levels over ``span``, with a warning then.
+    One level is kept for the air over the highest cell."""
+    sizes = [v * VOXEL_SHARE for v in (thinnest, shallowest) if v and v > 0]
+    fewest = span / (MAX_LEVELS - 1)
+    wanted = min(sizes) if sizes else fewest
+    if wanted < fewest:
+        notes.append({"code": "voxels_clamped", "wanted": wanted, "used": fewest, "levels": MAX_LEVELS})
+        return fewest
+    return wanted
+
+
+# ------------------------------------------------------------------ the job
+@dataclass
+class Plan:
+    """What :func:`prepare` knows beyond the job."""
+
+    frame: Frame
+    has_dem: np.ndarray | None
+    floor_given: bool
+    notes: list
+    spaces: dict
+    spots_ignored: int = 0
+
+    @property
+    def grid(self) -> sf.Grid:
+        return self.frame.grid
+
+    @property
+    def factor(self) -> int | None:
+        return self.frame.factor
+
+    @property
+    def on_surfaces(self) -> bool:
+        return self.frame.on_surfaces
+
+
+def prepare(chunk, tmp: Path, cell: float | None = None, folds: int | None = FOLDS, floor: float | None = None,
+            overrides: dict | None = None, nelements: int | None = None) -> tuple[dict, Plan]:
+    """The job of the chunk, with its arrays in the folder ``tmp``, and the :class:`Plan`."""
+    holes = bh.load(chunk)
+    if not holes:
+        raise RuntimeError(t("Nessun sondaggio nel chunk: importali prima", "No borehole in the chunk: import them first"))
+    codes = bh.order(chunk)
+    marks = cuts_of(chunk)
+    data = gather(holes, marks)
+    add_measures(chunk, data, codes, marks)
+    if not data.contacts:
+        raise RuntimeError(t("Nessun contatto: i sondaggi hanno bisogno di una quota, o il chunk di un DEM",
+                             "No contact: the boreholes need an elevation, or the chunk a DEM"))
+    notes = list(data.notes)
+    notes.extend({"code": "cut_without_fill", "unit": u} for u, m in marks.items() if m["kind"] == "cut" and not m["fills"])
+    column = column_of(codes, marks, data)
+    series = series_of(chunk, overrides, data)
+    frame = model_frame(chunk, holes, cell, marks)
+    grid = frame.grid
+    ground, has_dem = ground_on(chunk, frame, holes)
+    if not np.isfinite(ground).any():
+        raise RuntimeError(t("Nessuna cella con il terreno intorno ai sondaggi",
+                             "No cell with the ground around the boreholes"))
+    tops = sf.tops(chunk)
+    last_top = on_frame(tops[-1][1], frame) if tops and frame.on_surfaces else None
+    zmin = float(floor) if floor is not None else model_mod.default_floor(holes, last_top)
+    heights = [r[3] for r in data.contacts] + [r[2] for rows in data.base.values() for r in rows]
+    if floor is None:
+        margin = max(0.1, 0.05 * (max(heights) - min(heights)))
+        zmin = min(zmin, min(heights) - margin) if zmin is not None else min(heights) - margin
+    top = float(np.nanmax(ground))
+    thin = [float(np.mean(v)) for v in data.thick.values() if v and np.mean(v) > 0]
+    shallow = [max(v) for v in data.depths.values() if v]
+    dz = voxel_step(min(thin, default=None), min(shallow, default=None), top - zmin, notes)
+    tmp = Path(tmp)
+    tmp.mkdir(parents=True, exist_ok=True)
+    np.save(tmp / "dem.npy", ground, allow_pickle=False)
+    cuts = {}
+    for i, entry in enumerate(e for e in column if e["kind"] == "cut"):
+        cut = entry["unit"]
+        mask, said = outline(chunk, grid, cut, marks[cut]["fills"])
+        notes.extend(said)
+        path = None
+        if mask is not None:
+            path = str((tmp / f"outline_{i}.npy").absolute())
+            np.save(path, mask, allow_pickle=False)
+        cuts[cut] = {"base": data.base.get(cut, []), "outline": path, "profile": marks[cut]["profile"],
+                     "inside": data.inside.get(cut, []), "outside": data.outside.get(cut, [])}
+    absent = {}
+    for i, (unit, mask) in enumerate(absent_masks(chunk, holes, codes, column, frame, data).items()):
+        path = str((tmp / f"absent_{i}.npy").absolute())
+        np.save(path, mask, allow_pickle=False)
+        absent[unit] = path
+    job = {"protocol": 1, "output": str((tmp / "run").absolute()), "dem": str((tmp / "dem.npy").absolute()),
+           "grid": {"x0": grid.x0, "y0": grid.y0, "cell": grid.cell, "width": grid.width, "height": grid.height},
+           "zmin": float(zmin), "zmax": top + dz, "dz": float(dz), "series": series, "contacts": data.contacts,
+           "orientations": data.orientations, "column": column, "absent": absent,
+           "fills": {u: m["fills"] for u, m in marks.items() if m["kind"] == "fill" and u in {e["unit"] for e in column}},
+           "cuts": cuts, "options": {"vertical": None, "folds": min(int(folds), FOLDS) if folds else None}}
+    if nelements:
+        job["options"]["nelements"] = int(nelements)
+    spaces = {u: s["space"] for s in series for u in s["units"]}
+    return job, Plan(frame, has_dem, floor is not None, notes, spaces, data.spots_ignored)
+
+
+# ------------------------------------------------------------------ the results
+def _swap(pairs: list) -> None:
+    """Every ``(new, final)`` folder into place, or none: a failure half-way puts the old ones back."""
+    done = []
+    try:
+        for new, final in pairs:
+            old = final.with_name(final.name + ".old")
+            shutil.rmtree(old, ignore_errors=True)
+            had = final.exists()
+            if had:
+                final.rename(old)
+            done.append((final, old, had))
+            new.rename(final)
+    except BaseException:
+        for final, old, had in reversed(done):
+            shutil.rmtree(final, ignore_errors=True)
+            if had:
+                old.rename(final)
+        raise
+    for _final, old, _had in done:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def _span(values: np.ndarray, mask: np.ndarray) -> tuple[float | None, float | None]:
+    v = values[mask & np.isfinite(values)]
+    return (float(v.min()), float(v.max())) if v.size else (None, None)
+
+
+def _common_cells(chunk, plan: Plan) -> np.ndarray | None:
+    """The cells of the job's grid where both methods say something: the kriging stops at the margin around
+    the boreholes, the implicit model has every cell with a DEM. None without surfaces."""
+    tops = sf.tops(chunk)
+    if not tops or not plan.on_surfaces:
+        return None
+    known = np.isfinite(on_frame(tops[0][1], plan.frame))
+    return known if plan.has_dem is None else known & plan.has_dem
+
+
+def _kriging_volumes(chunk, plan: Plan, common: np.ndarray | None, zmin: float) -> dict:
+    """The volume of every unit by kriging on the cells ``common``: the isopachs, and the last unit down to the
+    base of this model."""
+    if common is None:
+        return {}
+    area = plan.grid.cell ** 2
+    out = {}
+    for e in sf.registry(chunk).get("thickness", []):
+        thick = on_frame(sf.read_band(Path(chunk.data_dir) / e["file"], 1)[0], plan.frame)
+        out[e["unit"]] = float(np.nansum(thick[common]) * area)
+    tops = sf.tops(chunk)
+    if tops:
+        top = on_frame(tops[-1][1], plan.frame)
+        out[tops[-1][0]] = float(np.nansum(np.maximum(top[common] - zmin, 0.0)) * area)
+    return out
+
+
+def _surfaces(chunk, result: dict, run: Path, plan: Plan, out: Path) -> list[dict]:
+    """``implicit/top_<k>_<unit>.tif`` in the folder ``out``, and their entries."""
+    grid = plan.grid
+    shape = (grid.height, grid.width)
+    colours = bh.colours(chunk)
+    kriged = {e["unit"]: e for e in sf.registry(chunk).get("contacts", [])}
+    entries = []
+    for k, unit in enumerate(result["units"]):
+        name = (result["files"].get("tops") or {}).get(unit)
+        if name is None:
+            continue
+        top = np.load(run / name, allow_pickle=False).astype(np.float64)
+        rel = (result["files"].get("variance") or {}).get(unit)
+        variance = np.load(run / rel, allow_pickle=False).astype(np.float64) if rel else np.full(shape, np.nan)
+        difference = np.full(shape, np.nan)
+        e = kriged.get(unit)
+        if e is not None and plan.on_surfaces:
+            other = on_frame(sf.read_band(Path(chunk.data_dir) / e["file"], 1)[0], plan.frame)
+            if other.shape == shape:
+                difference = top - other
+        stem = f"top_{k}_{sf.slug(unit)}"
+        sf.write_tif(out / f"{stem}.tif", [top, variance, difference], grid,
+                     [f"top of {unit} (m)", "jackknife variance (m2)", "implicit minus kriging (m)"], BIGTIFF="IF_SAFER")
+        loo = (result.get("loo") or {}).get(unit) or {}
+        entry = {"id": PREFIX + stem, "kind": "surface", "unit": unit, "k": k, "colour": colours.get(unit),
+                 "name": t("Tetto di {0} (implicito)", "Top of {0} (implicit)").format(unit), "method": "implicit",
+                 "file": str((folder(chunk) / f"{stem}.tif").relative_to(chunk.data_dir)), "stats": sf._stats(top),
+                 "variance": sf._stats(variance), "difference": sf._stats(difference)}
+        if unit in plan.spaces:
+            entry["mode"] = plan.spaces[unit]
+        if loo.get("rmse") is not None:
+            entry["loocv_rmse"] = float(loo["rmse"])
+        entries.append(entry)
+    return entries
+
+
+def _model(chunk, job: dict, result: dict, run: Path, plan: Plan, out: Path, explode: float | None) -> dict:
+    """The files of ``model/`` in the folder ``out``, and its registry: the shape of :func:`model.build`
+    with ``"method": "implicit"``; a cut, with no material, is a row with its volume range."""
+    from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
+
+    grid = plan.grid
+    out.mkdir(parents=True, exist_ok=True)
+    area = grid.cell ** 2
+    voxel = area * float(job["dz"])
+    labels = np.load(run / result["files"]["labels"], allow_pickle=False)
+    units = list(result["units"])
+    index = {u: i for i, u in enumerate(units)}
+    colours = bh.colours(chunk)
+    descriptions = {u["code"]: u.get("description", "") for u in bh.units(chunk)}
+    common = _common_cells(chunk, plan)
+    kriging_m3 = _kriging_volumes(chunk, plan, common, float(job["zmin"]))
+    removed = (result.get("info") or {}).get("absent") or {}
+    tops = {u: np.load(run / n, allow_pickle=False) for u, n in (result["files"].get("tops") or {}).items()}
+    cuts = (result.get("info") or {}).get("cuts") or {}
+    final = model_mod.folder(chunk)
+    rows, meshes = [], []
+    for entry in job["column"]:
+        unit = entry["unit"]
+        if entry["kind"] == "cut":
+            info = cuts.get(unit) or {}
+            span = info.get("volume_range") or {}
+            if span:
+                rows.append({"unit": unit, "kind": "cut", "description": descriptions.get(unit, ""), "method": "implicit",
+                             "cells": int(round(float(info.get("plan_area", 0.0)) / area)),
+                             "area_m2": float(info.get("plan_area", 0.0)), "clipped": False, "to_floor": False,
+                             "volume_m3": float(span.get(info.get("profile"), max(span.values()))),
+                             "range_min": float(min(span.values())), "range_max": float(max(span.values())),
+                             "range": {k: float(v) for k, v in span.items()}, "profile": info.get("profile"),
+                             "cut_range": {k: float(v) for k, v in (info.get("cut_volume_range") or {}).items()},
+                             "edge": info.get("edge")})
+            continue
+        row = {"unit": unit, "kind": entry["kind"], "description": descriptions.get(unit, ""), "method": "implicit",
+               "kriging_m3": kriging_m3.get(unit), "clipped": False, "clipped_to": [], "cells": 0, "volume_m3": 0.0,
+               "area_m2": 0.0, "to_floor": unit == units[-1]}
+        if unit in removed:
+            row["absent_cells"] = int(removed[unit])
+        rows.append(row)
+        solid = (result["files"].get("solids") or {}).get(unit)
+        if unit not in index or solid is None:
+            continue
+        counts = (labels == index[unit]).sum(axis=2)
+        mask = counts > 0
+        if not mask.any():
+            continue
+        verts = np.load(run / solid[0], allow_pickle=False)
+        faces = np.load(run / solid[1], allow_pickle=False).astype(np.int64)
+        rgb = np.array([int(colours.get(unit, "#a0a0a0")[i:i + 2], 16) for i in (1, 3, 5)], np.uint8)
+        name = sf.slug(unit)
+        write_mesh_ply(out / f"{name}.ply", verts, faces, np.tile(rgb, (len(verts), 1)), double=True)
+        on = mask if plan.has_dem is None else mask & plan.has_dem
+        thick = counts[on] * float(job["dz"]) if on.any() else np.zeros(1)
+        k = units.index(unit)
+        below = tops.get(units[k + 1]) if k + 1 < len(units) else None
+        top_lo, top_hi = _span(tops[unit], mask) if unit in tops else (None, None)
+        base_lo, base_hi = _span(below, mask) if below is not None else (float(job["zmin"]), float(job["zmin"]))
+        row.update(cells=int(mask.sum()), area_m2=float(on.sum() * area), volume_m3=float(counts[on].sum() * voxel),
+                   mesh_volume_m3=model_mod.signed_volume(verts, faces), mean_thickness_m=float(thick.mean()),
+                   max_thickness_m=float(thick.max()), top_min=top_lo, top_max=top_hi, base_min=base_lo, base_max=base_hi,
+                   faces=int(len(faces)), ply=str((final / f"{name}.ply").relative_to(chunk.data_dir)))
+        if common is not None:
+            row["same_cells_m3"] = float(counts[common].sum() * voxel)
+        off = mask & ~on
+        if off.any():
+            row["outside_dem"] = {"cells": int(off.sum()), "area_m2": float(off.sum() * area),
+                                  "volume_m3": float(counts[off].sum() * voxel)}
+        meshes.append((unit, verts, faces, rgb))
+    files = {}
+    if meshes:
+        model_mod.write_obj(out / "unita.obj", meshes)
+        files["obj"] = str((final / "unita.obj").relative_to(chunk.data_dir))
+    # the fill of a cut is in the rows of its fills: here only its range, or a sum of the column counts it twice
+    model_mod.write_volumes(out / "volumi.csv", [dict(r, volume_m3=None) if r.get("kind") == "cut" else r for r in rows],
+                            VOLUME_COLUMNS)
+    files["csv"] = str((final / "volumi.csv").relative_to(chunk.data_dir))
+    if model_mod.write_display(chunk, meshes, explode, out) is not None:
+        files["display"] = str((final / model_mod.DISPLAY).relative_to(chunk.data_dir))
+    return {"made": time.strftime("%Y-%m-%d %H:%M"), "cell": grid.cell, "factor": plan.factor, "floor": float(job["zmin"]),
+            "floor_given": plan.floor_given, "clip": False, "units": rows, "files": files, "method": "implicit",
+            "explode": float(explode or 0.0)}
+
+
+def against_logs(holes, marks: dict, job: dict, result: dict, run: Path, grid: sf.Grid) -> tuple[list[dict], list[dict]]:
+    """The model at its own boreholes: per unit, the top of the model against the top in the logs (``{"unit", "n",
+    "rmse", "max"}``), and the warnings: ``logs_missed`` above :data:`LOGS_MISSED` m or two voxels of rmse,
+    ``fill_thinned`` for a fill left with under half of what a hole logged. The leave-one-out cannot see
+    this: it asks of a hole what the others say, not whether the model keeps the hole."""
+    tops = {u: np.load(run / n, allow_pickle=False) for u, n in (result["files"].get("tops") or {}).items()}
+    labels = np.load(run / result["files"]["labels"], allow_pickle=False)
+    index = {u: i for i, u in enumerate(result["units"])}
+    dz = float(job["dz"])
+    misses: dict = {}
+    notes = []
+    for b in holes:
+        row, col = int((grid.y0 - b.y) // grid.cell), int((b.x - grid.x0) // grid.cell)
+        if b.z is None or not (0 <= row < grid.height and 0 <= col < grid.width):
+            continue
+        for unit, top, base in _stretches(b):
+            model = float(tops[unit][row, col]) if unit in tops else float("nan")
+            if np.isfinite(model):
+                misses.setdefault(unit, []).append(model - (b.z - top))
+            if marks.get(unit, {}).get("kind") == "fill" and unit in index:
+                modelled = int((labels[row, col] == index[unit]).sum()) * dz
+                if modelled < 0.5 * (base - top) and base - top - modelled > dz:
+                    notes.append({"code": "fill_thinned", "unit": unit, "hole": b.id, "logged": float(base - top),
+                                  "modelled": float(modelled)})
+    rows = []
+    for entry in job["column"]:
+        values = np.abs(misses.get(entry["unit"], []))
+        if values.size:
+            rows.append({"unit": entry["unit"], "n": int(values.size), "rmse": float(np.sqrt(np.mean(values ** 2))),
+                         "max": float(values.max())})
+    notes += [{"code": "logs_missed", "unit": r["unit"], "rmse": r["rmse"], "max": r["max"]} for r in rows
+              if r["rmse"] > max(LOGS_MISSED, 2 * dz)]
+    return rows, notes
+
+
+def _loo_rows(chunk, result: dict) -> list[dict]:
+    """The leave-one-out of the contacts beside that of the kriging."""
+    kriged = {e["unit"]: e for e in sf.registry(chunk).get("contacts", [])}
+    out = []
+    for unit, loo in (result.get("loo") or {}).items():
+        e = kriged.get(unit) or {}
+        out.append({"unit": unit, "rmse": loo.get("rmse"), "mae": loo.get("mae"), "n": loo.get("n"), "nan": loo.get("nan"),
+                    "kriging_rmse": e.get("loocv_rmse"), "kriging_points": e.get("points")})
+    return out
+
+
+def build(chunk, cell: float | None = None, folds: int | None = FOLDS, floor: float | None = None,
+          explode: float | None = None, overrides: dict | None = None, nelements: int | None = None, progress=None,
+          python: Path | None = None, script: Path | None = None) -> dict:
+    """The implicit model of the chunk: the job in a temporary folder inside its data, the worker, then
+    surfaces, solids, volumes and registries, all at the end. ``cell``: of the grid; ``folds``: groups of
+    the leave-one-out, none without; ``floor``: the base of the model; ``explode``: as in
+    :func:`model.build`; ``overrides``: ``{unit: "depth"|"elevation"}``. Returns the registry
+    ``chunk.meta["geoarchaeology"]["implicit"]``."""
+    from pyarchinit_photogrammetry.core.progress import as_progress
+
+    from . import implicit_runner
+
+    progress = as_progress(progress)
+    if python is None and script is None and WORKER is not None:
+        python, script = WORKER
+    tmp = bh.folder(chunk) / f"implicit_job_{uuid.uuid4().hex[:8]}"
+    tmp.mkdir(parents=True)
+    try:
+        progress(0.01, t("Preparazione dei dati", "Preparing the data"))
+        job, plan = prepare(chunk, tmp, cell, folds, floor, overrides, nelements)
+        result = implicit_runner.run(job, tmp, progress.sub(0.02, 0.86), python=python, script=script)
+        progress(0.9, t("Superfici e solidi", "Surfaces and solids"))
+        run = Path(result["output"])
+        new_surfaces, new_model = tmp / "implicit.new", tmp / "model.new"
+        new_surfaces.mkdir()
+        entries = _surfaces(chunk, result, run, plan, new_surfaces)
+        model_reg = _model(chunk, job, result, run, plan, new_model, explode)
+        logs, log_notes = against_logs(bh.load(chunk), cuts_of(chunk), job, result, run, plan.grid)
+        kept = folder(chunk) / DATA
+        if kept.exists():
+            shutil.copytree(kept, new_surfaces / DATA)
+        _swap([(new_surfaces, folder(chunk)), (new_model, model_mod.folder(chunk))])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    info = result.get("info") or {}
+    state = _state(chunk)
+    state.update(made=time.strftime("%Y-%m-%d %H:%M"), stale=False, grid=plan.grid.to_dict(), series=job["series"],
+                 absent=dict(info.get("absent") or {}),
+                 column=job["column"], surfaces=entries, cut_results=info.get("cuts") or {},
+                 warnings=list(plan.notes) + list(info.get("warnings") or []) + log_notes, logs=logs,
+                 loo=_loo_rows(chunk, result),
+                 versions=result.get("versions") or {}, vertical=info.get("vertical"), dz=job["dz"], zmin=job["zmin"],
+                 zmax=job["zmax"], folds=job["options"]["folds"], seconds=result.get("seconds"),
+                 drawn=drawn_hash(chunk), spots_ignored=plan.spots_ignored)
+    bh.meta(chunk)["model"] = model_reg
+    progress(1.0, t("Modello implicito pronto", "Implicit model ready"))
+    return state
+
+
+def remove(chunk) -> None:
+    """Forget the results of the implicit model (and the solids, when they are the model of the chunk).
+    Cuts, fills and the data added stay: they are data of the chunk, not results."""
+    out = folder(chunk)
+    if out.exists():
+        for p in out.iterdir():
+            if p.is_file():
+                p.unlink()
+    if model_mod.method(chunk) == "implicit":
+        model_mod.remove(chunk)
+    state = _state(chunk)
+    for key in list(state):
+        if key not in ("cuts", "data"):
+            state.pop(key)
+
+
+# ------------------------------------------------------------------ contacts and orientations from files
+COLUMN_NAMES = {"direction": "dip_direction"}  # as a file has to call them
+
+
+def _rows(path, extra: dict | None, wanted: tuple) -> tuple[list[dict], list[str]]:
+    notes: list = []
+    rows, names = bh.read_table(path, notes, extra)
+    missing = [COLUMN_NAMES.get(f, f) for f in wanted if f not in names]
+    if missing:
+        raise ValueError(t("{0}: mancano le colonne {1}", "{0}: the columns {1} are missing").format(
+            Path(path).name, ", ".join(missing)))
+    good = []
+    for r in rows:
+        if not str(r.get("unit") or "").strip() or any(r.get(f) is None for f in wanted if f != "unit"):
+            notes.append(t("riga {0}: incompleta, lasciata fuori", "line {0}: incomplete, left out").format(r["_line"]))
+        else:
+            good.append(r)
+    return good, notes
+
+
+def read_contacts(path) -> tuple[list[dict], list[str]]:
+    """The rows of a file ``unit, x, y, z[, kind]`` (separators and decimal marks as the logs:
+    :func:`boreholes.read_table`), ``kind`` "wall" a wall row of a cut, and the notes."""
+    rows, notes = _rows(path, None, ("unit", "x", "y", "z"))
+    return [{"unit": r["unit"].strip(), "x": r["x"], "y": r["y"], "z": r["z"],
+             "kind": "wall" if bh.normalise(r.get("kind") or "") in WALL_WORDS else ""} for r in rows], notes
+
+
+def read_orientations(path) -> tuple[list[dict], list[str]]:
+    """The rows of a file ``unit, x, y, z, dip, dip direction`` (degrees, the direction clockwise from
+    north), and the notes."""
+    rows, notes = _rows(path, {"dip": DIP_NAMES, "direction": DIRECTION_NAMES}, ("unit", "x", "y", "z", "dip", "direction"))
+    good = []
+    for r in rows:
+        if 0.0 <= r["dip"] <= 180.0:
+            good.append({"unit": r["unit"].strip(), "x": r["x"], "y": r["y"], "z": r["z"], "dip": r["dip"],
+                         "direction": r["direction"] % 360.0})
+        else:
+            notes.append(t("riga {0}: inclinazione {1} fuori da 0-180 gradi", "line {0}: dip {1} outside 0-180 degrees")
+                         .format(r["_line"], num(r["dip"])))
+    return good, notes
+
+
+def set_data(chunk, contacts=None, orientations=None) -> dict:
+    """The rows of the files into the registry and the files under ``implicit/data/``: a file given
+    replaces the one of its kind. Returns what was read: ``{"contacts", "orientations", "unknown"
+    (units that are in no log and no mark: kept, and said again by the build), "notes"}``."""
+    state = _state(chunk)
+    stored = state.setdefault("data", {})
+    codes = bh.order(chunk)
+    known = codes + [u for u in cuts_of(chunk) if u not in codes]
+    report: dict = {"contacts": None, "orientations": None, "unknown": [], "notes": []}
+    for key, path, reader in (("contacts", contacts, read_contacts), ("orientations", orientations, read_orientations)):
+        if not path:
+            continue
+        rows, notes = reader(path)
+        out = folder(chunk) / DATA
+        out.mkdir(parents=True, exist_ok=True)
+        shutil.copy(path, out / f"{key}{Path(path).suffix}")
+        stored[key] = {"file": Path(path).name, "rows": rows}
+        report[key] = len(rows)
+        report["notes"] += notes
+        for r in rows:
+            if bh.resolve_unit(r["unit"], known) is None and r["unit"] not in report["unknown"]:
+                report["unknown"].append(r["unit"])
+    _stale(chunk)
+    return report
+
+
+def data_text(report: dict) -> str:
+    lines = []
+    if report.get("contacts") is not None:
+        lines.append(plural(report["contacts"], t("{0} contatto letto", "{0} contact read"),
+                            t("{0} contatti letti", "{0} contacts read")))
+    if report.get("orientations") is not None:
+        lines.append(plural(report["orientations"], t("{0} giacitura letta", "{0} orientation read"),
+                            t("{0} giaciture lette", "{0} orientations read")))
+    if report.get("unknown"):
+        lines.append(t("Unità sconosciute, per ora fuori dal modello: {0}", "Unknown units, out of the model for now: {0}")
+                     .format(", ".join(report["unknown"])))
+    return "\n".join(lines + ["- " + n for n in report.get("notes", [])[:15]])
+
+
+# ------------------------------------------------------------------ what it says
+class _Values(dict):
+    def __missing__(self, key):
+        return "?"
+
+
+def warning_text(w: dict) -> str:
+    """A warning of the engine or of this module in the language of the interface."""
+    text = WARNINGS.get(w.get("code"))
+    if text is None:
+        return str(w.get("code"))
+    values = _Values({k: num(v, 2) if isinstance(v, float) else v for k, v in w.items()})
+    return t(*text).format_map(values)
+
+
+def _metres(value) -> str:
+    return "-" if value is None else num(value, 2) + " m"
+
+
+def summary_text(chunk) -> str:
+    """The last result: the sentence that it is an interpretation, errors side by side, volumes of the
+    cuts as ranges, warnings."""
+    reg = registry(chunk)
+    if not reg.get("made"):
+        return t("Il modello implicito non è ancora stato costruito.", "The implicit model has not been built yet.")
+    lines = [t(*INTERPRETATION), t("Costruito il {0}.", "Built on {0}.").format(reg["made"])]
+    if is_stale(chunk):
+        lines.append(t("I dati sono cambiati: ricostruiscilo.", "The data changed: build it again."))
+    g = reg.get("grid") or {}
+    if g:
+        lines.append(t("{0} x {1} celle di {2} m, voxel di {3} m, esagerazione verticale x{4}.",
+                       "{0} x {1} cells of {2} m, voxels of {3} m, vertical exaggeration x{4}.")
+                     .format(g["width"], g["height"], num(g["cell"], 2), num(reg.get("dz") or 0.0, 3),
+                             num(reg.get("vertical") or 1.0, 1)))
+    if reg.get("loo"):
+        lines.append(t("Errore leave-one-out per contatto (la verifica lascia fuori i sondaggi a gruppi):",
+                       "Leave-one-out error per contact (the check leaves the boreholes out by groups):"))
+        for r in reg["loo"]:
+            lines.append(t("{0}: implicito {1} ({2} sondaggi), kriging {3} ({4} sondaggi)",
+                           "{0}: implicit {1} ({2} boreholes), kriging {3} ({4} boreholes)")
+                         .format(r["unit"], _metres(r.get("rmse")), r.get("n", "?"), _metres(r.get("kriging_rmse")),
+                                 r.get("kriging_points") or "-"))
+    if reg.get("logs"):
+        lines.append(t("Il modello contro i log, ai suoi sondaggi (da leggere con il leave-one-out, che da solo non lo mostra):",
+                       "The model against the logs, at its own boreholes (to read with the leave-one-out, which alone does not show this):"))
+        for r in reg["logs"]:
+            lines.append(t("{0}: rmse {1}, massimo {2} ({3} sondaggi)", "{0}: rmse {1}, maximum {2} ({3} boreholes)")
+                         .format(r["unit"], _metres(r["rmse"]), _metres(r["max"]), r["n"]))
+    model = model_mod.registry(chunk)
+    if model.get("method") == "implicit":
+        lines.append(t("Volumi:", "Volumes:"))
+        for r in model.get("units", []):
+            if r.get("kind") == "cut":
+                names = PROFILE_NAMES.get(r.get("profile"), ("", ""))
+                lines.append(t("{0}, il riempimento: da {1} a {2} m³ secondo la forma del fondo (scelta: {3}, {4} m³)",
+                               "{0}, its fill: from {1} to {2} m³ by the shape of the floor (chosen: {3}, {4} m³)")
+                             .format(r["unit"], num(r["range_min"], 1), num(r["range_max"], 1), t(*names),
+                                     num(r["volume_m3"], 1)))
+            else:
+                line = f"{r['unit']}: {num(r['volume_m3'], 1)} m³"
+                if r.get("kriging_m3") is not None and r.get("same_cells_m3") is not None:
+                    line += t("; sulle celle del kriging {0} m³, kriging {1} m³", "; on the cells of the kriging {0} m³, kriging {1} m³") \
+                        .format(num(r["same_cells_m3"], 1), num(r["kriging_m3"], 1))
+                if r.get("absent_cells"):
+                    line += t("; tolta da {0} celle: i sondaggi senza l'unità prevalgono", "; taken from {0} cells: the "
+                              "boreholes without the unit prevail").format(r["absent_cells"])
+                lines.append(line)
+    if reg.get("spots_ignored"):
+        lines.append(t("Quote lasciate fuori, su US che non sono unità del modello: {0}.",
+                       "Spot heights left out, on US that are not units of the model: {0}.").format(reg["spots_ignored"]))
+    warnings = reg.get("warnings") or []
+    if warnings:
+        lines.append(t("Avvisi:", "Warnings:"))
+        lines += ["- " + warning_text(w) for w in warnings]
+    return "\n".join(lines)

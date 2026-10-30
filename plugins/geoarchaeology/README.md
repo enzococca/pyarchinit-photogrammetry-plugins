@@ -81,6 +81,14 @@ DEM and the orthomosaic of the chunk).
   vertically); the pane shows them again, opens the folder of the model, or makes the units the
   model of a new chunk of the project (*Apri come modello di un nuovo chunk*), where the *Taglia*
   button of the program's 3D view cuts them and closes every unit on the cut in its colour.
+* **The implicit model, on request** (LoopStructural, MIT, in a process of its own; see below): the ground as
+  scalar fields in 3D instead of surfaces z(x, y). What it adds: cuts and their fills, as excavation records (a pit
+  or a ditch crosses the layers, with the outline of the US drawn, a floor through every base measured, its
+  volume as a range between a flat, bowl and V floor), undercut walls from rows marked `wall`, contacts seen in
+  few boreholes shaped by the layers around them, contacts and orientations from CSV files, the program's
+  spot heights carrying a US. Where the boreholes without a unit outweigh those with it, the unit is not there, by the same rule as the kriging. Surfaces, solids, volumes beside the kriging's on the same cells, sections, exports and QGIS go through
+  the same products. Kriging stays the default: on plain layers it is as good or better, and the leave-one-out
+  of the two methods is shown side by side. Tab *Implicito* of the pane.
 * The *Geoarcheologia* pane (with the program 1.3.4 a pane of its own beside the workspace, from *Vista > Pannelli*; before, a tab of the project dock): boreholes, surfaces and sections in three
   tables, the boreholes as a layer of points of the view (id, z, depth, units), a surface (its
   elevation, variance or correction - this one on a diverging ramp around zero, lowered and raised
@@ -89,7 +97,7 @@ DEM and the orthomosaic of the chunk).
   and traces drawn again on every raster the view shows), the
   exports, the QGIS project (surfaces, boreholes and sections; also for a chunk in a local
   system). *File > Esporta > Sondaggi e superfici geoarcheologiche (GeoPackage)*.
-* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|export|remove PROJECT ...`;
+* `ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|implicit|implicit-data|implicit-status|implicit-install|export|remove PROJECT ...`;
   `ppg plugin geoarchaeology help` prints the options of every command.
 
 ```bash
@@ -120,8 +128,28 @@ S1;1,6;4,2;3;argilla grigia;2.5Y 5/2
 
 Everything lives in `chunk.meta["geoarchaeology"]` and in `<chunk data>/geoarchaeology/`
 (`sources/` the tables read, `sondaggi.gpkg` boreholes, intervals and sections, `surfaces/`,
-`sections/`, `logs/`, `model/`). No dependency beyond what the program carries (NumPy, SciPy,
+`sections/`, `logs/`, `model/`, `implicit/`). No dependency beyond what the program carries (NumPy, SciPy,
 rasterio, shapely, ezdxf, matplotlib with its interface; colour-science for the Munsell colours
 when present).
+
+## How LoopStructural runs
+
+LoopStructural and what it needs (pandas, scikit-image, scikit-learn) are never imported by the program: each model
+runs in a process of its own (`implicit_worker.py`, started by path), with data in a job folder and results swapped in
+only at the end, so a failure or a cancel leaves the present model as it was. The Python that runs it is
+
+* the Python of the program, when LoopStructural is installed there;
+* otherwise an environment the plugin makes on request with [uv](https://github.com/astral-sh/uv) (Python 3.12, about
+  300 MB, in the plugin's data folder, `PPG_GEOARCH_LOOP_ENV` to put it elsewhere): the *Installa LoopStructural* button
+  or `ppg plugin geoarchaeology implicit-install`. The packaged application works this way.
+
+VTK is left out (`--no-deps`): LoopStructural uses it only for drawing, and the worker puts a stub in the place of pyvista.
+
+```bash
+ppg plugin geoarchaeology implicit-install
+ppg plugin geoarchaeology implicit-data scavo.ppg --contacts contatti.csv --orientations giaciture.csv
+ppg plugin geoarchaeology implicit scavo.ppg
+ppg plugin geoarchaeology implicit-status scavo.ppg
+```
 
 Licence: GPL-2.0-or-later.
