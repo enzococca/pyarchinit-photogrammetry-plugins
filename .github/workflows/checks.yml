@@ -38,7 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         plugin: [plugins/blender-em, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/mesh-tools,
-                 plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/landscape, plugins/sentinel2, plugins/spirula,
+                 plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/landscape, plugins/sentinel2, plugins/shipwreck, plugins/spirula,
                  plugins/terrain, plugins/terrio, plugins/underwater, template]
     services:
       postgis:

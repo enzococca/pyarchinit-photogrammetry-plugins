@@ -136,6 +136,22 @@ def test_sections_out_of_date_are_said(tmp_path):
     assert lines.is_stale(ch)
 
 
+def test_a_cancelled_series_leaves_the_old_sections(tmp_path):
+    from pyarchinit_photogrammetry.core.progress import Cancelled, Progress
+
+    _doc, ch, ends = project(tmp_path)
+    _frame(ch, ends)
+    ship.set_stations(ch, [{"name": "S", "x": 6.0}])
+    lines.build(ch)
+    first = lines.load(ch)
+    ship.set_stations(ch, ship.regular(1.0, 5, start=2.0))
+    progress = Progress()
+    progress.cancel()
+    with pytest.raises(Cancelled):
+        lines.build(ch, progress=progress)
+    assert lines.load(ch) == first
+
+
 def test_a_table_of_stations_keeps_the_names_of_the_field(tmp_path):
     table = tmp_path / "st.csv"
     table.write_text("nome;x\nF30;12,4\nF31;13\n", encoding="utf-8")
