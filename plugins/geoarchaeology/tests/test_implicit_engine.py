@@ -248,10 +248,10 @@ def test_a_hole_by_the_edge_is_held_by_the_limits():
     base = np.array([[31.5, 20.5, 9.5]])  # half a metre deep beside the edge
     _plan, table, depths, held = _floor_on(mask, base, ground)
     assert held["bowl"].all() and held["v"].all()
-    # P is under P_MIN here: the scale is the depth over P_MIN at most, the cap at 1.5 x 0.5 m acts first
-    assert depths["bowl"].max() == pytest.approx(0.75, abs=1e-3)
+    # P is under P_MIN here: the floor in the middle is at most four times the depth measured beside the edge
+    assert depths["bowl"].max() == pytest.approx(2.0, abs=1e-3)
     for profile in engine.PROFILES:
-        assert depths[profile].max() <= 0.75 + 1e-6  # never a deeper floor than the cap
+        assert depths[profile].max() <= 2.0 + 1e-6
 
 
 def test_p_min_acts_alone_when_a_deep_hole_is_elsewhere():
@@ -261,7 +261,6 @@ def test_p_min_acts_alone_when_a_deep_hole_is_elsewhere():
     plan, table, depths, held = _floor_on(mask, base, ground)
     assert list(held["v"]) == [True, False]
     wanted = table.depth[0] / engine.P_MIN
-    assert wanted < engine.DEPTH_CAP * 4.0  # the cap does not act: only P_MIN
     row, col = table.rows[0], table.cols[0]
     assert depths["v"][row, col] == pytest.approx(wanted * plan.cell_t[row, col], rel=0.1)
 
@@ -993,17 +992,18 @@ def test_a_pit_of_a_known_profile(profile, holes):
 
 
 @loop
-def test_a_hole_by_the_rim_alone_keeps_the_floor_under_its_cap():
-    dem, job, base = _profile_pit("flat", [(7.5, 0.0)])
+@pytest.mark.parametrize("profile", ["flat", "bowl", "v"])
+def test_a_hole_by_the_rim_alone_says_that_the_floor_was_not_measured(profile):
+    dem, job, base = _profile_pit(profile, [(7.5, 0.0)])
     job["zmin"] = 0.0  # the old field went down to here
     result = engine.run(job, dem)
-    assert result.volumes["F"] == pytest.approx(_pit_volume("flat"), rel=0.40)
+    if profile != "v":  # beside the edge of a V the measure says nothing of the middle: only the warning can tell
+        assert result.volumes["F"] == pytest.approx(_pit_volume(profile), rel=0.40)
     deepest = 10.0 - base[0][2]
     zc = job["zmin"] + (np.arange(result.labels.shape[2]) + 0.5) * job["dz"]
     cells = (result.labels == result.units.index("F")).any(axis=(0, 1))
-    assert float(zc[np.nonzero(cells)[0].min()]) - 0.5 * job["dz"] >= 10.0 - 1.5 * deepest - job["dz"]
-    assert {"code": "base_near_edge", "unit": "P", "rows": 1} in result.info["warnings"]
-    assert result.info["cuts"]["P"]["base_capped"] == [True]
+    assert float(zc[np.nonzero(cells)[0].min()]) - 0.5 * job["dz"] >= 10.0 - 4.0 * deepest - job["dz"]
+    assert {"code": "floor_unmeasured", "unit": "P"} in result.info["warnings"]
 
 
 @loop

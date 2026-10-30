@@ -72,8 +72,8 @@ CUT_ELEMENTS = 120_000  # at most these many elements for the field of a cut wit
 PROFILES = {"flat": lambda t: 1.0 - (1.0 - np.minimum(t / 0.25, 1.0)) ** 2,  # steep walls, flat floor
             "bowl": lambda t: 1.0 - (1.0 - t) ** 3,
             "v": lambda t: t}
-P_MIN = 0.3  # a hole next to the edge says little about the depth in the middle
-DEPTH_CAP = 1.5  # the scale of a floor, at most this many times the deepest measure of its cut
+RIM_T = 0.25  # holes all nearer the edge than this share of the half width: the floor's depth was never measured
+P_MIN = 0.25  # the profile at a hole next to the edge counts as this much: its depth at most x4 in the middle
 IDW_BATCH = 100_000  # cells of a plan at a time
 
 
@@ -781,15 +781,14 @@ def base_rows(base: np.ndarray, plan: Plan, grid: Grid, dem: Dem) -> BaseRows:
 def floors(plan: Plan, table: BaseRows, grid: Grid, dem: Dem, base: np.ndarray) -> tuple[dict, dict]:
     """The depth (m, raster) of the floor for every profile, and which rows it does not reach.
 
-    ``depth = s(x, y) P(t)``: the scale of a row is its depth over the profile at its place, at most
-    :data:`DEPTH_CAP` times the deepest row of the cut and with the profile counted as at least
-    :data:`P_MIN` (a hole beside the edge says little of the middle); between the rows it is spread by
-    inverse distance. A row not held by those two limits is met exactly at its cell."""
-    cap = DEPTH_CAP * float(table.depth.max())
+    ``depth = s(x, y) P(t)``: the scale of a row is its depth over the profile at its place, with the
+    profile counted as at least :data:`P_MIN` (a hole beside the edge says little of the middle: the
+    floor there is a guess and ``base_near_edge`` says so); between the rows it is spread by inverse
+    distance. A row not held by that limit is met exactly at its cell."""
     shares = {name: profile(table.t) for name, profile in PROFILES.items()}
     wanted = {name: table.depth / np.maximum(share, P_MIN) for name, share in shares.items()}
-    held = {name: (shares[name] < P_MIN) | (wanted[name] > cap) for name in PROFILES}
-    scales = np.column_stack([np.minimum(wanted[name], cap) for name in PROFILES])
+    held = {name: shares[name] < P_MIN for name in PROFILES}
+    scales = np.column_stack([wanted[name] for name in PROFILES])
     rows, cols = np.nonzero(plan.mask)
     s = np.empty((len(rows), len(PROFILES)))
     for start in range(0, len(rows), IDW_BATCH):
@@ -999,6 +998,8 @@ def build_cut(frame: Frame, name: str, spec: dict, fill_rows: np.ndarray, orient
                           "distance": float(distance)})
     if held[profile].any():
         notes.append({"code": "base_near_edge", "unit": name, "rows": int(held[profile].sum())})
+    if float(table.t.max()) < RIM_T:
+        notes.append({"code": "floor_unmeasured", "unit": name})
     room = np.maximum(dem.filled - frame.zmin, 0.0)
     if np.any((depths[profile] > room + 1e-9) & plan.mask & dem.mask):
         notes.append({"code": "cut_reaches_zmin", "unit": name})
