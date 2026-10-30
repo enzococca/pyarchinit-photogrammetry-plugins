@@ -30,8 +30,9 @@ spostamento laterale dei canali, il mare, quello che sta sotto la superficie.
 Si può spegnere uno dei due processi (non entrambi). Le celle senza valore sono chiuse. Il bordo dei
 dati è **aperto** (acqua e sedimento escono, come su un pendio che continua oltre il rilievo) o
 **chiuso** (non esce niente; con l'acqua che scorre la cella di bordo più bassa accanto a una cella
-interna resta aperta come unico sbocco - uno per ogni parte separata dei dati, comprese le isole che un
-DEM ha spesso accanto al corpo principale).
+interna resta aperta come unico sbocco - uno per ogni gruppo di celle interne al bordo: le isole che un
+DEM ha spesso accanto al corpo principale, e le parti unite a esso solo da una strozzatura larga una o
+due celle).
 
 ## Scenari predefiniti
 
@@ -122,7 +123,7 @@ passi della diffusione vanno con il quadrato della cella).
 
 ## Dove
 
-* il pannello **Paesaggio nel tempo**, a destra accanto a *PyArchInit* (*Vista > Pannelli*): il DEM
+* il pannello **Paesaggio**, a destra accanto a *PyArchInit* (*Vista > Pannelli*): il DEM
   da cui partire (quello attivo o una versione conservata), lo scenario, gli anni, le istantanee, la
   cella, il bordo, il passo, i due processi con i loro parametri (quelli avanzati dell'acqua dietro
   una casella), la stima, *Avvia la simulazione*; le simulazioni del chunk in una tabella, i loro

@@ -128,8 +128,8 @@ LAYER_TITLES = {
     "compare": ("Differenza con il DEM di «{0}»", "Difference with the DEM of '{0}'"),
 }
 BOUNDARY_TITLES = {"open": ("Bordo aperto (acqua e sedimento escono)", "Open edge (water and sediment leave)"),
-                   "closed": ("Bordo chiuso (un solo sbocco nel punto più basso)",
-                              "Closed edge (one outlet at the lowest point)")}
+                   "closed": ("Bordo chiuso (esce solo dal punto più basso)",
+                              "Closed edge (out only at the lowest point)")}
 SCENARIO_NOTE = ("Sono scenari: il risultato dipende dai parametri, non è una previsione. Confrontalo con il DEM "
                  "di una fase successiva per tarare i parametri.",
                  "These are scenarios: the result depends on the parameters, it is not a prediction. Compare it "

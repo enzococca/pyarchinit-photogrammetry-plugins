@@ -30,8 +30,8 @@ under the surface.
 Either process can be switched off (not both). The cells without a value are closed. The edge of the
 data is **open** (water and sediment leave there, as on a slope that goes on beyond the survey) or
 **closed** (nothing leaves; with running water the lowest edge cell beside a cell inside stays open as
-the one outlet - one for each separate part of the data, the islands a DEM often has beside its main
-body included).
+the one outlet - one for each group of cells inside the edge: the islands a DEM often has beside its
+main body, and the parts joined to it only by a neck one or two cells wide).
 
 ## Presets
 
@@ -121,7 +121,7 @@ steps go with the square of the cell).
 
 ## Where
 
-* the **Paesaggio nel tempo** (*Landscape through time*) pane, on the right beside *PyArchInit*
+* the **Paesaggio** (*Landscape*) pane, on the right beside *PyArchInit*
   (*Vista > Pannelli*): the DEM to start from (the active one or a kept version), the preset, the
   years, the snapshots, the cell, the edge, the step, the two processes with their parameters
   (advanced ones of the water behind a tick), the estimate, *Run*; the runs of the chunk in a table,

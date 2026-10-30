@@ -287,6 +287,20 @@ def test_command_line(tmp_path, fake, monkeypatch):
 
 
 # ------------------------------------------------------------------ the pane in the window
+def test_the_pane_does_not_widen_its_column():
+    # the program's right column is about 300 px wide: a check box or a combo with a long text would make
+    # the pane wider than that and cut it (check boxes do not wrap)
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_landscape.pane import LandscapePane
+
+    QApplication.instance() or QApplication([])
+    pane = LandscapePane()
+    pane.k_advanced.setChecked(True)
+    assert pane.minimumSizeHint().width() <= 280
+
+
 def test_the_pane_in_the_window(tmp_path, fake, monkeypatch):
     pytest.importorskip("PySide6")
     from PySide6.QtCore import QSettings

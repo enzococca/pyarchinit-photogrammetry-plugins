@@ -93,6 +93,8 @@ class LandscapePane(QWidget):
                                    "version (an earlier phase)."))
         form.addRow(t("DEM di partenza", "Starting DEM"), self.c_source)
         self.c_preset = QComboBox()
+        self.c_preset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.c_preset.setMinimumContentsLength(12)
         for key in PRESETS:
             self.c_preset.addItem(preset_title(key), key)
         self.c_preset.setToolTip(t("Valori di partenza difendibili per i casi più comuni; cambiando un valore lo "
@@ -115,12 +117,16 @@ class LandscapePane(QWidget):
         self.s_cell.setSpecialValueText(t("automatica", "automatic"))
         form.addRow(t("Cella (m)", "Cell (m)"), self.s_cell)
         self.c_boundary = QComboBox()
+        self.c_boundary.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.c_boundary.setMinimumContentsLength(12)
         for key in engine.BOUNDARIES:
             self.c_boundary.addItem(t(*BOUNDARY_TITLES[key]), key)
         self.c_boundary.setToolTip(t("Aperto: ai margini del DEM acqua e sedimento escono (un versante che continua). "
-                                     "Chiuso: niente esce se non dal punto più basso del bordo (un'area isolata).",
+                                     "Chiuso: niente esce se non dal punto più basso del bordo (un'area isolata); "
+                                     "anche le isole e le parti unite da una strozzatura hanno il loro punto di uscita.",
                                      "Open: water and sediment leave at the edges of the DEM (a slope that goes on). "
-                                     "Closed: nothing leaves but at the lowest point of the edge (an enclosed area)."))
+                                     "Closed: nothing leaves but at the lowest point of the edge (an enclosed area); "
+                                     "islands and parts joined by a narrow neck have an outlet of their own too."))
         form.addRow(t("Bordo", "Edge"), self.c_boundary)
         self.s_dt = self._spin(0.0, 1e5, 3, t("Il passo più lungo (anni). Automatico: gli anni / 100; la simulazione "
                                               "lo accorcia da sé dove serve alla stabilità.",
@@ -128,19 +134,27 @@ class LandscapePane(QWidget):
                                               "shortens it by itself where stability needs it."))
         self.s_dt.setSpecialValueText(t("automatico", "automatic"))
         form.addRow(t("Passo (anni)", "Step (years)"), self.s_dt)
-        self.k_diffusion = QCheckBox(t("Creep del suolo (diffusione del versante)", "Soil creep (hillslope diffusion)"))
+        # short texts: a check box does not wrap, and a long one would widen the column of the pane
+        self.k_diffusion = QCheckBox(t("Creep del suolo", "Soil creep"))
+        self.k_diffusion.setToolTip(t("Diffusione del versante: il suolo scivola giù per i pendii, in proporzione alla "
+                                      "pendenza (LinearDiffuser).", "Hillslope diffusion: soil creeps down the slopes, "
+                                      "in proportion to the slope (LinearDiffuser)."))
         self.k_diffusion.setChecked(True)
         form.addRow(self.k_diffusion)
         self.spins: dict[str, QDoubleSpinBox] = {}
         self._labels: dict[str, QLabel] = {}
         self._param_row(form, "D")
-        self.k_fluvial = QCheckBox(t("Acqua che scorre (erosione e deposito, SPACE)",
-                                     "Running water (erosion and deposition, SPACE)"))
+        self.k_fluvial = QCheckBox(t("Acqua che scorre (SPACE)", "Running water (SPACE)"))
+        self.k_fluvial.setToolTip(t("Erosione e deposito dell'acqua che scorre in superficie (SPACE).",
+                                    "Erosion and deposition by the water running over the surface (SPACE)."))
         self.k_fluvial.setChecked(True)
         form.addRow(self.k_fluvial)
         for key in FLUVIAL_KEYS:
             self._param_row(form, key)
-        self.k_advanced = QCheckBox(t("Parametri avanzati dell'acqua", "Advanced parameters of the water"))
+        self.k_advanced = QCheckBox(t("Parametri avanzati", "Advanced parameters"))
+        self.k_advanced.setToolTip(t("I parametri avanzati dell'acqua che scorre: frazione fine, porosità, H*, "
+                                     "velocità di deposito, esponenti.", "The advanced parameters of the running "
+                                     "water: fine fraction, porosity, H*, settling velocity, exponents."))
         form.addRow(self.k_advanced)
         lay.addWidget(box)
         self.l_estimate = QLabel("")
