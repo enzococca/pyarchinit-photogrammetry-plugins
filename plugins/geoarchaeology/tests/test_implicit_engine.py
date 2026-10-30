@@ -11,7 +11,7 @@ import math
 import numpy as np
 import pytest
 
-from implicit_samples import Ground, bowl, circle, has_loopstructural, layers_job, load, stub_pyvista
+from implicit_samples import Ground, bowl, circle, has_loopstructural, layers_job, load, polygon_mask, stub_pyvista
 
 engine = load("implicit_engine")
 loop = pytest.mark.skipif(not has_loopstructural(), reason="LoopStructural is not installed for this Python")
@@ -62,9 +62,7 @@ def test_the_plane_of_a_contact():
     line = np.column_stack([np.arange(6.0), 2 * np.arange(6.0), np.arange(6.0)])
     plane, is_plane = engine.fit_plane(line)
     n = engine.plane_normal(line)
-    assert not is_plane and n[2] > 0.5  # along a line: the least tilted plane through it
-    assert float(n @ np.array([1.0, 2.0, 1.0])) == pytest.approx(0.0, abs=1e-12)
-    assert float(n @ np.array([-2.0, 1.0, 0.0])) == pytest.approx(0.0, abs=1e-12)
+    assert not is_plane and np.allclose(plane, [0, 0, 2.5]) and np.allclose(n, [0, 0, 1])  # along a line: horizontal
     flat = np.column_stack([np.arange(6.0), np.zeros(6), np.full(6, 2.0)])
     assert np.allclose(engine.plane_normal(flat), [0, 0, 1])
 
@@ -147,15 +145,177 @@ def test_the_jackknife_of_a_raster():
     assert np.isnan(engine.jackknife(stack)[0, 0])
 
 
-def test_an_estimated_edge_runs_halfway_between_the_holes():
+def test_a_plan_nobody_drew_is_estimated():
     ground = Ground(40, 1.0)
-    reader = engine.Dem(engine.Grid(ground.grid), np.full((40, 40), 10.0))
-    inside = np.array([[20.0, 20.0]])
-    outside = np.array([[28.0, 20.0], [12.0, 20.0], [20.0, 28.0], [20.0, 12.0]])
-    edge = engine.estimated_edge(inside, outside, reader, 0.25)
-    r = np.hypot(edge[:, 0] - 20, edge[:, 1] - 20)
-    assert np.all((r > 3.5) & (r < 6.0))  # 4 m along the axes, more between them
-    assert r[0] == pytest.approx(4.0, abs=0.3) and np.all(edge[:, 2] == 10.0)
+    grid = engine.Grid(ground.grid)
+    inside = np.array([[20.0, 20.0], [26.0, 20.0]])
+    outside = np.array([[14.0, 20.0], [32.0, 20.0]])
+    mask, limit = engine.estimated_plan(inside, outside, grid, 2.0)
+    assert limit == pytest.approx(6.0)  # the spacing of the holes inside
+    near = np.minimum(np.hypot(ground.X - 20, ground.Y - 20), np.hypot(ground.X - 26, ground.Y - 20))
+    assert near[mask].max() <= 6.0
+    assert np.all(ground.X[mask] > 17) and np.all(ground.X[mask] < 29)  # nearer to the holes inside
+    mask, limit = engine.estimated_plan(inside, np.zeros((0, 2)), grid, 2.0)
+    assert limit == pytest.approx(6.0) and mask[ground.Y == 19.5][20]  # no hole outside: discs
+    assert near[mask].max() <= 6.0 and near[~mask].min() > 5.0
+    mask, limit = engine.estimated_plan(inside[:1], np.zeros((0, 2)), grid, 2.5)
+    assert limit == 2.5 and np.hypot(ground.X - 20, ground.Y - 20)[mask].max() <= 2.5  # a single hole
+    assert engine.estimated_plan(inside[:1], outside, grid, 2.5)[1] == pytest.approx(6.0)
+
+
+def test_the_profiles():
+    t = np.array([0.0, 0.125, 0.25, 0.5, 1.0])
+    assert np.allclose(engine.PROFILES["flat"](t), [0.0, 0.75, 1.0, 1.0, 1.0])
+    assert np.allclose(engine.PROFILES["bowl"](t), [0.0, 1 - 0.875 ** 3, 1 - 0.75 ** 3, 0.875, 1.0])
+    assert np.allclose(engine.PROFILES["v"](t), t)
+
+
+def _bar(rows: int, cols: int, top: int, bottom: int) -> np.ndarray:
+    mask = np.zeros((rows, cols), dtype=bool)
+    mask[top:bottom, 4:-4] = True
+    return mask
+
+
+@pytest.mark.parametrize("cells", [4, 5])
+def test_the_half_width_of_a_ditch_with_an_even_or_odd_number_of_cells(cells):
+    distance, width = engine.edge_and_width(_bar(20, 40, 8, 8 + cells), 0.5)
+    middle = (2 * 8 + cells, 2 * 20 + 1)
+    assert distance[middle] == pytest.approx(cells * 0.25)  # the axis, between two rows of cells when even
+    assert width[middle] == pytest.approx(cells * 0.25)
+    assert width[2 * 8 + 1, 2 * 20 + 1] == pytest.approx(cells * 0.25)  # at the border cells too
+    assert distance[2 * 8 + 1, 2 * 20 + 1] == pytest.approx(0.25)  # half a cell: never 0
+
+
+def test_an_elbow_does_not_set_the_width_of_the_ditch():
+    mask = np.zeros((60, 60), dtype=bool)
+    mask[50:54, 10:50] = True
+    mask[10:54, 10:14] = True
+    plan = engine.Plan.of(mask, 0.5, "drawn")
+    _distance, width = engine.edge_and_width(mask, 0.5)
+    assert width[2 * 52, 2 * 12] > 1.03  # the elbow is wider
+    assert width[2 * 52, 2 * 40] == pytest.approx(1.0) and width[2 * 30, 2 * 12] == pytest.approx(1.0)
+    assert plan.cell_t[52, 40] == pytest.approx(0.75)
+
+
+def test_a_hand_drawn_outline_keeps_its_width():
+    ground = Ground(160, 0.25)
+    rng = np.random.default_rng(1)
+    angle = 2 * np.pi * np.arange(120) / 120
+    radius = 8 + 0.3 * rng.standard_normal(120)
+    outline = np.column_stack([20 + radius * np.cos(angle), 20 + radius * np.sin(angle)])
+    mask = polygon_mask(ground, outline)
+    t = engine.Plan.of(mask, 0.25, "drawn").cell_t[mask]
+    truth = np.clip(1 - np.hypot(ground.X - 20, ground.Y - 20)[mask] / 8, 0, 1)
+    bowl_profile = engine.PROFILES["bowl"]
+    # its small bumps are ridges too: with the nearest ridge this was 1.6, and 2.6 for the v
+    assert float(bowl_profile(t).mean() / bowl_profile(truth).mean()) == pytest.approx(1.0, abs=0.05)
+    assert float(t.mean() / truth.mean()) == pytest.approx(1.0, abs=0.08)
+
+
+def test_the_border_of_the_raster_is_not_the_edge_of_a_plan():
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[5:15, :6] = True
+    distance, _width = engine.edge_and_width(mask, 1.0)
+    assert distance[2 * 10, 1] == pytest.approx(5.0)  # from the sides, not from the west border of the raster
+    distance, width = engine.edge_and_width(np.ones((4, 4), dtype=bool), 1.0)
+    assert np.all(distance / width == 1.0)
+
+
+def _floor_on(mask: np.ndarray, base: np.ndarray, ground: Ground, level: float = 10.0):
+    grid = engine.Grid(ground.grid)
+    dem = engine.Dem(grid, np.full(mask.shape, level))
+    plan = engine.Plan.of(mask, grid.cell, "drawn")
+    table = engine.base_rows(base, plan, grid, dem)
+    depths, held = engine.floors(plan, table, grid, dem, base)
+    return plan, table, depths, held
+
+
+def test_a_floor_passes_through_its_measures():
+    ground = Ground(40, 1.0)
+    r = np.hypot(ground.X - 20, ground.Y - 20)
+    mask = r < 12
+    base = np.array([[20.5, 20.5, 7.0], [25.5, 20.5, 8.0], [14.5, 22.5, 8.8]])
+    _plan, table, depths, held = _floor_on(mask, base, ground)
+    for profile in engine.PROFILES:
+        assert not held[profile].any()
+        assert np.allclose(depths[profile][table.rows, table.cols], 10.0 - base[:, 2])
+        assert depths[profile][~mask].max() == 0 and depths[profile][mask].min() > 0
+
+
+def test_a_hole_by_the_edge_is_held_by_the_limits():
+    ground = Ground(40, 1.0)
+    mask = np.hypot(ground.X - 20, ground.Y - 20) < 12
+    base = np.array([[31.5, 20.5, 9.5]])  # half a metre deep beside the edge
+    _plan, table, depths, held = _floor_on(mask, base, ground)
+    assert held["bowl"].all() and held["v"].all()
+    # P is under P_MIN here: the scale is the depth over P_MIN at most, the cap at 1.5 x 0.5 m acts first
+    assert depths["bowl"].max() == pytest.approx(0.75, abs=1e-3)
+    for profile in engine.PROFILES:
+        assert depths[profile].max() <= 0.75 + 1e-6  # never a deeper floor than the cap
+
+
+def test_p_min_acts_alone_when_a_deep_hole_is_elsewhere():
+    ground = Ground(40, 1.0)
+    mask = np.hypot(ground.X - 20, ground.Y - 20) < 12
+    base = np.array([[31.5, 20.5, 9.0], [20.5, 20.5, 6.0]])
+    plan, table, depths, held = _floor_on(mask, base, ground)
+    assert list(held["v"]) == [True, False]
+    wanted = table.depth[0] / engine.P_MIN
+    assert wanted < engine.DEPTH_CAP * 4.0  # the cap does not act: only P_MIN
+    row, col = table.rows[0], table.cols[0]
+    assert depths["v"][row, col] == pytest.approx(wanted * plan.cell_t[row, col], rel=0.1)
+
+
+def test_the_wall_of_a_plan_is_on_the_edge_of_its_cells():
+    ground = Ground(10, 1.0)
+    frame = engine.Frame({"grid": ground.grid, "zmin": 0.0, "zmax": 12.0, "dz": 1.0}, np.full((10, 10), 10.0))
+    mask = np.zeros((10, 10), dtype=bool)
+    mask[3:7, 3:7] = True
+    plan = engine.Plan.of(mask, 1.0, "drawn")
+    cube = frame.volume(engine.plan_function(frame, plan, np.where(mask, 5.0, 0.0)))
+    # half a cell on both sides of the wall, so a solid has it there and not on a slant to the next column
+    assert cube[4, 3, 8] == pytest.approx(0.5) and cube[4, 2, 8] == pytest.approx(-0.5)
+    assert cube[4, 4, 3] < 0  # under the floor
+
+
+class _Positive:
+    def at(self, x, _y, _z):
+        return np.ones(len(x))
+
+
+def test_a_voxel_under_the_box_of_a_field_is_never_inside():
+    ground = Ground(10, 1.0)
+    frame = engine.Frame({"grid": ground.grid, "zmin": 0.0, "zmax": 12.0, "dz": 1.0}, np.full((10, 10), 10.0))
+    box = engine.Box([0.0, 0.0, 5.0], [10.0, 10.0, 20.0], 1.0, 1000)
+    function = engine.wall_function(frame, _Positive(), box, np.array([[5.5, 5.5]]), frame.points())
+    cube = frame.volume(function)
+    assert cube[:, :, :5].max() < 0 and cube[:, :, 5:9].min() > 0
+
+
+def test_a_row_past_the_outline_counts_at_the_nearest_cell():
+    ground = Ground(40, 1.0)
+    mask = np.zeros((40, 40), dtype=bool)
+    mask[18:22, 5:35] = True
+    base = np.array([[10.5, 20.5, 8.0], [20.5, 25.5, 8.0], [30.5, 20.5, 8.0]])
+    plan, table, depths, _held = _floor_on(mask, base, ground)
+    assert table.past[1] == pytest.approx(3.5) and table.past[0] == 0.0 and table.past[2] == 0.0
+    assert (table.rows[1], table.cols[1]) == (18, 20)
+    assert table.y[1] == pytest.approx(ground.ys[18])
+    assert np.all(depths["flat"][mask] == pytest.approx(2.0))  # it changes nothing: same depth, flat floor
+
+
+class _Linear:
+    def evaluate_value(self, points):
+        return points[:, 2] * 2.0
+
+
+def test_a_field_goes_on_past_its_box():
+    reader = engine.Dem(engine.Grid(Ground(4, 1.0).grid), np.zeros((4, 4)))
+    fitted = engine.Fitted(_Linear(), "elevation", 1.0, reader, 0.0, 10.0, gain=2.0)
+    values = fitted.evaluate(np.full(3, 1.0), np.full(3, 1.0), np.array([-5.0, 5.0, 15.0]))
+    assert np.allclose(values, [-10.0, 10.0, 30.0])
+    fitted.gain = 0.0
+    assert np.allclose(fitted.evaluate(np.full(1, 1.0), np.full(1, 1.0), np.array([-5.0])), [0.0])
 
 
 def test_too_many_voxels_are_refused_before_any_work():
@@ -271,7 +431,7 @@ def test_a_series_hung_from_the_dem_follows_a_mound():
         assert result.variance[unit].shape == dem.shape
 
 
-def _pit_job(ground, dem, centre, radius, depth, tops, holes_in, holes_out, base_rows, edge_rows, **options):
+def _pit_job(ground, dem, tops, holes_in, holes_out, base_rows, outline, **options):
     contacts = []
     for i, (x, y) in enumerate(holes_out):
         for unit, z in tops.items():
@@ -283,13 +443,13 @@ def _pit_job(ground, dem, centre, radius, depth, tops, holes_in, holes_out, base
             "column": [{"unit": "F", "kind": "fill"}, {"unit": "P", "kind": "cut"}] +
                       [{"unit": u, "kind": "layer"} for u in units],
             "fills": {"F": "P"},
-            "cuts": {"P": {"base": base_rows, "edge": edge_rows, "inside": holes_in, "outside": holes_out}},
+            "cuts": {"P": {"base": base_rows, "outline": outline, "inside": holes_in, "outside": holes_out}},
             "options": options}
 
 
 @pytest.fixture(scope="module")
 def pit():
-    """A flat-bottomed pit 2.8 m deep through the layers A and B into C, filled by F, on flat ground."""
+    """A bowl 2.8 m deep through the layers A and B into C, filled by F, on flat ground."""
     ground = Ground(60, 1.0)
     dem = np.full((60, 60), 10.0)
     centre = (30.0, 30.0)
@@ -299,7 +459,7 @@ def pit():
               [33.0, 27.0], [27.0, 33.0], [36.5, 30.0], [23.5, 30.0], [30.0, 36.5], [30.0, 23.5]]
     base = [[x, y, 10.0 - float(bowl(np.hypot(x - 30, y - 30), radius, depth))] for x, y in inside]
     outside = [[float(x), float(y)] for x, y in ground.holes(5, 0.1) if np.hypot(x - 30, y - 30) > radius + 1]
-    job = _pit_job(ground, dem, centre, radius, depth, tops, inside, outside, base, circle(centre, radius, 10.0))
+    job = _pit_job(ground, dem, tops, inside, outside, base, polygon_mask(ground, circle(centre, radius, 10.0)))
     return ground, dem, job, engine.run(job, dem)
 
 
@@ -340,7 +500,7 @@ def test_a_pit_leaves_the_layers_around_it_untouched(pit):
 @loop
 def test_an_edge_nobody_drew_is_estimated_and_said(pit):
     ground, dem, job, _result = pit
-    job = {**job, "cuts": {"P": {**job["cuts"]["P"], "edge": []}}}
+    job = {**job, "cuts": {"P": {**job["cuts"]["P"], "outline": None}}}
     result = engine.run(job, dem)
     assert result.info["cuts"]["P"]["edge"] == "estimated"
     assert [w for w in result.info["warnings"] if w["code"] == "edge_estimated"][0]["unit"] == "P"
@@ -384,24 +544,50 @@ def test_a_layer_can_cover_a_filled_pit(pit):
     assert result.labels[8, 8][np.argmin(np.abs(zc - 9.7))] == index["Y"]
 
 
+def _solved(job, dem):
+    """The names of the fields solved by a run, then its result."""
+    names = []
+    original = engine._solve
+
+    def spy(name, *args):
+        names.append(name)
+        return original(name, *args)
+
+    engine._solve = spy
+    try:
+        names.append(engine.run(job, dem))
+    finally:
+        engine._solve = original
+    return names
+
+
+def _bottle_job(ground, dem, tops, zmin=2.0):
+    # a mouth of 4 m at the ground, 7 m of radius at 2 m down: a bottle pit, seen on a section of its wall
+    a = 2 * np.pi * np.arange(24) / 24
+    wall = [[25 + 7 * math.cos(t), 25 + 7 * math.sin(t), 8.0, "wall"] for t in a]
+    shoulder = [[25 + 5.5 * math.cos(t), 25 + 5.5 * math.sin(t), 9.1, "wall"] for t in a]
+    lower = [[25 + 5.5 * math.cos(t), 25 + 5.5 * math.sin(t), 6.8, "wall"] for t in a]
+    sides = [[25 + 5.5 * math.cos(t), 25 + 5.5 * math.sin(t), 6.5, "wall"] for t in a[::4]]
+    floor = [[25 + r * math.cos(t), 25 + r * math.sin(t), 6.5] for r in (0.0, 3.0) for t in a[::4]]
+    inside = [[25.0, 25.0], [27.0, 25.0], [23.0, 25.0], [25.0, 27.0], [25.0, 23.0]]
+    outside = [[float(x), float(y)] for x, y in ground.holes(5, 0.06) if np.hypot(x - 25, y - 25) > 10]
+    outline = polygon_mask(ground, circle((25.0, 25.0), 4.0, 10.0))
+    job = _pit_job(ground, dem, tops, inside, outside, wall + shoulder + floor + sides + lower, outline)
+    job["dz"] = 0.2
+    job["zmin"] = zmin
+    return job
+
+
 @loop
 def test_an_undercut_wall_stays_in_the_model():
     ground = Ground(50, 1.0)
     dem = np.full((50, 50), 10.0)
-    centre = (25.0, 25.0)
     tops = {"A": 10.0, "B": 8.0}
-    # a mouth of 4 m at the ground, 7 m of radius at 2 m down: a bottle pit, seen on a section of its wall
-    a = 2 * np.pi * np.arange(24) / 24
-    wall = [[25 + 7 * math.cos(t), 25 + 7 * math.sin(t), 8.0] for t in a]
-    shoulder = [[25 + 5.5 * math.cos(t), 25 + 5.5 * math.sin(t), 9.1] for t in a]
-    floor = [[25 + r * math.cos(t), 25 + r * math.sin(t), 6.5] for r in (0.0, 3.0, 5.5) for t in a[::4]]
-    lower = [[25 + 5.5 * math.cos(t), 25 + 5.5 * math.sin(t), 6.8] for t in a]
-    base = wall + shoulder + floor + lower
-    inside = [[25.0, 25.0], [27.0, 25.0], [23.0, 25.0], [25.0, 27.0], [25.0, 23.0]]
-    outside = [[float(x), float(y)] for x, y in ground.holes(5, 0.06) if np.hypot(x - 25, y - 25) > 10]
-    job = _pit_job(ground, dem, centre, 7.0, 3.5, tops, inside, outside, base, circle(centre, 4.0, 10.0))
-    job["dz"] = 0.2
-    result = engine.run(job, dem)
+    job = _bottle_job(ground, dem, tops)
+    calls = _solved(job, dem)
+    result = calls.pop()
+    assert any(name.startswith("cut ") for name in calls)  # walls: the only cut with a field
+    assert result.info["cuts"]["P"]["field"] is True
     index = {u: i for i, u in enumerate(result.units)}
     labels = result.labels[25, 30]  # a column under the shoulder, 5.5 m from the middle
     fill = np.nonzero(labels == index["F"])[0]
@@ -414,6 +600,18 @@ def test_an_undercut_wall_stays_in_the_model():
     near = np.hypot(vertices[:, 0] - 30.5, vertices[:, 1] - 24.5) < 1.0
     assert vertices[near, 2].max() < 9.8  # the solid has a roof there, under the ground
     assert np.isfinite(result.tops["F"][25, 30])  # and the raster keeps the highest crossing
+
+
+@loop
+def test_a_field_stays_inside_its_box():
+    ground = Ground(50, 1.0)
+    dem = np.full((50, 50), 10.0)
+    job = _bottle_job(ground, dem, {"A": 10.0, "B": 8.0}, zmin=-30.0)
+    result = engine.run(job, dem)
+    index = result.units.index("F")
+    zc = job["zmin"] + (np.arange(result.labels.shape[2]) + 0.5) * job["dz"]
+    deepest = float(zc[np.nonzero((result.labels == index).any(axis=(0, 1)))[0].min()])
+    assert deepest > 4.0  # about 2 m under the floor at most, nothing down to the bottom of the job
 
 
 @loop
@@ -556,46 +754,91 @@ def test_an_older_unit_keeps_its_ground_where_a_younger_contact_runs_under_it():
 
 
 # ---------------------------------------------------------------------- the review's cases
-def _ditch(outline, inside, depth=1.5):
-    ground = Ground(200, 0.5)
-    dem = np.full((200, 200), 10.0)
+def _ditch(outline, inside, depth=1.5, profile="flat", n=200, dz=0.25):
+    ground = Ground(n, 0.5)
+    dem = np.full((n, n), 10.0)
     contacts = [[u, float(x), float(y), z, 1.0, f"S{i}"] for i, (x, y) in enumerate(ground.holes(6, 0.08))
                 for u, z in (("B", 9.0), ("C", 7.0))]
-    job = {"grid": ground.grid, "zmin": 3.0, "zmax": 12.0, "dz": 0.25,
+    mask = polygon_mask(ground, outline)
+    job = {"grid": ground.grid, "zmin": 3.0, "zmax": 12.0, "dz": dz,
            "series": [{"name": "l", "space": "elevation", "units": ["B", "C"]}], "contacts": contacts,
            "orientations": [], "column": [{"unit": "F", "kind": "fill"}, {"unit": "P", "kind": "cut"}] +
                      [{"unit": u, "kind": "layer"} for u in "ABC"],
            "fills": {"F": "P"}, "options": {},
-           "cuts": {"P": {"base": [[x, y, 10.0 - depth] for x, y in inside], "edge": [[x, y, 10.0] for x, y in outline],
-                          "inside": inside, "outside": []}}}
+           "cuts": {"P": {"base": [[x, y, 10.0 - depth] for x, y in inside], "outline": mask, "inside": inside,
+                          "outside": [], "profile": profile}}}
     result = engine.run(job, dem)
-    return ground, result, (result.labels == result.units.index("F")).any(axis=2)
+    return result, (result.labels == result.units.index("F")).any(axis=2), mask
+
+
+STRAIGHT = [[10, 49], [90, 49], [90, 51], [10, 51]]
+_ARC = np.linspace(0, np.pi, 40)
+CURVED = [[50 + 31.5 * np.cos(a), 50 + 31.5 * np.sin(a)] for a in _ARC] + \
+         [[50 + 28.5 * np.cos(a), 50 + 28.5 * np.sin(a)] for a in _ARC[::-1]]
+BENT = [[20, 20], [72, 20], [72, 22], [22, 22], [22, 72], [20, 72]]
+TEE = [[10, 49], [90, 49], [90, 51], [51, 51], [51, 80], [49, 80], [49, 51], [10, 51]]
+AXIS = [[20.0, 50.0], [50.0, 50.0], [80.0, 50.0]]
 
 
 @loop
-def test_a_straight_ditch_stays_in_its_outline():
-    outline = [[10, 49], [90, 49], [90, 51], [10, 51]]
-    ground, result, cells = _ditch(outline, [[20.0, 50.0], [50.0, 50.0], [80.0, 50.0]])
-    assert result.volumes["F"] == pytest.approx(240.0, rel=0.15)
-    far = np.maximum(np.abs(ground.X - 50) - 40, np.abs(ground.Y - 50) - 1)
-    assert float(far[cells].max()) <= 1.5 * 0.5
-    assert cells.sum() >= 0.95 * 640
-    assert result.info["cuts"]["P"]["base_miss"]["max"] < 0.25
+@pytest.mark.parametrize("outline, holes, truth", [
+    (STRAIGHT, AXIS, 240.0),
+    (CURVED, [[50 + 30 * np.cos(a), 50 + 30 * np.sin(a)] for a in (0.4, 1.57, 2.7)],
+     1.5 * 0.5 * np.pi * (31.5 ** 2 - 28.5 ** 2)),
+    (BENT, [[21.0, 60.0], [21.0, 21.0], [60.0, 21.0]], 306.0),
+    (TEE, [[20.0, 50.0], [80.0, 50.0], [50.0, 70.0]], 327.0)], ids=["straight", "curved", "bent", "tee"])
+def test_a_ditch_with_a_flat_floor_fills_its_plan(outline, holes, truth):
+    result, cells, mask = _ditch(outline, holes)
+    assert result.volumes["F"] == pytest.approx(truth, rel=0.10)
+    assert np.array_equal(cells, mask)  # the footprint is the raster, cell by cell
+    assert result.info["cuts"]["P"]["field"] is False
+    assert result.info["cuts"]["P"]["plan_area"] == pytest.approx(mask.sum() * 0.25)
+    assert max(result.info["cuts"]["P"]["base_miss"]) < 1e-9
 
 
 @loop
-def test_a_curved_ditch_leaves_the_inside_of_its_bend_alone():
-    t = np.linspace(0, np.pi, 40)
-    outline = [[50 + 31.5 * np.cos(a), 50 + 31.5 * np.sin(a)] for a in t]
-    outline += [[50 + 28.5 * np.cos(a), 50 + 28.5 * np.sin(a)] for a in t[::-1]]
-    inside = [[50 + 30 * np.cos(a), 50 + 30 * np.sin(a)] for a in (0.4, 1.57, 2.7)]
-    ground, result, cells = _ditch(outline, inside)
-    truth = 1.5 * 0.5 * np.pi * (31.5 ** 2 - 28.5 ** 2)
-    assert result.volumes["F"] == pytest.approx(truth, rel=0.15)
-    r = np.hypot(ground.X - 50, ground.Y - 50)
-    apart = np.maximum(np.maximum(r - 31.5, 28.5 - r), 50 - ground.Y)
-    assert float(apart[cells].max()) <= 1.5 * 0.5
-    assert not cells[r < 27].any()
+def test_a_diagonal_ditch_follows_its_raster():
+    a = math.pi / 4
+    along, across, start = np.array([math.cos(a), math.sin(a)]), np.array([-math.sin(a), math.cos(a)]), np.array([15.0, 15.0])
+    outline = [start + across, start + along * 120 + across, start + along * 120 - across, start - across]
+    result, cells, mask = _ditch(outline, [list(start + along * s) for s in (20, 60, 100)], n=300)
+    assert np.array_equal(cells, mask)
+    # the raster of a band at 45 degrees loses a strip: the volume is the mask's
+    assert result.volumes["F"] == pytest.approx(mask.sum() * 0.25 * 1.5, rel=0.01)
+
+
+@loop
+def test_a_v_ditch_needs_its_profile():
+    result, cells, mask = _ditch(STRAIGHT, AXIS, profile="v", dz=0.1)
+    assert result.volumes["F"] == pytest.approx(120.0, rel=0.10)
+    assert result.info["cuts"]["P"]["volume_range"]["v"] == pytest.approx(120.0, rel=0.02)
+    assert np.array_equal(cells, mask)
+
+
+@loop
+@pytest.mark.parametrize("truth", [240.0, 180.0, 120.0], ids=["flat", "bowl", "v"])
+def test_the_truth_lies_inside_the_range_whatever_the_profile(truth):
+    # the three holes on the axis read the same depth under any of the three shapes
+    result, _cells, _mask = _ditch(STRAIGHT, AXIS, profile="bowl")
+    span = result.info["cuts"]["P"]["volume_range"]
+    assert span["v"] * 0.99 <= truth <= span["flat"] * 1.01
+
+
+@loop
+def test_a_hole_past_the_side_is_said_and_leaves_the_floor_on():
+    result, cells, mask = _ditch(STRAIGHT, [[20.0, 50.0], [50.0, 52.2], [80.0, 50.0]])
+    assert result.volumes["F"] == pytest.approx(240.0, rel=0.10)
+    assert np.array_equal(cells, mask)
+    said = [w for w in result.info["warnings"] if w["code"] == "base_outside_outline"]
+    assert len(said) == 1 and said[0]["distance"] == pytest.approx(1.2, abs=0.3)
+
+
+@loop
+def test_no_cut_runs_loopstructural_without_walls():
+    _ground, dem, job, _base = _pit_fixture(3)
+    names = _solved(job, dem)
+    names.pop()
+    assert not [n for n in names if n.startswith("cut ") or n.startswith("fills ")]
 
 
 @loop
@@ -684,7 +927,7 @@ def test_two_cuts_keep_their_fills():
     column = job["column"][:2] + [{"unit": "G1", "kind": "fill"}, {"unit": "G2", "kind": "fill"},
                                   {"unit": "Q", "kind": "cut"}] + job["column"][2:]
     cuts = dict(job["cuts"])
-    cuts["Q"] = {"base": [[x, y, 7.5] for x, y in pit_q], "edge": circle((12, 12), 5.0, 10.0), "inside": pit_q,
+    cuts["Q"] = {"base": [[x, y, 7.5] for x, y in pit_q], "outline": polygon_mask(ground, circle((12, 12), 5.0, 10.0)), "inside": pit_q,
                  "outside": job["cuts"]["P"]["outside"]}
     job = {**job, "contacts": contacts, "column": column, "fills": {"F": "P", "G1": "Q", "G2": "Q"}, "cuts": cuts}
     result = engine.run(job, dem)
@@ -705,27 +948,182 @@ def _pit_fixture(holes: int):
               [33.0, 27.0], [27.0, 33.0], [36.5, 30.0], [23.5, 30.0], [30.0, 36.5], [30.0, 23.5]][:holes]
     base = [[x, y, 10.0 - float(bowl(np.hypot(x - 30, y - 30), 8.0, 2.8))] for x, y in inside]
     outside = [[float(x), float(y)] for x, y in ground.holes(5, 0.1) if np.hypot(x - 30, y - 30) > 9.0]
-    job = _pit_job(ground, dem, (30.0, 30.0), 8.0, 2.8, {"A": 10.0, "B": 9.0, "C": 8.0}, inside, outside, base,
-                   circle((30.0, 30.0), 8.0, 10.0))
+    job = _pit_job(ground, dem, {"A": 10.0, "B": 9.0, "C": 8.0}, inside, outside, base,
+                   polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0)))
     return ground, dem, job, base
 
 
-PIT_VOLUME = float(np.sum(2 * np.pi * np.linspace(0, 8, 8001) * bowl(np.linspace(0, 8, 8001), 8.0, 2.8)) * 8 / 8000)
+def _pit_volume(profile: str) -> float:
+    r = np.linspace(0, 8, 8001)
+    return float(np.sum(2 * np.pi * r * 2.8 * engine.PROFILES[profile]((8 - r) / 8)) * (r[1] - r[0]))
+
+
+def _profile_pit(profile: str, positions: list):
+    ground = Ground(60, 1.0)
+    dem = np.full((60, 60), 10.0)
+    base = [[30 + a, 30 + b, 10 - 2.8 * float(engine.PROFILES[profile](np.array(1 - math.hypot(a, b) / 8)))]
+            for a, b in positions]
+    outside = [[float(x), float(y)] for x, y in ground.holes(5, 0.1) if np.hypot(x - 30, y - 30) > 9.0]
+    job = _pit_job(ground, dem, {"A": 10.0, "B": 9.0, "C": 8.0}, [b[:2] for b in base], outside, base,
+                   polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0)))
+    job["cuts"]["P"]["profile"] = profile
+    return dem, job, base
+
+
+HOLES = [(0, 0), (4, 0), (-4, 0), (0, 4), (0, -4), (3, 3), (-3, -3), (3, -3), (-3, 3), (6.5, 0), (-6.5, 0), (0, 6.5), (0, -6.5)]
 
 
 @loop
-@pytest.mark.parametrize("holes", [1, 3, 5])
-def test_a_pit_met_by_few_boreholes(holes):
-    ground, dem, job, base = _pit_fixture(holes)
+@pytest.mark.parametrize("profile", list(engine.PROFILES))
+@pytest.mark.parametrize("holes", [1, 3, 13])
+def test_a_pit_of_a_known_profile(profile, holes):
+    dem, job, base = _profile_pit(profile, HOLES[:holes])
     result = engine.run(job, dem)
-    assert result.volumes["F"] == pytest.approx(PIT_VOLUME, rel=0.20 if holes == 1 else 0.15)
+    truth = _pit_volume(profile)
+    assert result.volumes["F"] == pytest.approx(truth, rel=0.20 if holes == 1 else 0.10)
+    cut = result.info["cuts"]["P"]
+    assert not any(n for n in cut["base_capped"]) or profile == "v"
+    assert max(m for m, held in zip(cut["base_miss"], cut["base_capped"]) if not held) < 1e-9
     zc = job["zmin"] + (np.arange(result.labels.shape[2]) + 0.5) * job["dz"]
     fill = result.units.index("F")
-    for x, y, z in base:
+    for (x, y, z), held in zip(base, cut["base_capped"]):
         column = np.nonzero(result.labels[int(60 - y), int(x)] == fill)[0]
-        assert abs(zc[column.min()] - 0.5 * job["dz"] - z) <= job["dz"] + 1e-6  # within a voxel of the measure
-    assert result.info["cuts"]["P"]["base_miss"]["none"] == 0
-    assert result.info["cuts"]["P"]["base_miss"]["max"] < job["dz"]
+        assert held or abs(zc[column.min()] - 0.5 * job["dz"] - z) <= job["dz"] + 1e-6
+    assert cut["volume_range"]["v"] * 0.97 <= truth <= cut["volume_range"]["flat"] * 1.03
+
+
+@loop
+def test_a_hole_by_the_rim_alone_keeps_the_floor_under_its_cap():
+    dem, job, base = _profile_pit("flat", [(7.5, 0.0)])
+    job["zmin"] = 0.0  # the old field went down to here
+    result = engine.run(job, dem)
+    assert result.volumes["F"] == pytest.approx(_pit_volume("flat"), rel=0.40)
+    deepest = 10.0 - base[0][2]
+    zc = job["zmin"] + (np.arange(result.labels.shape[2]) + 0.5) * job["dz"]
+    cells = (result.labels == result.units.index("F")).any(axis=(0, 1))
+    assert float(zc[np.nonzero(cells)[0].min()]) - 0.5 * job["dz"] >= 10.0 - 1.5 * deepest - job["dz"]
+    assert {"code": "base_near_edge", "unit": "P", "rows": 1} in result.info["warnings"]
+    assert result.info["cuts"]["P"]["base_capped"] == [True]
+
+
+@loop
+def test_a_rim_hole_beside_a_deep_one_is_met_or_said():
+    dem, job, base = _profile_pit("bowl", [(0.0, 0.0), (7.5, 0.0)])
+    result = engine.run(job, dem)
+    cut = result.info["cuts"]["P"]
+    assert cut["base_capped"] == [False, True]  # P under P_MIN at the rim
+    assert result.volumes["F"] == pytest.approx(_pit_volume("bowl"), rel=0.20)
+    assert any(w["code"] == "base_near_edge" for w in result.info["warnings"])
+
+
+@loop
+def test_a_floor_stops_at_the_bottom_of_the_job():
+    dem, job, _base = _profile_pit("flat", [(0.0, 0.0)])
+    job["zmin"] = 8.5
+    job["series"][0]["units"] = ["B"]
+    job["contacts"] = [c for c in job["contacts"] if c[0] == "B"]
+    job["column"] = job["column"][:-1]
+    result = engine.run(job, dem)
+    assert {"code": "cut_reaches_zmin", "unit": "P"} in result.info["warnings"]
+    cut = result.info["cuts"]["P"]
+    assert 0.9 * 1.5 * cut["plan_area"] < cut["volume_range"]["flat"] <= 1.5 * cut["plan_area"]  # not 2.8 m
+    assert int((result.labels >= 0).sum()) == result.info["voxels_under_dem"]
+
+
+@loop
+def test_a_pit_on_a_slope_hangs_from_the_ground():
+    ground = Ground(60, 1.0)
+    dem = 10 + 0.25 * (ground.X - 30)
+    reader = engine.Dem(engine.Grid(ground.grid), dem)
+    holes = [[30.5, 30.5], [34.5, 30.5], [26.5, 30.5]]
+    base = [[x, y, float(reader.at(np.array([x]), np.array([y]))[0]) - 2.0] for x, y in holes]
+    outside = [[5.0, 5.0], [55.0, 55.0]]
+    job = _pit_job(ground, dem, {"A": 10.0, "B": 4.0, "C": 2.0}, holes, outside, base,
+                   polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0)))
+    job["zmin"], job["zmax"] = -4.0, 20.0
+    job["cuts"]["P"]["profile"] = "flat"
+    result = engine.run(job, dem)
+    assert max(result.info["cuts"]["P"]["base_miss"]) < 1e-9
+    assert result.volumes["F"] == pytest.approx(result.info["cuts"]["P"]["volume_range"]["flat"], rel=0.05)
+    assert int((result.labels >= 0).sum()) == result.info["voxels_under_dem"]
+    for _unit, (_vertices, faces) in result.solids.items():
+        assert _closed(faces)
+
+
+@loop
+def test_a_cut_nobody_drew_with_one_hole_is_a_disc():
+    dem, job, _base = _profile_pit("bowl", [(0.0, 0.0)])
+    job["cuts"]["P"].update(outline=None, outside=[])
+    result = engine.run(job, dem)
+    said = [w for w in result.info["warnings"] if w["code"] == "edge_estimated"]
+    assert said[0]["limit"] == pytest.approx(2.8) and "overstated" in said[0]["effect"]
+    assert result.info["cuts"]["P"]["edge"] == "estimated"
+    cells = (result.labels == result.units.index("F")).any(axis=2)
+    assert 0 < cells.sum() <= math.pi * 2.8 ** 2 * 1.3
+
+
+@loop
+def test_an_older_fill_without_a_contact_is_said(pit):
+    ground, dem, job, _result = pit
+    inside = job["cuts"]["P"]["inside"]
+    contacts = job["contacts"] + [["F1", x, y, 9.0, 1.0, f"I{i}"] for i, (x, y) in enumerate(inside)]
+    column = [{"unit": "F1", "kind": "fill"}, {"unit": "F2", "kind": "fill"}] + job["column"][1:]
+    result = engine.run({**job, "contacts": contacts, "column": column, "fills": {"F1": "P", "F2": "P"}}, dem)
+    assert {"code": "fill_without_contact", "unit": "F2", "cut": "P"} in result.info["warnings"]
+
+
+@loop
+@pytest.mark.parametrize("a, b", [((14.85, 15.15), (9.9, 10.1)), ((14.7, 15.3), (10.3, 9.7))], ids=["same way", "opposite"])
+def test_two_close_holes_do_not_tilt_the_site(a, b):
+    ground = Ground(60, 2.0)
+    dem = np.full((60, 60), 20.0)
+    holes = [(57.0, 60.0), (63.0, 60.0)]
+    contacts = []
+    for i, (x, y) in enumerate(holes):
+        contacts += [["A", x, y, a[i], 1.0, f"S{i}"], ["B", x, y, b[i], 1.0, f"S{i}"]]
+    job = layers_job(ground, dem, contacts, ["T", "A", "B"], zmin=0.0, zmax=22.0)
+    job["series"][0]["units"] = ["A", "B"]
+    result = engine.run(job, dem)
+    for (x, y), za, zb in zip(holes, a, b):
+        row, col = int((120 - y) / 2), int(x / 2)
+        assert abs(result.tops["A"][row, col] - za) <= 0.27 and abs(result.tops["B"][row, col] - zb) <= 0.27
+    assert result.volumes["T"] == pytest.approx(5 * 14400, rel=0.01)
+    assert result.volumes["A"] == pytest.approx(5 * 14400, rel=0.01)
+    assert {"code": "few_holes", "series": "layers"} in result.info["warnings"]
+
+
+@loop
+@pytest.mark.parametrize("line", [60.0, 50.0], ids=["through the middle", "off the middle"])
+def test_a_transect_is_not_held_by_pins_on_its_line(line):
+    ground = Ground(60, 2.0)
+    dem = np.full((60, 60), 20.0)
+    top = lambda x: 14 + 2.5 * math.exp(-((x - 60) / 15) ** 2)  # noqa: E731
+    contacts = []
+    for i, x in enumerate(np.linspace(10, 110, 8)):
+        x = float(x)
+        contacts += [["A", x, line, top(x), 1.0, f"S{i}"], ["B", x, line, top(x) - 3, 1.0, f"S{i}"]]
+    job = layers_job(ground, dem, contacts, ["T", "A", "B"], zmin=0.0, zmax=22.0, folds=8 if line == 60.0 else None)
+    job["series"][0]["units"] = ["A", "B"]
+    result = engine.run(job, dem)
+    assert line != 60.0 or result.loo["A"]["rmse"] < 1.1 * 0.59  # the old pins gave 0.94 m
+    tops = result.tops["A"]
+    assert abs(tops[int((120 - 5) / 2), 30] - tops[int((120 - 115) / 2), 30]) < 0.3  # no tilt across the line
+
+
+def test_pins_keep_away_from_the_holes():
+    ground = Ground(10, 10.0)
+    frame = engine.Frame({"grid": ground.grid, "zmin": 0.0, "zmax": 10.0, "dz": 1.0}, np.full((10, 10), 8.0))
+    seen = []
+    original, engine._solve = engine._solve, lambda _n, rows, *_a: seen.extend(rows) or _Linear()
+    try:
+        contacts = [("A", 50.0 + i, 50.0, 4.0, 1.0, f"S{i}") for i in range(2)] + \
+                   [("B", 50.0 + i, 50.0, 2.0, 1.0, f"S{i}") for i in range(2)]
+        engine.fit_series(frame, {"name": "s", "units": ["A", "B"]}, contacts, [], ["A", "B"], 1.0, 1000)
+    finally:
+        engine._solve = original
+    pins = [(r["X"], r["Y"]) for r in seen if "val" in r and (r["X"], r["Y"]) not in ((50.0, 50.0), (51.0, 50.0))]
+    assert pins and all(math.hypot(x - 50, y - 50) >= 25 for x, y in pins)
+    assert all(abs(r["nz"] - 1) < 1e-9 for r in seen if "nz" in r)  # one horizontal plane
 
 
 @loop

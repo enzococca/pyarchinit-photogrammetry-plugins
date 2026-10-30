@@ -20,8 +20,8 @@ has pyvista, so VTK is never loaded. The job::
      "orientations": [[unit, x, y, z, nx, ny, nz], ...],
      "column": [{"unit": "US 1", "kind": "layer" | "cut" | "fill"}, ...],
      "fills": {"US 7": "T1"},
-     "cuts": {"T1": {"base": [[x, y, z], ...], "edge": [[x, y, z], ...],
-                     "inside": [[x, y], ...], "outside": [[x, y], ...]}},
+     "cuts": {"T1": {"base": [[x, y, z], [x, y, z, "wall"], ...], "outline": "/abs/outline_t1.npy" | null,
+                     "profile": "flat" | "bowl" | "v", "inside": [[x, y], ...], "outside": [[x, y], ...]}},
      "options": {"nelements": 20000, "vertical": null, "folds": null, "seed": 20261030}}
 
 * ``grid`` and ``dem``: the raster, north up, ``(x0, y0)`` its top-left corner; ``dem.npy`` a 2-D array
@@ -31,13 +31,15 @@ has pyvista, so VTK is never loaded. The job::
   a hole, the rows at one position are one borehole for the leave-one-out. A point where a fill rests
   on a truncated layer belongs in the ``base`` of the cut, not among the contacts of that layer.
 * ``orientations``: the normal of the top of a unit at a point, in the world, pointing up; of a
-  ``cut``: of its surface, pointing into the cut.
+  cut with walls: of its surface, pointing into the cut.
 * ``column``: the units top-down, the top one a unit with material. A cut has no material: it sits
   under its fills and above what it cuts. ``fills`` says which cut each fill fills.
-* ``cuts``: ``base`` the bottom or the wall of the cut where a borehole or a section met it; ``edge``
-  the closed outline on the ground in order, empty when nobody drew it (it is then estimated from
-  ``inside`` and ``outside``, and a warning says so); ``inside`` and ``outside`` the positions of the
-  holes in and out of the cut.
+* ``cuts``: ``base`` the bottom of the cut where a borehole or a section met it; a row marked ``"wall"``
+  is a point of a wall, outside the plan or on an undercut side, and only a cut with such rows is a
+  field of LoopStructural, the others having an explicit floor on their plan. ``outline`` a boolean
+  ``.npy`` on the grid (the plugin rasterises the drawn polygon), null when nobody drew it (the plan is
+  then estimated from ``inside`` and ``outside``, and a warning says so); ``profile`` the shape of the
+  floor, ``bowl`` when missing; ``inside`` and ``outside`` the positions of the holes in and out of the cut.
 * ``options``: ``vertical`` null chooses the exaggeration from the thinnest unit; ``folds`` null leaves
   out the leave-one-out.
 
@@ -61,12 +63,18 @@ Every message is one line on stdout, the prefix ``@ppg-geoarch`` and a JSON obje
   "loo": {unit: {"rmse", "mae", "n", "nan"}}, "info": {"vertical", "cuts", "warnings", ...}}}``
 * ``{"type": "error", "error": "...", "phase": "...", "exception": "...", "traceback": "..."}``
 
-``info["cuts"][cut]`` has ``edge`` (``drawn``, ``estimated``, ``none``) and ``base_miss`` (``max`` and
-``rmse`` in metres between the surface of the cut and its base rows, ``n``, ``none``).
-``info["warnings"]`` are dictionaries with a ``code``: ``edge_estimated`` (the text must say that the
-volume may be overstated), ``cut_without_data``, ``series_without_data``, ``unit_without_contact``,
-``contact_leaves_box``, ``contact_shares_no_hole``, ``few_holes``, ``normal_turned_up``,
-``column_contradicted`` (with ``holes``): the plugin says them in the language of the interface.
+``info["cuts"][cut]`` has ``edge`` (``drawn``, ``estimated``, ``none``: the only key of a cut left out),
+``profile``, ``plan_area`` (m2), ``volume_range`` (m3 by profile, on the plan: an undercut is not in it),
+``field`` (true for a cut with walls), ``base_miss`` (metres between the floor and each row of the
+base, in order; for a field the nearest zero along the column of each row of the job, null without one)
+and ``base_capped`` (true for the rows the floor does not reach).
+``info["warnings"]`` are dictionaries with a ``code``: ``edge_estimated`` (with ``limit``; the text must
+say that the volume may be overstated), ``base_near_edge`` (with ``rows``: the floor does not reach them,
+they are next to the edge), ``base_outside_outline`` (with ``x``, ``y``, ``distance``), ``cut_reaches_zmin``,
+``fill_without_contact`` (with ``cut``), ``cut_without_data``, ``series_without_data``,
+``unit_without_contact``, ``contact_leaves_box``, ``contact_shares_no_hole``, ``few_holes``,
+``normal_turned_up``, ``column_contradicted`` (with ``holes``): the plugin says them in the language of the
+interface.
 Other lines on stdout and stderr are LoopStructural's own: the plugin keeps the last ones
 for the report of a failure. The exit code is 0 with a result, 1 after an error.
 """

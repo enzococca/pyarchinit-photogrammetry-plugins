@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("pyarchinit_photogrammetry", reason="the runner needs the program")
 
-from implicit_samples import Ground, circle, loop_python  # noqa: E402
+from implicit_samples import Ground, loop_python  # noqa: E402
 from ppg_geoarchaeology import environment, implicit_runner as runner  # noqa: E402
 from pyarchinit_photogrammetry.core.progress import Cancelled, Progress  # noqa: E402
 
@@ -215,10 +215,17 @@ def test_a_real_pit_through_the_worker(tmp_path):
     job["column"].insert(1, {"unit": "P", "kind": "cut"})
     job["fills"] = {"F": "P"}
     inside = [[20.0, 20.0], [22.0, 20.0], [18.0, 20.0]]
-    job["cuts"] = {"P": {"base": [[x, y, 6.0] for x, y in inside], "edge": circle((20, 20), 5.0, 10.0),
+    grid = job["grid"]
+    xs = grid["x0"] + (np.arange(grid["width"]) + 0.5) * grid["cell"]
+    ys = grid["y0"] - (np.arange(grid["height"]) + 0.5) * grid["cell"]
+    outline = tmp_path / "outline.npy"
+    np.save(outline, np.hypot(*np.meshgrid(xs - 20, ys - 20)) < 5.0, allow_pickle=False)
+    job["cuts"] = {"P": {"base": [[x, y, 6.0] for x, y in inside], "outline": str(outline),
                          "inside": inside, "outside": [[5.0, 5.0], [35.0, 35.0]]}}
     result = runner.run(job, tmp_path / "work", python=LOOP)
-    assert result["volumes"]["F"] > 0 and result["info"]["cuts"]["P"]["edge"] == "drawn"
+    cut = result["info"]["cuts"]["P"]
+    assert result["volumes"]["F"] > 0 and cut["edge"] == "drawn" and cut["profile"] == "bowl"
+    assert set(cut["volume_range"]) == {"flat", "bowl", "v"}
 
 
 @real

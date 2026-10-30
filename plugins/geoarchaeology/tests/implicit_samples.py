@@ -78,9 +78,20 @@ def layers_job(ground: Ground, dem: np.ndarray, contacts: list, units: list, spa
             "orientations": [], "column": [{"unit": u, "kind": "layer"} for u in units], "options": options}
 
 
-def bowl(r: np.ndarray, radius: float, depth: float, power: float = 4.0) -> np.ndarray:
-    """Depth (m) of a flat-bottomed pit at distance ``r`` from its middle, 0 at the rim and beyond."""
+def bowl(r: np.ndarray, radius: float, depth: float, power: float = 3.0) -> np.ndarray:
+    """Depth (m) of a pit at distance ``r`` from its middle, 0 at the rim and beyond: the profile
+    ``bowl`` of the engine with the default power."""
     return depth * np.clip(1 - (r / radius) ** power, 0.0, None)
+
+
+def polygon_mask(ground: Ground, points) -> np.ndarray:
+    """The cells of ``ground`` with their centre in a polygon: what the plugin gives as ``outline``."""
+    p = np.asarray(points, dtype=np.float64)[:, :2]
+    inside = np.zeros(ground.X.shape, dtype=bool)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for (x1, y1), (x2, y2) in zip(p, np.roll(p, -1, axis=0)):
+            inside ^= ((y1 > ground.Y) != (y2 > ground.Y)) & (ground.X < (x2 - x1) * (ground.Y - y1) / (y2 - y1) + x1)
+    return inside
 
 
 def circle(centre, radius: float, z: float, n: int = 24) -> list:
