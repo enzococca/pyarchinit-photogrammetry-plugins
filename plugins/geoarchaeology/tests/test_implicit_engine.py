@@ -550,6 +550,9 @@ def test_an_older_unit_keeps_its_ground_where_a_younger_contact_runs_under_it():
     assert east[np.argmin(np.abs(zc - 6.0))] == index["B"]  # B stands above where A would be: A is gone here
     assert not (east == index["A"]).any()
     assert west[np.argmin(np.abs(zc - 6.0))] == index["A"] and west[np.argmin(np.abs(zc - 2.0))] == index["B"]
+    # the top of "A and what is under it" is the top of B there: the cumulative set keeps the older unit
+    assert result.tops["A"][20, 30] == pytest.approx(3.0 + 0.2 * 30.5, abs=0.1)
+    assert result.tops["A"][20, 5] == pytest.approx(7.0, abs=0.1)
 
 
 # ---------------------------------------------------------------------- the review's cases
