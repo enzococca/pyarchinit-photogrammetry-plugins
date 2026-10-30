@@ -3,7 +3,7 @@
 * the program's own Python, when LoopStructural is installed beside it with what the engine needs:
   looked up with :func:`importlib.util.find_spec`, never imported here - it pulls in pandas and a good
   part of the scientific stack, which stay out of the window's process;
-* otherwise an environment the plugin installs on request with ``uv`` (Python 3.12, about 240 MB)
+* otherwise an environment the plugin installs on request with ``uv`` (Python 3.12, about 300 MB)
   in ``<plugin data>/loop-env`` (``PPG_GEOARCH_LOOP_ENV`` to put it elsewhere): the packaged
   application, which is not a Python and has no pip, works this way.
 
@@ -162,9 +162,9 @@ def status_text() -> str:
         return t("LoopStructural {0} nell'ambiente del plugin ({1}).",
                  "LoopStructural {0} in the environment of the plugin ({1}).").format(version, env_dir())
     return t("LoopStructural non è installato: Installa LoopStructural lo scarica in un ambiente del plugin "
-             "(circa 240 MB).",
+             "(circa 300 MB).",
              "LoopStructural is not installed: Install LoopStructural downloads it into an environment of the "
-             "plugin (about 240 MB).")
+             "plugin (about 300 MB).")
 
 
 def _python() -> Path:
@@ -336,7 +336,7 @@ def commands(uv: Path, python: Path) -> list[list[str]]:
 
 def install(progress=None, env: Path | None = None, uv: Path | None = None) -> Path:
     """Create the environment of the plugin: Python 3.12 and LoopStructural from PyPI, with ``uv``
-    (``uv``: another one, for the tests). A few minutes, about 240 MB; returns the folder."""
+    (``uv``: another one, for the tests). A few minutes, about 300 MB; returns the folder."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)

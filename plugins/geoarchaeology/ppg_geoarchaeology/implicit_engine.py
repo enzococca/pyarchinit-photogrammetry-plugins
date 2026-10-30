@@ -8,14 +8,19 @@ The fields
     Every series is one scalar field of LoopStructural. A series in ``depth`` space is fitted on
     ``z - DEM(x, y)`` (contacts that follow the ground), one in ``elevation`` space on ``z``. In both
     the vertical is exaggerated by ``k`` (:func:`vertical_scale`), or a layer thinner than an element
-    disappears. The value of a contact is the mean height of its points in those coordinates, so the
-    field grows upwards at about one unit per scaled metre and ``(value - field) / k`` is a distance
-    in metres, positive under the contact. A series of one contact has no gradient of its own: a
-    normal is added at the mean of its points (:func:`plane_normal`).
+    disappears. The values of the contacts are as far apart as the boreholes say they are
+    (:func:`contact_values`), so the field grows upwards at about one unit per scaled metre and
+    ``(value - field) / (gain k)`` is a distance in metres, positive under the contact. A series of one
+    contact has no gradient of its own: a normal is added at the mean of its points
+    (:func:`plane_normal`), and so for a series whose positions do not make a plane. The box of a field
+    holds each contact over the whole grid (:func:`series_box`); beyond it the field goes on along
+    its gradient.
 
     A cut has a field of its own, in a box of its own around it (:func:`cut_constraints`), positive
-    inside. Several fills of one cut are ordered by one more field in the same box. Fields and data
-    stay independent of each other.
+    inside, its elements sized on the width of the cut. A drawn outline bounds it in plan. Between the
+    boreholes its floor is a guess from the outline and the depths measured (:func:`floor_guess`), the
+    measures themselves being met. Several fills of one cut are ordered by one more field in the same
+    box. Fields and data stay independent of each other.
 
 The painter (:func:`paint`)
     LoopStructural's stratigraphic column is not used. The column is walked from the bottom up
@@ -24,7 +29,8 @@ The painter (:func:`paint`)
 
     * a layer takes what is under its top and nobody has taken yet: ``max(phi, s_unit)``;
     * a cut clears its inside in every set painted so far: ``min(phi_j, -s_cut)``;
-    * a fill takes what is inside its cut and under its top: ``max(phi, min(s_fill, s_cut))``;
+    * a fill takes what is inside its cut and under its top: ``max(phi, min(s_fill, s_cut))``; the
+      youngest fill of a cut with no layer over it takes all that is left of the cut;
     * the highest layer takes everything left under the DEM (its top is the ground, whatever its
       contacts say; a fill over it stays inside its cut), and so does the unit at the top of the column.
 
@@ -57,6 +63,11 @@ JACKKNIFE_CELLS = 40_000  # columns of the rasters of the variance
 COLUMN_SAMPLES = 256  # heights looked at along a column for a crossing
 CUT_RING = 24  # points of the ring around a cut known to be outside
 EDGE_RAYS = 72  # directions of an estimated edge
+COLLINEAR = 0.05  # positions spread across their line less than this share of its length do not make a plane
+CUT_ELEMENTS = 120_000  # at most these many elements for the field of a cut
+BASE_WEIGHT = 20.0  # a measured point of a cut against the guess of its floor (weight 1)
+FLOOR_POWER = 4  # the guessed floor: depth x (1 - (1 - d / d_max) ** power), d the distance from the outline
+FLOOR_MIN = 0.3  # a hole next to the outline says little about the depth in the middle
 
 
 def versions() -> dict:
@@ -156,18 +167,43 @@ def scaled_normal(normal, k: float, slope=(0.0, 0.0)) -> np.ndarray:
     return out / np.where(length > 0, length, 1.0)
 
 
-def plane_normal(points: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
-    """The upward normal of the plane through ``points`` (N, 3), the vertical when they do not
-    make a plane (fewer than three, or along a line)."""
-    pts = np.asarray(points, dtype=np.float64)
-    if len(pts) < 3:
-        return np.array([0.0, 0.0, 1.0])
+def fit_plane(points: np.ndarray, weights: np.ndarray | None = None) -> tuple[np.ndarray, bool]:
+    """``(a, b, c)`` of ``z = a x + b y + c`` through ``points`` (N, 3), and whether their positions
+    make a plane. Positions along a line give the plane through it that tilts least (nothing says
+    more), one position the horizontal."""
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     w = np.ones(len(pts)) if weights is None else np.asarray(weights, dtype=np.float64)
-    centred = (pts - np.average(pts, axis=0, weights=w)) * np.sqrt(w)[:, None]
-    _u, sv, vt = np.linalg.svd(centred, full_matrices=False)
-    if sv[1] <= 1e-6 * max(sv[0], 1e-12) or abs(vt[2, 2]) < 1e-6:
-        return np.array([0.0, 0.0, 1.0])
-    return vt[2] * np.sign(vt[2, 2])
+    mean = np.average(pts, axis=0, weights=w)
+    centred = pts - mean
+    if len(pts) < 2:
+        return np.array([0.0, 0.0, mean[2]]), False
+    _u, spread, axes = np.linalg.svd(centred[:, :2] * np.sqrt(w)[:, None], full_matrices=False)
+    spread = spread / math.sqrt(float(w.sum()))
+    if spread[0] < 1e-6:
+        return np.array([0.0, 0.0, mean[2]]), False
+    if len(pts) < 3 or len(spread) < 2 or spread[1] < COLLINEAR * spread[0]:
+        along = centred[:, :2] @ axes[0]
+        slope = float(np.sum(w * along * centred[:, 2]) / np.sum(w * along * along))
+        a, b = slope * axes[0]
+        return np.array([a, b, mean[2] - a * mean[0] - b * mean[1]]), False
+    root = np.sqrt(w)[:, None]
+    (a, b), *_rest = np.linalg.lstsq(centred[:, :2] * root, centred[:, 2:] * root, rcond=None)
+    a, b = float(a[0]), float(b[0])
+    return np.array([a, b, mean[2] - a * mean[0] - b * mean[1]]), True
+
+
+def plane_normal(points: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
+    """The upward normal of :func:`fit_plane`: the vertical for one position, the least tilted
+    normal for positions along a line."""
+    (a, b, _c), _plane = fit_plane(points, weights)
+    n = np.array([-a, -b, 1.0])
+    return n / np.linalg.norm(n)
+
+
+def _upward(normal) -> tuple[np.ndarray, bool]:
+    """A normal pointing up, and whether it had to be turned round."""
+    n = np.asarray(normal, dtype=np.float64)
+    return (-n, True) if n[2] < 0 else (n, False)
 
 
 @dataclass
@@ -222,21 +258,44 @@ def check_column(job: dict) -> list:
     return column
 
 
-def thinnest_unit(contacts: list, column: list) -> float | None:
-    """The smallest mean thickness of a unit, from the holes that see its top and what comes next."""
+def thinnest_unit(contacts: list, column: list, dem: "Dem | None" = None) -> float | None:
+    """The smallest mean thickness of a unit, from the holes that see its top and what comes next. A
+    thin unit between the ground and the first contact of a hole counts too (``dem``)."""
+    order = {u: i for i, (u, _k) in enumerate(column)}
+    names = [u for u, _k in column]
+    holes: dict = {}
+    for unit, x, y, z, _w, hole in contacts:
+        if unit in order:
+            holes.setdefault(hole, []).append((order[unit], z, unit, x, y))
+    seen: dict = {}
+    for rows in holes.values():
+        rows.sort()
+        for (_i, z_a, unit, _x, _y), (_j, z_b, *_rest) in zip(rows, rows[1:]):
+            if z_a > z_b:
+                seen.setdefault(unit, []).append(z_a - z_b)
+        first, z_first, _unit, x, y = rows[0]
+        if dem is not None and first > 0:
+            depth = float(dem.at(np.array([x]), np.array([y]))[0]) - z_first
+            if depth > 0:
+                seen.setdefault(names[first - 1], []).append(depth)
+    means = [float(np.mean(v)) for v in seen.values()]
+    return min(means) if means else None
+
+
+def column_contradictions(contacts: list, column: list) -> int:
+    """How many boreholes show two units in the opposite order of the column."""
     order = {u: i for i, (u, _k) in enumerate(column)}
     holes: dict = {}
     for unit, _x, _y, z, _w, hole in contacts:
         if unit in order:
-            holes.setdefault(hole, []).append((order[unit], z, unit))
-    seen: dict = {}
+            holes.setdefault(hole, []).append((order[unit], z))
+    count = 0
     for rows in holes.values():
         rows.sort()
-        for (_i, z_a, unit), (_j, z_b, _next) in zip(rows, rows[1:]):
-            if z_a > z_b:
-                seen.setdefault(unit, []).append(z_a - z_b)
-    means = [float(np.mean(v)) for v in seen.values()]
-    return min(means) if means else None
+        heights = [z for _i, z in rows]
+        if any(a < b - 1e-9 for a, b in zip(heights, heights[1:])):
+            count += 1
+    return count
 
 
 class Frame:
@@ -292,23 +351,25 @@ class Fitted:
     space: str
     k: float
     dem: Dem
-    zlo: float  # the scaled limits of its box: heights are kept inside them
+    zlo: float  # the scaled limits of its box
     zhi: float
     values: dict = field(default_factory=dict)
-    gain: float = 1.0
+    gain: float = 1.0  # growth per scaled metre; 0 for a cut, which does not grow upwards
 
     def coordinate(self, x, y, z) -> np.ndarray:
         z = np.asarray(z, dtype=np.float64)
         return (z - self.dem.at(x, y) if self.space == "depth" else z) * self.k
 
     def evaluate(self, x, y, scaled) -> np.ndarray:
-        """The field at scaled heights, those beyond its box at the edge of the box."""
+        """The field at scaled heights; beyond its box it goes on from the edge of the box along its
+        gradient, so a voxel out of the box stays on the side of the contacts it is on."""
         x, y, scaled = np.broadcast_arrays(np.asarray(x, np.float64), np.asarray(y, np.float64), np.asarray(scaled))
-        pts = np.column_stack([x.ravel(), y.ravel(), np.clip(scaled.ravel(), self.zlo, self.zhi)])
+        kept = np.clip(scaled.ravel(), self.zlo, self.zhi)
+        pts = np.column_stack([x.ravel(), y.ravel(), kept])
         out = np.empty(len(pts), dtype=np.float64)
         for start in range(0, len(pts), BATCH):
             out[start:start + BATCH] = self.feature.evaluate_value(pts[start:start + BATCH])
-        return out.reshape(x.shape)
+        return (out + self.gain * (scaled.ravel() - kept)).reshape(x.shape)
 
     def at(self, x, y, z) -> np.ndarray:
         return self.evaluate(x, y, self.coordinate(x, y, z))
@@ -353,36 +414,105 @@ def _monotonic(values: dict, order: list, step: float) -> dict:
     return out
 
 
-def series_box(frame: Frame, xy: np.ndarray, scaled: np.ndarray, space: str, k: float):
-    """The box of a field, in scaled coordinates: the grid and the data; vertically the data of a
-    depth series with a margin (what is below or above belongs to the first and the last contact and
-    resolution is not spent there), the range of the job for an elevation series."""
+def contact_values(seen: list, unit_of: np.ndarray, scaled: np.ndarray, holes: np.ndarray, planes: dict,
+                   centres: dict) -> tuple[dict, list]:
+    """The value of each contact: how far apart the contacts are, measured in the boreholes that see two
+    of them, by least squares, so that a contact seen in few holes keeps its distance from its
+    neighbours wherever those holes are (means over different boreholes mix the distance with the
+    dip of the site). Returns the values and the contacts that share no hole with the main group: those
+    are placed by the plane of the best-seen contact, at their own position."""
+    index = {u: i for i, u in enumerate(seen)}
+    measured: dict = {}
+    for hole in np.unique(holes):
+        here = holes == hole
+        heights = sorted((index[u], float(np.mean(scaled[here & (unit_of == u)]))) for u in set(unit_of[here].tolist()))
+        for (a, z_a), (b, z_b) in zip(heights, heights[1:]):
+            measured.setdefault((a, b), []).append(z_a - z_b)
+    # a distance that stays the same from hole to hole counts more than one that wanders: else a thick,
+    # erratic unit moves the contact next to it (Sultan: 0.63 m of leave-one-out on US 3 against 0.33 m)
+    spread = {pair: float(np.var(d)) / len(d) for pair, d in measured.items() if len(d) > 1}
+    usual = float(np.median(list(spread.values()))) if spread else 1.0
+    least = max(1e-6 * (float(np.ptp(scaled)) ** 2 + 1.0), 1e-9)
+    pairs = [(a, b, float(np.mean(d)), 1.0 / math.sqrt(max(spread.get((a, b), usual), least)))
+             for (a, b), d in sorted(measured.items())]
+    group = list(range(len(seen)))
+
+    def find(i: int) -> int:
+        while group[i] != i:
+            i = group[i]
+        return i
+
+    for a, b, _d, _w in pairs:
+        group[find(a)] = find(b)
+    roots = [find(i) for i in range(len(seen))]
+    counts = [int((unit_of == u).sum()) for u in seen]
+    size = {r: sum(c for c, g in zip(counts, roots) if g == r) for r in set(roots)}
+    main = max(size, key=lambda r: (size[r], -min(i for i, g in enumerate(roots) if g == r)))
+    members = [i for i, g in enumerate(roots) if g == main]
+    anchor = max(members, key=lambda i: counts[i])
+    rows, right = [], []
+    for a, b, d, w in pairs:
+        if roots[a] == main:
+            row = np.zeros(len(seen))
+            row[a], row[b] = w, -w
+            rows.append(row)
+            right.append(w * d)
+    row = np.zeros(len(seen))
+    row[anchor] = 1.0
+    rows.append(row)
+    fixed = float(np.mean(scaled[unit_of == seen[anchor]]))
+    right.append(fixed)
+    solved = np.linalg.lstsq(np.array(rows), np.array(right), rcond=None)[0]
+    values = {seen[i]: float(solved[i]) for i in members}
+    apart = [seen[i] for i in range(len(seen)) if i not in members]
+    a, b, c = planes[seen[anchor]]
+    for unit in apart:
+        cx, cy = centres[unit]
+        values[unit] = fixed + float(np.mean(scaled[unit_of == unit])) - (a * cx + b * cy + c)
+    return values, apart
+
+
+def series_box(frame: Frame, xy: np.ndarray, scaled: np.ndarray, planes: dict, space: str, k: float):
+    """The box of a field, in scaled coordinates: the grid and the data, and vertically each contact
+    (its plane, ``planes``) over the whole grid with a margin, within the range of the job. Returns the box
+    and the contacts that leave the range of the job somewhere on the grid."""
     x0, y0, x1, y1 = frame.grid.bounds
     margin = 2 * frame.grid.cell
     lo = [min(x0, xy[:, 0].min()) - margin, min(y0, xy[:, 1].min()) - margin]
     hi = [max(x1, xy[:, 0].max()) + margin, max(y1, xy[:, 1].max()) + margin]
-    if space == "depth":
-        span = max(float(scaled.max() - scaled.min()), 4 * frame.dz * k)
-        zlo, zhi = min(float(scaled.min()), 0.0) - 0.25 * span, max(float(scaled.max()), 0.0) + 0.1 * span
-    else:
-        pad = 3 * frame.dz * k
-        zlo, zhi = min(frame.zmin * k, float(scaled.min())) - pad, max(frame.zmax * k, float(scaled.max())) + pad
-    return lo + [zlo], hi + [zhi]
+    gx, gy = np.meshgrid(np.linspace(x0, x1, 21), np.linspace(y0, y1, 21))
+    ground = frame.dem.at(gx, gy) if space == "depth" else np.zeros(gx.shape)
+    bottom, top = (frame.zmin - ground) * k, (frame.zmax - ground) * k  # the job's range, in these coordinates
+    low, high = float(scaled.min()), float(scaled.max())
+    leaving = []
+    for unit, (a, b, c) in planes.items():
+        height = a * gx + b * gy + c
+        if (height < bottom).any() or (height > top).any():
+            leaving.append(unit)
+        low = min(low, float(np.maximum(height, bottom).min()))
+        high = max(high, float(np.minimum(height, top).max()))
+    pad = max(3 * frame.dz * k, 0.1 * (high - low))
+    zlo = min(max(low - pad, float(bottom.min())), float(scaled.min()) - frame.dz * k)
+    zhi = max(min(high + pad, float(top.max())), float(scaled.max()) + frame.dz * k)
+    return lo + [zlo], hi + [zhi], leaving
 
 
 def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, order: list, k: float,
-               nelements: int) -> Fitted | None:
+               nelements: int, notes: list | None = None) -> Fitted | None:
     """The field of a series from ``contacts`` and ``orientations`` (of any series): the units of
-    ``order`` (top-down) in ``spec``; None when none of them has a point.
+    ``order`` (top-down) in ``spec``; None when none of them has a point. ``notes`` collects the warnings.
 
-    Several contacts: every point is asked for the mean height of its contact. Interface constraints
-    (one unknown value per contact, a normal for the gradient) were tried on the 18 boreholes of the
-    spike and lose: leave-one-out of the rare contact 0.59 m against 0.29 m, of the thick one 1.86 m
-    against 1.56 m (x8). One contact: it has nothing to set the size of the gradient but a normal
-    and it is asked only to stay one surface: 0.32 m against 0.79 m with a value at x40."""
+    Several contacts: every point is asked for the value of its contact (:func:`contact_values`).
+    Interface constraints (one unknown value per contact, a normal for the gradient) were tried on the
+    18 boreholes of the spike and lose: leave-one-out of the rare contact 0.59 m against 0.29 m, of the
+    thick one 1.86 m against 1.56 m (x8). One contact: it has nothing to set the size of the gradient
+    but a normal and it is asked only to stay one surface: 0.32 m against 0.79 m with a value at x40.
+    Positions that do not make a plane say nothing about the tilt across them: a normal says it,
+    as for one contact."""
     space = str(spec.get("space", "elevation"))
     if space not in ("depth", "elevation"):
         raise ValueError(f"unknown space of series {spec.get('name')}: {space}")
+    notes = notes if notes is not None else []
     names = {str(u) for u in spec["units"]}
     rows = [c for c in contacts if c[0] in names]
     if not rows:
@@ -391,32 +521,70 @@ def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, ord
     z = np.array([r[3] for r in rows], dtype=np.float64)
     weight = np.array([r[4] for r in rows], dtype=np.float64)
     unit_of = np.array([r[0] for r in rows])
+    holes = np.array([r[5] for r in rows])
     probe = Fitted(None, space, k, frame.dem, 0.0, 0.0)
     scaled = probe.coordinate(xy[:, 0], xy[:, 1], z)
-    lo, hi = series_box(frame, xy, scaled, space, k)
     seen = [u for u in order if u in names and (unit_of == u).any()]
-    means = {u: float(np.average(scaled[unit_of == u], weights=weight[unit_of == u])) for u in seen}
-    values = _monotonic(means, seen, 0.1 * frame.dz * k)
+    measured = []
+    for o in orientations:
+        if str(o[0]) not in names:
+            continue
+        x, y, zo = float(o[1]), float(o[2]), float(o[3])
+        normal, turned = _upward(np.array(o[4:7], dtype=np.float64))
+        if turned:
+            notes.append({"code": "normal_turned_up", "unit": str(o[0])})
+        slope = frame.dem.slope(np.array([x]), np.array([y])) if space == "depth" else (0.0, 0.0)
+        n = scaled_normal(normal, k, tuple(float(np.ravel(s)[0]) for s in slope))[0]
+        measured.append((str(o[0]), x, y, float(probe.coordinate(np.array([x]), np.array([y]), np.array([zo]))[0]), n))
+    pts = np.column_stack([xy, scaled])
+    _whole, positions_plane = fit_plane(np.column_stack([xy, np.zeros(len(xy))]), weight)
+    planes, centres = {}, {}
+    for unit in seen:
+        mine = unit_of == unit
+        plane, is_plane = fit_plane(pts[mine], weight[mine])
+        centres[unit] = np.average(xy[mine], axis=0, weights=weight[mine])
+        given = [m for m in measured if m[0] == unit] or ([] if is_plane else measured)
+        if given and abs(float(np.mean([m[4][2] for m in given]))) > 1e-6:
+            n = np.mean([m[4] for m in given], axis=0)
+            a, b = -n[0] / n[2], -n[1] / n[2]
+            plane = np.array([a, b, float(np.average(pts[mine, 2], weights=weight[mine]))
+                              - a * centres[unit][0] - b * centres[unit][1]])
+        planes[unit] = plane
+    lo, hi, leaving = series_box(frame, xy, scaled, planes, space, k)
+    notes.extend({"code": "contact_leaves_box", "unit": u} for u in leaving)
     interface = len(seen) < 2
+    values: dict = {}
+    if not interface:
+        values, apart = contact_values(seen, unit_of, scaled, holes, planes, centres)
+        notes.extend({"code": "contact_shares_no_hole", "unit": u} for u in apart)
+        values = _monotonic(values, seen, 0.1 * frame.dz * k)
     data = []
     for i in range(len(rows)):
         if interface:
-            data.append(_row(xy[i, 0], xy[i, 1], scaled[i], interface=seen.index(str(unit_of[i])), weight=weight[i]))
+            data.append(_row(xy[i, 0], xy[i, 1], scaled[i], interface=0, weight=weight[i]))
         else:
             data.append(_row(xy[i, 0], xy[i, 1], scaled[i], val=values[str(unit_of[i])], weight=weight[i]))
-    measured = [o for o in orientations if str(o[0]) in names]
-    for o in measured:
-        x, y, zo = float(o[1]), float(o[2]), float(o[3])
-        slope = frame.dem.slope(np.array([x]), np.array([y])) if space == "depth" else (0.0, 0.0)
-        n = scaled_normal(np.array(o[4:7], dtype=np.float64), k, tuple(float(np.ravel(s)[0]) for s in slope))[0]
-        at = float(probe.coordinate(np.array([x]), np.array([y]), np.array([zo]))[0])
+    for _unit, x, y, at, n in measured:
         # the direction only: the values of two contacts already fix the gradient's size
         data.append(_row(x, y, at, normal=n) if interface else _row(x, y, at, gradient=n))
-    if interface and not measured:
-        # nothing says which way the field grows: the plane of the points, at their mean
-        pts = np.column_stack([xy, scaled])
-        data.append(_row(*(float(v) for v in np.average(pts, axis=0, weights=weight)),
-                         normal=plane_normal(pts, weight)))
+    if not positions_plane and not measured:
+        notes.append({"code": "few_holes", "series": str(spec.get("name", "series"))})
+    if not measured and (interface or not positions_plane):
+        # nothing says which way the field grows or leans: the plane of the points, at their mean,
+        # and across the grid when they are not a plane themselves
+        x0, y0, x1, y1 = frame.grid.bounds
+        across = [(a, b) for a in (x0, 0.5 * (x0 + x1), x1) for b in (y0, 0.5 * (y0 + y1), y1)]
+        for unit in seen:
+            mine = unit_of == unit
+            normal = plane_normal(pts[mine], weight[mine])
+            data.append(_row(*(float(v) for v in np.average(pts[mine], axis=0, weights=weight[mine])), normal=normal))
+            if not positions_plane:
+                a, b, c = planes[unit]
+                for px, py in across:
+                    height = float(np.clip(a * px + b * py + c, lo[2], hi[2]))
+                    data.append(_row(px, py, height, normal=normal))
+                    data.append(_row(px, py, height, interface=0) if interface else
+                                _row(px, py, height, val=values[unit]))
     fitted = Fitted(_solve(str(spec.get("name", "series")), data, lo, hi, nelements), space, k, frame.dem, lo[2], hi[2])
     h = 0.5 * (hi[2] - lo[2]) / max(COLUMN_SAMPLES, 1)
     upper = fitted.evaluate(xy[:, 0], xy[:, 1], scaled + h)
@@ -484,33 +652,152 @@ def estimated_edge(inside: np.ndarray, outside: np.ndarray, dem: Dem, step: floa
 
 
 @dataclass
+class Outline:
+    """The outline of a cut on a raster of its own: ``mask`` the cells inside, ``depth_in`` and
+    ``depth_out`` the distance (m) of each cell from the outline, inside and outside it."""
+
+    mask: np.ndarray
+    x0: float
+    y0: float
+    step: float
+    depth_in: np.ndarray
+    depth_out: np.ndarray
+
+    @property
+    def widest(self) -> float:
+        """The distance from the outline of the point farthest inside: half the width of the cut."""
+        return max(float(self.depth_in.max()), 0.5 * self.step)
+
+    def _cells(self, x, y):
+        x, y = np.asarray(x, np.float64), np.asarray(y, np.float64)
+        col = np.floor((x - self.x0) / self.step).astype(int)
+        row = np.floor((self.y0 - y) / self.step).astype(int)
+        known = (row >= 0) & (row < self.mask.shape[0]) & (col >= 0) & (col < self.mask.shape[1])
+        return np.clip(row, 0, self.mask.shape[0] - 1), np.clip(col, 0, self.mask.shape[1] - 1), known
+
+    def outside(self, x, y) -> np.ndarray:
+        """Distance (m) of points from the outline on its outer side, 0 inside it."""
+        row, col, known = self._cells(x, y)
+        return np.where(known, self.depth_out[row, col], BIG)
+
+    def inside(self, x, y) -> np.ndarray:
+        row, col, known = self._cells(x, y)
+        return np.where(known, self.depth_in[row, col], 0.0)
+
+    def ring(self, distances: np.ndarray, distance: float, spacing: float) -> np.ndarray:
+        """Points (N, 2) at ``distance`` in the raster ``distances``, about ``spacing`` apart."""
+        row, col = np.nonzero(np.abs(distances - distance) <= 0.75 * self.step)
+        xy = np.column_stack([self.x0 + (col + 0.5) * self.step, self.y0 - (row + 0.5) * self.step])
+        return thinned(xy, spacing)
+
+
+def thinned(xy: np.ndarray, spacing: float) -> np.ndarray:
+    """One point (N, 2) per square of side ``spacing``."""
+    if not len(xy):
+        return xy
+    _keys, first = np.unique(np.floor(xy / spacing).astype(np.int64), axis=0, return_index=True)
+    return xy[np.sort(first)]
+
+
+def outline_raster(polygon: np.ndarray, reach: np.ndarray, cell: float) -> Outline:
+    """A closed outline (N, 2) on a raster with the cell of the job, finer when the outline is narrower
+    than a few cells; the raster covers ``reach`` (points, N x 2) too and a margin around all of it."""
+    from scipy import ndimage
+    from skimage.draw import polygon2mask
+
+    both = np.vstack([polygon, reach])
+    low, high = both.min(axis=0), both.max(axis=0)
+    pad = 0.3 * float((high - low).max()) + 4 * cell
+    x0, y0 = float(low[0] - pad), float(high[1] + pad)
+    step = cell
+    for _attempt in range(4):
+        shape = (int(math.ceil((high[1] + pad - low[1] + pad) / step)), int(math.ceil((high[0] + pad - x0) / step)))
+        rows = (y0 - polygon[:, 1]) / step - 0.5
+        cols = (polygon[:, 0] - x0) / step - 0.5
+        mask = polygon2mask(shape, np.column_stack([rows, cols]))
+        if not mask.any():
+            mask[np.clip(rows.astype(int), 0, shape[0] - 1), np.clip(cols.astype(int), 0, shape[1] - 1)] = True
+        depth_in = ndimage.distance_transform_edt(mask) * step
+        if depth_in.max() >= 2 * step or shape[0] * shape[1] > 4_000_000:
+            break
+        step /= 2
+    return Outline(mask, x0, y0, step, depth_in, ndimage.distance_transform_edt(~mask) * step)
+
+
+def floor_guess(outline: Outline, base: np.ndarray, dem: Dem):
+    """A guess of the depth of a cut at any point inside its outline, from the depths of its base.
+
+    The boreholes say how deep the cut is where they are and the outline where it ends; between them
+    the depth follows the distance from the outline, steep at the side and level across the middle, in
+    the same way for a pit and for a ditch: the depths of the holes are divided by that profile, spread
+    by inverse distance and multiplied back, so the guess goes through every hole."""
+    def profile(x, y):
+        return 1.0 - (1.0 - np.clip(outline.inside(x, y) / outline.widest, 0.0, 1.0)) ** FLOOR_POWER
+
+    depths = dem.at(base[:, 0], base[:, 1]) - base[:, 2]
+    level = depths / np.maximum(profile(base[:, 0], base[:, 1]), FLOOR_MIN)
+
+    def depth(x, y):
+        d2 = (x[:, None] - base[:, 0]) ** 2 + (y[:, None] - base[:, 1]) ** 2
+        w = 1.0 / np.maximum(d2, 1e-6)
+        return np.sum(w * level, axis=1) / np.sum(w, axis=1) * profile(x, y)
+
+    return depth
+
+
+@dataclass
 class CutData:
     """The constraints of a cut: ``points`` (x, y, z in metres) with their signed distance from its
-    surface, the box in scaled coordinates, its vertical scale, the positions of the holes inside."""
+    surface and their weights, the box in scaled coordinates, its vertical scale and elements, the
+    positions known inside, the outline with how far the cut may pass it, the measured base."""
 
     points: np.ndarray
     values: np.ndarray
+    weights: np.ndarray
     lo: list
     hi: list
     k: float
+    nelements: int
     seeds: np.ndarray
     edge: str
+    outline: Outline
+    reach: float
+    base: np.ndarray
 
 
 def _rows3(rows, columns: int) -> np.ndarray:
     return np.asarray(rows, dtype=np.float64).reshape(-1, columns) if len(rows or ()) else np.zeros((0, columns))
 
 
-def cut_constraints(spec: dict, dem: Dem, dz: float, step: float) -> CutData | None:
+def cut_box(zero: np.ndarray, near_ground: float, depth: float, width: float, margin: float, nelements: int):
+    """The box of a cut around its points: its elements a third of the width of the cut, or as many as
+    the job gives a field when that is finer, within :data:`CUT_ELEMENTS`; the vertical scaled so that
+    the depth spans six of them. Returns the box (metres, heights not scaled), ``k`` and the elements."""
+    lo = zero.min(axis=0) - [margin, margin, 0.5 * depth]
+    hi = zero.max(axis=0) + [margin, margin, 0.0]
+    hi[2] = max(hi[2], near_ground) + 0.4 * depth
+    size = hi - lo
+    area = float(size[0] * size[1])
+    wanted = min(width / 3.0, (area * size[2] / nelements) ** (1 / 3))
+    k = float(np.clip(6 * wanted / depth, K_MIN, K_MAX))
+    count = int(np.clip(area * size[2] * k / wanted ** 3, nelements, max(nelements, CUT_ELEMENTS)))
+    return lo, hi, k, count
+
+
+def cut_constraints(spec: dict, dem: Dem, dz: float, cell: float, nelements: int = NELEMENTS) -> CutData | None:
     """The data of the field of a cut, or None when there is not enough to place it (no base, or no
     edge and no hole outside to estimate one).
 
-    On the surface of the cut the value is zero: the base where the boreholes crossed it, the edge
-    on the ground. The rest says on which side a point is, with its distance from those points as the
-    value: the column of a hole inside is positive above the base and negative just below; the
-    column of a hole outside, and of a ring outside everything else, is negative all the way down.
-    The field lives in a box of its own around the cut, close to a cube (its own vertical scale), so
-    the elements of a pit are small whatever the size of the site. ``step`` is the spacing of the edge."""
+    On the surface of the cut the value is zero: the base where the boreholes crossed it (with a
+    high weight: a measure must be met), the edge on the ground, and, where the base has no wall
+    outside the outline, a guess of the floor over all of the outline (:func:`floor_guess`). The rest
+    says on which side a point is, with its distance from those points as the value: rings at fixed
+    distances on both sides of the outline, following its shape; the column of a hole inside and of the
+    cells inside, positive above the floor and negative just below; the columns of the holes outside and
+    of the rings outside the reach of the base, negative all the way down.
+
+    The field lives in a box of its own around the cut (:func:`cut_box`), so the elements of a ditch
+    follow its width whatever the size of the site."""
     from scipy.spatial import cKDTree
 
     base, edge = _rows3(spec.get("base"), 3), _rows3(spec.get("edge"), 3)
@@ -520,69 +807,117 @@ def cut_constraints(spec: dict, dem: Dem, dz: float, step: float) -> CutData | N
     if not len(inside):
         inside = np.unique(base[:, :2], axis=0)
     kind = "drawn"
-    if len(edge):
-        edge = densify(edge, step, dem)
+    if len(edge) >= 3:
+        edge = densify(edge, cell, dem)
     elif len(outside):
-        edge, kind = estimated_edge(inside, outside, dem, step), "estimated"
+        edge, kind = estimated_edge(inside, outside, dem, cell), "estimated"
     else:
         return None
+    outline = outline_raster(edge[:, :2], base[:, :2], cell)
     zero = np.vstack([base, edge])
-    centre = edge[:, :2].mean(axis=0)
-    radius = max(float(np.hypot(*(zero[:, :2] - centre).T).max()), 2 * step)
-    ground_of_base = dem.at(base[:, 0], base[:, 1])
-    depth = max(float((ground_of_base - base[:, 2]).max()), 2 * dz)
-    ring_r = 1.2 * radius
-    half = 1.4 * radius
-    lo_xy, hi_xy = centre - half, centre + half
-    near = dem.at(*np.meshgrid(np.linspace(lo_xy[0], hi_xy[0], 15), np.linspace(lo_xy[1], hi_xy[1], 15)))
-    zlo, zhi = float(zero[:, 2].min()) - 0.5 * depth, max(float(near.max()), float(zero[:, 2].max())) + 0.4 * depth
-    k = float(np.clip(2 * half / (zhi - zlo), K_MIN, K_MAX))
+    passes = outline.outside(base[:, 0], base[:, 1])
+    reach = float(passes.max()) if float(passes.max()) > cell else 0.0
+    extent = float((zero[:, :2].max(axis=0) - zero[:, :2].min(axis=0)).max())
+    width = 2 * outline.widest
+    margin = max(4 * cell, min(width, 0.25 * extent))
+    depth = max(float((dem.at(base[:, 0], base[:, 1]) - base[:, 2]).max()), 2 * dz)
+    gx, gy = np.meshgrid(np.linspace(zero[:, 0].min() - margin, zero[:, 0].max() + margin, 15),
+                         np.linspace(zero[:, 1].min() - margin, zero[:, 1].max() + margin, 15))
+    lo, hi, k, count = cut_box(zero, float(dem.at(gx, gy).max()), depth, width, margin, nelements)
+    spacing = max(((hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]) * k / count) ** (1 / 3), cell)
 
-    def scaled(points):
-        return np.asarray(points, dtype=np.float64) * [1.0, 1.0, k]
+    def ground(xy):
+        return dem.at(xy[:, 0], xy[:, 1])
 
-    positive, negative = [], []
+    def with_height(xy, heights):
+        return np.column_stack([xy, heights])
+
+    positive, negative = [np.zeros((0, 3))], [np.zeros((0, 3))]
+    floor = np.zeros((0, 3))
+    # the ground: both sides of the outline, whatever the cut does further down
+    near_in = outline.ring(outline.depth_in, min(0.2 * margin, 0.5 * outline.widest), spacing)
+    positive.append(with_height(near_in, ground(near_in)))
+    for share in (0.25, 0.5, 0.9):
+        ring = outline.ring(outline.depth_out, share * margin, spacing)
+        negative.append(with_height(ring, ground(ring)))
+        down = outline.ring(outline.depth_out, reach + share * margin, spacing)
+        here = ground(down)
+        negative.extend(with_height(down, here + f * depth) for f in (0.3, -0.4, -0.8, -1.2))
+    # the columns of the holes
     for x, y in inside:
-        ground = float(dem.at(np.array([x]), np.array([y]))[0])
+        top = float(dem.at(np.array([x]), np.array([y]))[0])
         here = base[np.hypot(base[:, 0] - x, base[:, 1] - y) < 1e-6]
-        bottom = float(here[:, 2].max()) if len(here) else ground - 0.5 * depth
-        positive.extend((x, y, bottom + f * (ground - bottom)) for f in (0.35, 0.65, 1.0, 1.3))
+        bottom = float(here[:, 2].max()) if len(here) else top - 0.5 * depth
+        positive.append(np.array([(x, y, bottom + f * (top - bottom)) for f in (0.35, 0.65, 1.0, 1.3)]))
         if len(here):
-            negative.append((x, y, bottom - max(2 * dz, 0.15 * depth)))
-    angles = 2 * np.pi * np.arange(CUT_RING) / CUT_RING
-    ring = centre + ring_r * np.column_stack([np.cos(angles), np.sin(angles)])
-    keep = outside[np.all(np.abs(outside - centre) < half, axis=1)] if len(outside) else outside
-    for x, y in np.vstack([ring, keep]):
-        ground = float(dem.at(np.array([x]), np.array([y]))[0])
-        negative.extend((x, y, ground + f * depth) for f in (0.3, 0.0, -0.4, -0.8, -1.2))
-    # the outline parts the ground: just out of it is out of the cut, whatever the cut does further down
-    for offset, side in ((0.12, negative), (0.3, negative), (0.55, negative), (-0.12, positive)):
-        moved = edge[:, :2] + (edge[:, :2] - edge[:, :2].mean(axis=0)) * offset
-        side.extend(zip(moved[:, 0], moved[:, 1], dem.at(moved[:, 0], moved[:, 1])))
-    positive, negative = np.array(positive), np.array(negative).reshape(-1, 3)
-    tree = cKDTree(scaled(zero))
-    points = np.vstack([zero, positive, negative])
-    values = np.concatenate([np.zeros(len(zero)), tree.query(scaled(positive))[0], -tree.query(scaled(negative))[0]])
-    lo, hi = [float(lo_xy[0]), float(lo_xy[1]), zlo * k], [float(hi_xy[0]), float(hi_xy[1]), zhi * k]
-    seeds = positive[:, :2]
-    return CutData(points, values, lo, hi, k, seeds, kind)
+            negative.append(np.array([(x, y, bottom - max(2 * dz, 0.15 * depth))]))
+    known = outside[outline.outside(outside[:, 0], outside[:, 1]) > reach] if len(outside) else outside
+    if len(known):
+        keep = np.all((known >= zero[:, :2].min(axis=0) - margin) & (known <= zero[:, :2].max(axis=0) + margin), axis=1)
+        known = known[keep]
+    for x, y in known:
+        top = float(dem.at(np.array([x]), np.array([y]))[0])
+        negative.append(np.array([(x, y, top + f * depth) for f in (0.3, 0.0, -0.4, -0.8, -1.2)]))
+    # the floor between the holes, when the base stays inside the outline
+    within = outline.ring(outline.depth_in, 0.5 * outline.widest, spacing)  # never empty, seeds a thin outline too
+    if reach == 0.0:
+        rows, cols = np.nonzero(outline.mask)
+        cells = thinned(np.column_stack([outline.x0 + (cols + 0.5) * outline.step,
+                                         outline.y0 - (rows + 0.5) * outline.step]), spacing)
+        guess = floor_guess(outline, base, dem)(cells[:, 0], cells[:, 1])
+        top = ground(cells)
+        floor = np.column_stack([cells, top - guess])
+        positive.extend(np.column_stack([cells, top - f * guess]) for f in (0.5, 0.0, -0.3))
+        negative.append(np.column_stack([cells, top - guess - np.maximum(2 * dz, 0.15 * guess)]))
+        within = cells
+    positive.append(with_height(within, ground(within)))
+    positive, negative = np.vstack(positive), np.vstack(negative)
+    stretch = np.array([1.0, 1.0, k])
+    known_zero = np.vstack([base, edge, floor])
+    tree = cKDTree(known_zero * stretch)
+    points = np.vstack([known_zero, positive, negative])
+    values = np.concatenate([np.zeros(len(known_zero)), tree.query(positive * stretch)[0],
+                             -tree.query(negative * stretch)[0]])
+    weights = np.concatenate([np.full(len(base), BASE_WEIGHT), np.ones(len(points) - len(base))])
+    box_lo, box_hi = [float(lo[0]), float(lo[1]), float(lo[2]) * k], [float(hi[0]), float(hi[1]), float(hi[2]) * k]
+    return CutData(points, values, weights, box_lo, box_hi, k, count, positive[:, :2], kind, outline, reach, base)
 
 
-def fit_cut(name: str, data: CutData, dem: Dem, orientations: list, nelements: int) -> Fitted:
+def fit_cut(name: str, data: CutData, dem: Dem, orientations: list) -> Fitted:
     """The field of a cut, positive inside; a measured wall (an orientation of the cut, its normal
     pointing into the cut) adds to the data."""
-    rows = [_row(p[0], p[1], p[2] * data.k, val=float(v)) for p, v in zip(data.points, data.values)]
+    rows = [_row(p[0], p[1], p[2] * data.k, val=float(v), weight=float(w))
+            for p, v, w in zip(data.points, data.values, data.weights)]
     for o in orientations:
         if str(o[0]) == name:
             n = scaled_normal(np.array(o[4:7], dtype=np.float64), data.k)[0]
             rows.append(_row(float(o[1]), float(o[2]), float(o[3]) * data.k, gradient=n))
-    return Fitted(_solve(f"cut {name}", rows, data.lo, data.hi, nelements), "elevation", data.k, dem, data.lo[2],
-                  data.hi[2])
+    return Fitted(_solve(f"cut {name}", rows, data.lo, data.hi, data.nelements), "elevation", data.k, dem, data.lo[2],
+                  data.hi[2], gain=0.0)
+
+
+def base_miss(fitted: Fitted, base: np.ndarray, reach: float) -> dict:
+    """How far the surface of a cut passes from its measured base: for every row the zero of the field
+    nearest to it along its column, within ``reach`` metres (``none`` counts those without one)."""
+    heights = np.linspace(-reach, reach, 121)
+    columns = base[:, 2:3] + heights[None, :]
+    grid = fitted.at(base[:, 0:1], base[:, 1:2], columns)
+    misses = []
+    for row in grid:
+        where = np.nonzero(np.sign(row[:-1]) * np.sign(row[1:]) <= 0)[0]
+        if len(where):
+            t = row[where] / (row[where] - row[where + 1] + 1e-30)
+            misses.append(float(np.min(np.abs(heights[where] + t * (heights[1] - heights[0])))))
+    found = np.array(misses)
+    return {"max": float(found.max()) if len(found) else None,
+            "rmse": float(np.sqrt(np.mean(found ** 2))) if len(found) else None,
+            "n": int(len(found)), "none": int(len(base) - len(found))}
 
 
 def cut_function(frame: Frame, fitted: Fitted, data: CutData, xyz) -> np.ndarray:
     """The signed function of a cut at the evaluated voxels: its field inside the box of the cut,
-    negative beyond, without the bits of the field that are not joined to a hole inside."""
+    negative beyond, without the bits of the field that are not joined to a hole inside. A drawn
+    outline is a limit in plan: past it there is no cut, except as far as the cut's own base goes."""
     from scipy import ndimage
 
     x, y, z = xyz
@@ -590,10 +925,14 @@ def cut_function(frame: Frame, fitted: Fitted, data: CutData, xyz) -> np.ndarray
     out = np.full(len(x), -BIG, dtype=np.float32)
     out[inside] = fitted.at(x[inside], y[inside], z[inside]).astype(np.float32)
     cube = frame.volume(out)
+    g = frame.grid
+    if data.edge == "drawn":
+        cx, cy = np.meshgrid(g.xs, g.ys)
+        limit = data.reach + 0.5 * g.cell - data.outline.outside(cx, cy)
+        cube = np.minimum(cube, limit[:, :, None].astype(np.float32))
     positive = (cube > 0) & frame.under
     if positive.any():
         labels, count = ndimage.label(positive)
-        g = frame.grid
         cols = np.clip(((data.seeds[:, 0] - g.x0) / g.cell).astype(int), 0, g.width - 1)
         rows = np.clip(((g.y0 - data.seeds[:, 1]) / g.cell).astype(int), 0, g.height - 1)
         joined = np.unique(labels[rows, cols, :])
@@ -659,6 +998,11 @@ def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fil
     phi = np.full(len(x), -BIG, dtype=np.float32)
     stages: list = []  # (unit, cumulative function), from the bottom of the column
     highest_layer = next(u for u, kind in column if kind == "layer")
+    youngest = {}  # the first fill of each cut, going down the column
+    for unit, kind in column:
+        if kind == "fill":
+            youngest.setdefault(fills[unit], unit)
+    names = [u for u, _kind in column]
     for unit, kind in reversed(column):
         if kind == "cut":
             if unit in cuts:
@@ -672,8 +1016,9 @@ def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fil
                 own = None
             else:
                 fitted = fill_fields.get(cut)
-                if fitted is None or unit not in fitted.values:
-                    own = cuts[cut]  # one fill, or the last: all that is left of the cut
+                covered = any(k == "layer" for _u, k in column[:names.index(unit)])
+                if fitted is None or unit not in fitted.values or (unit == youngest[cut] and not covered):
+                    own = cuts[cut]  # all that is left of the cut: nothing younger can have it
                 else:
                     own = np.minimum(signed(unit, fitted), cuts[cut])
         elif unit == highest_layer:
@@ -892,15 +1237,18 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
         if wrong:
             raise ValueError(f"series {spec.get('name')}: {wrong} are not layers of the column")
     warnings: list = []
+    contradicted = column_contradictions([c for c in contacts if c[0] not in fills], column)
+    if contradicted:
+        warnings.append({"code": "column_contradicted", "holes": contradicted})
     x0, y0, x1, y1 = frame.grid.bounds
     k = options.get("vertical")
     if k is None:
-        thin = thinnest_unit([c for c in contacts if c[0] not in fills], column)
+        thin = thinnest_unit([c for c in contacts if c[0] not in fills], column, frame.dem)
         k = vertical_scale(thin, (x1 - x0, y1 - y0, frame.zmax - frame.zmin), nelements)
     k = float(k)
     fields: dict = {}
     for i, spec in enumerate(series_specs):
-        fitted = fit_series(frame, spec, contacts, orientations, order, k, nelements)
+        fitted = fit_series(frame, spec, contacts, orientations, order, k, nelements, warnings)
         if fitted is None:
             warnings.append({"code": "series_without_data", "series": str(spec.get("name"))})
             continue
@@ -914,24 +1262,29 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
     cuts: dict = {}
     fill_fields: dict = {}
     cut_info: dict = {}
-    step = frame.grid.cell
+    listed = {str(c) for c in (job.get("cuts") or {})}
+    for cut in (u for u, kind in column if kind == "cut" and u not in listed):
+        warnings.append({"code": "cut_without_data", "unit": cut})
+        cut_info[cut] = {"edge": "none"}
     for cut, spec in (job.get("cuts") or {}).items():
         cut = str(cut)
-        data = cut_constraints(spec, frame.dem, frame.dz, step)
+        data = cut_constraints(spec, frame.dem, frame.dz, frame.grid.cell, nelements)
         if data is None:
             warnings.append({"code": "cut_without_data", "unit": cut})
             cut_info[cut] = {"edge": "none"}
             continue
-        fitted = fit_cut(cut, data, frame.dem, orientations, nelements)
+        fitted = fit_cut(cut, data, frame.dem, orientations)
         cuts[cut] = cut_function(frame, fitted, data, xyz)
         own = [u for u, _kind in column if fills.get(u) == cut]
         covered = bool(own) and any(kind == "layer" for u, kind in column[:order.index(own[0])])
         ordered = fit_fills(frame, cut, own, contacts, data, nelements, covered)
         if ordered is not None:
             fill_fields[cut] = ordered
-        cut_info[cut] = {"edge": data.edge, "vertical": data.k}
+        span = max(float(np.ptp(data.base[:, 2])), 4 * frame.dz, 1.0)
+        cut_info[cut] = {"edge": data.edge, "vertical": data.k, "elements": data.nelements,
+                         "base_miss": base_miss(fitted, data.base, span)}
         if data.edge == "estimated":
-            warnings.append({"code": "edge_estimated", "unit": cut})
+            warnings.append({"code": "edge_estimated", "unit": cut, "effect": "the volume may be overstated"})
     say(0.35, "paint")
     painted = paint(frame, column, fills, fields, cuts, fill_fields, xyz)
     say(0.5, "tops")

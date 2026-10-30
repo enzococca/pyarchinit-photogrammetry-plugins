@@ -61,9 +61,13 @@ Every message is one line on stdout, the prefix ``@ppg-geoarch`` and a JSON obje
   "loo": {unit: {"rmse", "mae", "n", "nan"}}, "info": {"vertical", "cuts", "warnings", ...}}}``
 * ``{"type": "error", "error": "...", "phase": "...", "exception": "...", "traceback": "..."}``
 
-``info["warnings"]`` are dictionaries with a ``code`` (``edge_estimated``, ``cut_without_data``,
-``series_without_data``, ``unit_without_contact``): the plugin says them in the language of the
-interface. Other lines on stdout and stderr are LoopStructural's own: the plugin keeps the last ones
+``info["cuts"][cut]`` has ``edge`` (``drawn``, ``estimated``, ``none``) and ``base_miss`` (``max`` and
+``rmse`` in metres between the surface of the cut and its base rows, ``n``, ``none``).
+``info["warnings"]`` are dictionaries with a ``code``: ``edge_estimated`` (the text must say that the
+volume may be overstated), ``cut_without_data``, ``series_without_data``, ``unit_without_contact``,
+``contact_leaves_box``, ``contact_shares_no_hole``, ``few_holes``, ``normal_turned_up``,
+``column_contradicted`` (with ``holes``): the plugin says them in the language of the interface.
+Other lines on stdout and stderr are LoopStructural's own: the plugin keeps the last ones
 for the report of a failure. The exit code is 0 with a result, 1 after an error.
 """
 from __future__ import annotations

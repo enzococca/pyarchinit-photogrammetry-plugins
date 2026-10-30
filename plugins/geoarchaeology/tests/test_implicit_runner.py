@@ -239,7 +239,7 @@ def test_where_loopstructural_runs(tmp_path, monkeypatch):
     monkeypatch.delattr(sys, "frozen")
     monkeypatch.setattr(environment, "local_available", lambda: False)
     monkeypatch.setenv(environment.ENV_VAR, str(tmp_path / "env"))
-    assert environment.where() == (None, "") and "240 MB" in environment.status_text()
+    assert environment.where() == (None, "") and "300 MB" in environment.status_text()
     with pytest.raises(environment.LoopMissing, match="non è installato"):
         environment.worker_python()
     monkeypatch.setattr(environment, "unsupported", lambda *a: "niente per questo computer")
