@@ -1,0 +1,12 @@
+{
+  "title": "Shipwreck",
+  "description": "The technical drawing of an excavated hull from its 3D model: ship frame, stations, cross-sections, longitudinals and horizontals cut from the model, a stated water correction, body plan, half-breadth plan, profile, plan over the orthophoto, timber catalogue with measures. Measures, reconstructs nothing",
+  "i18n": {
+    "it": {
+      "title": "Relitto",
+      "description": "Il disegno tecnico di uno scafo scavato dal suo modello 3D: sistema della nave, stazioni, sezioni, longitudinali e orizzontali tagliate dal modello, correzione dell'acqua dichiarata, piano di costruzione, linee d'acqua, profilo, pianta sull'ortofoto, catalogo dei legni con le misure. Misura, non ricostruisce"
+    }
+  },
+  "min_app": "1.3.4",
+  "requires": []
+}
