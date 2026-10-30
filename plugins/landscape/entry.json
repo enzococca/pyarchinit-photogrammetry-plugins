@@ -1,0 +1,12 @@
+{
+  "title": "Landscape through time",
+  "description": "How the surveyed surface changes over the years with Landlab: soil creep and running water (SPACE erosion and deposition) on the DEM of the chunk, presets for a mudbrick tell, an earth slope, an exposed excavation; final surface, erosion and deposition, drainage area, snapshots, mass balance, a DEM version, comparison with a later phase. Scenarios, not predictions",
+  "i18n": {
+    "it": {
+      "title": "Paesaggio nel tempo",
+      "description": "Come cambia nel tempo la superficie rilevata, con Landlab: creep del suolo e acqua che erode e deposita (SPACE) sul DEM del chunk, scenari per tell in mattoni crudi, versante in terra, scavo esposto; superficie finale, erosione e deposito, area drenata, istantanee, bilancio dei volumi, versione del DEM, confronto con una fase successiva. Scenari, non previsioni"
+    }
+  },
+  "min_app": "1.3.4",
+  "requires": []
+}
