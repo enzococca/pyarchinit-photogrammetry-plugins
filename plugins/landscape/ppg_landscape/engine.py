@@ -35,8 +35,9 @@ warning above 10 minutes and a refusal above 2 hours.
 Boundaries: cells without a value are closed. ``open``: the valid cells along the outer edge of
 the data (the grid's edge or nodata reaching it) are fixed-value nodes - water and sediment leave
 there; holes of nodata inside the DEM stay closed. ``closed``: those cells are closed too; with
-running water the lowest of them beside a cell inside stays open as ONE artificial outlet (else every
-drop would stay in the model as a lake); with diffusion only nothing leaves and the volume is conserved.
+running water the lowest of them beside a cell inside stays open as ONE artificial outlet for each
+separate part of the data (else every drop would stay in the model as a lake); with diffusion only
+nothing leaves and the volume is conserved.
 """
 from __future__ import annotations
 
@@ -386,15 +387,30 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     filled = np.where(ok, z_raster, np.nanmax(np.where(ok, z_raster, np.nan)))
     z = grid.add_field("topographic__elevation", to_nodes(filled).astype(np.float64), at="node")
     outlet = None
+    outlets: list[int] = []
     if boundary == "closed" and fluvial is not None:
-        # running water needs a way out: one artificial outlet, the lowest edge cell beside a cell inside
-        # (a corner touches only other edge cells: water would reach it diagonally, creep never)
+        # running water needs a way out: one artificial outlet per separate part of the data (8-connected,
+        # as the water flows), the lowest edge cell of the part beside a cell inside (a corner touches only
+        # other edge cells: water would reach it diagonally, creep never). A part without an outlet - an
+        # island of a few cells a real DEM often has beside its main body - is a lake the DepressionFinder
+        # never drains: it loops for ever
+        from scipy import ndimage
+
+        labels = to_nodes(ndimage.label(ok, structure=np.ones((3, 3), bool))[0])
         inside = to_nodes(ok & ~edge)
         on_edge = np.flatnonzero(to_nodes(edge))
-        beside = [i for i in on_edge if any(inside[j] for j in grid.adjacent_nodes_at_node[i] if j >= 0)]
-        candidates = np.asarray(beside or on_edge)
-        outlet = int(candidates[np.argmin(z[candidates])])
-        status[outlet] = NodeStatus.FIXED_VALUE
+        beside = np.asarray([i for i in on_edge if any(inside[j] for j in grid.adjacent_nodes_at_node[i] if j >= 0)],
+                            dtype=np.int64)
+        for part in np.unique(labels[np.flatnonzero(inside)]):
+            candidates = beside[labels[beside] == part]
+            if candidates.size:
+                outlets.append(int(candidates[np.argmin(z[candidates])]))
+        if not outlets and on_edge.size:
+            outlets.append(int(on_edge[np.argmin(z[on_edge])]))
+        status[outlets] = NodeStatus.FIXED_VALUE
+        if outlets:  # the outlet of the largest part
+            sizes = np.bincount(labels[np.flatnonzero(inside)])
+            outlet = max(outlets, key=lambda i: sizes[labels[i]] if labels[i] < sizes.size else 0)
     grid.status_at_node = status  # all at once: perimeter nodes must never be core, not even for a moment
     core = grid.core_nodes
     if core.size == 0:
@@ -501,7 +517,8 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
         closure = eroded_solid - deposited_solid - (from_flow or 0.0) - (diffusion_out_solid if ld is not None else 0.0)
     balance = {
         "years": years, "cell": dx, "cell_area_m2": cell_area, "cells": int(ok.sum()), "core_cells": int(core.size),
-        "boundary": boundary, "outlet_node": outlet, "steps": steps, "smallest_step": smallest if steps else None,
+        "boundary": boundary, "outlet_node": outlet, "outlets": len(outlets), "steps": steps,
+        "smallest_step": smallest if steps else None,
         "diffusion_substeps": diffusion_substeps, "diffusion_dt_limit": None if ld is None else d_limit,
         "eroded_m3": float(-d[d < 0].sum() * cell_area), "deposited_m3": float(d[d > 0].sum() * cell_area),
         "net_m3": float(d.sum() * cell_area), "initial_volume_m3": None,

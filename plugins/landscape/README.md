@@ -30,7 +30,8 @@ under the surface.
 Either process can be switched off (not both). The cells without a value are closed. The edge of the
 data is **open** (water and sediment leave there, as on a slope that goes on beyond the survey) or
 **closed** (nothing leaves; with running water the lowest edge cell beside a cell inside stays open as
-the one outlet).
+the one outlet - one for each separate part of the data, the islands a DEM often has beside its main
+body included).
 
 ## Presets
 

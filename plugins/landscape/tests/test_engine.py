@@ -325,3 +325,23 @@ def test_a_dem_inside_nodata_routes_the_water_to_its_edge():
         engine.run({**job, "router": "priority_flood"}, z)
     full, *_ = notched_slope()  # the data reaching the frame: PriorityFlood as before
     assert engine.run({**job, "years": 2}, full).balance["router"] == "priority_flood"
+
+
+@landlab
+def test_a_closed_edge_gives_every_separate_part_of_the_data_an_outlet():
+    # an island of the data apart from the main body (a real DEM has many, a few cells each): with one
+    # outlet for the whole grid it was a lake without a way out, and the DepressionFinder looped for ever
+    z, *_ = notched_slope()
+    z = z.copy()
+    z[:, :4] = np.nan
+    z[:, -4:] = np.nan
+    z[-3:, :] = np.nan
+    z[40:47, 60:] = np.nan  # bands of nodata cutting off the island z[47:60, 70:96]...
+    z[47:60, 60:70] = np.nan
+    z[60:67, 60:] = np.nan  # ...with 11 x 24 cells inside its own edge
+    job = {"cell": CELL, "years": 5, "boundary": "closed", "diffusion": None,
+           "fluvial": {"K_sed": 0.01, "K_br": 0.002, "runoff": 1.0, "soil_depth": 0.2}}
+    res = engine.run(job, z)
+    b = res.balance
+    assert b["router"] == "depression_finder" and b["outlets"] == 2
+    assert b["fluvial_out_m3"] > 0 and abs(b["closure_percent"]) < 1

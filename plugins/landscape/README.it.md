@@ -30,7 +30,8 @@ spostamento laterale dei canali, il mare, quello che sta sotto la superficie.
 Si può spegnere uno dei due processi (non entrambi). Le celle senza valore sono chiuse. Il bordo dei
 dati è **aperto** (acqua e sedimento escono, come su un pendio che continua oltre il rilievo) o
 **chiuso** (non esce niente; con l'acqua che scorre la cella di bordo più bassa accanto a una cella
-interna resta aperta come unico sbocco).
+interna resta aperta come unico sbocco - uno per ogni parte separata dei dati, comprese le isole che un
+DEM ha spesso accanto al corpo principale).
 
 ## Scenari predefiniti
 
