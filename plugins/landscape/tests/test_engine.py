@@ -329,16 +329,18 @@ def test_a_dem_inside_nodata_routes_the_water_to_its_edge():
 
 @landlab
 def test_a_closed_edge_gives_every_separate_part_of_the_data_an_outlet():
-    # an island of the data apart from the main body (a real DEM has many, a few cells each): with one
-    # outlet for the whole grid it was a lake without a way out, and the DepressionFinder looped for ever
+    # a part of the data joined to the main body only by a neck one cell wide (or not at all, an island: a
+    # real DEM has many): the closed edge cells of the neck part it from the rest, and with one outlet for
+    # the whole grid it was a lake without a way out - the DepressionFinder looped for ever
     z, *_ = notched_slope()
     z = z.copy()
     z[:, :4] = np.nan
     z[:, -4:] = np.nan
     z[-3:, :] = np.nan
-    z[40:47, 60:] = np.nan  # bands of nodata cutting off the island z[47:60, 70:96]...
+    z[40:47, 60:] = np.nan  # bands of nodata around the part z[47:60, 70:96]...
     z[47:60, 60:70] = np.nan
     z[60:67, 60:] = np.nan  # ...with 11 x 24 cells inside its own edge
+    z[40:47, 85] = 30.0  # the neck: one cell wide, all edge
     job = {"cell": CELL, "years": 5, "boundary": "closed", "diffusion": None,
            "fluvial": {"K_sed": 0.01, "K_br": 0.002, "runoff": 1.0, "soil_depth": 0.2}}
     res = engine.run(job, z)

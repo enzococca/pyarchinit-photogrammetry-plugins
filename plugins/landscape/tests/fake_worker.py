@@ -9,7 +9,8 @@ one year, a snapshot at each year asked; the drainage area is the cell area ever
 ``PPG_LANDSCAPE_FAKE`` changes what it does: ``fail`` (the simulation raises Landlab's kind of
 error), ``crash`` (the process dies as on a segmentation fault, in the middle of the run),
 ``crash_save`` (it dies after writing the first file: the partial folder stays behind), ``sleep``
-(every year takes a second: for cancelling), ``noise`` (Landlab's own lines among the messages).
+(every year takes a second: for cancelling), ``noise`` (Landlab's own lines among the messages),
+``lake`` (the DepressionFinder's endless lines about a lake without an outlet).
 """
 from __future__ import annotations
 
@@ -51,6 +52,11 @@ def simulate(job, elevation, valid, progress):
         sys.stdout.flush()
         print("\nanother line of Landlab", flush=True)
     progress(0.0, "grid")
+    if MODE == "lake":  # as Landlab's DepressionFinderAndRouter does: for ever
+        print("Unable to find drainage outlet for a lake.", flush=True)
+        while True:
+            print("Node ID:  0\nNode Elevation:  307.2\nNode Flood Status:  0", flush=True)
+            time.sleep(0.001)
     snapshots = {}
     wanted = {float(s) for s in job.get("snapshots") or ()}
     n = int(round(years))

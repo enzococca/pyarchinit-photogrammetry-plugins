@@ -27,6 +27,9 @@ WORKER = Path(__file__).with_name("worker.py")
 PREFIX = "@ppg-landscape "
 POLL = 0.2  # seconds between two looks at the cancel button while the worker says nothing
 KEEP_LINES = 80  # lines of Landlab's own output kept for the report of a failure
+# Landlab's DepressionFinderAndRouter says this when a lake has no way out, and then loops for ever printing
+# the nodes of the lake: the run is stopped at the first such line
+STUCK_LAKE = "Unable to find drainage outlet for a lake"
 
 
 class WorkerError(RuntimeError):
@@ -145,6 +148,16 @@ def run(job: dict, folder: Path, progress=None, python: Path | None = None, scri
                 if msg is None:
                     if line.strip():
                         output_lines.append(line)
+                    if STUCK_LAKE in line:
+                        proc.kill()
+                        proc.wait()
+                        raise WorkerError(t(
+                            "Landlab non trova uno sbocco per un lago della superficie (una parte dei dati senza "
+                            "uscita) e non finirebbe mai: la simulazione è stata fermata. Prova il bordo aperto o "
+                            "un'altra cella.",
+                            "Landlab finds no outlet for a lake of the surface (a part of the data with no way out) "
+                            "and would never end: the simulation was stopped. Try the open edge or another cell."),
+                            (last or {}).get("phase", "run"), output_lines, "\n".join(output_lines))
                     continue
                 kind = msg.get("type")
                 if kind == "progress":

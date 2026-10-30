@@ -81,6 +81,17 @@ def test_failures_and_crashes_leave_nothing(tmp_path, fake):
     _nothing_left(tmp_path)  # the partial folder the worker left is gone too
 
 
+def test_a_lake_without_an_outlet_stops_the_run(tmp_path, fake):
+    import time
+
+    fake("lake")
+    t0 = time.monotonic()
+    with pytest.raises(runner.WorkerError, match="non trova uno sbocco") as err:
+        runner.run(_job(tmp_path), tmp_path / "work", python=Path(sys.executable), script=FAKE)
+    assert time.monotonic() - t0 < 30 and runner.STUCK_LAKE in err.value.details
+    _nothing_left(tmp_path)
+
+
 def test_an_existing_output_is_refused_and_kept(tmp_path, fake):
     (tmp_path / "run").mkdir()
     (tmp_path / "run" / "mine.txt").write_text("keep")

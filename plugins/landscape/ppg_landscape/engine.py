@@ -389,28 +389,31 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     outlet = None
     outlets: list[int] = []
     if boundary == "closed" and fluvial is not None:
-        # running water needs a way out: one artificial outlet per separate part of the data (8-connected,
-        # as the water flows), the lowest edge cell of the part beside a cell inside (a corner touches only
-        # other edge cells: water would reach it diagonally, creep never). A part without an outlet - an
-        # island of a few cells a real DEM often has beside its main body - is a lake the DepressionFinder
-        # never drains: it loops for ever
+        # running water needs a way out: one artificial outlet for each separate group of cells inside the edge
+        # (8-connected, as the water flows from cell to cell): the lowest edge cell beside a cell of the group
+        # (a corner touches only other edge cells: water would reach it diagonally, creep never). The closed
+        # edge cells part the inside wherever the data narrow to a neck one or two cells wide, and a real DEM
+        # has islands of a few cells beside its main body: a group without an outlet is a lake the
+        # DepressionFinder never drains - it loops for ever
         from scipy import ndimage
 
-        labels = to_nodes(ndimage.label(ok, structure=np.ones((3, 3), bool))[0])
-        inside = to_nodes(ok & ~edge)
-        on_edge = np.flatnonzero(to_nodes(edge))
-        beside = np.asarray([i for i in on_edge if any(inside[j] for j in grid.adjacent_nodes_at_node[i] if j >= 0)],
-                            dtype=np.int64)
-        for part in np.unique(labels[np.flatnonzero(inside)]):
-            candidates = beside[labels[beside] == part]
-            if candidates.size:
-                outlets.append(int(candidates[np.argmin(z[candidates])]))
-        if not outlets and on_edge.size:
-            outlets.append(int(on_edge[np.argmin(z[on_edge])]))
+        groups = to_nodes(ndimage.label(ok & ~edge, structure=np.ones((3, 3), bool))[0])
+        best: dict[int, int] = {}
+        for i in np.flatnonzero(to_nodes(edge)):
+            for j in grid.adjacent_nodes_at_node[i]:
+                g = int(groups[j]) if j >= 0 else 0
+                if g and (g not in best or z[i] < z[best[g]]):
+                    best[g] = int(i)
+        outlets = sorted(set(best.values()))
+        if not outlets and edge.any():
+            on_edge = np.flatnonzero(to_nodes(edge))
+            outlets = [int(on_edge[np.argmin(z[on_edge])])]
         status[outlets] = NodeStatus.FIXED_VALUE
-        if outlets:  # the outlet of the largest part
-            sizes = np.bincount(labels[np.flatnonzero(inside)])
-            outlet = max(outlets, key=lambda i: sizes[labels[i]] if labels[i] < sizes.size else 0)
+        if best:  # the outlet of the largest group
+            sizes = np.bincount(groups[groups > 0])
+            outlet = best[max(best, key=lambda g: sizes[g])]
+        elif outlets:
+            outlet = outlets[0]
     grid.status_at_node = status  # all at once: perimeter nodes must never be core, not even for a moment
     core = grid.core_nodes
     if core.size == 0:
