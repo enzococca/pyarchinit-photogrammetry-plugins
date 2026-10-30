@@ -299,3 +299,29 @@ def test_the_worker_writes_the_files_and_dz_is_final_minus_initial(tmp_path, cap
     # the output exists: refused, nothing touched
     assert worker.main([str(tmp_path / "job.json")]) == 1
     assert "exists already" in capsys.readouterr().out and np.array_equal(np.load(out / "final.npy"), final)
+
+
+@landlab
+def test_a_dem_inside_nodata_routes_the_water_to_its_edge():
+    # a real DEM rarely reaches the frame of its grid: its footprint is surrounded by nodata. PriorityFlood
+    # floods from the frame only, so it found no outlet, "filled" the surface to infinity and every cell
+    # drained to itself (drainage area = one or two cells, no sediment ever left): auto takes the
+    # DepressionFinder there, and PriorityFlood asked for by name is refused
+    z, notch, _north, _cols = notched_slope()
+    z = z.copy()
+    z[:, :4] = np.nan
+    z[:, -4:] = np.nan
+    z[-3:, :] = np.nan
+    job = {"cell": CELL, "years": 20, "boundary": "open", "diffusion": None,
+           "fluvial": {"K_sed": 0.01, "K_br": 0.002, "runoff": 1.0, "soil_depth": 0.2}}
+    res = engine.run(job, z)
+    b = res.balance
+    assert b["router"] == "depression_finder"
+    cells = res.area[np.isfinite(res.area)] / (CELL * CELL)
+    assert cells.max() > 500  # the water gathers, down the notch and the apron
+    assert b["bedload_out_m3"] + b["wash_load_m3"] > 0  # and sediment leaves at the edge of the data
+    assert abs(b["closure_percent"]) < 1
+    with pytest.raises(ValueError, match="priority_flood"):
+        engine.run({**job, "router": "priority_flood"}, z)
+    full, *_ = notched_slope()  # the data reaching the frame: PriorityFlood as before
+    assert engine.run({**job, "years": 2}, full).balance["router"] == "priority_flood"

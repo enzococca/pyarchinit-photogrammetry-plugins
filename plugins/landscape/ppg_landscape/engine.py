@@ -257,11 +257,29 @@ def versions() -> dict:
     return out
 
 
+def outlets_on_the_frame(grid) -> bool:
+    """Whether every open (fixed-value) node lies on the outer frame of the grid. PriorityFloodFlowRouter
+    fills the depressions with richdem, which floods from the cells of the array's frame only and gives the
+    closed nodes an infinite height: an open node inside the array - the edge of a DEM whose data does not
+    reach the frame, surrounded by nodata, or the one outlet of a closed edge - is never an outlet there, the
+    whole surface is "filled" to infinity and every cell drains to itself."""
+    from landlab.grid.nodestatus import NodeStatus
+
+    fixed = np.flatnonzero(np.asarray(grid.status_at_node) == NodeStatus.FIXED_VALUE)
+    return bool(np.isin(fixed, np.asarray(grid.perimeter_nodes)).all())
+
+
 def _router(grid, kind: str, runoff: float):
-    """The flow router and its name: PriorityFlood (richdem) or FlowAccumulator + DepressionFinder."""
+    """The flow router and its name: PriorityFlood (richdem) when every outlet lies on the frame of the
+    grid (:func:`outlets_on_the_frame`), else FlowAccumulator + DepressionFinder, which routes to any
+    open node."""
     from landlab.components import FlowAccumulator
 
-    if kind in ("auto", "priority_flood"):
+    if kind == "priority_flood" and not outlets_on_the_frame(grid):
+        raise ValueError("router priority_flood: the edge of the data does not lie on the frame of the grid "
+                         "(nodata around the DEM, or a closed edge); PriorityFlood would see no outlet - use "
+                         "depression_finder or auto")
+    if kind == "priority_flood" or (kind == "auto" and outlets_on_the_frame(grid)):
         try:
             from landlab.components import PriorityFloodFlowRouter
 
