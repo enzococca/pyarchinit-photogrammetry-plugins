@@ -319,7 +319,9 @@ class LandscapePlugin(Plugin):
             return
         if view.tr is None:
             self.context.show_raster("dem")
-        values, transform, _crs = landscape.load(chunk, run_id, layer)
+        base = getattr(view, "_base_size", None)  # the view shows a copy this large: no need to read more
+        side = 2 * max(base) if base else 4096
+        values, transform, _crs = landscape.load(chunk, run_id, layer, max_side=side)
         if self.overlay is None or self.overlay.view is not view:
             self.overlay = Overlay(view)
         kind = landscape.kind_of(layer)
@@ -427,8 +429,12 @@ class LandscapePlugin(Plugin):
                                               "GeoTIFF (*.tif)")
         if not path:
             return
-        landscape.export(chunk, run_id, path, layer)
-        self._status(t("Esportato: {0}", "Exported: {0}").format(path))
+        def done(_result) -> None:
+            self._status(t("Esportato: {0}", "Exported: {0}").format(path))
+
+        # in the background: a multi-band GeoTIFF of a large DEM takes a while to write
+        self.context.run(t("Esportazione del paesaggio", "Exporting the landscape"),
+                         lambda p: landscape.export(chunk, run_id, path, layer), done)
 
     def _export_latest(self, chunk, path, progress=None):
         from . import landscape

@@ -116,7 +116,7 @@ PARAMETERS = {
              "Exponent of the drained area in the erosion law (usually 0.5).", 0.0, 3.0, 3),
     "n_sp": ("Esponente della pendenza n", "Slope exponent n",
              "Esponente della pendenza nella legge di erosione (di solito 1).",
-             "Exponent of the slope in the erosion law (usually 1).", 0.1, 3.0, 3),
+             "Exponent of the slope in the erosion law (usually 1).", 1.0, 3.0, 3),
 }
 FLUVIAL_KEYS = ("K_sed", "K_br", "runoff", "soil_depth", "F_f", "phi", "H_star", "v_s", "m_sp", "n_sp")
 # the layers of a run, as the pane and the tree name them

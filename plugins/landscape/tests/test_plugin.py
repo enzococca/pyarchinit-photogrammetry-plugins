@@ -142,6 +142,93 @@ def test_the_scenario_is_checked_and_estimated(tmp_path):
     assert not (ch.data_dir / "landscape").exists()  # refused before anything was written
 
 
+def _tall_project(tmp_path: Path, rows: int, cols: int = 200):
+    """A chunk whose DEM is a long tell, ``rows`` x ``cols`` cells of 0.5 m (narrower than a tile: the
+    blocks of rows are as small as asked), a band without a value along the west edge."""
+    y, x = np.mgrid[0:rows, 0:cols].astype(np.float64)
+    z = 10.0 + 4.0 * np.maximum(0.0, 1.0 - np.hypot((x - cols / 2) / cols, (y - rows / 2) / rows) * 2.2)
+    z[:, :3] = np.nan
+    doc = ppg.Document()
+    a = doc.add_chunk("Lungo")
+    doc.save(tmp_path / "lungo.ppg")
+    a.crs = CRS
+    _write_dem(a.data_dir / "dem.tif", z)
+    a._set_product("dem", a.data_dir / "dem.tif")
+    doc.save()
+    return doc, a
+
+
+def test_the_results_come_back_block_by_block(tmp_path, fake, monkeypatch):
+    # the DEM never whole in the program's process: the change is interpolated and written by blocks of rows;
+    # the same files as in one block
+    doc, ch = _tall_project(tmp_path, 300)
+    scenario = {**SCENARIO, "cell": 2.0, "snapshots": [5]}
+    monkeypatch.setattr(landscape, "BLOCK_CELLS", 10 ** 9)
+    whole = landscape.run(ch, scenario)
+    monkeypatch.setattr(landscape, "BLOCK_CELLS", 200 * 7)  # 43 blocks of 7 rows, not a multiple of the 4 of a cell
+    blocks = landscape.run(ch, scenario)
+    for layer in ("final", "dz", "area", "snap:5"):
+        a, b = _read(landscape.path_of(ch, whole, layer))[0], _read(landscape.path_of(ch, blocks, layer))[0]
+        assert np.array_equal(np.isnan(a), np.isnan(b)), layer
+        np.testing.assert_allclose(a, b, atol=1e-5, equal_nan=True, err_msg=layer)
+    assert blocks["stats"]["cells"] == whole["stats"]["cells"] > 0
+    assert blocks["stats"]["median"] == pytest.approx(whole["stats"]["median"], abs=1e-6)
+    z = _read(ch.dem_path)[0]
+    ok = np.isfinite(z)
+    dz = _read(landscape.path_of(ch, blocks, "dz"))[0]
+    np.testing.assert_allclose(_read(landscape.path_of(ch, blocks, "final"))[0][ok] - z[ok], dz[ok], atol=1e-5)
+    assert dz[150, 100] < 0  # the summit wears down, in the middle of the blocks too
+    # the comparison with another chunk, block by block too
+    later = doc.add_chunk("Dopo")
+    later.crs = CRS
+    _write_dem(later.data_dir / "dem.tif", np.where(ok, z - 0.1, np.nan))
+    later._set_product("dem", later.data_dir / "dem.tif")
+    c = landscape.compare(ch, blocks["id"], later)
+    diff = _read(ch.data_dir / c["file"])[0]
+    final = _read(landscape.path_of(ch, blocks, "final"))[0]
+    np.testing.assert_allclose(diff[ok], final[ok] - (z[ok] - 0.1), atol=1e-5)
+    assert c["baseline"]["median"] == pytest.approx(0.1, abs=1e-5) and c["stats"]["cells"] == ok.sum()
+
+
+def test_the_memory_is_bounded_by_the_block(tmp_path, fake, monkeypatch):
+    import tracemalloc
+
+    doc, ch = _tall_project(tmp_path, 4000, 250)  # 1 M cells: 8 MB as float64, ~56 MB with the old whole arrays
+    monkeypatch.setattr(landscape, "BLOCK_CELLS", 250 * 16)
+    monkeypatch.setattr(landscape, "STATS_CELLS", 10_000)
+    tracemalloc.start()
+    try:
+        e = landscape.run(ch, {**SCENARIO, "cell": None, "snapshots": [5]})
+        _now, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert e["grid"][0] < 4000 and e["stats"]["cells"] <= 2 * 10_000
+    assert peak < 2_500_000, f"{peak / 1e6:.1f} MB"  # under a third of ONE float64 copy of the DEM (~1 MB measured)
+
+
+def test_large_dems_and_wrong_values_are_said(tmp_path, monkeypatch):
+    doc, ch = _project(tmp_path, later=False)
+    monkeypatch.setattr(landscape, "LARGE_DEM_CELLS", 1000)
+    est = landscape.estimate(ch, SCENARIO, lang="it")
+    assert est["dem_cells"] == N * N and "celle" in est["warning"] and not est["refuse"]
+    assert "minutes" in landscape.estimate(ch, SCENARIO, lang="en")["warning"]
+    for bad, text in (({"cell": -1}, "cell"), ({"dt": -2}, "dt"), ({"fluvial": {"n_sp": 0.5}}, "n_sp")):
+        with pytest.raises(ValueError, match=text):
+            landscape.job_params({**SCENARIO, **bad})
+    # a DEM in degrees: no cell in degrees helps, it is refused (and nothing is run)
+    geo = doc.add_chunk("Gradi")
+    z, _r = tell(n=N, cell=CELL)
+    _write_dem(geo.data_dir / "dem.tif", z, cell=1e-5, origin=(14.0, 41.0), crs="EPSG:4326")
+    geo._set_product("dem", geo.data_dir / "dem.tif")
+    with pytest.raises(ValueError, match="in metri"):
+        landscape.estimate(geo, SCENARIO, lang="it")
+    with pytest.raises(ValueError, match="degrees"):
+        landscape.estimate(geo, SCENARIO, lang="en")
+    with pytest.raises(ValueError):
+        landscape.run(geo, SCENARIO, force=True)
+    assert not (geo.data_dir / "landscape").exists()
+
+
 # ------------------------------------------------------------------ versions, comparison, removal
 def test_the_final_surface_as_a_version_of_the_dem(tmp_path, fake):
     from pyarchinit_photogrammetry.core import versions
@@ -386,6 +473,7 @@ def test_the_pane_in_the_window(tmp_path, fake, monkeypatch):
         plugin.deactivate()
         plugin.context.release()
         assert w.panes.dock(pane) is None
+        assert not {"landlab", "richdem", "netCDF4"} & set(sys.modules)  # never in the program's process
     finally:
         w.setWindowModified(False)
         w.close()
@@ -409,3 +497,4 @@ def test_a_run_through_landlab(tmp_path):
     ok = np.isfinite(z)
     np.testing.assert_allclose(_read(landscape.path_of(ch, e, "final"))[0][ok] - z[ok], dz[ok], atol=1e-5)
     assert dz[N // 2, N // 2] < 0
+    assert not {"landlab", "richdem", "netCDF4"} & set(sys.modules)  # Landlab ran in the worker only

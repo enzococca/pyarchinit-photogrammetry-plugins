@@ -32,7 +32,10 @@ dati è **aperto** (acqua e sedimento escono, come su un pendio che continua olt
 **chiuso** (non esce niente; con l'acqua che scorre la cella di bordo più bassa accanto a una cella
 interna resta aperta come unico sbocco - uno per ogni gruppo di celle interne al bordo: le isole che un
 DEM ha spesso accanto al corpo principale, e le parti unite a esso solo da una strozzatura larga una o
-due celle).
+due celle). Con tutti e due i bordi, un gruppo di celle con un valore che non tocca il bordo dei
+dati - un'isola dentro un buco senza valore (una pozza, un telo, un'ombra) - ha un suo sbocco, la sua
+cella più bassa accanto al buco, e quello che esce da lì è contato fra le uscite (`island_outlets` in
+`balance.json`). Il DEM deve essere in metri: un DEM in gradi viene rifiutato.
 
 ## Scenari predefiniti
 
@@ -92,13 +95,18 @@ superficie finale. Le celle del DEM che l'interpolazione non raggiunge, lungo il
 dei dati, hanno dz 0. L'area drenata torna con il vicino più prossimo. Ogni strato è un GeoTIFF
 float32 con NaN come nessun valore, sulla griglia, nel sistema e con il CRS del DEM; `dz.tif` è
 scritto come differenza delle due superfici float32, così `finale - DEM = dz` vale anche nei file.
+Il DEM non è mai tutto in memoria: GDAL lo legge a finestre per mediarlo sulla griglia della
+simulazione, e il cambiamento torna a blocchi di righe, così un DEM di 10^8 celle chiede circa la
+memoria di un blocco, non del DEM; oltre 50 milioni di celle la stima avverte che scrivere i
+risultati richiede alcuni minuti.
 
 ## I volumi
 
 `balance.json` di ogni simulazione, e il pannello:
 
-* volumi **apparenti** da dz: `eroded_m3`, `deposited_m3`, `net_m3` - quello che mostra la mappa,
-  vuoti compresi;
+* volumi **apparenti** da dz sulla griglia della simulazione: `eroded_m3`, `deposited_m3`,
+  `net_m3`, vuoti compresi (sommando `dz.tif` sulla griglia del DEM eroso e depositato vengono un po'
+  più piccoli, qualche per cento, perché l'interpolazione smussa i picchi; il netto è lo stesso);
 * volumi **solidi**, per cella `(1 - phi) dH + d(substrato)`: `eroded_solid_m3`, `deposited_solid_m3`
   (il suolo è poroso, il materiale sotto no; con il solo creep solido = apparente);
 * quello che esce: `bedload_out_m3` e `wash_load_m3` (i fini F_f), la loro somma `fluvial_out_m3`, e
@@ -106,7 +114,9 @@ scritto come differenza delle due superfici float32, così `finale - DEM = dz` v
   conta anche i vuoti che si formano quando il creep trasforma in suolo il materiale sotto);
 * `closure_m3` = solido eroso - solido depositato - tutto quello che esce, e `closure_percent` del
   solido eroso: circa 0 quando i conti tornano (lo controllano i test, in ogni combinazione di bordi,
-  F_f e phi). Vuoto con `Space` o `ErosionDeposition`, che non dicono quanto esce.
+  F_f e phi). Vuoto con `Space` o `ErosionDeposition`, che non dicono quanto esce. Per la parte del
+  creep è un'identità (quello che il creep porta fuori è misurato come cambiamento solido dei suoi
+  sottopassi): la chiusura controlla i conti dell'acqua che scorre.
 
 Eroso e depositato apparenti differiscono quando il sedimento si deposita (i vuoti) o esce:
 confronta quelli solidi.
@@ -119,7 +129,8 @@ limite di tipo CFL, dall'incisione più rapida possibile: tutta la griglia che d
 i secondi, dai costi misurati su un Apple M4 Pro proporzionati alle celle. Oltre 10 minuti avverte,
 oltre 2 ore rifiuta (`--force` dalla riga di comando). La stima è un tetto: i passi veri seguono la
 portata vera e di solito sono molti meno. Una cella più grande accorcia molto una simulazione (i
-passi della diffusione vanno con il quadrato della cella).
+passi della diffusione vanno con il quadrato della cella). L'esponente della pendenza `n_sp` è
+almeno 1: sotto 1 l'incisione sarebbe più rapida sulle celle piatte e nessuna stima terrebbe.
 
 ## Dove
 

@@ -31,7 +31,11 @@ Either process can be switched off (not both). The cells without a value are clo
 data is **open** (water and sediment leave there, as on a slope that goes on beyond the survey) or
 **closed** (nothing leaves; with running water the lowest edge cell beside a cell inside stays open as
 the one outlet - one for each group of cells inside the edge: the islands a DEM often has beside its
-main body, and the parts joined to it only by a neck one or two cells wide).
+main body, and the parts joined to it only by a neck one or two cells wide). With either edge, a
+group of valid cells that touches no edge of the data - an island inside a hole of nodata (a pool, a
+tarpaulin, a shadow) - has its own outlet, its lowest cell beside the hole, and what leaves there is
+counted as out (`island_outlets` in `balance.json`). The DEM must be in metres: a DEM in degrees is
+refused.
 
 ## Presets
 
@@ -89,14 +93,18 @@ could not see (stones, walls, the edges of trenches) stays in the final surface.
 out of reach of the interpolation, along the outermost edge of the data, get dz 0. The drainage area
 comes back by nearest neighbour. Every layer is a float32 GeoTIFF with NaN as nodata, on the grid, in
 the frame and with the CRS of the DEM; `dz.tif` is written as the difference of the two float32
-surfaces, so `final - DEM = dz` holds in the files.
+surfaces, so `final - DEM = dz` holds in the files. The DEM is never held whole in memory: it is
+averaged onto the simulation grid by GDAL reading it in windows, and the change comes back block by
+block of rows, so a DEM of 10^8 cells needs about the memory of a block, not of the DEM; above
+50 million cells the estimate says that writing the results takes a few minutes.
 
 ## The volumes
 
 `balance.json` of each run, and the pane:
 
-* **bulk** volumes from dz: `eroded_m3`, `deposited_m3`, `net_m3` - what the map shows, pores
-  included;
+* **bulk** volumes from dz on the simulation grid: `eroded_m3`, `deposited_m3`, `net_m3`, pores
+  included (summing `dz.tif` on the DEM's grid gives eroded and deposited volumes a few per cent
+  smaller, because the interpolation smooths the peaks; the net is the same);
 * **solid** volumes, per cell `(1 - phi) dH + d(bedrock)`: `eroded_solid_m3`, `deposited_solid_m3`
   (the soil is porous, the material below is not; with creep alone solid = bulk);
 * what leaves: `bedload_out_m3` and `wash_load_m3` (the fines F_f), their sum `fluvial_out_m3`, and
@@ -104,7 +112,9 @@ surfaces, so `final - DEM = dz` holds in the files.
   the pores gained when creep turns the material below into soil);
 * `closure_m3` = solid eroded - solid deposited - everything out, and `closure_percent` of the eroded
   solid: about 0 when the books close (it is checked in the tests, in every combination of edges,
-  F_f and phi). None with `Space` or `ErosionDeposition`, which do not report their outflow.
+  F_f and phi). None with `Space` or `ErosionDeposition`, which do not report their outflow. The
+  creep part of it is an identity (what creep took out is measured as the solid change of its own
+  sub-steps): the closure checks the books of the running water.
 
 Bulk eroded and deposited differ when sediment is deposited (pores) or leaves: compare the solid
 ones.
@@ -117,7 +127,8 @@ limit, from the fastest incision possible: the whole grid draining to one cell) 
 costs measured on an Apple M4 Pro scaled by the cells. Above 10 minutes it warns, above 2 hours it
 refuses (`--force` on the command line). The estimate is a ceiling: the steps of the real run follow
 the real discharge and are usually far fewer. A larger cell shortens a run a lot (the diffusion
-steps go with the square of the cell).
+steps go with the square of the cell). The slope exponent `n_sp` is at least 1: below 1 the
+incision would be fastest on flat cells and no estimate would hold.
 
 ## Where
 

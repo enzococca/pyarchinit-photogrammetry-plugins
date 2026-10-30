@@ -486,9 +486,16 @@ def summary_text(e: dict) -> str:
     if b.get("eroded_m3") is not None:
         lines.append(t("Eroso {0}, depositato {1}, netto {2}.", "Eroded {0}, deposited {1}, net {2}.").format(
             m3(b["eroded_m3"]), m3(b.get("deposited_m3") or 0), m3(b.get("net_m3", (b.get("deposited_m3") or 0) - b["eroded_m3"]))))
-    out = sum(float(b.get(k) or 0) for k in ("fluvial_out_m3", "diffusion_out_m3"))
+    if b.get("eroded_solid_m3") is not None:
+        lines.append(t("Solido (senza i vuoti): eroso {0}, depositato {1}.",
+                       "Solid (without the voids): eroded {0}, deposited {1}.").format(
+            m3(b["eroded_solid_m3"]), m3(b.get("deposited_solid_m3") or 0)))
+    out = sum(float(b.get(k) or 0) for k in ("fluvial_out_m3", "diffusion_out_solid_m3"))
     if out:
         lines.append(t("Uscito dai margini: {0} (solido).", "Left across the edges: {0} (solid).").format(m3(out)))
+    if b.get("closure_m3") is not None:
+        lines.append(t("Chiusura del bilancio: {0} ({1} %).", "Closure of the balance: {0} ({1} %).").format(
+            m3(b["closure_m3"]), number(float(b.get("closure_percent") or 0), 4)))
     if b.get("max_erosion_m") is not None:
         lines.append(t("Erosione massima {0} m, deposito massimo {1} m.", "Largest erosion {0} m, largest deposit {1} m.")
                      .format(number(abs(float(b["max_erosion_m"])), 3), number(float(b.get("max_deposition_m") or 0), 3)))
