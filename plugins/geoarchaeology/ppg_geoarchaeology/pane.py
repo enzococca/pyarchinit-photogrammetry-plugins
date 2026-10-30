@@ -1,19 +1,21 @@
 """The Geoarcheologia pane: the steps as buttons (their parameters asked in dialogs), the
 boreholes, the surfaces and the sections of the chunk in three tables, the overlay of a surface
 on the raster view with its band, palette and opacity, the model of the units in the 3D view of
-the program, its folder, the units as the model of a new chunk, the exports. The boreholes
-selected are kept in the order they were picked: a section through them follows that order.
+the program, its folder, the units as the model of a new chunk, the exports; a tab for the implicit
+model: where LoopStructural runs, the cuts and their fills, the data added, the last result. The
+boreholes selected are kept in the order they were picked: a section through them follows that order.
 
 Every row of buttons is a :class:`FlowLayout` and the combos keep a short minimum: in a narrow
 dock the pane wraps and never widens the column of the window."""
 from __future__ import annotations
 
 from PySide6.QtCore import QItemSelectionModel, Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHeaderView, QLabel, QPushButton, QSlider, QTableWidget,
-                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHeaderView, QLabel, QPlainTextEdit, QPushButton, QSlider,
+                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
 
+from .implicit import INTERPRETATION, PROFILE_NAMES, PROFILES
 from .overlay import PALETTES
 from .texts import num, t
 
@@ -22,7 +24,8 @@ BANDS = ((1, ("Quota", "Elevation")), (2, ("Varianza di kriging", "Kriging varia
 MODEL_NAMES = {"spherical": ("sferico", "spherical"), "exponential": ("esponenziale", "exponential"),
                "gaussian": ("gaussiano", "Gaussian")}
 METHOD_NAMES = {"ground": ("terreno", "ground"), "idw": ("IDW", "IDW"), "constant": ("costante", "constant"),
-                "none": ("nessun dato", "no data")}
+                "none": ("nessun dato", "no data"), "implicit": ("implicito", "implicit")}
+IMPLICIT_BANDS = {2: ("Varianza jackknife", "Jackknife variance"), 3: ("Implicito meno kriging", "Implicit minus kriging")}
 PALETTE_NAMES = (("", ("Del prodotto", "The product's own")), ("terrain", ("Ipsometrica", "Hypsometric")),
                  ("earth", ("Terra", "Earth")), ("thickness", ("Spessore", "Thickness")), ("grey", ("Grigi", "Greys")),
                  ("grey_inverted", ("Grigi invertiti", "Greys inverted")), ("heat", ("Calore", "Heat")),
@@ -80,6 +83,12 @@ class GeoarchaeologyPane(QWidget):
     open_requested = Signal(str)  # a section id: its drawing
     remove_requested = Signal(str, str)  # what ("product", "section", "boreholes"), its id
     qgis_requested = Signal()
+    implicit_requested = Signal()
+    implicit_install_requested = Signal()
+    implicit_data_requested = Signal()
+    implicit_mark_requested = Signal()
+    implicit_unmark_requested = Signal(str)  # a cut or a fill
+    implicit_profile_changed = Signal(str, str)  # a cut, the shape of its floor
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -147,6 +156,8 @@ class GeoarchaeologyPane(QWidget):
         self.tabs.addTab(self.t_holes, t("Sondaggi", "Boreholes"))
         self.tabs.addTab(self.t_products, t("Superfici", "Surfaces"))
         self.tabs.addTab(self.t_sections, t("Sezioni", "Sections"))
+        self.t_implicit = self._implicit_tab()
+        self.tabs.addTab(self.t_implicit, t("Modello implicito", "Implicit model"))
         lay.addWidget(self.tabs, 1)
         holder3 = QWidget()
         row3 = FlowLayout(holder3)
@@ -205,6 +216,83 @@ class GeoarchaeologyPane(QWidget):
         self.sections: list[dict] = []
         self.set_state([], [], [], "")
 
+    def _implicit_tab(self) -> QWidget:
+        """The block of the implicit model: where LoopStructural runs, what can be done, the table of
+        the cuts and their fills, the last result."""
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(4, 4, 4, 4)
+        note = QLabel(t("Un'alternativa al kriging per tagli, riempimenti e contatti rari. ", "An alternative to kriging "
+                        "for cuts, fills and sparse contacts. ") + t(*INTERPRETATION))
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        self.l_loop = QLabel("")
+        self.l_loop.setWordWrap(True)
+        lay.addWidget(self.l_loop)
+        holder = QWidget()
+        bar = FlowLayout(holder)
+        self.b_loop_install = QPushButton(t("Installa LoopStructural...", "Install LoopStructural..."))
+        self.b_implicit = QPushButton(t("Costruisci...", "Build..."))
+        self.b_implicit.setToolTip(t("Superfici, solidi e volumi in un processo separato: il modello del chunk viene "
+                                     "sostituito alla fine",
+                                     "Surfaces, solids and volumes in a process of its own: the model of the chunk is "
+                                     "replaced at the end"))
+        self.b_implicit_data = QPushButton(t("Contatti e giaciture da file...", "Contacts and orientations from a file..."))
+        self.b_mark = QPushButton(t("Segna un riempimento...", "Mark a fill..."))
+        self.b_unmark = QPushButton(t("Togli il segno", "Remove the mark"))
+        for b in (self.b_loop_install, self.b_implicit, self.b_implicit_data, self.b_mark, self.b_unmark):
+            bar.addWidget(b)
+        lay.addWidget(holder)
+        self.t_cuts = _table([t("Unità", "Unit"), t("Tipo", "Kind"), t("Forma del fondo", "Shape of the floor"),
+                              t("Riempimenti o taglio", "Fills or cut")])
+        lay.addWidget(self.t_cuts, 1)
+        self.l_implicit = QPlainTextEdit()
+        self.l_implicit.setReadOnly(True)
+        self.l_implicit.setMinimumHeight(60)
+        lay.addWidget(self.l_implicit, 2)
+        self.b_loop_install.clicked.connect(self.implicit_install_requested)
+        self.b_implicit.clicked.connect(self.implicit_requested)
+        self.b_implicit_data.clicked.connect(self.implicit_data_requested)
+        self.b_mark.clicked.connect(self.implicit_mark_requested)
+        self.b_unmark.clicked.connect(lambda: self.current_mark() and self.implicit_unmark_requested.emit(self.current_mark()))
+        self.t_cuts.itemSelectionChanged.connect(self._update_buttons)
+        self.marks: list[str] = []
+        self.loop_available = True
+        return tab
+
+    def current_mark(self) -> str | None:
+        rows = sorted({i.row() for i in self.t_cuts.selectedIndexes()})
+        return self.marks[rows[0]] if rows and rows[0] < len(self.marks) else None
+
+    def set_implicit(self, status: str, can_install: bool, available: bool, cuts: dict, summary: str) -> None:
+        """The block of the implicit model: where LoopStructural runs, whether it can be installed and can
+        run here, the marks (:func:`.implicit.cuts_of`), the text of the last result."""
+        self.l_loop.setText(status)
+        self.b_loop_install.setVisible(bool(can_install))
+        self.loop_available = bool(available)
+        keep = self.current_mark()
+        self.marks = list(cuts)
+        self.t_cuts.setRowCount(len(self.marks))
+        for r, name in enumerate(self.marks):
+            mark = cuts[name]
+            is_cut = mark["kind"] == "cut"
+            fills = ", ".join(mark["fills"]) if is_cut else mark["fills"]
+            for c, v in ((0, name), (1, t("taglio", "cut") if is_cut else t("riempimento", "fill")), (3, fills)):
+                self.t_cuts.setItem(r, c, QTableWidgetItem(v))
+            self.t_cuts.setItem(r, 2, QTableWidgetItem(""))
+            if is_cut:
+                combo = _combo([(k, PROFILE_NAMES[k]) for k in PROFILES], 6)
+                combo.setCurrentIndex(max(combo.findData(mark["profile"]), 0))
+                combo.currentIndexChanged.connect(
+                    lambda _i, n=name, w=combo: self.implicit_profile_changed.emit(n, str(w.currentData())))
+                self.t_cuts.setCellWidget(r, 2, combo)
+            else:
+                self.t_cuts.removeCellWidget(r, 2)
+            if name == keep:
+                self.t_cuts.selectRow(r)
+        self.l_implicit.setPlainText(summary)
+        self._update_buttons()
+
     # --------------------------------------------------------------- selections
     def _selected_in_table(self) -> list[str]:
         rows = sorted({i.row() for i in self.t_holes.selectedIndexes()})
@@ -261,7 +349,14 @@ class GeoarchaeologyPane(QWidget):
             b.setEnabled(self.has_model)
         self.b_overlay.setEnabled(product is not None)
         self.c_band.setEnabled(entry is not None and entry.get("kind") == "surface")
+        implicit = entry is not None and entry.get("method") == "implicit"
+        for i, (band, names) in enumerate(BANDS):
+            self.c_band.setItemText(i, t(*(IMPLICIT_BANDS.get(band, names) if implicit else names)))
         self.b_open.setEnabled(self.current_section() is not None)
+        self.b_implicit.setEnabled(has_holes and self.loop_available)
+        self.b_implicit_data.setEnabled(has_holes)
+        self.b_mark.setEnabled(has_holes)
+        self.b_unmark.setEnabled(self.current_mark() is not None)
         self.b_export.setEnabled(has_holes)
         self.b_qgis.setEnabled(has_holes)
         tab = self.tabs.currentWidget()

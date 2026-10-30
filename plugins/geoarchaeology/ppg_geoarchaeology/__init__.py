@@ -7,13 +7,15 @@ photogrammetric survey (the DEM and the orthomosaic of the chunk).
   kriging, the sections (a trace drawn on the view with the program's drawing, lent to the plugin,
   or through the boreholes chosen), the stratigraphic columns, the 3D model of the units with their
   volumes (shown in the program's 3D view, its folder opened in the file manager, or made the model
-  of a new chunk, to cut it with the *Taglia* button of the 3D view); the boreholes and the section
+  of a new chunk, to cut it with the *Taglia* button of the 3D view); the implicit model of the
+  deposits with LoopStructural (:mod:`.implicit`: pits, ditches and their fills, sparse contacts,
+  dips, in a process of its own); the boreholes and the section
   traces as layers of the view (drawn again on every raster the view shows), a surface or a
   thickness over the orthomosaic or DEM with palette and opacity, the exports, the QGIS project;
 * *Plugin > Geoarcheologia* menu actions for the same; *File > Esporta > Sondaggi e superfici
   geoarcheologiche (GeoPackage)*;
-* ``ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|export|remove
-  PROJECT ...``.
+* ``ppg plugin geoarchaeology import|list|order|surfaces|section|model|model-chunk|logs|export|remove|
+  implicit|implicit-data|implicit-status|implicit-install PROJECT ...``.
 
 Everything lives in ``chunk.meta["geoarchaeology"]`` and in ``<chunk data>/geoarchaeology/``. The
 window's parts it uses come from the plugin API of the program (``request_line``,
@@ -50,7 +52,10 @@ class GeoarchaeologyPlugin(Plugin):
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
+        from . import environment
+
         self.context = context
+        environment.configure(context)
         context.add_action(t("Importa sondaggi...", "Import boreholes..."), self.import_dialog,
                            tip=t("CSV dei collari e degli intervalli, o una tabella sola",
                                  "CSV of the collars and of the intervals, or one table"))
@@ -70,10 +75,14 @@ class GeoarchaeologyPlugin(Plugin):
         context.add_action(t("Nascondi la sovrapposizione", "Hide the overlay"), self.hide_overlay)
         context.add_command("geoarchaeology", self.command,
                             help="boreholes and their logs, contact surfaces by kriging, sections, 3D model of the units: "
-                                 "import, list, order, surfaces, section, model, model-chunk, logs, export, remove")
+                                 "import, list, order, surfaces, section, model, model-chunk, logs, export, remove, "
+                                 "implicit, implicit-data, implicit-status, implicit-install")
         context.add_exporter(t("Sondaggi e superfici geoarcheologiche (GeoPackage)",
                                "Boreholes and geoarchaeological surfaces (GeoPackage)"), ".gpkg", self._export_gpkg)
         if context.window is not None:
+            context.add_action(t("Modello implicito...", "Implicit model..."), self.implicit_dialog, processing=True,
+                               tip=t("Tagli, riempimenti e contatti rari con LoopStructural, in un processo separato",
+                                     "Cuts, fills and sparse contacts with LoopStructural, in a process of its own"))
             self._install_pane(context.window)
             # the layers of the plugin go with the raster the view leaves: drawn again on the next one
             context.on_raster_loaded(self._raster_loaded)
@@ -136,11 +145,19 @@ class GeoarchaeologyPlugin(Plugin):
         p.open_requested.connect(self.open_section)
         p.remove_requested.connect(self.remove_dialog)
         p.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
+        p.implicit_requested.connect(self.implicit_dialog)
+        p.implicit_install_requested.connect(self.implicit_install_dialog)
+        p.implicit_data_requested.connect(self.implicit_data_dialog)
+        p.implicit_mark_requested.connect(self.implicit_mark_dialog)
+        p.implicit_unmark_requested.connect(self.implicit_unmark)
+        p.implicit_profile_changed.connect(self.implicit_profile)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         self.refresh_pane()
 
     def refresh_pane(self) -> None:
         from . import boreholes as bh
+        from . import environment
+        from . import implicit
         from . import model as model_mod
         from . import section as section_mod
         from . import surfaces as sf
@@ -148,6 +165,12 @@ class GeoarchaeologyPlugin(Plugin):
         if self.pane is None:
             return
         chunk = self._chunk()
+        problem = environment.unsupported()
+        kind = environment.where()[0]
+        status = t("Non disponibile: ", "Not available: ") + problem if problem else environment.status_text()
+        self.pane.set_implicit(status, problem is None and kind is None, problem is None,
+                               implicit.cuts_of(chunk) if chunk is not None else {},
+                               implicit.summary_text(chunk) if chunk is not None else "")
         if chunk is None:
             self.pane.set_state([], [], [], "")
             return
@@ -640,6 +663,9 @@ class GeoarchaeologyPlugin(Plugin):
             if r.get("outside_dem"):
                 line += t(" (+ {0} m³ dove manca il DEM)", " (+ {0} m³ where there is no DEM)").format(
                     num(r["outside_dem"]["volume_m3"], 0))
+            if r.get("kind") == "cut":
+                line = t("{0}: da {1} a {2} m³ secondo la forma del fondo", "{0}: from {1} to {2} m³ by the shape of the "
+                         "floor").format(r["unit"], num(r["range_min"], 0), num(r["range_max"], 0))
             if r.get("to_floor"):
                 line += t(" (fino al fondo, {0} m)", " (down to the floor, {0} m)").format(num(reg.get("floor") or 0.0, 2))
             if r.get("clipped"):
@@ -647,6 +673,229 @@ class GeoarchaeologyPlugin(Plugin):
             rows.append(line)
         head = [t("Modello in {0}", "Model in {0}").format(folder)] if folder is not None else []
         return "\n".join(head + rows)
+
+    # ------------------------------------------------------------------ the implicit model
+    def _loop_ready(self, then) -> bool:
+        """LoopStructural can run now. When it is not installed, offer to install it and ``then()`` after;
+        the first time in a session, check in the background that it works and ``then()`` after."""
+        from . import environment
+        from . import implicit
+
+        if implicit.WORKER is not None:  # another worker (the tests): nothing to check
+            return True
+        problem = environment.unsupported()
+        if problem:
+            self._message("warning", problem)
+            return False
+        window = self.context.window
+        if environment.where()[0] is not None:
+            if environment.known_usable() or window is None:
+                return True
+
+            def checked(info):
+                self.refresh_pane()
+                if environment.usable(info):
+                    then()
+                else:
+                    self._message("warning", environment.problem_text(info))
+
+            self.context.run(t("Prova di LoopStructural", "Trying LoopStructural"), lambda p: environment.check(p), checked)
+            return False
+        if window is None:
+            print(environment.status_text())
+            return False
+        from pyarchinit_photogrammetry.gui import dialogs
+
+        text = t("LoopStructural non è installato. Il plugin lo installa in un ambiente suo, separato dal programma: "
+                 "Python 3.12 e LoopStructural da PyPI con uv, circa 300 MB e qualche minuto. Installarlo ora?",
+                 "LoopStructural is not installed. The plugin installs it in an environment of its own, apart from the "
+                 "program: Python 3.12 and LoopStructural from PyPI with uv, about 300 MB and a few minutes. Install it now?")
+        if dialogs.choice(window, "question", self.title, text, [t("Installa", "Install")]) != 0:
+            return False
+        self._loop_install(then)
+        return False
+
+    def _loop_install(self, then=None) -> None:
+        from . import environment
+
+        def done(_env):
+            self.refresh_pane()
+            if then is not None:
+                then()
+
+        self.context.run(t("Installazione di LoopStructural", "Installing LoopStructural"),
+                         lambda p: environment.install(p), done)
+
+    def implicit_install_dialog(self) -> None:
+        from . import environment
+
+        problem = environment.unsupported()
+        if problem:
+            self._message("warning", problem)
+            return
+        kind, version = environment.where()
+        if kind == "local":
+            self._message("info", t("LoopStructural {0} è già installato per questo Python: il plugin usa quello.",
+                                    "LoopStructural {0} is already installed for this Python: the plugin uses it.")
+                          .format(version))
+            return
+        if kind == "environment" and self.context.window is not None:
+            from pyarchinit_photogrammetry.gui import dialogs
+
+            text = t("LoopStructural è già installato ({0}). Installarlo di nuovo?",
+                     "LoopStructural is already installed ({0}). Install it again?").format(version)
+            if dialogs.choice(self.context.window, "question", self.title, text,
+                              [t("Installa di nuovo", "Install again")]) != 0:
+                return
+        self._loop_install()
+
+    def implicit_dialog(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
+
+        chunk = self._need_boreholes()
+        window = self.context.window
+        if chunk is None:
+            return
+        if not self._loop_ready(self.implicit_dialog):
+            return
+        v = {"cell": None, "folds": 12, "series": "", "explode": None}
+        if window is not None:
+            v = ParamDialog.ask(window, t("Modello implicito", "Implicit model"), [
+                Field("cell", t("Cella (m, vuota = automatica)", "Cell (m, empty = automatic)"), None, kind="optional_float"),
+                Field("folds", t("Gruppi di sondaggi per la verifica leave-one-out (0 = nessuna verifica)",
+                                 "Groups of boreholes for the leave-one-out check (0 = no check)"), 12, minimum=0, maximum=50),
+                Field("series", t("Per unità (es.: US 2=profondità, US 5=quota; vuoto = come le superfici)",
+                                  "By unit (e.g. US 2=depth, US 5=elevation; empty = as the surfaces)"), "", kind="text"),
+                Field("explode", t("Nella vista 3D, unità separate in verticale di (m, vuoto = come stanno)",
+                                   "In the 3D view, units set apart vertically by (m, empty = as they lie)"), None,
+                      kind="optional_float"),
+            ], intro=t("Un'alternativa al kriging, costruita su richiesta: disegna i tagli e i loro riempimenti, e i "
+                       "contatti visti in pochi sondaggi prendono la forma degli strati intorno. Il modello attuale viene "
+                       "sostituito alla fine; i contorni dei tagli vengono dalle US disegnate. È un'interpretazione "
+                       "dei dati, non una misura.",
+                       "An alternative to kriging, built on request: it draws cuts and their fills, and the contacts seen "
+                       "in a few boreholes take the shape of the layers around them. The present model is replaced at "
+                       "the end; the outlines of the cuts come from the US drawn. It is an interpretation of the data, "
+                       "not a measure."))
+            if not v:
+                return
+            self.context.store_drawings()  # the US and the spot heights drawn in the window into the project
+
+        def done(_reg):
+            self._after(t("Modello implicito pronto", "Implicit model ready"))
+            if window is not None:
+                self.show_model(quiet=True)
+                self._message("info", self.implicit_text(chunk))
+
+        try:
+            overrides = self._series_text(chunk, v.get("series"))
+        except ValueError as exc:
+            self._message("warning", str(exc))
+            return
+        from . import implicit
+
+        self._run(t("Modello implicito", "Implicit model"),
+                  lambda p: implicit.build(chunk, cell=v["cell"], folds=int(v["folds"] or 0) or None, explode=v.get("explode"),
+                                           overrides=overrides, progress=p), done)
+
+    @staticmethod
+    def _series_text(chunk, text) -> dict:
+        """The units named in a text of modes (``US 2=depth, US 5=quota``)."""
+        from . import boreholes as bh
+        from . import surfaces as sf
+
+        _default, given = sf.parse_modes(text or "")
+        return {sf.unit_of(u, bh.order(chunk)): m for u, m in given.items()}
+
+    @staticmethod
+    def implicit_text(chunk) -> str:
+        from . import implicit
+        from . import model as model_mod
+
+        return implicit.summary_text(chunk) + "\n\n" + t("File in {0}", "Files in {0}").format(model_mod.folder(chunk))
+
+    def implicit_data_dialog(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
+
+        from . import implicit
+
+        chunk = self._need_boreholes()
+        window = self.context.window
+        if chunk is None or window is None:
+            return
+        csv_filter = "CSV (*.csv *.txt *.tsv *.dat);;" + t("Tutti", "All") + " (*)"
+        v = ParamDialog.ask(window, t("Contatti e giaciture da file", "Contacts and orientations from a file"), [
+            Field("contacts", t("Contatti (unità, x, y, z, tipo)", "Contacts (unit, x, y, z, kind)"), "", kind="file_open",
+                  filter=csv_filter),
+            Field("orientations", t("Giaciture (unità, x, y, z, inclinazione, immersione)",
+                                    "Orientations (unit, x, y, z, dip, dip direction)"), "", kind="file_open",
+                  filter=csv_filter),
+        ], intro=t("Contatti visti in sezione o sulla superficie, oltre ai sondaggi; il tipo «wall» è un punto della "
+                   "parete di un taglio. L'immersione è in gradi da nord in senso orario. Anche le quote del programma "
+                   "con il numero di una US sono contatti di quella unità.",
+                   "Contacts seen in a section or on the surface, beyond the boreholes; the kind 'wall' is a point of the "
+                   "wall of a cut. The dip direction is in degrees clockwise from north. The program's spot heights with "
+                   "the number of a US are contacts of that unit too."))
+        if not v or not (v["contacts"] or v["orientations"]):
+            return
+        try:
+            report = implicit.set_data(chunk, v["contacts"] or None, v["orientations"] or None)
+        except (ValueError, OSError) as exc:
+            self._message("warning", str(exc))
+            return
+        self._after(t("Dati del modello implicito aggiornati", "Data of the implicit model updated"))
+        self._message("info", implicit.data_text(report))
+
+    def implicit_mark_dialog(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
+
+        from . import boreholes as bh
+        from . import implicit
+
+        chunk = self._need_boreholes()
+        window = self.context.window
+        if chunk is None or window is None:
+            return
+        units = [(c, c) for c in bh.order(chunk)]
+        cuts = [(u, u) for u, m in implicit.cuts_of(chunk).items() if m["kind"] == "cut"]
+        v = ParamDialog.ask(window, t("Taglio e riempimento", "Cut and fill"), [
+            Field("fill", t("Riempimento (l'unità nei log)", "Fill (the unit in the logs)"), units[0][0] if units else "",
+                  choices=units),
+            Field("cut", t("Taglio (il suo numero di US, o un nome)", "Cut (its US number, or a name)"), "",
+                  choices=cuts, kind="combo_text"),
+            Field("profile", t("Forma del fondo", "Shape of the floor"), implicit.DEFAULT_PROFILE,
+                  choices=[(k, t(*implicit.PROFILE_NAMES[k])) for k in implicit.PROFILES]),
+        ], intro=t("Un taglio non ha materiale: nei log si vede il riempimento. Il contorno viene dalla US disegnata per il "
+                   "taglio o per il riempimento; pochi sondaggi non dicono la forma del fondo, per questo il volume è "
+                   "dato come intervallo fra le tre forme.",
+                   "A cut has no material: the logs show its fill. The outline comes from the US drawn for the cut or the "
+                   "fill; a few boreholes cannot tell the shape of the floor, so the volume is given as a range between "
+                   "the three shapes."))
+        if not v or not str(v["cut"]).strip():
+            return
+        try:
+            implicit.mark_fill(chunk, v["fill"], v["cut"])
+            implicit.set_profile(chunk, bh.resolve_unit(v["cut"], bh.order(chunk)) or str(v["cut"]).strip(), v["profile"])
+        except ValueError as exc:
+            self._message("warning", str(exc))
+            return
+        self._after()
+
+    def implicit_unmark(self, name: str) -> None:
+        from . import implicit
+
+        chunk = self._chunk()
+        if chunk is not None and name:
+            implicit.unmark(chunk, name)
+            self._after()
+
+    def implicit_profile(self, cut: str, profile: str) -> None:
+        from . import implicit
+
+        chunk = self._chunk()
+        if chunk is not None:
+            implicit.set_profile(chunk, cut, profile)
+            self._after()
 
     # ------------------------------------------------------------------ sections
     def draw_section(self) -> None:
@@ -861,8 +1110,10 @@ class GeoarchaeologyPlugin(Plugin):
         except RuntimeError as exc:
             self._message("warning", str(exc))
             return
+        third = t("implicito meno kriging (m)", "implicit minus kriging (m)") if e.get("method") == "implicit" else \
+            t("correzione (m)", "correction (m)")
         what = {1: t("quota", "elevation"), 2: t("varianza (m²)", "variance (m²)"),
-                3: t("correzione (m)", "correction (m)")}[band] if kind == "surface" else t("spessore (m)", "thickness (m)")
+                3: third}[band] if kind == "surface" else t("spessore (m)", "thickness (m)")
         if self.pane is not None:
             digits = 3 if kind == "surface" and band == 2 else 2
             self.pane.set_limits(f"{e['name']}, {what}: {num(lo, digits)} - {num(hi, digits)}")
@@ -908,12 +1159,17 @@ class GeoarchaeologyPlugin(Plugin):
     def remove_dialog(self, what: str, ident: str) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import choice
 
+        from . import implicit
+
         chunk = self._chunk()
         window = self.context.window
         if chunk is None:
             return
-        question = {"product": t("Togliere tutte le superfici e gli spessori (formano una pila)?",
-                                 "Remove all the surfaces and thicknesses (they form a stack)?"),
+        whole = t("Togliere tutte le superfici e gli spessori (formano una pila)?",
+                  "Remove all the surfaces and thicknesses (they form a stack)?")
+        if what == "product" and implicit.is_product(ident):
+            whole = t("Togliere il modello implicito e le sue superfici?", "Remove the implicit model and its surfaces?")
+        question = {"product": whole,
                     "section": t("Togliere la sezione {0} e i suoi disegni?", "Remove the section {0} and its drawings?"),
                     "boreholes": t("Togliere i sondaggi {0}?", "Remove the boreholes {0}?")}[what].format(ident)
         if window is not None and choice(window, "question", self.title, question,
@@ -930,8 +1186,13 @@ class GeoarchaeologyPlugin(Plugin):
         if chunk is None:
             return
         if what == "product":
+            from . import implicit
+
             self.hide_overlay()
-            sf.remove(chunk)
+            if implicit.is_product(ident):
+                implicit.remove(chunk)
+            else:
+                sf.remove(chunk)
         elif what == "section":
             section_mod.remove(chunk, ident)
             from .export import write_layers
@@ -1004,6 +1265,27 @@ class GeoarchaeologyPlugin(Plugin):
         p.add_argument("--label", default=None,
                        help="label of the new chunk (default: 'Unità geoarcheologiche - <chunk>' in the language of "
                             "the interface, numbered when taken)")
+        p = sub.add_parser("implicit", help="the implicit model with LoopStructural: cuts, fills, sparse contacts; "
+                                            "surfaces, solids, volumes (it becomes the model of the chunk)")
+        p.add_argument("project")
+        p.add_argument("--cell", type=float, default=None, help="m (default: the surfaces', at most 120000 columns)")
+        p.add_argument("--folds", type=int, default=12, help="groups of boreholes of the leave-one-out, 0 for none")
+        p.add_argument("--cut", action="append", default=[], metavar="UNIT=PROFILE",
+                       help="a cut and the shape of its floor: flat, bowl, v (repeated for more)")
+        p.add_argument("--fill", action="append", default=[], metavar="FILL=CUT",
+                       help="a unit of the logs that fills a cut (repeated for more)")
+        p.add_argument("--series", default="", help="'US2=depth,US5=elevation' (default: as the surfaces)")
+        p.add_argument("--floor", type=float, default=None, help="elevation of the base of the model")
+        p.add_argument("--explode", type=float, default=None, help="metres between the units in the file of the 3D view")
+        p = sub.add_parser("implicit-data", help="contacts (unit, x, y, z, kind) and orientations (unit, x, y, z, dip, "
+                                                 "dip direction) of the implicit model, from CSV files")
+        p.add_argument("project")
+        p.add_argument("--contacts", default=None, help="CSV; kind 'wall' = a point of the wall of a cut")
+        p.add_argument("--orientations", default=None, help="CSV; degrees, the direction clockwise from north")
+        p = sub.add_parser("implicit-status", help="where LoopStructural runs; with a project, the last implicit model")
+        p.add_argument("project", nargs="?", default=None)
+        p = sub.add_parser("implicit-install", help="install LoopStructural in an environment of the plugin (uv)")
+        p.add_argument("--force", action="store_true", help="also when this Python has it, or again")
         p = sub.add_parser("logs", help="stratigraphic columns: one borehole or a panel")
         p.add_argument("project")
         p.add_argument("ids", nargs="*", help="the boreholes (all by default)")
@@ -1019,8 +1301,8 @@ class GeoarchaeologyPlugin(Plugin):
         p = sub.add_parser("remove", help="forget what the plugin made")
         p.add_argument("project")
         p.add_argument("target", nargs="?", default="all",
-                       help="all (or boreholes: everything goes with them), surfaces, sections, model, the id of a "
-                            "section or of a borehole")
+                       help="all (or boreholes: everything goes with them), surfaces, sections, model, implicit, the "
+                            "id of a section or of a borehole")
         for sp in sub.choices.values():
             sp.add_argument("--chunk", default=None, help="label of the chunk (the active one by default)")
         sub.add_parser("help", help="this help and that of every command (ppg itself answers --help)")
@@ -1035,12 +1317,18 @@ class GeoarchaeologyPlugin(Plugin):
         from pyarchinit_photogrammetry.core.progress import print_progress
 
         from . import boreholes as bh
+        from . import environment
         from . import export as export_mod
+        from . import implicit
         from . import logs
         from . import model as model_mod
         from . import section as section_mod
         from . import surfaces as sf
 
+        if a.what == "implicit-install":
+            return self._implicit_install_cli(a.force, print_progress)
+        if a.what == "implicit-status" and not a.project:
+            return self._implicit_status_cli()
         doc = ppg.Document.open(a.project)
         chunk = doc.chunk if not a.chunk else next((c for c in doc.chunks if c.label == a.chunk), None)
         if chunk is None:
@@ -1087,6 +1375,23 @@ class GeoarchaeologyPlugin(Plugin):
                 solids = sum(1 for r in model_mod.registry(chunk).get("units", []) if r.get("ply"))
                 print(f"{new.label}: {solids} units, {report['faces']} faces, {report['vertices']} vertices "
                       f"(chunk key {new.key})")
+            elif a.what == "implicit-status":
+                code = self._implicit_status_cli()
+                print(implicit.summary_text(chunk))
+                return code
+            elif a.what == "implicit-data":
+                print(implicit.data_text(implicit.set_data(chunk, a.contacts, a.orientations)))
+            elif a.what == "implicit":
+                for text in a.cut:
+                    unit, _, profile = text.partition("=")
+                    implicit.mark_cut(chunk, unit, profile.strip() or implicit.DEFAULT_PROFILE)
+                for text in a.fill:
+                    fill, _, cut = text.partition("=")
+                    implicit.mark_fill(chunk, fill, cut)
+                implicit.build(chunk, cell=a.cell, folds=a.folds or None, floor=a.floor, explode=a.explode,
+                               overrides=self._series_text(chunk, a.series), progress=print_progress)
+                print(implicit.summary_text(chunk))
+                print(model_mod.folder(chunk))
             elif a.what == "logs":
                 drawn = logs.draw(chunk, a.ids or None, path=a.out, vertical=a.vertical, scale=a.scale)
                 for path in drawn:
@@ -1106,8 +1411,38 @@ class GeoarchaeologyPlugin(Plugin):
         return 0
 
     @staticmethod
+    def _implicit_status_cli() -> int:
+        from . import environment
+
+        if environment.where()[0] is not None:
+            try:
+                environment.check(again=True)
+            except environment.LoopMissing as exc:
+                print(exc)
+                return 1
+        print(environment.status_text())
+        return 0 if environment.known_usable() else 1
+
+    @staticmethod
+    def _implicit_install_cli(force: bool, progress) -> int:
+        from . import environment
+
+        kind = environment.where()[0]
+        if kind is not None and not force:
+            print(environment.status_text() + " " + t("Niente da installare (--force per installarlo di nuovo).",
+                                                      "Nothing to install (--force to install it again)."))
+            return 0
+        try:
+            print(environment.install(progress))
+        except (RuntimeError, OSError) as exc:
+            print(f"error: {exc}")
+            return 1
+        return 0
+
+    @staticmethod
     def _remove_cli(chunk, what: str) -> None:
         from . import boreholes as bh
+        from . import implicit
         from . import model as model_mod
         from . import section as section_mod
         from . import surfaces as sf
@@ -1124,6 +1459,8 @@ class GeoarchaeologyPlugin(Plugin):
             sf.remove(chunk)
         elif what == "model":
             model_mod.remove(chunk)
+        elif what == "implicit":
+            implicit.remove(chunk)
         elif what == "sections":
             section_mod.remove(chunk)
         elif any(s["id"] == what or s["name"] == what for s in section_mod.entries(chunk)):
@@ -1131,6 +1468,7 @@ class GeoarchaeologyPlugin(Plugin):
         elif bh.get(chunk, what) is not None:
             bh.remove(chunk, [what])
         else:
-            raise ValueError(f"nothing called {what!r}: all, boreholes, surfaces, sections, model, a section or a borehole")
+            raise ValueError(f"nothing called {what!r}: all, boreholes, surfaces, sections, model, implicit, a section or "
+                             "a borehole")
         write_layers(chunk)
         print(f"{what} removed")
