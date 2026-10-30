@@ -157,7 +157,7 @@ class GeoarchaeologyPane(QWidget):
         self.tabs.addTab(self.t_products, t("Superfici", "Surfaces"))
         self.tabs.addTab(self.t_sections, t("Sezioni", "Sections"))
         self.t_implicit = self._implicit_tab()
-        self.tabs.addTab(self.t_implicit, t("Modello implicito", "Implicit model"))
+        self.tabs.addTab(self.t_implicit, t("Implicito", "Implicit"))
         lay.addWidget(self.tabs, 1)
         holder3 = QWidget()
         row3 = FlowLayout(holder3)

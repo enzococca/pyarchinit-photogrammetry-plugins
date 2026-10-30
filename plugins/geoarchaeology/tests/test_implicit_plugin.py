@@ -137,10 +137,10 @@ def test_the_outline_and_its_narrowest_part(tmp_path):
     from pyarchinit_photogrammetry.archaeo.stratigraphy import UnitPolygon
 
     d = ch.meta["drawings"]
-    d["units"] = [UnitPolygon(box(X0 + 20, Y0 + 39.5, X0 + 80, Y0 + 40.5), us="7").to_dict()]  # a ditch 1 m wide
+    d["units"] = [UnitPolygon(box(X0 + 20, Y0 + 39.2, X0 + 80, Y0 + 40.2), us="7").to_dict()]  # a ditch 1 m wide
     job, plan = job_of(ch, tmp_path / "ditch", cell=1.0)
     note = next(n for n in plan.notes if n["code"] == "outline_narrow")
-    assert note["unit"] == "T1" and note["use"] < 1.0 and note["width"] <= 1.0
+    assert note["unit"] == "T1" and note["cells"] == 1.0 and note["use"] == pytest.approx(1.0 / 3)
     assert "m" in implicit.warning_text(note)
     # a bump on a wide pit says nothing of its width
     wide = np.zeros((60, 60), bool)
@@ -148,6 +148,12 @@ def test_the_outline_and_its_narrowest_part(tmp_path):
     wide[(rr - 30) ** 2 + (cc - 30) ** 2 <= 400] = True
     wide[9, 30] = True
     assert implicit._narrowest(wide) > 30
+    two = np.zeros((20, 40), bool)
+    two[9:11, 2:38] = True  # an even width keeps its cells
+    assert implicit._narrowest(two) == 2.0
+    three = np.zeros((20, 40), bool)
+    three[9:12, 2:38] = True
+    assert implicit._narrowest(three) == 3.0
 
 
 def test_no_drawing_no_outline(tmp_path):
@@ -216,7 +222,7 @@ def test_contacts_orientations_and_spot_heights(tmp_path):
     assert [CENTRE[0], CENTRE[1], 99.0] in job["cuts"]["T1"]["base"]
     assert [CENTRE[0] + 7, CENTRE[1], 100.0, "wall"] in job["cuts"]["T1"]["base"]
     note = next(n for n in plan.notes if n["code"] == "unknown_units")
-    assert "US 99" in note["units"] and "55" in note["units"]
+    assert note["units"] == "US 99" and plan.spots_ignored == 1  # a spot height on no unit is not data of the model
     us3 = next(o for o in job["orientations"] if o[0] == "US 3")
     assert us3[4:] == pytest.approx([np.sin(np.radians(30)), 0.0, np.cos(np.radians(30))], abs=1e-9)  # dips east
     wall = next(o for o in job["orientations"] if o[0] == "T1")
@@ -241,6 +247,9 @@ def test_marks(tmp_path):
         implicit.set_profile(ch, "T1", "cone")
     with pytest.raises(ValueError):
         implicit.mark_fill(ch, "US 99", "T1")
+    # a unit that is a fill already: the floor of its cut, as many times as it is asked
+    assert implicit.mark_cut(ch, "US 7", "v") == "T1" and implicit.mark_cut(ch, "us7", "bowl") == "T1"
+    assert implicit.cuts_of(ch)["T1"]["profile"] == "bowl"
     implicit.unmark(ch, "T1")
     assert implicit.cuts_of(ch) == {}
     # a unit of the logs marked as a cut: a cut has no material, the unit is its fill
@@ -248,6 +257,122 @@ def test_marks(tmp_path):
     assert implicit.cuts_of(ch)["Taglio US 7"] == {"kind": "cut", "fills": ["US 7"], "profile": "v"}
     implicit.unmark(ch, "US 7")
     assert implicit.cuts_of(ch)["Taglio US 7"]["fills"] == []
+    # one cut in two spellings is one cut
+    implicit.unmark(ch, "Taglio US 7")
+    implicit.mark_cut(ch, "US 8", "flat")
+    implicit.mark_fill(ch, "US 7", "us8")
+    assert implicit.cuts_of(ch)["US 8"]["fills"] == ["US 7"] and "us8" not in implicit.cuts_of(ch)
+
+
+def test_a_cut_named_in_the_language_of_the_interface(tmp_path, monkeypatch):
+    doc, ch = pit_site(tmp_path)
+    implicit.unmark(ch, "T1")
+    monkeypatch.setattr(implicit, "t", lambda it, en: en)
+    assert implicit.mark_cut(ch, "US 7") == "Cut US 7"
+
+
+def test_small_rules_of_the_data(tmp_path):
+    doc, ch = pit_site(tmp_path)
+    # "auto" is no choice: the mode of the surfaces stays
+    assert implicit.series_of(ch, {"US 2": "auto"}) == implicit.series_of(ch)
+    # a USM spot height is not the US with that number; a US that is no unit is not said
+    ch.meta["drawings"] = {"units": [], "quote": [
+        {"x": X0 + 1, "y": Y0 + 1, "quota_q": 99.0, "us_q": "3", "unita_tipo_q": "USM"},
+        {"x": X0 + 2, "y": Y0 + 2, "quota_q": 99.0, "us_q": "3", "unita_tipo_q": "US"},
+        {"x": X0 + 3, "y": Y0 + 3, "quota_q": 99.0, "us_q": "40", "unita_tipo_q": "US"}]}
+    job, plan = job_of(ch, tmp_path)
+    spots = [r for r in job["contacts"] if r[5] is None]
+    assert [(r[1], r[0]) for r in spots] == [(X0 + 2, "US 3")]
+    assert plan.spots_ignored == 2 and not any(n["code"] == "unknown_units" for n in plan.notes)
+    # an orientation on a cut without walls does nothing, and says so
+    or_file = write(tmp_path, "o.csv", f"unit;x;y;z;dip;dip direction\nT1;{X0 + 50};{Y0 + 40};100;80;90\n")
+    implicit.set_data(ch, orientations=or_file)
+    job, plan = job_of(ch, tmp_path / "o")
+    assert not job["orientations"] and {"code": "orientation_ignored", "unit": "T1"} in plan.notes
+    # at most 12 groups
+    assert job_of(ch, tmp_path / "f", folds=50)[0]["options"]["folds"] == 12
+
+
+def test_a_hole_without_elevation_through_a_fill_is_inside(tmp_path):
+    doc, ch = project(tmp_path, dem=False)
+    text = logs(tmp_path).read_text()
+    collars = "sondaggio;x;y;z\n" + "".join(sorted({
+        f"{r[0]};{r[1]};{r[2]};100\n" for r in (ln.split(";") for ln in text.splitlines()[1:]) if r[0] != "P1"}))
+    collars += f"P1;{CENTRE[0] - 3};{CENTRE[1]};\n"
+    intervals = "\n".join(";".join(c for k, c in enumerate(ln.split(";")) if k not in (1, 2)) for ln in text.splitlines())
+    bh.import_files(ch, [write(tmp_path, "c.csv", collars), write(tmp_path, "i.csv", intervals + "\n")])
+    assert bh.get(ch, "P1").z is None
+    implicit.mark_fill(ch, "US 7", "T1")
+    data = implicit.gather(bh.load(ch), implicit.cuts_of(ch))
+    assert [CENTRE[0] - 3, CENTRE[1]] in data.inside["T1"]
+    assert [CENTRE[0] - 3, CENTRE[1]] not in data.outside["T1"] and len(data.base["T1"]) == 1
+
+
+def test_a_drawing_or_a_spot_height_changed_makes_the_model_old(tmp_path, fake):
+    doc, ch = pit_site(tmp_path)
+    draw(ch, "7")
+    implicit.build(ch)
+    assert not implicit.is_stale(ch) and "cambiati" not in implicit.summary_text(ch)
+    draw(ch, "7", 3.0, (CENTRE[0] + 20, CENTRE[1]))
+    assert implicit.is_stale(ch) and "cambiati" in implicit.summary_text(ch)
+    implicit.build(ch)
+    assert not implicit.is_stale(ch)
+    ch.meta["drawings"]["quote"].append({"x": X0, "y": Y0, "quota_q": 99.0, "us_q": "2", "unita_tipo_q": "US"})
+    assert implicit.is_stale(ch)
+
+
+def test_an_outline_past_the_grid(tmp_path):
+    from shapely.geometry import box
+
+    from pyarchinit_photogrammetry.archaeo.stratigraphy import UnitPolygon
+
+    doc, ch = pit_site(tmp_path)  # surfaces: their grid stays
+    g = sf.grid_of(ch)
+    east = g.x0 + g.width * g.cell
+    ch.meta["drawings"] = {"quote": [], "units": [UnitPolygon(box(east - 20, Y0 + 34, east + 60, Y0 + 46), us="7").to_dict()]}
+    job, plan = job_of(ch, tmp_path)
+    note = next(n for n in plan.notes if n["code"] == "outline_clipped")
+    assert note["drawn"] == pytest.approx(960.0) and note["kept"] == pytest.approx(240.0, rel=0.05)
+    assert "960" in implicit.warning_text(note)
+    ch.meta["drawings"]["units"] = [UnitPolygon(box(east + 50, Y0, east + 70, Y0 + 20), us="7").to_dict()]
+    job, plan = job_of(ch, tmp_path / "out")
+    assert job["cuts"]["T1"]["outline"] is None and {"code": "outline_outside", "unit": "T1"} in plan.notes
+    # no surfaces yet: the grid goes as far as the outline
+    (tmp_path / "s").mkdir()
+    doc2, ch2 = pit_site(tmp_path / "s", surfaces=False)
+    ch2.meta["drawings"] = {"quote": [], "units": [UnitPolygon(box(east - 20, Y0 + 34, east + 60, Y0 + 46), us="7").to_dict()]}
+    job, plan = job_of(ch2, tmp_path / "wide")
+    assert plan.grid.x0 + plan.grid.width * plan.grid.cell >= east + 60
+    assert np.load(job["cuts"]["T1"]["outline"]).sum() * plan.grid.cell ** 2 == pytest.approx(960.0, rel=0.05)
+    assert not any(n["code"] == "outline_clipped" for n in plan.notes)
+
+
+def test_a_cell_finer_than_the_surfaces_is_built_as_asked(tmp_path, fake):
+    import rasterio
+
+    doc, ch = project(tmp_path)
+    bh.import_files(ch, [logs(tmp_path)])
+    sf.build(ch, cell=2.0)
+    implicit.mark_fill(ch, "US 7", "T1")
+    g = sf.grid_of(ch)
+    job, plan = job_of(ch, tmp_path, cell=0.5)
+    assert plan.grid.cell == 0.5 and plan.factor is None and (plan.grid.x0, plan.grid.y0) == (g.x0, g.y0)
+    assert plan.grid.width == 4 * g.width and plan.grid.height == 4 * g.height
+    assert implicit.model_frame(ch, bh.load(ch), 4.0).factor == 2  # a whole factor stays a coarsening
+    assert implicit.model_frame(ch, bh.load(ch), 3.0).factor is None
+    reg = implicit.build(ch, cell=0.5, folds=None)
+    e = next(e for e in reg["surfaces"] if e["unit"] == "US 2")
+    with rasterio.open(ch.data_dir / e["file"]) as src:
+        assert src.width == 4 * g.width and np.isfinite(src.read(3)).any()  # band 3 resampled onto it
+    rows = {r["unit"]: r for r in model.registry(ch)["units"]}
+    assert rows["US 2"]["kriging_m3"] == pytest.approx(next(  # from the kriging's own grid: exact whatever the cell
+        t["volume_m3"] for t in sf.registry(ch)["thickness"] if t["unit"] == "US 2"))
+
+
+def test_the_volumes_compare_with_the_kriging_on_the_cells_with_a_dem(tmp_path):
+    doc, ch = pit_site(tmp_path)
+    _job, plan = job_of(ch, tmp_path, cell=1.0)
+    assert plan.has_dem.sum() * plan.grid.cell ** 2 == 100.0 * 80.0  # not a cell around it
 
 
 # ------------------------------------------------------------------ what comes back
@@ -308,8 +433,8 @@ def test_the_results(tmp_path, fake):
     new, report = model.to_chunk(doc, ch)
     assert report["faces"] > 0 and new.label.startswith("Unità geoarcheologiche")
     text = implicit.summary_text(ch)
-    assert "interpretazione" in text and "T1: da 50,0 a 100,0 m³" in text and "kriging" in text
-    assert "T1: da 50 a 100 m³" in sys.modules["ppg_geoarchaeology"].GeoarchaeologyPlugin.model_text(m)
+    assert "interpretazione" in text and "T1, il riempimento: da 50,0 a 100,0 m³" in text and "kriging" in text
+    assert "T1, il riempimento: da 50 a 100 m³" in sys.modules["ppg_geoarchaeology"].GeoarchaeologyPlugin.model_text(m)
     assert "implicit model" in export.summary(ch)
 
 
@@ -438,7 +563,7 @@ def test_the_command_line(tmp_path, fake, capsys):
     assert "1 contatto letto" in capsys.readouterr().out
     assert plugin.command("implicit", p, "--cut", "T1=flat", "--fill", "us7=T1", "--folds", "4", "--series", "US2=depth") == 0
     out = capsys.readouterr().out
-    assert "interpretazione" in out and "T1: da 50,0 a 100,0 m³" in out
+    assert "interpretazione" in out and "T1, il riempimento: da 50,0 a 100,0 m³" in out
     reg = ppg.Document.open(p).chunk.meta["geoarchaeology"]
     assert reg["implicit"]["cuts"]["T1"]["profile"] == "flat" and reg["model"]["method"] == "implicit"
     assert plugin.command("implicit", p, "--cut", "T1=cone") == 1
@@ -543,11 +668,109 @@ def test_the_pane(tmp_path, monkeypatch, fake):
 
 
 # ------------------------------------------------------------------ the real worker
-def test_a_drawn_pit_with_the_real_worker(tmp_path, monkeypatch):
+@pytest.fixture
+def real(monkeypatch):
     python = loop_python()
     if python is None or not python.exists():
         pytest.skip("no Python with LoopStructural (PPG_TEST_LOOP)")
     monkeypatch.setattr(implicit, "WORKER", (python, None))
+
+
+def _tilted(tmp_path: Path):
+    """16 holes, US 1 to 0.5 m and US 2 to 2 m under a ground rising to the north-east, so the contacts,
+    taken by elevation, rise about half a degree to the east."""
+    rows = ["sondaggio;x;y;da;a;us"]
+    for i, (x, y) in enumerate((10.0 + 26 * a, 10.0 + 20 * b) for a in range(4) for b in range(4)):
+        rows += [f"S{i};{X0 + x};{Y0 + y};0;0,5;US 1", f"S{i};{X0 + x};{Y0 + y};0,5;2;US 2",
+                 f"S{i};{X0 + x};{Y0 + y};2;6;US 3"]
+    doc, ch = project(tmp_path)
+    bh.import_files(ch, [write(tmp_path, "t.csv", "\n".join(rows) + "\n")])
+    sf.build(ch)
+    return doc, ch
+
+
+def test_a_dip_against_the_contact_does_not_turn_the_model_over(tmp_path, real):
+    doc, ch = _tilted(tmp_path)
+    series = {"US 2": "elevation", "US 3": "elevation"}
+    implicit.build(ch, cell=4.0, folds=None, overrides=series)
+    plain = {r["unit"]: r["volume_m3"] for r in model.registry(ch)["units"]}
+    b = bh.get(ch, "S0")
+    z = b.z - next(iv.top for iv in b.intervals if iv.unit == "US 3")
+    implicit.set_data(ch, orientations=write(tmp_path, "o.csv", "unit;x;y;z;dip;dip direction\n"
+                                                                f"US 3;{b.x};{b.y};{z};10;90\n"))
+    reg = implicit.build(ch, cell=4.0, folds=None, overrides=series)
+    rows = {r["unit"]: r["volume_m3"] for r in model.registry(ch)["units"]}
+    for unit, volume in plain.items():
+        assert rows[unit] == pytest.approx(volume, rel=0.05), unit
+    tops = {e["unit"]: sf.read_band(ch.data_dir / e["file"], 1)[0] for e in reg["surfaces"]}
+    assert np.nanmedian(tops["US 3"]) < np.nanmedian(tops["US 2"]) < np.nanmedian(tops["US 1"])
+
+
+def test_a_dip_that_agrees_still_acts(tmp_path, real):
+    """A line of holes west to east says nothing of the north-south tilt: the measure does."""
+    rows = ["sondaggio;x;y;da;a;us"]
+    for i, x in enumerate(np.linspace(10, 90, 6)):
+        rows += [f"S{i};{X0 + x};{CENTRE[1]};0;1;US 1", f"S{i};{X0 + x};{CENTRE[1]};1;3;US 2", f"S{i};{X0 + x};{CENTRE[1]};3;6;US 3"]
+    doc, ch = project(tmp_path)
+    bh.import_files(ch, [write(tmp_path, "t.csv", "\n".join(rows) + "\n")])
+    b = bh.get(ch, "S2")
+    implicit.set_data(ch, orientations=write(tmp_path, "o.csv", "unit;x;y;z;dip;dip direction\n"
+                                                                f"US 3;{b.x};{b.y};{b.z - 3};5;0\n"))
+    reg = implicit.build(ch, cell=4.0, folds=None, overrides={"US 2": "elevation", "US 3": "elevation"})
+    assert not any(w["code"] == "orientation_dropped" for w in reg["warnings"])
+    e = next(e for e in reg["surfaces"] if e["unit"] == "US 3")
+    north, south = (float(bh.raster_values(ch.data_dir / e["file"], b.x, b.y + d)[0]) for d in (12.0, -12.0))
+    assert north - south == pytest.approx(-24.0 * np.tan(np.radians(5.0)), abs=0.8)
+
+
+def test_contacts_and_spot_heights_shape_the_model(tmp_path, real):
+    doc, ch = _tilted(tmp_path)
+    series = {"US 2": "elevation", "US 3": "elevation"}
+    x, y = X0 + 49.0, Y0 + 40.0  # between the holes
+    before = implicit.build(ch, cell=2.0, folds=None, overrides=series)
+    e = next(e for e in before["surfaces"] if e["unit"] == "US 3")
+    level = float(bh.raster_values(ch.data_dir / e["file"], x, y)[0])
+    spot = level - 0.8
+    ch.meta["drawings"] = {"units": [], "quote": [{"x": x, "y": y, "quota_q": spot, "us_q": "3", "unita_tipo_q": "US"}]}
+    implicit.set_data(ch, write(tmp_path, "c.csv", f"us;x;y;z\nUS 3;{x + 2};{y};{spot}\n"))
+    after = implicit.build(ch, cell=2.0, folds=None, overrides=series)
+    e = next(e for e in after["surfaces"] if e["unit"] == "US 3")
+    moved = float(bh.raster_values(ch.data_dir / e["file"], x, y)[0])
+    assert spot < moved < level - 0.1  # towards them: the field is smooth, two points do not make a dent of their own
+    assert implicit.registry(ch)["spots_ignored"] == 0
+
+
+def test_a_cut_with_walls_keeps_its_undercut(tmp_path, real):
+    """A bottle pit: a mouth of 4 m, 7 m at 2 m down, the walls seen on a section."""
+    from test_geoarchaeology import ground
+
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
+
+    rows = ["sondaggio;x;y;da;a;us"]
+    for i, (dx, dy) in enumerate((a, b) for a in (-30.0, -15.0, 15.0, 30.0) for b in (-25.0, 25.0)):
+        rows += [f"S{i};{CENTRE[0] + dx};{CENTRE[1] + dy};0;2;US 1", f"S{i};{CENTRE[0] + dx};{CENTRE[1] + dy};2;6;US 2"]
+    for i, (dx, dy) in enumerate(((0, 0), (2, 0), (-2, 0), (0, 2), (0, -2))):
+        rows += [f"P{i};{CENTRE[0] + dx};{CENTRE[1] + dy};0;3,5;US 7", f"P{i};{CENTRE[0] + dx};{CENTRE[1] + dy};3,5;6;US 2"]
+    doc, ch = project(tmp_path)
+    bh.import_files(ch, [write(tmp_path, "t.csv", "\n".join(rows) + "\n")])
+    implicit.mark_fill(ch, "US 7", "T1")
+    draw(ch, "7", 4.0)
+    a = 2 * np.pi * np.arange(24) / 24
+    g = float(ground(CENTRE[0] - X0, CENTRE[1] - Y0))
+    table = ["us;x;y;z;tipo"]
+    for r, depth, step in ((7.0, 2.0, 1), (5.5, 0.9, 1), (5.5, 3.2, 1), (5.5, 3.5, 4)):
+        table += [f"T1;{CENTRE[0] + r * np.cos(v)};{CENTRE[1] + r * np.sin(v)};{g - depth};wall" for v in a[::step]]
+    implicit.set_data(ch, write(tmp_path, "w.csv", "\n".join(table).replace(".", ",") + "\n"))
+    reg = implicit.build(ch, cell=1.0, folds=None)
+    assert reg["cut_results"]["T1"]["field"] is True
+    rows_ = {r["unit"]: r for r in model.registry(ch)["units"]}
+    mesh = read_mesh(ch.data_dir / rows_["US 7"]["ply"])
+    r = np.hypot(mesh.xyz[:, 0] - CENTRE[0], mesh.xyz[:, 1] - CENTRE[1])
+    assert r.max() > 5.5  # past the mouth
+    assert mesh.xyz[r > 5.0, 2].max() < g - 0.3  # under a roof: the layer stays over it
+
+
+def test_a_drawn_pit_with_the_real_worker(tmp_path, real):
     doc, ch = pit_site(tmp_path)
     implicit.set_profile(ch, "T1", "flat")
     draw(ch, "7")
@@ -555,7 +778,8 @@ def test_a_drawn_pit_with_the_real_worker(tmp_path, monkeypatch):
     m = model.registry(ch)
     rows = {r["unit"]: r for r in m["units"]}
     fill = rows["US 7"]["volume_m3"]
-    assert rows["T1"]["range_min"] * 0.9 <= fill <= rows["T1"]["range_max"] * 1.1
+    assert rows["T1"]["range_min"] <= fill <= rows["T1"]["range_max"]  # the range of the fill, under the topsoil
+    assert rows["T1"]["range_max"] < max(rows["T1"]["cut_range"].values())
     truth = np.pi * RADIUS ** 2 * (PIT - TOP)
     assert fill == pytest.approx(truth, rel=0.25)
     assert reg["cut_results"]["T1"]["edge"] == "drawn" and reg["cut_results"]["T1"]["field"] is False

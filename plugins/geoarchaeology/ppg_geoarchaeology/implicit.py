@@ -22,9 +22,10 @@ The data
       under ``implicit/data/``; the spot heights of the program with a US that is a unit are contacts of it.
 
 The frame
-    The grid is that of the surfaces, coarser (:func:`model_frame`) up to :data:`MAX_COLUMNS` columns; the
-    voxels are at most a tenth of the thinnest unit and of the shallowest cut, at most :data:`MAX_LEVELS`
-    levels (:func:`voxel_step`).
+    The grid is that of the surfaces, coarser up to :data:`MAX_COLUMNS` columns; a cell asked for is built as
+    asked, finer than the surfaces too, on a grid with their corner (:func:`model_frame`). Without surfaces
+    the grid holds the boreholes and the drawn outlines of the cuts. The voxels are at most a tenth of
+    the thinnest unit and of the shallowest cut, at most :data:`MAX_LEVELS` levels (:func:`voxel_step`).
 
 The results (:func:`build`)
     Nothing is touched until the worker has finished: ``implicit/`` and ``model/`` are written aside and
@@ -36,6 +37,8 @@ The results (:func:`build`)
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import shutil
 import time
@@ -61,6 +64,7 @@ FOLDS = 12
 MAX_COLUMNS = 120_000  # columns of the grid when no cell is given
 MAX_LEVELS = 200  # levels of voxels
 MIN_OUTLINE_CELLS = 3.0  # the narrowest part of a plan, in cells
+OUTLINE_KEPT = 0.95  # a plan with less than this share of the polygon drawn is said to be cut
 OUTLINE_BUMPS = 0.05  # share of a plan that may be narrower than the width told: the bumps of the line
 VOXEL_SHARE = 0.1  # a voxel is at most this share of the thinnest unit and of the shallowest cut
 TOLERANCE = bh.TOLERANCE
@@ -122,6 +126,18 @@ WARNINGS = {
     "outline_empty": ("{unit}: il contorno disegnato è più piccolo di una cella ed è stato ignorato: serve una cella "
                       "minore.",
                       "{unit}: the drawn outline is smaller than a cell and was ignored: a smaller cell is needed."),
+    "outline_outside": ("{unit}: il contorno disegnato è tutto fuori dalla griglia ed è stato ignorato: ricostruisci le "
+                        "superfici con un margine più grande.",
+                        "{unit}: the drawn outline is wholly outside the grid and was ignored: build the surfaces "
+                        "again with a larger margin."),
+    "outline_clipped": ("{unit}: il contorno disegnato misura {drawn} m², sulla griglia ne restano {kept} m²: esce dalla "
+                        "griglia, o la cella è grande per la sua forma. Il volume ne risente.",
+                        "{unit}: the drawn outline measures {drawn} m², {kept} m² are left on the grid: it leaves the "
+                        "grid, or the cell is large for its shape. The volume suffers."),
+    "orientation_dropped": ("{unit}: la giacitura in {x}, {y} contraddice il contatto e avrebbe rovesciato il modello: "
+                            "lasciata fuori.",
+                            "{unit}: the orientation at {x}, {y} contradicts the contact and would have turned the "
+                            "model over: left out."),
     "voxels_clamped": ("Voxel di {used} m invece di {wanted} m: più di {levels} livelli non si possono fare; le "
                        "unità sottili e i tagli poco profondi sono resi male.",
                        "Voxels of {used} m instead of {wanted} m: no more than {levels} levels can be made; thin "
@@ -139,8 +155,10 @@ WARNINGS = {
     "wall_without_cut": ("{unit}: una riga «wall» di un'unità che non è un taglio né un riempimento: usata come "
                          "contatto.",
                          "{unit}: a 'wall' row of a unit that is neither a cut nor a fill: used as a contact."),
-    "orientation_ignored": ("{unit}: giacitura di un riempimento: non serve al modello, lasciata fuori.",
-                            "{unit}: orientation of a fill: of no use to the model, left out."),
+    "orientation_ignored": ("{unit}: giacitura di un riempimento, o di un taglio senza pareti: non serve al modello, "
+                            "lasciata fuori.",
+                            "{unit}: orientation of a fill, or of a cut without walls: of no use to the model, "
+                            "left out."),
 }
 PROFILE_NAMES = {"flat": ("fondo piatto", "flat floor"), "bowl": ("a conca", "bowl"), "v": ("a V", "V-shaped")}
 
@@ -173,6 +191,21 @@ def _stale(chunk) -> None:
     state = _state(chunk)
     if state.get("made"):
         state["stale"] = True
+
+
+def drawn_hash(chunk) -> str:
+    """A fingerprint of the drawn units and of the spot heights: they decide plans and contacts."""
+    d = chunk.meta.get("drawings") or {}
+    units = sorted((str(u.get("wkt")), str(u.get("us")), str(u.get("tipo"))) for u in d.get("units") or [])
+    spots = sorted((str(q.get("x")), str(q.get("y")), str(q.get("quota_q")), str(q.get("us_q")), str(q.get("unita_tipo_q")))
+                   for q in d.get("quote") or [])
+    return hashlib.sha1(json.dumps([units, spots]).encode("utf-8")).hexdigest()
+
+
+def is_stale(chunk) -> bool:
+    """The data of the last build changed: logs, order, marks, files, drawings or spot heights."""
+    reg = registry(chunk)
+    return bool(reg.get("made")) and (bool(reg.get("stale")) or reg.get("drawn") != drawn_hash(chunk))
 
 
 # ------------------------------------------------------------------ cuts and fills
@@ -211,7 +244,8 @@ def _profile(profile: str) -> str:
 
 def mark_cut(chunk, unit: str, profile: str = DEFAULT_PROFILE) -> str:
     """``unit`` is a cut with the floor ``profile``; returns its name. A cut has no material: a unit found
-    in the logs is what fills it, and the cut takes the name ``Taglio <unit>``."""
+    in the logs is what fills it, and the cut takes the name ``Taglio <unit>``; a unit that is a fill
+    already sets the floor of its cut."""
     _profile(profile)
     codes = bh.order(chunk)
     name = bh.resolve_unit(unit, codes) or str(unit).strip()
@@ -219,10 +253,12 @@ def mark_cut(chunk, unit: str, profile: str = DEFAULT_PROFILE) -> str:
         raise ValueError(t("Un taglio vuole un nome", "A cut needs a name"))
     marks = cuts_of(chunk)
     if marks.get(name, {}).get("kind") == "fill":
-        raise ValueError(t("{0} è già un riempimento di {1}", "{0} is already a fill of {1}")
-                         .format(name, marks[name]["fills"]))
+        cut = marks[name]["fills"]
+        marks[cut]["profile"] = profile
+        _store(chunk, marks)
+        return cut
     if name in codes and not marks.get(name, {}).get("fills"):
-        cut = f"Taglio {name}"
+        cut = t("Taglio {0}", "Cut {0}").format(name)
         marks[cut] = {"kind": "cut", "fills": [name], "profile": profile}
         marks[name] = {"kind": "fill", "fills": cut, "profile": None}
         _store(chunk, marks)
@@ -241,7 +277,8 @@ def mark_fill(chunk, fill: str, cut: str) -> str:
         raise ValueError(t("Unità sconosciuta: {0} (le unità: {1})", "Unknown unit: {0} (the units: {1})")
                          .format(fill, ", ".join(codes)))
     marks = cuts_of(chunk)
-    target = bh.resolve_unit(cut, codes) or str(cut).strip()
+    known = codes + [u for u, m in marks.items() if m["kind"] == "cut" and u not in codes]
+    target = bh.resolve_unit(cut, known) or str(cut).strip()
     if not target or target == name:
         raise ValueError(t("{0} non può riempire {1}", "{0} cannot fill {1}").format(name, target or "?"))
     if marks.get(target, {}).get("kind") == "fill":
@@ -296,6 +333,7 @@ class Data:
     thick: dict = field(default_factory=dict)
     depths: dict = field(default_factory=dict)  # cut -> the depths of its base at the holes
     notes: list = field(default_factory=list)
+    spots_ignored: int = 0  # spot heights on a US that is not a unit of the model: not data of it
 
 
 def _stretches(b) -> list:
@@ -330,18 +368,19 @@ def gather(holes, marks: dict) -> Data:
     for b in holes:
         if not b.intervals:
             continue
-        if b.z is None:
-            without.append(b.id)
-            continue
         stretches = _stretches(b)
         truncated = set()
+        if b.z is None:
+            without.append(b.id)
         for cut in cuts:
             own = [i for i, s in enumerate(stretches) if fill_of.get(s[0]) == cut or s[0] == cut]
             if not own:
                 continue
-            data.inside[cut].append([b.x, b.y])
+            data.inside[cut].append([b.x, b.y])  # also without an elevation: it says where the cut is
             data.above[cut].update(s[0] for s in stretches[:own[0]])
             tops[cut].append(stretches[own[0]][1])
+            if b.z is None:
+                continue
             depth = stretches[own[-1]][2]
             row = [b.x, b.y, b.z - depth]
             if own[-1] == len(stretches) - 1 and depth >= b.bottom - TOLERANCE:
@@ -350,6 +389,8 @@ def gather(holes, marks: dict) -> Data:
                 data.base[cut].append(row)
                 data.depths[cut].append(depth)
                 truncated.add(own[-1] + 1)  # its top is the floor of the cut, not the top of that layer
+        if b.z is None:
+            continue
         last = len(stretches) - 1
         for i, (unit, top, base) in enumerate(stretches):
             if i < last or base < b.bottom - TOLERANCE:
@@ -387,7 +428,7 @@ def _spot_heights(chunk) -> list:
         if "x" not in q or "y" not in q or us in (None, "") or z in (None, ""):
             continue
         try:
-            out.append((f"{q.get('unita_tipo_q') or 'US'} {us}", str(us), float(q["x"]), float(q["y"]), float(z)))
+            out.append((str(q.get("unita_tipo_q") or "US"), str(us), float(q["x"]), float(q["y"]), float(z)))
         except (TypeError, ValueError):
             continue
     return out
@@ -422,15 +463,21 @@ def add_measures(chunk, data: Data, codes: list, marks: dict) -> None:
         unit = resolve(r["unit"])
         if unit is not None:
             place(unit, float(r["x"]), float(r["y"]), float(r["z"]), r.get("kind") == "wall")
-    for drawn, us, x, y, z in _spot_heights(chunk):
-        unit = bh.resolve_unit(drawn, known) or resolve(us)
-        if unit is not None:
+    for kind, us, x, y, z in _spot_heights(chunk):
+        unit = bh.resolve_unit(f"{kind} {us}", known)
+        if unit is None and bh.normalise(kind) == "us":  # as model.polygons_for: USM 3 is only a USM
+            unit = bh.resolve_unit(us, known)
+        if unit is None:
+            data.spots_ignored += 1
+        else:
             place(unit, x, y, z)
     for r in (stored.get("orientations") or {}).get("rows", []):
         unit = resolve(r["unit"])
         if unit is None:
             continue
-        if marks.get(unit, {}).get("kind") == "fill":
+        mark = marks.get(unit, {})
+        walled = any(len(row) > 3 for row in data.base.get(unit, ()))
+        if mark.get("kind") == "fill" or (mark.get("kind") == "cut" and not walled):
             data.notes.append({"code": "orientation_ignored", "unit": unit})
             continue
         x, y, z = float(r["x"]), float(r["y"]), float(r["z"])
@@ -479,6 +526,7 @@ def series_of(chunk, overrides: dict | None = None, data: Data | None = None) ->
     column = column_of(bh.order(chunk), marks, data)
     layers = [e["unit"] for e in column if e["kind"] == "layer"]
     given = {bh.resolve_unit(k, layers) or str(k): sf.mode_word(v) for k, v in (overrides or {}).items()}
+    given = {u: m for u, m in given.items() if m != "auto"}
     known = sf.registry(chunk).get("modes") or {}
     ground = bh.dem_path(chunk) is not None or any(b.z is not None for b in holes)
     depth, own = [], []
@@ -509,17 +557,29 @@ def series_of(chunk, overrides: dict | None = None, data: Data | None = None) ->
 
 
 # ------------------------------------------------------------------ the frame
+def _lattice(mask: np.ndarray) -> np.ndarray:
+    """A plan on half cells, cell centres at odd indices, the points between them true when they have only
+    cells of the plan around them: a width of n cells spans n half cells from the middle to the edge."""
+    out = np.zeros((2 * mask.shape[0] + 1, 2 * mask.shape[1] + 1), dtype=bool)
+    out[1::2, 1::2] = mask
+    out[1::2, 2:-1:2] = mask[:, :-1] & mask[:, 1:]
+    out[2:-1:2, 1::2] = mask[:-1, :] & mask[1:, :]
+    out[2:-1:2, 2:-1:2] = mask[:-1, :-1] & mask[:-1, 1:] & mask[1:, :-1] & mask[1:, 1:]
+    return out
+
+
 def _narrowest(mask: np.ndarray) -> float:
-    """The narrowest part of a plan, in cells: from the ridge of its distance transform, a ridge point
-    held by the circle of a wider one saying nothing, and the narrowest circles left out as long as they
-    hold less than :data:`OUTLINE_BUMPS` of the plan (the bumps of a hand-drawn line are ridges too)."""
+    """The narrowest part of a plan, in cells: from the ridge of its distance transform on half cells, a
+    ridge point held by the circle of a wider one saying nothing, and the narrowest circles left out as long
+    as they hold less than :data:`OUTLINE_BUMPS` of the plan (the bumps of a hand-drawn line are ridges too,
+    and so a short neck goes unsaid)."""
     from scipy import ndimage
 
-    padded = np.pad(mask, 1)
-    reach = ndimage.distance_transform_edt(padded)
-    rows, cols = np.nonzero(padded & (reach >= ndimage.maximum_filter(reach, size=3)))
-    covered = np.zeros(padded.shape, dtype=bool)
-    held = []  # the radius of every circle and the cells of the plan only it holds, widest first
+    lattice = _lattice(mask)
+    reach = ndimage.distance_transform_edt(lattice)
+    rows, cols = np.nonzero(lattice & (reach >= ndimage.maximum_filter(reach, size=3)))
+    covered = np.zeros(lattice.shape, dtype=bool)
+    held = []  # the radius of every circle and the points of the plan only it holds, widest first
     for i in np.argsort(-reach[rows, cols], kind="stable"):
         row, col = rows[i], cols[i]
         if covered[row, col]:
@@ -527,70 +587,119 @@ def _narrowest(mask: np.ndarray) -> float:
         radius = float(reach[row, col])
         n = int(radius)
         top, left = max(row - n, 0), max(col - n, 0)
-        ys, xs = np.ogrid[top - row:min(row + n + 1, padded.shape[0]) - row,
-                          left - col:min(col + n + 1, padded.shape[1]) - col]
+        ys, xs = np.ogrid[top - row:min(row + n + 1, lattice.shape[0]) - row,
+                          left - col:min(col + n + 1, lattice.shape[1]) - col]
         new = (ys ** 2 + xs ** 2 <= radius ** 2) & ~covered[top:top + ys.size, left:left + xs.size]
         covered[top:top + ys.size, left:left + xs.size] |= new
-        held.append((radius, int((new & padded[top:top + ys.size, left:left + xs.size]).sum())))
+        held.append((radius, int((new & lattice[top:top + ys.size, left:left + xs.size]).sum())))
     total = sum(n for _r, n in held)
     so_far = 0
     for radius, n in held:
         so_far += n
         if so_far >= (1.0 - OUTLINE_BUMPS) * total:
-            return 2.0 * radius - 1.0
-    return 2.0 * held[-1][0] - 1.0
+            return radius
+    return held[-1][0]
 
 
-def outline(chunk, grid: sf.Grid, cut: str, fills: list) -> tuple[np.ndarray | None, list]:
-    """The plan of a cut on ``grid``, a boolean raster, from the US drawn for it or else for its fills
-    (a cell belongs to it when its centre does); None when nobody drew them. With the warnings."""
-    from rasterio.features import rasterize
+def _drawn_shape(chunk, cut: str, fills: list):
+    """The union of the US drawn for a cut, else for its fills; None when nobody drew them."""
     from shapely.ops import unary_union
 
     drawn = model_mod.drawn_units(chunk)
     polygons = model_mod.polygons_for(cut, drawn) if drawn else []
     if not polygons:
         polygons = [p for f in fills for p in model_mod.polygons_for(f, drawn)]
-    if not polygons:
+    return unary_union([p.geometry for p in polygons]) if polygons else None
+
+
+def outline(chunk, grid: sf.Grid, cut: str, fills: list) -> tuple[np.ndarray | None, list]:
+    """The plan of a cut on ``grid``, a boolean raster, from the US drawn for it or else for its fills
+    (a cell belongs to it when its centre does); None when nobody drew them. With the warnings."""
+    from rasterio.features import rasterize
+
+    shape = _drawn_shape(chunk, cut, fills)
+    if shape is None:
         return None, []
-    shape = unary_union([p.geometry for p in polygons])
     mask = rasterize([(shape, 1)], out_shape=(grid.height, grid.width), transform=grid.transform, fill=0,
                      all_touched=False, dtype="uint8").astype(bool)
     if not mask.any():
-        return None, [{"code": "outline_empty", "unit": cut}]
+        x0, y0, x1, y1 = shape.bounds
+        off = x1 <= grid.x0 or x0 >= grid.x0 + grid.width * grid.cell or y0 >= grid.y0 or \
+            y1 <= grid.y0 - grid.height * grid.cell
+        return None, [{"code": "outline_outside" if off else "outline_empty", "unit": cut}]
+    notes = []
+    kept = float(mask.sum() * grid.cell ** 2)
+    if kept < OUTLINE_KEPT * shape.area:
+        notes.append({"code": "outline_clipped", "unit": cut, "drawn": float(shape.area), "kept": kept})
     cells = _narrowest(mask)
     if cells < MIN_OUTLINE_CELLS:
         width = cells * grid.cell
-        return mask, [{"code": "outline_narrow", "unit": cut, "width": width, "cells": cells, "cell": grid.cell,
-                       "use": width / MIN_OUTLINE_CELLS}]
-    return mask, []
+        notes.append({"code": "outline_narrow", "unit": cut, "width": width, "cells": cells, "cell": grid.cell,
+                      "use": width / MIN_OUTLINE_CELLS})
+    return mask, notes
 
 
-def model_frame(chunk, holes, cell: float | None) -> tuple[sf.Grid, int, bool]:
-    """``(grid, factor, on the surfaces)``: the grid of the surfaces coarsened by ``factor`` (see
-    :func:`model.model_grid`: ``cell``, or within :data:`MAX_COLUMNS`), a grid of the boreholes when
-    there are no surfaces."""
+@dataclass
+class Frame:
+    """The grid of the job and how it stands to ``base``, the grid of the surfaces (or, without them, of
+    the boreholes): ``factor`` the whole number of its cells in one of the job, None when the job's cell is
+    another size and a raster has to be resampled."""
+
+    grid: sf.Grid
+    base: sf.Grid
+    factor: int | None
+    on_surfaces: bool
+
+
+def model_frame(chunk, holes, cell: float | None, marks: dict | None = None) -> Frame:
+    """The grid of the job: the grid of the surfaces, or one over the boreholes and the outlines drawn for
+    the cuts when there are no surfaces; coarser by a whole factor to stay within :data:`MAX_COLUMNS` when no
+    ``cell`` is given; ``cell`` as asked, finer than the surfaces too, from the same corner."""
     base = sf.grid_of(chunk)
     known = base is not None
     if base is None:
         xy = np.array([[b.x, b.y] for b in holes], float)
-        dem = bh.dem_path(chunk)
         own = 0.0
+        dem = bh.dem_path(chunk)
         if dem is not None:
             import rasterio
 
             with rasterio.open(dem) as src:
                 own = abs(src.transform.a)
-        base = sf.make_grid(chunk, xy, sf.default_buffer(xy, own), None)
+        buffer = sf.default_buffer(xy, own)
+        corners = [xy]
+        for name, mark in (marks or {}).items():
+            shape = _drawn_shape(chunk, name, mark["fills"]) if mark["kind"] == "cut" else None
+            if shape is not None:
+                x0, y0, x1, y1 = shape.bounds
+                corners.append(np.array([[x0 - buffer, y0 - buffer], [x1 + buffer, y1 + buffer]]))
+        base = sf.make_grid(chunk, np.vstack(corners), buffer, None)
     if not cell:
         cell = base.cell * max(1, int(np.ceil(np.sqrt(base.width * base.height / MAX_COLUMNS))))
-    grid, factor = model_mod.model_grid(base, cell)
-    return grid, factor, known
+    ratio = float(cell) / base.cell
+    if ratio >= 1.0 - 1e-9 and abs(ratio - round(ratio)) < 1e-9:
+        grid, factor = model_mod.model_grid(base, cell)
+        return Frame(grid, base, factor, known)
+    grid = sf.Grid(base.x0, base.y0, float(cell), int(np.ceil(base.width / ratio - 1e-9)),
+                   int(np.ceil(base.height / ratio - 1e-9)), base.crs)
+    return Frame(grid, base, None, known)
 
 
-def ground_on(chunk, grid: sf.Grid, holes) -> tuple[np.ndarray, np.ndarray | None]:
-    """The ground on ``grid`` and the cells with a DEM (None without one): the DEM, filled with the surface
-    of the collars where it has no cells, as :func:`surfaces.build` does."""
+def on_frame(values: np.ndarray, frame: Frame) -> np.ndarray:
+    """A raster of the base grid on the grid of the job: block means, or bilinear for a cell of another size."""
+    from .overlay import resample_to
+
+    if frame.factor is not None:
+        return model_mod.coarsen(values, frame.factor)
+    return resample_to(values, frame.base.transform, frame.grid.transform,
+                       (frame.grid.height, frame.grid.width)).astype(np.float64)
+
+
+def ground_on(chunk, frame: Frame, holes) -> tuple[np.ndarray, np.ndarray | None]:
+    """The ground on the grid of ``frame`` and the cells with a DEM (None without one): the DEM, filled with
+    the surface of the collars where it has no cells, as :func:`surfaces.build` does. The cells with a DEM
+    come from the base grid, as in :func:`model.build`: the mean on a coarser grid spreads a cell around it."""
+    grid = frame.grid
     dem = sf.dem_on_grid(chunk, grid)
     collars = [b for b in holes if b.z is not None]
     surface = None
@@ -610,8 +719,11 @@ def ground_on(chunk, grid: sf.Grid, holes) -> tuple[np.ndarray, np.ndarray | Non
             raise RuntimeError(t("Serve un DEM o la quota dei sondaggi",
                                  "A DEM or the elevations of the boreholes are needed"))
         return surface.astype(np.float32), None
-    has_dem = np.isfinite(dem)
-    return (dem if surface is None else np.where(has_dem, dem, surface)).astype(np.float32), has_dem
+    has_cells = np.isfinite(dem)
+    ground = dem if surface is None else np.where(has_cells, dem, surface)
+    fine = sf.dem_on_grid(chunk, frame.base)
+    has_dem = np.isfinite(on_frame(np.where(np.isfinite(fine), 1.0, np.nan), frame))
+    return ground.astype(np.float32), has_dem
 
 
 def voxel_step(thinnest: float | None, shallowest: float | None, span: float, notes: list) -> float:
@@ -630,15 +742,26 @@ def voxel_step(thinnest: float | None, shallowest: float | None, span: float, no
 # ------------------------------------------------------------------ the job
 @dataclass
 class Plan:
-    """What :func:`prepare` knows beyond the job: the grid and its factor from the surfaces' one."""
+    """What :func:`prepare` knows beyond the job."""
 
-    grid: sf.Grid
-    factor: int
-    on_surfaces: bool
+    frame: Frame
     has_dem: np.ndarray | None
     floor_given: bool
     notes: list
     spaces: dict
+    spots_ignored: int = 0
+
+    @property
+    def grid(self) -> sf.Grid:
+        return self.frame.grid
+
+    @property
+    def factor(self) -> int | None:
+        return self.frame.factor
+
+    @property
+    def on_surfaces(self) -> bool:
+        return self.frame.on_surfaces
 
 
 def prepare(chunk, tmp: Path, cell: float | None = None, folds: int | None = FOLDS, floor: float | None = None,
@@ -658,13 +781,14 @@ def prepare(chunk, tmp: Path, cell: float | None = None, folds: int | None = FOL
     notes.extend({"code": "cut_without_fill", "unit": u} for u, m in marks.items() if m["kind"] == "cut" and not m["fills"])
     column = column_of(codes, marks, data)
     series = series_of(chunk, overrides, data)
-    grid, factor, on_surfaces = model_frame(chunk, holes, cell)
-    ground, has_dem = ground_on(chunk, grid, holes)
+    frame = model_frame(chunk, holes, cell, marks)
+    grid = frame.grid
+    ground, has_dem = ground_on(chunk, frame, holes)
     if not np.isfinite(ground).any():
         raise RuntimeError(t("Nessuna cella con il terreno intorno ai sondaggi",
                              "No cell with the ground around the boreholes"))
     tops = sf.tops(chunk)
-    last_top = model_mod.coarsen(tops[-1][1], factor) if tops and on_surfaces else None
+    last_top = on_frame(tops[-1][1], frame) if tops and frame.on_surfaces else None
     zmin = float(floor) if floor is not None else model_mod.default_floor(holes, last_top)
     heights = [r[3] for r in data.contacts] + [r[2] for rows in data.base.values() for r in rows]
     if floor is None:
@@ -693,11 +817,11 @@ def prepare(chunk, tmp: Path, cell: float | None = None, folds: int | None = FOL
            "zmin": float(zmin), "zmax": top + dz, "dz": float(dz), "series": series, "contacts": data.contacts,
            "orientations": data.orientations, "column": column,
            "fills": {u: m["fills"] for u, m in marks.items() if m["kind"] == "fill" and u in {e["unit"] for e in column}},
-           "cuts": cuts, "options": {"vertical": None, "folds": int(folds) if folds else None}}
+           "cuts": cuts, "options": {"vertical": None, "folds": min(int(folds), FOLDS) if folds else None}}
     if nelements:
         job["options"]["nelements"] = int(nelements)
     spaces = {u: s["space"] for s in series for u in s["units"]}
-    return job, Plan(grid, factor, on_surfaces, has_dem, floor is not None, notes, spaces)
+    return job, Plan(frame, has_dem, floor is not None, notes, spaces, data.spots_ignored)
 
 
 # ------------------------------------------------------------------ the results
@@ -744,7 +868,7 @@ def _kriging_volumes(chunk) -> dict:
 
 def _surfaces(chunk, result: dict, run: Path, plan: Plan, out: Path) -> list[dict]:
     """``implicit/top_<k>_<unit>.tif`` in the folder ``out``, and their entries."""
-    grid, factor = plan.grid, plan.factor
+    grid = plan.grid
     shape = (grid.height, grid.width)
     colours = bh.colours(chunk)
     kriged = {e["unit"]: e for e in sf.registry(chunk).get("contacts", [])}
@@ -759,7 +883,7 @@ def _surfaces(chunk, result: dict, run: Path, plan: Plan, out: Path) -> list[dic
         difference = np.full(shape, np.nan)
         e = kriged.get(unit)
         if e is not None and plan.on_surfaces:
-            other = model_mod.coarsen(sf.read_band(Path(chunk.data_dir) / e["file"], 1)[0], factor)
+            other = on_frame(sf.read_band(Path(chunk.data_dir) / e["file"], 1)[0], plan.frame)
             if other.shape == shape:
                 difference = top - other
         stem = f"top_{k}_{sf.slug(unit)}"
@@ -809,6 +933,7 @@ def _model(chunk, job: dict, result: dict, run: Path, plan: Plan, out: Path, exp
                              "volume_m3": float(span.get(info.get("profile"), max(span.values()))),
                              "range_min": float(min(span.values())), "range_max": float(max(span.values())),
                              "range": {k: float(v) for k, v in span.items()}, "profile": info.get("profile"),
+                             "cut_range": {k: float(v) for k, v in (info.get("cut_volume_range") or {}).items()},
                              "edge": info.get("edge")})
             continue
         row = {"unit": unit, "kind": entry["kind"], "description": descriptions.get(unit, ""), "method": "implicit",
@@ -905,7 +1030,8 @@ def build(chunk, cell: float | None = None, folds: int | None = FOLDS, floor: fl
                  column=job["column"], surfaces=entries, cut_results=info.get("cuts") or {},
                  warnings=list(plan.notes) + list(info.get("warnings") or []), loo=_loo_rows(chunk, result),
                  versions=result.get("versions") or {}, vertical=info.get("vertical"), dz=job["dz"], zmin=job["zmin"],
-                 zmax=job["zmax"], folds=job["options"]["folds"], seconds=result.get("seconds"))
+                 zmax=job["zmax"], folds=job["options"]["folds"], seconds=result.get("seconds"),
+                 drawn=drawn_hash(chunk), spots_ignored=plan.spots_ignored)
     bh.meta(chunk)["model"] = model_reg
     progress(1.0, t("Modello implicito pronto", "Implicit model ready"))
     return state
@@ -1033,7 +1159,7 @@ def summary_text(chunk) -> str:
     if not reg.get("made"):
         return t("Il modello implicito non è ancora stato costruito.", "The implicit model has not been built yet.")
     lines = [t(*INTERPRETATION), t("Costruito il {0}.", "Built on {0}.").format(reg["made"])]
-    if reg.get("stale"):
+    if is_stale(chunk):
         lines.append(t("I dati sono cambiati: ricostruiscilo.", "The data changed: build it again."))
     g = reg.get("grid") or {}
     if g:
@@ -1055,8 +1181,8 @@ def summary_text(chunk) -> str:
         for r in model.get("units", []):
             if r.get("kind") == "cut":
                 names = PROFILE_NAMES.get(r.get("profile"), ("", ""))
-                lines.append(t("{0}: da {1} a {2} m³ secondo la forma del fondo (scelta: {3}, {4} m³)",
-                               "{0}: from {1} to {2} m³ by the shape of the floor (chosen: {3}, {4} m³)")
+                lines.append(t("{0}, il riempimento: da {1} a {2} m³ secondo la forma del fondo (scelta: {3}, {4} m³)",
+                               "{0}, its fill: from {1} to {2} m³ by the shape of the floor (chosen: {3}, {4} m³)")
                              .format(r["unit"], num(r["range_min"], 1), num(r["range_max"], 1), t(*names),
                                      num(r["volume_m3"], 1)))
             else:

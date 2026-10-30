@@ -232,10 +232,10 @@ def summary(chunk) -> str:
                             if r.get("outside_dem") else "")
                          + (" (clipped to the US drawn)" if r.get("clipped") else "")
                          + (" (down to the floor)" if r.get("to_floor") else "")
-                         + (f" (from {r['range_min']:.3f} to {r['range_max']:.3f} m3 by the shape of the floor)"
+                         + (f" (its fill from {r['range_min']:.3f} to {r['range_max']:.3f} m3 by the shape of the floor)"
                             if r.get("range_max") is not None else ""))
     reg = implicit.registry(chunk)
     if reg.get("made"):
-        lines.append(f"implicit model ({reg['made']}{', stale: build it again' if reg.get('stale') else ''}): "
+        lines.append(f"implicit model ({reg['made']}{', stale: build it again' if implicit.is_stale(chunk) else ''}): "
                      f"{len(reg.get('surfaces', []))} surfaces")
     return "\n".join(lines)

@@ -664,8 +664,8 @@ class GeoarchaeologyPlugin(Plugin):
                 line += t(" (+ {0} m³ dove manca il DEM)", " (+ {0} m³ where there is no DEM)").format(
                     num(r["outside_dem"]["volume_m3"], 0))
             if r.get("kind") == "cut":
-                line = t("{0}: da {1} a {2} m³ secondo la forma del fondo", "{0}: from {1} to {2} m³ by the shape of the "
-                         "floor").format(r["unit"], num(r["range_min"], 0), num(r["range_max"], 0))
+                line = t("{0}, il riempimento: da {1} a {2} m³ secondo la forma del fondo", "{0}, its fill: from {1} to {2} "
+                         "m³ by the shape of the floor").format(r["unit"], num(r["range_min"], 0), num(r["range_max"], 0))
             if r.get("to_floor"):
                 line += t(" (fino al fondo, {0} m)", " (down to the floor, {0} m)").format(num(reg.get("floor") or 0.0, 2))
             if r.get("clipped"):
@@ -761,9 +761,12 @@ class GeoarchaeologyPlugin(Plugin):
         v = {"cell": None, "folds": 12, "series": "", "explode": None}
         if window is not None:
             v = ParamDialog.ask(window, t("Modello implicito", "Implicit model"), [
-                Field("cell", t("Cella (m, vuota = automatica)", "Cell (m, empty = automatic)"), None, kind="optional_float"),
+                Field("cell", t("Cella (m, vuota = quella delle superfici, resa più grande se servono troppe celle; "
+                                "può essere più piccola di quella delle superfici)",
+                                "Cell (m, empty = that of the surfaces, larger when too many cells would be needed; it "
+                                "can be smaller than that of the surfaces)"), None, kind="optional_float"),
                 Field("folds", t("Gruppi di sondaggi per la verifica leave-one-out (0 = nessuna verifica)",
-                                 "Groups of boreholes for the leave-one-out check (0 = no check)"), 12, minimum=0, maximum=50),
+                                 "Groups of boreholes for the leave-one-out check (0 = no check)"), 12, minimum=0, maximum=12),
                 Field("series", t("Per unità (es.: US 2=profondità, US 5=quota; vuoto = come le superfici)",
                                   "By unit (e.g. US 2=depth, US 5=elevation; empty = as the surfaces)"), "", kind="text"),
                 Field("explode", t("Nella vista 3D, unità separate in verticale di (m, vuoto = come stanno)",
@@ -1268,8 +1271,11 @@ class GeoarchaeologyPlugin(Plugin):
         p = sub.add_parser("implicit", help="the implicit model with LoopStructural: cuts, fills, sparse contacts; "
                                             "surfaces, solids, volumes (it becomes the model of the chunk)")
         p.add_argument("project")
-        p.add_argument("--cell", type=float, default=None, help="m (default: the surfaces', at most 120000 columns)")
-        p.add_argument("--folds", type=int, default=12, help="groups of boreholes of the leave-one-out, 0 for none")
+        p.add_argument("--cell", type=float, default=None,
+                       help="m, also finer than the surfaces, on their corner (default: theirs, coarser when more than "
+                            "120000 columns)")
+        p.add_argument("--folds", type=int, default=12, help="groups of boreholes of the leave-one-out, at most 12; 0 for "
+                                                             "none")
         p.add_argument("--cut", action="append", default=[], metavar="UNIT=PROFILE",
                        help="a cut and the shape of its floor: flat, bowl, v (repeated for more)")
         p.add_argument("--fill", action="append", default=[], metavar="FILL=CUT",

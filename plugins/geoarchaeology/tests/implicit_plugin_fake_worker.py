@@ -57,6 +57,7 @@ def build(job, dem, progress):
     for cut, spec in (job.get("cuts") or {}).items():
         cuts[cut] = {"edge": "drawn" if spec.get("outline") else "estimated", "profile": spec.get("profile"), "field": False,
                      "plan_area": 50.0, "volume_range": {"flat": 100.0, "bowl": 80.0, "v": 50.0},
+                     "cut_volume_range": {"flat": 120.0, "bowl": 100.0, "v": 70.0},
                      "base_miss": [0.0] * len(spec.get("base") or ()), "base_capped": [False] * len(spec.get("base") or ())}
     series = [u for s in job["series"] for u in s["units"]]
     return Result(units, labels, tops, {u: np.full(dem.shape, 0.01, np.float32) for u in series}, solids,
