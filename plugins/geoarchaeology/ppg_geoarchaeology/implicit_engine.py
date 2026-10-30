@@ -39,8 +39,10 @@ The painter (:func:`paint`)
       youngest fill of a cut with no layer over it takes all that is left of the cut;
     * the highest layer takes everything left under the DEM (its top is the ground, whatever its
       contacts say; a fill over it stays inside its cut), and so does the unit at the top of the column;
-    * a field keeps a thickness where a unit is not: ``absent`` gives the columns without it, and there its
-      voxels go to the layer under it, the two with one top, as in the stack of the kriging.
+    * a field keeps a thickness where a unit is not: ``absent`` gives the columns without it. There it takes
+      nothing: its voxels go to the nearest layer above it that is there, if one is in its series, and the
+      top of the layer under it stays where its own boreholes put it; otherwise to the layer under it, the
+      two with one top. Fills and the inside of cuts neither give nor take.
 
     So no two units overlap by construction, and every voxel under the DEM belongs to one unit.
 
@@ -1122,10 +1124,33 @@ def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fil
           absent: dict | None = None) -> Painted:
     """The units on the voxels (see the head of this file). ``series``: unit -> :class:`Fitted` of its
     series; ``cuts``: cut -> signed function at the evaluated voxels; ``fill_fields``: cut ->
-    :class:`FillTops` of its fills; ``absent``: unit -> raster of the columns without it, where its voxels go
-    to the layer under it. Units without a function take no voxels."""
+    :class:`FillTops` of its fills; ``absent``: unit -> raster of the columns without it (see the head of this
+    file). Units without a function take no voxels."""
     x, y, z = xyz
     raw: dict = {}
+    absent = {u: m for u, m in (absent or {}).items() if dict(column).get(u) == "layer"}
+    names = [u for u, _kind in column]
+    to_above, to_below, removed = {}, {}, {}
+    for unit, mask in absent.items():
+        there = np.zeros(mask.shape, dtype=bool)
+        own_series = series.get(unit)
+        for other, kind in column[:names.index(unit)]:
+            if kind == "layer" and own_series is not None and series.get(other) is own_series:
+                there |= ~absent.get(other, np.zeros(mask.shape, dtype=bool))
+        to_above[unit], to_below[unit] = mask & there, mask & ~there
+
+    def on_points(mask: np.ndarray) -> np.ndarray:
+        return Dem(frame.grid, mask.astype(np.float64)).at(x, y) > 0.5
+
+    def columns_lost(unit: str, own: np.ndarray, phi: np.ndarray) -> int:
+        """The columns of ``absent`` where the unit had voxels of its own under the ground."""
+        grid = frame.grid
+        mine = (own > 0) & (phi <= 0) & (z < frame.dem.at(x, y))
+        cells = np.zeros(absent[unit].shape, dtype=bool)
+        rows = np.clip(((grid.y0 - y[mine]) / grid.cell).astype(int), 0, grid.height - 1)
+        cols = np.clip(((x[mine] - grid.x0) / grid.cell).astype(int), 0, grid.width - 1)
+        cells[rows, cols] = True
+        return int((cells & absent[unit]).sum())
 
     def signed(unit: str, fitted) -> np.ndarray:
         if isinstance(fitted, FillTops):
@@ -1143,7 +1168,6 @@ def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fil
     for unit, kind in column:
         if kind == "fill":
             youngest.setdefault(fills[unit], unit)
-    names = [u for u, _kind in column]
     for unit, kind in reversed(column):
         if kind == "cut":
             if unit in cuts:
@@ -1167,43 +1191,35 @@ def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fil
         else:
             fitted = series.get(unit)
             own = signed(unit, fitted) if fitted is not None and unit in fitted.values else None
+            if own is not None and unit in absent:
+                removed[unit] = columns_lost(unit, own, phi)
+                if to_above[unit].any():  # it takes nothing there: the next layer up has that space
+                    own = np.where(on_points(to_above[unit]), -BIG, own)
         if own is not None:
             phi = np.maximum(phi, own)
         stages.append((unit, phi.copy()))
     stages[-1] = (stages[-1][0], np.full(len(x), BIG, dtype=np.float32))  # the top: all that is left
     stages.reverse()
     units = [u for u, _p in stages]
-
-    def labelled() -> np.ndarray:
-        index = np.zeros(len(x), dtype=np.int16)
-        for i in range(1, len(stages)):
-            index[stages[i][1] > 0] = i
-        labels = np.full(frame.shape, -1, dtype=np.int16)
-        labels[frame.evaluated] = index
-        labels[~frame.under] = -1
-        return labels
-
-    labels = labelled()
-    removed = {}
     kinds = dict(column)
-    if absent:
-        before = labels
-        for i, (unit, top) in enumerate(stages):
-            if unit not in absent or kinds.get(unit) != "layer":
-                continue
-            below = i + 1
-            while below < len(stages) and kinds.get(units[below]) == "fill":  # the space of a pit is its own
-                cut = fills[units[below]]
-                if cut in cuts:
-                    top = np.minimum(top, -cuts[cut])
-                below += 1
-            if below == len(stages):
-                continue
-            mask = absent[unit]
-            at = Dem(frame.grid, mask.astype(np.float64)).at(x, y) > 0.5
+    for i, (unit, top) in enumerate(stages):
+        if unit not in to_below or not to_below[unit].any():
+            continue
+        below = i + 1
+        while below < len(stages) and kinds.get(units[below]) == "fill":  # the space of a pit is its own
+            cut = fills[units[below]]
+            if cut in cuts:
+                top = np.minimum(top, -cuts[cut])
+            below += 1
+        if below < len(stages):
+            at = on_points(to_below[unit])
             stages[below] = (units[below], np.where(at, np.maximum(stages[below][1], top), stages[below][1]))
-            removed[unit] = int(((before == i).any(axis=2) & mask).sum())
-        labels = labelled()
+    index = np.zeros(len(x), dtype=np.int16)
+    for i in range(1, len(stages)):
+        index[stages[i][1] > 0] = i
+    labels = np.full(frame.shape, -1, dtype=np.int16)
+    labels[frame.evaluated] = index
+    labels[~frame.under] = -1
     return Painted(units, [p for _u, p in stages], labels, removed)
 
 

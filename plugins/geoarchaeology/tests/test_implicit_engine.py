@@ -1295,7 +1295,7 @@ def test_two_fills_under_a_layer_follow_their_holes_across_the_pit():
 
 
 @loop
-def test_a_layer_is_not_where_the_job_says_and_the_one_under_it_takes_its_place():
+def test_a_layer_gives_its_place_to_the_one_above_and_the_top_under_it_stays_measured():
     ground = Ground(40, 1.0)
     dem = np.full((40, 40), 10.0)
     holes = ground.holes(4, 0.1)
@@ -1305,14 +1305,51 @@ def test_a_layer_is_not_where_the_job_says_and_the_one_under_it_takes_its_place(
     mask = ground.X > 20.0
     result = engine.run({**job, "absent": {"B": mask}}, dem)
     index = {u: i for i, u in enumerate(result.units)}
-    for unit, array in (("whole", whole.labels), ("result", result.labels)):
-        assert (array >= 0).sum() == (whole.labels >= 0).sum(), unit
     assert not (result.labels[mask] == index["B"]).any()
-    assert np.allclose(result.volumes["B"], whole.volumes["B"] * (~mask).mean(), rtol=0.05)
-    assert result.volumes["C"] == pytest.approx(whole.volumes["C"] + whole.volumes["B"] * mask.mean(), rel=0.05)
-    assert result.volumes["A"] == pytest.approx(whole.volumes["A"], rel=0.02)  # nothing changes above it
+    assert (result.labels >= 0).sum() == (whole.labels >= 0).sum()  # no gap
+    assert result.volumes["B"] == pytest.approx(whole.volumes["B"] * (~mask).mean(), rel=0.05)
+    assert result.volumes["A"] == pytest.approx(whole.volumes["A"] + whole.volumes["B"] * mask.mean(), rel=0.05)
+    assert result.volumes["C"] == pytest.approx(whole.volumes["C"], rel=0.01)
     assert sum(result.volumes.values()) == pytest.approx(sum(whole.volumes.values()))
+    assert np.nanmax(np.abs(result.tops["C"][mask] - 6.0)) <= job["dz"]  # as its boreholes measured it
     assert result.info["absent"]["B"] == int(mask.sum())
-    assert np.nanmax(np.abs((result.tops["B"] - result.tops["C"])[mask])) < 1e-3  # one top, as in the stack of the kriging
-    for unit, (vertices, faces) in result.solids.items():
+    for unit, (_vertices, faces) in result.solids.items():
         assert len(faces), unit
+
+
+@loop
+def test_a_layer_alone_in_its_series_gives_its_place_to_the_one_under_it():
+    ground = Ground(40, 1.0)
+    dem = np.full((40, 40), 10.0)
+    holes = ground.holes(4, 0.1)
+    contacts = [[u, x, y, z, 1.0, f"H{i}"] for i, (x, y) in enumerate(holes) for u, z in (("B", 8.0), ("C", 6.0))]
+    job = layers_job(ground, dem, contacts, ["A", "B", "C"], spaces={"b": ("elevation", ["B"]), "c": ("elevation", ["C"])},
+                     zmin=0.0, zmax=11.0, dz=0.1)
+    mask = ground.X > 20.0
+    result = engine.run({**job, "absent": {"B": mask}}, dem)
+    assert np.nanmax(np.abs(result.tops["C"][mask] - 8.0)) <= job["dz"]
+    assert (result.labels >= 0).sum() == (engine.run(job, dem).labels >= 0).sum()
+
+
+@loop
+def test_a_layer_absent_around_a_pit_gives_the_fills_nothing():
+    """The space of a layer cut by a pit, absent on one side: not a voxel of the fills past the outline, whichever
+    way it goes, and the fills keep their volume."""
+    job, dem, _truth = _covered_pit("bowl", "bowl")
+    ground = Ground(60, 1.0)
+    holes = job["cuts"]["P"]["inside"]
+    job["contacts"] += [["G", x, y, 8.9, 1.0, f"H{i}"] for i, (x, y) in enumerate(holes)]
+    job["contacts"] += [["T", x, y, 10.0, 1.0, f"O{i}"] for i, (x, y) in enumerate(ground.holes(4, 0.1))]
+    job["column"].insert(2, {"unit": "G", "kind": "fill"})
+    job["fills"]["G"] = "P"
+    job["series"][0]["units"] = ["T", "L"]
+    plan = np.asarray(job["cuts"]["P"]["outline"])
+    whole = engine.run(job, dem)
+    mask = ground.X > 26.0  # through the pit
+    for series in (job["series"], [{"name": "l", "space": "elevation", "units": ["L"]}, job["series"][1]]):
+        result = engine.run({**job, "series": series, "absent": {"L": mask}}, dem)
+        index = {u: i for i, u in enumerate(result.units)}
+        for fill in ("F", "G"):
+            assert not (result.labels[~plan] == index[fill]).any(), fill
+            assert result.volumes[fill] == pytest.approx(whole.volumes[fill], rel=0.02), fill
+        assert (result.labels >= 0).sum() == (whole.labels >= 0).sum()

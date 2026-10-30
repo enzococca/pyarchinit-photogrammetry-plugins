@@ -28,7 +28,8 @@ has pyvista, so VTK is never loaded. The job::
 * ``grid`` and ``dem``: the raster, north up, ``(x0, y0)`` its top-left corner; ``dem.npy`` a 2-D array
   on it, NaN without a value. The voxels go from ``zmin`` to ``zmax`` by ``dz``.
 * ``absent`` (optional): boolean rasters on the grid, the columns where a layer is not: its voxels go to the
-  layer under it; ``info["absent"]`` of the result says how many columns lost it.
+  nearest layer above it that is there in its series, else to the layer under it; ``info["absent"]`` of the result
+  says how many columns lost it.
 * ``series``, oldest first: each is one scalar field. The order of the units comes from the ``column``.
 * ``contacts``: the *top* of a unit at a point. ``weight`` and ``hole`` may be missing or null: without
   a hole, the rows at one position are one borehole for the leave-one-out. A point where a fill rests
