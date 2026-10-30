@@ -101,7 +101,7 @@ def run(job: dict, folder: Path, progress=None, python: Path | None = None, scri
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
-    python = Path(python) if python is not None else environment.worker_python()
+    python = Path(python).absolute() if python is not None else environment.worker_python()
     script = Path(script).absolute() if script is not None else WORKER.absolute()
     folder = Path(folder).absolute()
     folder.mkdir(parents=True, exist_ok=True)
@@ -110,7 +110,8 @@ def run(job: dict, folder: Path, progress=None, python: Path | None = None, scri
     job_path = folder / "job.json"
     job_path.write_text(json.dumps(job), encoding="utf-8")
     progress(0.0, phase_text({"phase": "start"}))
-    proc = subprocess.Popen([str(python), "-u", str(script), str(job_path)], stdout=subprocess.PIPE,
+    # -I: neither the plugin's folder nor PYTHON* variables on the worker's path (it loads the engine by its path)
+    proc = subprocess.Popen([str(python), "-I", "-u", str(script), str(job_path)], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1,
                             env=environment.clean_environment(), close_fds=False)
     lines: queue.Queue = queue.Queue()

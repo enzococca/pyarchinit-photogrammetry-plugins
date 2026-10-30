@@ -72,11 +72,25 @@ def configure(context) -> None:
     _DATA = Path(context.data_dir)
 
 
-def unsupported(system: str | None = None, machine: str | None = None) -> str | None:
-    """Why Landlab cannot run on this computer, or None. ``system`` (``sys.platform``) and
-    ``machine`` (``platform.machine()``) for the tests."""
+def unsupported(system: str | None = None, machine: str | None = None, mac_release: str | None = None) -> str | None:
+    """Why Landlab cannot run on this computer, or None. ``system`` (``sys.platform``),
+    ``machine`` (``platform.machine()``) and ``mac_release`` (``platform.mac_ver()[0]``) for the tests.
+
+    On Intel Macs netCDF4, a dependency of Landlab 2.11, has wheels only for macOS 15 and later: on an
+    older system uv would try to compile it and fail after a long download."""
     system = system or sys.platform
     machine = (machine or platform.machine() or "").lower()
+    if system == "darwin" and machine == "x86_64":
+        release = mac_release if mac_release is not None else platform.mac_ver()[0]
+        try:
+            major = int(str(release).split(".")[0])
+        except ValueError:
+            major = 0
+        if 0 < major < 15:
+            return t("Landlab su un Mac Intel richiede macOS 15 o successivo (le sue librerie non hanno una versione "
+                     "per macOS {0}).",
+                     "Landlab on an Intel Mac needs macOS 15 or later (its libraries have no build for "
+                     "macOS {0}).").format(release)
     if system == "win32" and machine in ("arm64", "aarch64"):
         return t("Landlab non ha una versione per Windows su ARM: le simulazioni del paesaggio non sono disponibili "
                  "su questo computer.",
@@ -285,6 +299,21 @@ def find_uv(progress=None) -> Path:
     return Path(program_uv(progress))
 
 
+class CommandFailed(RuntimeError):
+    """A command of the installation failed: ``lines`` holds what it printed, ``fraction`` where the
+    bar was."""
+
+    def __init__(self, message: str, lines: list[str], fraction: float = 0.0):
+        super().__init__(message)
+        self.lines, self.fraction = lines, fraction
+
+
+def cache_refused(lines) -> bool:
+    """uv could not write in its cache (a cache with files of another user, made by a program run as root)."""
+    text = "\n".join(lines).lower()
+    return "permission denied" in text and "cache" in text
+
+
 def _run(cmd: list[str], env: dict, progress, start: float, end: float) -> list[str]:
     """``cmd`` (absolute path, the file descriptors inherited, no working directory: posix_spawn,
     as every process the program starts), its lines moving the bar from ``start`` to ``end``;
@@ -292,11 +321,13 @@ def _run(cmd: list[str], env: dict, progress, start: float, end: float) -> list[
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                             errors="replace", env=env, close_fds=False)
     lines: list[str] = []
+    fraction = start
     try:
         for k, raw in enumerate(proc.stdout, 1):
             line = raw.rstrip()
             lines.append(line)
-            progress(min(end, start + (end - start) * (1 - 1 / (1 + k / 20))), line[-120:] or "...")
+            fraction = min(end, start + (end - start) * (1 - 1 / (1 + k / 20)))
+            progress(fraction, line[-120:] or "...")
     except BaseException:
         proc.kill()
         proc.wait()
@@ -304,8 +335,24 @@ def _run(cmd: list[str], env: dict, progress, start: float, end: float) -> list[
     finally:
         proc.stdout.close()
     if proc.wait() != 0:
-        raise RuntimeError(t("Installazione non riuscita:", "Installation failed:") + "\n" + "\n".join(lines[-25:]))
+        raise CommandFailed(t("Installazione non riuscita:", "Installation failed:") + "\n" + "\n".join(lines[-25:]),
+                            lines, fraction)
     return lines
+
+
+def _uv(cmd: list[str], env: dict, progress, start: float, end: float, own_cache: Path) -> None:
+    """A uv command; when uv cannot write in its usual cache, once more with a cache of the plugin
+    (``UV_CACHE_DIR`` = ``own_cache``, kept in ``env`` for the commands after), said in the log."""
+    try:
+        _run(cmd, env, progress, start, end)
+    except CommandFailed as exc:
+        if "UV_CACHE_DIR" in env or not cache_refused(exc.lines):
+            raise
+        progress(exc.fraction, t("uv non può scrivere nella sua cache (permesso negato): riprovo con una cache del "
+                          "plugin in {0}", "uv cannot write in its cache (permission denied): trying again with a "
+                          "cache of the plugin in {0}").format(own_cache))
+        env["UV_CACHE_DIR"] = str(own_cache)
+        _run(cmd, env, progress, exc.fraction, end)
 
 
 def install(progress=None, env: Path | None = None, uv: Path | None = None) -> Path:
@@ -323,11 +370,14 @@ def install(progress=None, env: Path | None = None, uv: Path | None = None) -> P
     clean = clean_environment(for_uv=True)
     if env.exists():  # a failure leaves no environment that looks ready
         (env / MARKER).unlink(missing_ok=True)
+    own_cache = (_DATA or env.parent) / "uv-cache"
     progress(0.05, t("Creazione dell'ambiente Python per Landlab", "Creating the Python environment for Landlab"))
-    _run([str(uv), "venv", "--python", PYTHON, "--allow-existing", str(env)], clean, progress, 0.05, 0.2)
+    _uv([str(uv), "venv", "--python", PYTHON, "--allow-existing", str(env)], clean, progress, 0.05, 0.2, own_cache)
     progress(0.2, t("Installazione di Landlab (alcuni minuti)", "Installing Landlab (a few minutes)"))
-    _run([str(uv), "pip", "install", "--upgrade", "--python", str(env_python(env)), LANDLAB, "numpy"], clean, progress,
-         0.2, 0.9)
+    _uv([str(uv), "pip", "install", "--upgrade", "--python", str(env_python(env)), LANDLAB, "numpy"], clean, progress,
+        0.2, 0.9, own_cache)
+    if clean.get("UV_CACHE_DIR") == str(own_cache):  # the environment does not need the cache any more
+        shutil.rmtree(own_cache, ignore_errors=True)
     progress(0.92, t("Prova di Landlab", "Trying Landlab"))
     info = probe(env_python(env))
     _CHECKED[str(env_python(env))] = info

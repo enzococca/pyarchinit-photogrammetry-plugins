@@ -216,3 +216,53 @@ def test_the_environment_installed_with_uv(tmp_path, monkeypatch):
         environment.install(uv=uv)
     assert environment.is_installed() and not environment.known_usable()
     assert "DepressionFinderAndRouter" in environment.status_text()
+
+
+def test_intel_macs_before_macos_15():
+    assert "macOS 15" in environment.unsupported("darwin", "x86_64", "14.6")
+    assert environment.unsupported("darwin", "x86_64", "15.1") is None
+    assert environment.unsupported("darwin", "arm64", "14.6") is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake uv is a shell script")
+def test_uv_without_its_cache_tries_again_with_the_plugins(tmp_path, monkeypatch):
+    monkeypatch.setattr(environment, "local_available", lambda: False)
+    monkeypatch.setattr(environment, "unsupported", lambda *a: None)
+    monkeypatch.setattr(environment, "_CHECKED", {})
+    monkeypatch.setattr(environment, "_DATA", tmp_path / "data")
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    answer = tmp_path / "answer.json"
+    answer.write_text(json.dumps(ANSWER_OK))
+    monkeypatch.setenv("ANSWER", str(answer))
+    uv = tmp_path / "uv"
+    # uv as on a computer where a program run as root left files in ~/.cache/uv
+    uv.write_text("#!/bin/sh\n"
+                  "if [ \"$1\" = venv ]; then\n"
+                  "  for last; do :; done\n"
+                  "  mkdir -p \"$last/bin\"\n"
+                  "  printf '#!/bin/sh\\ncat \"$ANSWER\"\\n' > \"$last/bin/python\"\n"
+                  "  chmod +x \"$last/bin/python\"\n"
+                  "  exit 0\n"
+                  "fi\n"
+                  "if [ -z \"$UV_CACHE_DIR\" ]; then\n"
+                  "  echo 'error: Failed to write to the client cache'\n"
+                  "  echo '  Caused by: Permission denied (os error 13) at path \"/Users/x/.cache/uv/wheels\"'\n"
+                  "  exit 2\n"
+                  "fi\n"
+                  "mkdir -p \"$UV_CACHE_DIR\" && echo cached > \"$UV_CACHE_DIR/wheel\"\n"
+                  "echo ' + landlab==2.99.0'\n"
+                  "exit 0\n")
+    uv.chmod(0o755)
+    env = tmp_path / "env"
+    monkeypatch.setenv(environment.ENV_VAR, str(env))
+    seen = []
+    assert environment.install(Progress(lambda f, m: seen.append((f, m))), uv=uv) == env
+    said = [m for _f, m in seen]
+    assert any("permesso negato" in m and str(tmp_path / "data" / "uv-cache") in m for m in said)
+    assert environment.is_installed() and not (tmp_path / "data" / "uv-cache").exists()  # used, then removed
+    fractions = [f for f, _m in seen]
+    assert fractions == sorted(fractions)
+    # another failure is not retried
+    uv.write_text("#!/bin/sh\necho 'error: no matching distribution'\nexit 1\n")
+    with pytest.raises(RuntimeError, match="no matching distribution"):
+        environment.install(uv=uv)

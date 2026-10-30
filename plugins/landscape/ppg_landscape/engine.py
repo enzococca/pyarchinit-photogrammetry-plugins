@@ -29,11 +29,14 @@ The processes, both optional (at least one):
   with their adaptive solver). Each step is no longer than a CFL-like limit from the fastest
   incision wave, ``FLUVIAL_CFL dx / (K Q^m n S^(n-1))``.
 
+Before a run :func:`estimate` gives the sub-steps, an upper bound of the steps and the seconds, with a
+warning above 10 minutes and a refusal above 2 hours.
+
 Boundaries: cells without a value are closed. ``open``: the valid cells along the outer edge of
 the data (the grid's edge or nodata reaching it) are fixed-value nodes - water and sediment leave
 there; holes of nodata inside the DEM stay closed. ``closed``: those cells are closed too; with
-running water the lowest of them stays open as the single outlet (else every drop would stay in
-the model as a lake); with diffusion only nothing leaves and the volume is conserved.
+running water the lowest of them beside a cell inside stays open as ONE artificial outlet (else every
+drop would stay in the model as a lake); with diffusion only nothing leaves and the volume is conserved.
 """
 from __future__ import annotations
 
@@ -91,18 +94,81 @@ def diffusion_dt_limit(dx: float, D: float) -> float:
     return math.inf if D <= 0 else DIFFUSION_ALPHA * dx * dx / D
 
 
-def fluvial_dt_limit(dx: float, K: float, discharge, slope, m: float, n: float, cfl: float = FLUVIAL_CFL) -> float:
+def fluvial_dt_limit(dx: float, K: float, discharge, slope, m: float, n: float, cfl: float = FLUVIAL_CFL,
+                     phi: float = 0.0) -> float:
     """The longest step for stream-power incision: the celerity of a knickpoint is K Q^m n S^(n-1)
-    (K Q^m for n = 1); a step moves it at most ``cfl`` cells."""
+    (K Q^m for n = 1), divided by 1 - phi because SPACE thins the porous soil that much faster; a
+    step moves it at most ``cfl`` cells."""
     q = np.asarray(discharge, float)
     if K <= 0 or q.size == 0:
         return math.inf
-    c = K * np.power(np.maximum(q, 0.0), m)
+    c = K * np.power(np.maximum(q, 0.0), m) / max(1.0 - phi, 1e-6)
     if abs(n - 1.0) > 1e-12:
         s = np.maximum(np.asarray(slope, float), 1e-6)
         c = c * n * np.power(s, n - 1.0)
     top = float(np.nanmax(c)) if c.size else 0.0
     return math.inf if not top > 0 else cfl * dx / top
+
+
+# seconds per cell measured on an Apple M4 Pro with Landlab 2.11 (500 x 500 cells): a diffusion sub-step
+# ~0.15 s, a step of running water (routing + SPACE) ~1.2-1.8 s; the larger figure, scaled by the cells
+DIFFUSION_SECONDS_PER_CELL = 0.15 / 250_000
+FLUVIAL_SECONDS_PER_CELL = 1.8 / 250_000
+WARN_SECONDS = 600  # the pane warns above 10 minutes
+REFUSE_SECONDS = 7200  # and refuses above 2 hours
+
+
+def estimate(shape, cell: float, years: float, params: dict, lang: str = "it") -> dict:
+    """What a run will cost, before any routing: the diffusion sub-steps exactly, an upper bound of
+    the steps of running water (the fastest knickpoint possible: all the grid's area draining to one
+    cell, ``K (A runoff)^m``, with the slope bounded by ``params["relief"]`` (m) when n != 1), the
+    seconds from the costs measured on an M4 Pro scaled by the cells; ``warning`` (a text in
+    ``lang``, "it" or "en", or "") above :data:`WARN_SECONDS`, ``refuse`` above :data:`REFUSE_SECONDS`.
+    ``params``: the job's ``diffusion``, ``fluvial``, ``dt`` and optionally ``relief``."""
+    rows, cols = int(shape[0]), int(shape[1])
+    cells = rows * cols
+    years = float(years)
+    diffusion, fluvial = merged(params)
+    dt_max = _largest_step(params.get("dt"), years)
+    outer = math.ceil(years / dt_max - 1e-9)
+    fluvial_steps = 0
+    if fluvial is not None:
+        q = cells * cell * cell * fluvial["runoff"]
+        relief = float(params.get("relief") or 0.0)
+        n = fluvial["n_sp"]
+        if n > 1:
+            slope = min(max(relief / cell, 1e-3), 10.0) if relief > 0 else 10.0
+        else:
+            slope = max(relief / (max(rows, cols) * cell), 1e-3) if relief > 0 else 1e-3
+        limit = fluvial_dt_limit(cell, max(fluvial["K_sed"], fluvial["K_br"]), [q], [slope], fluvial["m_sp"], n,
+                                 phi=fluvial["phi"])
+        fluvial_steps = max(outer, math.ceil(years / min(limit, dt_max) - 1e-9))
+    steps = fluvial_steps or outer
+    substeps = 0
+    if diffusion is not None:
+        substeps = max(steps, math.ceil(years / diffusion_dt_limit(cell, diffusion["D"]) - 1e-9))
+    seconds = cells * (fluvial_steps * FLUVIAL_SECONDS_PER_CELL + substeps * DIFFUSION_SECONDS_PER_CELL)
+    warning = ""
+    if seconds > WARN_SECONDS:
+        hours = seconds / 3600
+        when = (f"{hours:.1f} ore" if lang == "it" else f"{hours:.1f} hours") if hours >= 1 else \
+            (f"{seconds / 60:.0f} minuti" if lang == "it" else f"{seconds / 60:.0f} minutes")
+        when = when.replace(".", ",") if lang == "it" else when
+        warning = (f"La simulazione può durare circa {when}: una cella più grande o meno anni la accorciano."
+                   if lang == "it" else
+                   f"The simulation may take about {when}: a larger cell or fewer years shorten it.")
+    return {"cells": cells, "steps": steps, "fluvial_steps": fluvial_steps, "diffusion_substeps": substeps,
+            "seconds": seconds, "warning": warning, "refuse": seconds > REFUSE_SECONDS}
+
+
+def _largest_step(dt, years: float) -> float:
+    """The job's ``dt`` (years) checked, or the default ``years / STEPS``."""
+    if dt is None or dt == 0:
+        return years / STEPS
+    dt = float(dt)
+    if not (dt > 0 and math.isfinite(dt)):
+        raise ValueError(f"dt must be a positive number of years, not {dt}")
+    return dt
 
 
 def plan_targets(years: float, snapshots=()) -> list[float]:
@@ -229,7 +295,10 @@ def _eroder(grid, kind: str, p: dict):
 
 def _to_soil(H: np.ndarray, br: np.ndarray, dz: np.ndarray, nodes: np.ndarray) -> None:
     """A change of the surface made by another process given to the soil layer: deposits thicken
-    it, erosion thins it and then lowers the material below (surface = bedrock + soil stays true)."""
+    it, erosion thins it and then lowers the material below (surface = bedrock + soil stays true).
+    Bulk volume for bulk volume: when creep digs into the bedrock, that solid material becomes porous
+    soil and the solid volume shrinks by phi times it - the balance measures it (the diffusion's
+    solid out), it does not hide it."""
     H[nodes] += dz[nodes]
     thin = nodes[H[nodes] < 0]
     br[thin] += H[thin]
@@ -244,11 +313,21 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
         cell (m), years, dt (largest step, years; default years / 100), snapshots ([years]),
         boundary ("open" | "closed"), diffusion ({"D"} | null), fluvial ({K_sed, K_br, F_f, phi,
         H_star, v_s, m_sp, n_sp, runoff, soil_depth} | null), router, eroder
-    """
-    from landlab import RasterModelGrid
-    from landlab.components import LinearDiffuser
-    from landlab.grid.nodestatus import NodeStatus
 
+    The balance (``Result.balance``, volumes in m3):
+
+    * ``eroded_m3``, ``deposited_m3``, ``net_m3``: BULK volumes, from dz - what the map of dz shows,
+      pores included;
+    * ``eroded_solid_m3``, ``deposited_solid_m3``: SOLID volumes, per core cell (1 - phi) dH + d bedrock
+      (the soil is porous, the material below is not); equal to the bulk ones with diffusion alone;
+    * ``bedload_out_m3``, ``wash_load_m3`` (``fluvial_out_m3`` their sum): solid sediment leaving with
+      the water (SPACE only; None with the other eroders), the wash load being the fines F_f of the
+      eroded bedrock;
+    * ``diffusion_out_m3`` (bulk) and ``diffusion_out_solid_m3``: what creep took out of the model
+      across open edges, the solid one including the pores gained when creep turns bedrock into soil;
+    * ``closure_m3`` = eroded solid - deposited solid - everything out, ``closure_percent`` of the
+      eroded solid: ~0 when the books close (None when the eroder does not report its outflow).
+    """
     say = progress or (lambda *a, **k: None)
     t0 = time.monotonic()
     z_raster = np.asarray(elevation, dtype=np.float64)
@@ -265,12 +344,19 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     years = float(job["years"])
     targets = plan_targets(years, job.get("snapshots") or ())
     wanted = {float(s) for s in job.get("snapshots") or () if 0 < float(s) <= years}
-    dt_max = float(job.get("dt") or 0.0) or years / STEPS
+    dt_max = _largest_step(job.get("dt"), years)
     boundary = str(job.get("boundary", "open"))
     if boundary not in BOUNDARIES:
         raise ValueError(f"boundary {boundary!r}: {' or '.join(BOUNDARIES)}")
+    router_kind = str(job.get("router", "auto"))
+    if router_kind not in ROUTERS:
+        raise ValueError(f"router {router_kind!r}: {', '.join(ROUTERS)}")
     diffusion, fluvial = merged(job)
     shape = z_raster.shape
+    from landlab import RasterModelGrid  # after the checks: a bad job fails without Landlab
+    from landlab.components import LinearDiffuser
+    from landlab.grid.nodestatus import NodeStatus
+
     say(0.0, "grid")
 
     # the grid: closed where there is no value, the edge of the data open or closed
@@ -282,9 +368,14 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     filled = np.where(ok, z_raster, np.nanmax(np.where(ok, z_raster, np.nan)))
     z = grid.add_field("topographic__elevation", to_nodes(filled).astype(np.float64), at="node")
     outlet = None
-    if boundary == "closed" and fluvial is not None:  # running water needs a way out: the lowest edge cell
+    if boundary == "closed" and fluvial is not None:
+        # running water needs a way out: one artificial outlet, the lowest edge cell beside a cell inside
+        # (a corner touches only other edge cells: water would reach it diagonally, creep never)
+        inside = to_nodes(ok & ~edge)
         on_edge = np.flatnonzero(to_nodes(edge))
-        outlet = int(on_edge[np.argmin(z[on_edge])])
+        beside = [i for i in on_edge if any(inside[j] for j in grid.adjacent_nodes_at_node[i] if j >= 0)]
+        candidates = np.asarray(beside or on_edge)
+        outlet = int(candidates[np.argmin(z[candidates])])
         status[outlet] = NodeStatus.FIXED_VALUE
     grid.status_at_node = status  # all at once: perimeter nodes must never be core, not even for a moment
     core = grid.core_nodes
@@ -301,19 +392,27 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     if fluvial is not None:
         H = grid.add_field("soil__depth", np.full(grid.number_of_nodes, max(fluvial["soil_depth"], 0.0)), at="node")
         br = grid.add_field("bedrock__elevation", z - H, at="node")
-        router, router_name = _router(grid, str(job.get("router", "auto")), fluvial["runoff"])
+        router, router_name = _router(grid, router_kind, fluvial["runoff"])
         router.run_one_step()  # the fields the eroder asks for
         eroder, eroder_name, keeps_soil = _eroder(grid, str(job.get("eroder", "auto")), fluvial)
         K = max(fluvial["K_sed"], fluvial["K_br"])
+        phi = fluvial["phi"]
+        H_start, br_start = H[core].copy(), br[core].copy()
 
     t = 0.0
     steps = diffusion_substeps = 0
     outlet_m3 = 0.0 if eroder_name == "space" else None
     wash_m3 = 0.0 if eroder_name == "space" else None
-    diffusion_out = 0.0
+    diffusion_out = diffusion_out_solid = 0.0
     smallest = math.inf
     snapshots: dict[float, np.ndarray] = {}
-    last_say = 0.0
+    last_say = [0.0]
+
+    def tell(now_t: float) -> None:  # the bar moves at most every half second, also inside the sub-steps
+        now = time.monotonic()
+        if now - last_say[0] >= 0.5 or now_t >= years:
+            last_say[0] = now
+            say(0.02 + 0.93 * now_t / years, "run", year=round(now_t, 6), years=years, step=steps)
     for target in targets:
         while t < target - EPS * max(1.0, target):
             step = min(target - t, dt_max)
@@ -322,35 +421,38 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
                     router.run_one_step()
                 f_limit = fluvial_dt_limit(dx, K, grid.at_node["surface_water__discharge"][core],
                                            grid.at_node["topographic__steepest_slope"][core], fluvial["m_sp"],
-                                           fluvial["n_sp"])
+                                           fluvial["n_sp"], phi=phi)
                 step = min(step, f_limit)
                 before = z.copy()
                 out = eroder.run_one_step(step)
                 if eroder_name == "space" and isinstance(out, tuple) and len(out) == 2:
-                    wash_m3 += float(out[0])
+                    wash_m3 += float(out[0]) * step  # vol_SSY_riv is a rate (m3/yr), V_leaving_riv a volume
                     outlet_m3 += float(out[1])
                 if not keeps_soil:
                     _to_soil(H, br, z - before, core)
             if ld is not None:
+                # LinearDiffuser splits a long step by itself too (at 0.15 dx^2 / D); our own split keeps the
+                # soil bookkeeping and the progress bar going sub-step by sub-step
                 n = max(1, math.ceil(step / d_limit - 1e-9))
                 sub = step / n
-                for _ in range(n):
+                for k in range(n):
                     before = z[core].copy()
                     ld.run_one_step(sub)
                     change = z[core] - before
                     diffusion_out -= float(change.sum()) * cell_area
                     if fluvial is not None:
+                        solid_before = (1 - phi) * H[core] + br[core]
                         dzn = np.zeros_like(z)
                         dzn[core] = change
                         _to_soil(H, br, dzn, core)
+                        diffusion_out_solid -= float(((1 - phi) * H[core] + br[core] - solid_before).sum()) * cell_area
+                    if n > 1:
+                        tell(t + sub * (k + 1))
                 diffusion_substeps += n
             smallest = min(smallest, step)
             steps += 1
             t = target if target - (t + step) <= EPS * max(1.0, target) else t + step
-            now = time.monotonic()
-            if now - last_say >= 0.25 or t >= years:
-                last_say = now
-                say(0.02 + 0.93 * t / years, "run", year=round(t, 6), years=years, step=steps)
+            tell(t)
             if not np.isfinite(z[core]).all():
                 raise FloatingPointError(f"the surface became NaN after {t:g} years: a shorter step (dt) is needed")
         if target in wanted:
@@ -359,7 +461,7 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     # drainage area of the final surface
     say(0.96, "area")
     if router is None:
-        router, router_name = _router(grid, str(job.get("router", "auto")), 1.0)
+        router, router_name = _router(grid, router_kind, 1.0)
     router.run_one_step()
     area = np.where(ok, to_raster(grid.at_node["drainage_area"], shape), np.nan)
 
@@ -368,6 +470,17 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
     dz = final - initial
     d = dz[ok]
     from_flow = None if outlet_m3 is None else outlet_m3 + wash_m3
+    # solid volumes: without pores (soil counts 1 - phi of its thickness); with diffusion alone no soil
+    # is modelled and solid = bulk
+    if fluvial is not None:
+        solid = ((1 - phi) * (H[core] - H_start) + (br[core] - br_start)) * cell_area
+        eroded_solid, deposited_solid = float(-solid[solid < 0].sum()), float(solid[solid > 0].sum())
+    else:
+        eroded_solid, deposited_solid = float(-d[d < 0].sum() * cell_area), float(d[d > 0].sum() * cell_area)
+        diffusion_out_solid = diffusion_out
+    closure = None
+    if fluvial is None or from_flow is not None:  # the eroders other than SPACE do not say what leaves
+        closure = eroded_solid - deposited_solid - (from_flow or 0.0) - (diffusion_out_solid if ld is not None else 0.0)
     balance = {
         "years": years, "cell": dx, "cell_area_m2": cell_area, "cells": int(ok.sum()), "core_cells": int(core.size),
         "boundary": boundary, "outlet_node": outlet, "steps": steps, "smallest_step": smallest if steps else None,
@@ -375,8 +488,12 @@ def run(job: dict, elevation: np.ndarray, valid: np.ndarray | None = None, progr
         "eroded_m3": float(-d[d < 0].sum() * cell_area), "deposited_m3": float(d[d > 0].sum() * cell_area),
         "net_m3": float(d.sum() * cell_area), "initial_volume_m3": None,
         "max_erosion_m": float(max(0.0, -d.min())), "max_deposition_m": float(max(0.0, d.max())),
+        "eroded_solid_m3": eroded_solid, "deposited_solid_m3": deposited_solid,
         "bedload_out_m3": outlet_m3, "wash_load_m3": wash_m3, "fluvial_out_m3": from_flow,
         "diffusion_out_m3": diffusion_out if ld is not None else None,
+        "diffusion_out_solid_m3": diffusion_out_solid if ld is not None else None,
+        "closure_m3": closure,
+        "closure_percent": None if closure is None else (100.0 * closure / eroded_solid if eroded_solid > 0 else 0.0),
         "router": router_name, "eroder": eroder_name or None, "diffusion": diffusion, "fluvial": fluvial,
         "seconds": round(time.monotonic() - t0, 3),
     }

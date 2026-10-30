@@ -66,6 +66,34 @@ def test_processes_and_their_defaults():
         assert set(preset["fluvial"]) == set(engine.DEFAULTS["fluvial"]) and preset["diffusion"]["D"] > 0
 
 
+def test_the_estimate_grows_with_the_years_and_the_cells():
+    params = {"diffusion": {"D": 0.01}, "fluvial": {}}
+    by_years = [engine.estimate((200, 200), 0.1, y, params)["seconds"] for y in (10, 100, 1000)]
+    by_cells = [engine.estimate((n, n), 0.1, 100, params)["seconds"] for n in (100, 200, 400)]
+    assert by_years == sorted(by_years) and by_years[0] < by_years[-1]
+    assert by_cells == sorted(by_cells) and by_cells[0] < by_cells[-1]
+    small = engine.estimate((100, 100), 0.5, 100, params)
+    assert small["warning"] == "" and not small["refuse"] and small["diffusion_substeps"] >= small["steps"]
+    # the "mudbrick tell" on a fine grid: long, said, refused above two hours
+    tell_preset = dict(engine.PRESETS["mudbrick_tell"])
+    big = engine.estimate((500, 500), 0.05, 1000, tell_preset)
+    assert big["diffusion_substeps"] == math.ceil(1000 / engine.diffusion_dt_limit(0.05, 0.01) - 1e-9)
+    assert "circa" in big["warning"]
+    huge = engine.estimate((500, 500), 0.02, 1000, tell_preset, lang="en")
+    assert huge["refuse"] and "hours" in huge["warning"]
+    only_creep = engine.estimate((100, 100), 0.5, 100, {"diffusion": {"D": 0.01}, "fluvial": None})
+    assert only_creep["fluvial_steps"] == 0 and only_creep["steps"] == engine.STEPS
+
+
+def test_bad_steps_and_routers_are_refused():
+    z, _r = tell(n=10)
+    for dt in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="dt must be"):
+            engine.run({"cell": CELL, "years": 10, "dt": dt, "diffusion": {"D": 0.01}, "fluvial": None}, z)
+    with pytest.raises(ValueError, match="router"):
+        engine.run({"cell": CELL, "years": 10, "router": "d16", "diffusion": {"D": 0.01}, "fluvial": None}, z)
+
+
 # ---------------------------------------------------------------------- with Landlab
 @landlab
 def test_diffusion_lowers_the_summit_and_raises_the_foot():
@@ -89,6 +117,7 @@ def test_the_volume_is_kept_with_closed_boundaries():
     assert abs(b["net_m3"]) / cone < 0.01
     assert b["eroded_m3"] / cone > 0.2  # it moved a lot, and kept it
     assert b["outlet_node"] is None and abs(b["diffusion_out_m3"]) / cone < 0.01
+    assert abs(b["closure_percent"]) < 1 and b["eroded_solid_m3"] == b["eroded_m3"]  # creep alone: solid = bulk
 
 
 @landlab
@@ -108,6 +137,101 @@ def test_running_water_incises_the_notch_and_deposits_downstream():
     assert b["smallest_step"] < 1.0  # the CFL limit of the incision shortened the steps
 
 
+FLUVIAL = {"K_sed": 0.01, "K_br": 0.005, "runoff": 1.0, "soil_depth": 1.0}
+
+
+@landlab
+@pytest.mark.parametrize("boundary", ["open", "closed"])
+@pytest.mark.parametrize("phi", [0.0, 0.3])
+@pytest.mark.parametrize("F_f", [0.0, 0.5])
+def test_the_balance_closes_on_the_solid_volumes(F_f, phi, boundary):
+    z, *_ = notched_slope(n=60)
+    res = engine.run({"cell": CELL, "years": 50, "boundary": boundary, "diffusion": None,
+                      "fluvial": dict(FLUVIAL, F_f=F_f, phi=phi)}, z)
+    b = res.balance
+    out = b["bedload_out_m3"] + b["wash_load_m3"]
+    assert b["fluvial_out_m3"] == pytest.approx(out) and out > 0
+    assert abs(b["eroded_solid_m3"] - b["deposited_solid_m3"] - out) < 0.01 * b["eroded_solid_m3"]
+    assert abs(b["closure_percent"]) < 1 and b["closure_m3"] == pytest.approx(
+        b["eroded_solid_m3"] - b["deposited_solid_m3"] - out)
+    assert (b["wash_load_m3"] > 0) == (F_f > 0)
+    if phi > 0:  # the soil is porous: what the map shows (bulk) is more than the solid sediment
+        assert b["eroded_m3"] > b["eroded_solid_m3"]
+    else:
+        assert b["eroded_m3"] == pytest.approx(b["eroded_solid_m3"])
+
+
+@landlab
+def test_the_wash_load_does_not_depend_on_the_step():
+    z, *_ = notched_slope(n=60)
+    job = {"cell": CELL, "years": 20, "boundary": "open", "diffusion": None, "fluvial": dict(FLUVIAL, F_f=0.5)}
+    coarse, fine = engine.run(job, z).balance, engine.run(dict(job, dt=0.1), z).balance
+    for b in (coarse, fine):
+        assert abs(b["closure_percent"]) < 1
+    assert fine["wash_load_m3"] == pytest.approx(coarse["wash_load_m3"], rel=0.1)
+
+
+@landlab
+def test_with_creep_too_the_balance_closes():
+    z, *_ = notched_slope(n=60)
+    res = engine.run({"cell": CELL, "years": 50, "boundary": "open", "diffusion": {"D": 0.01},
+                      "fluvial": dict(FLUVIAL, F_f=0.5, phi=0.3)}, z)
+    assert abs(res.balance["closure_percent"]) < 1 and res.balance["diffusion_out_solid_m3"] is not None
+
+
+@landlab
+def test_a_closed_boundary_with_running_water_has_one_outlet():
+    z, notch, north, cols = notched_slope(n=60)
+    res = engine.run({"cell": CELL, "years": 50, "boundary": "closed", "diffusion": {"D": 0.01},
+                      "fluvial": dict(FLUVIAL, F_f=0.5)}, z)
+    b = res.balance
+    outlet = b["outlet_node"]
+    rows, cols_n = z.shape
+    r, c = divmod(outlet, cols_n)  # Landlab's node: row from the south
+    assert r == 0 and 0 < c < cols_n - 1  # on the lowest (south) edge, not a corner
+    edge = np.zeros(z.shape, bool)
+    edge[0], edge[-1], edge[:, 0], edge[:, -1] = True, True, True, True
+    assert (res.dz[edge] == 0).all()  # closed edge cells (and the fixed outlet) do not move
+    assert b["fluvial_out_m3"] > 0 and abs(b["closure_percent"]) < 1  # the sediment leaves through the outlet
+    assert (res.dz[(north > 10) & notch] < 0).any()
+
+
+@landlab
+@pytest.mark.parametrize("missing, eroder, router", [
+    (("SpaceLargeScaleEroder",), "space_classic", "priority_flood"),
+    (("SpaceLargeScaleEroder", "Space"), "erosion_deposition", "priority_flood"),
+    (("PriorityFloodFlowRouter",), "space", "depression_finder"),
+])
+def test_the_fallbacks_incise_the_notch(monkeypatch, missing, eroder, router):
+    import landlab.components as lc
+
+    for name in missing:
+        monkeypatch.delattr(lc, name)
+    z, notch, north, cols = notched_slope(n=60)
+    res = engine.run({"cell": CELL, "years": 50, "boundary": "open", "diffusion": None, "fluvial": FLUVIAL}, z)
+    b = res.balance
+    assert b["eroder"] == eroder and b["router"] == router
+    band = (north > 17) & (north < 28)  # the slope (the apron, north < 15, takes the sediment)
+    in_notch, beside = res.dz[band & notch], res.dz[band & (np.abs(cols - 30) > 6)]
+    assert (in_notch < 0).all() and in_notch.mean() < beside.mean()
+    if eroder != "space":
+        assert b["closure_m3"] is None and b["fluvial_out_m3"] is None  # they do not say what leaves
+
+
+@landlab
+def test_the_bar_moves_inside_a_long_step(monkeypatch):
+    clock = iter(range(10_000_000))
+    monkeypatch.setattr(engine.time, "monotonic", lambda: float(next(clock)))
+    z, _r = tell(n=30)
+    seen = []
+    engine.run({"cell": CELL, "years": 100, "dt": 100.0, "diffusion": {"D": 0.05}, "fluvial": None}, z,
+               progress=lambda f, phase, **info: seen.append((f, phase, info.get("year"))))
+    years = [y for _f, phase, y in seen if phase == "run"]
+    assert len(years) > 10 and years == sorted(years) and years[-1] == 100  # one step, many sub-steps, many reports
+    fractions = [f for f, _p, _y in seen]
+    assert fractions == sorted(fractions)
+
+
 @landlab
 def test_snapshots_at_the_times_asked():
     z, _r = tell(n=40)
@@ -123,6 +247,8 @@ def test_snapshots_at_the_times_asked():
 
 @landlab
 def test_a_step_too_long_for_the_diffusion_is_split():
+    # LinearDiffuser would split it by itself as well (at 0.15 dx^2 / D): what this checks is the engine's own
+    # split - the count it reports, and a stable result (the soil bookkeeping and the bar follow its sub-steps)
     z, _r = tell(n=40)
     D = 0.05
     res = engine.run({"cell": CELL, "years": 100, "dt": 50.0, "boundary": "closed", "diffusion": {"D": D},
