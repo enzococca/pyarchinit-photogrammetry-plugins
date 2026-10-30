@@ -103,6 +103,26 @@
       "sha256": "2397383f43cd3ee5e8839611e444e950429bccb900eeb94316c2e263962aa69f"
     },
     {
+      "name": "landscape",
+      "version": "0.1.0",
+      "title": "Landscape through time",
+      "description": "How the surveyed surface changes over the years with Landlab: soil creep and running water (SPACE erosion and deposition) on the DEM of the chunk, presets for a mudbrick tell, an earth slope, an exposed excavation; final surface, erosion and deposition, drainage area, snapshots, mass balance, a DEM version, comparison with a later phase. Scenarios, not predictions",
+      "i18n": {
+        "it": {
+          "title": "Paesaggio nel tempo",
+          "description": "Come cambia nel tempo la superficie rilevata, con Landlab: creep del suolo e acqua che erode e deposita (SPACE) sul DEM del chunk, scenari per tell in mattoni crudi, versante in terra, scavo esposto; superficie finale, erosione e deposito, area drenata, istantanee, bilancio dei volumi, versione del DEM, confronto con una fase successiva. Scenari, non previsioni"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/landscape",
+      "license": "GPL-3.0-or-later",
+      "api": 1,
+      "min_app": "1.3.4",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/landscape-v0.1.0/ppg_landscape-0.1.0-py3-none-any.whl",
+      "sha256": "71dc189c1b513491e64d597563d43e56f98b121630683f3e597a6ca416678cf8"
+    },
+    {
       "name": "mesh-tools",
       "version": "0.1.1",
       "title": "Mesh (MeshLab)",
