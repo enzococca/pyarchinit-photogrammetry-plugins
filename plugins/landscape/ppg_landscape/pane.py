@@ -348,6 +348,7 @@ class LandscapePane(QWidget):
                 self.last_estimate = est
                 minutes = est["seconds"] / 60.0
                 when = (t("meno di un minuto", "less than a minute") if minutes < 1 else
+                        t("circa un minuto", "about a minute") if minutes < 1.5 else
                         t("circa {0} minuti", "about {0} minutes").format(number(minutes)) if minutes < 90 else
                         t("circa {0} ore", "about {0} hours").format(number(minutes / 60.0, 1)))
                 rows, cols = est["shape"]
