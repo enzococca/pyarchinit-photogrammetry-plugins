@@ -1168,3 +1168,104 @@ def test_a_column_against_the_boreholes_is_said(layered):
     column = [job["column"][0], job["column"][3], job["column"][2], job["column"][1]]
     result = engine.run({**job, "column": column, "options": {}}, dem)
     assert [w for w in result.info["warnings"] if w["code"] == "column_contradicted"][0]["holes"] > 0
+
+
+# ---------------------------------------------------------------------- a dip against the contact, a covered pit
+@loop
+def test_a_dip_against_the_contact_never_turns_the_model_over():
+    ground = Ground(50, 2.0)
+    dem = 104.0 + 0.01 * ground.X + 0.01 * ground.Y
+    contacts = []
+    for i, (x, y) in enumerate(ground.holes(4, 0.1)):
+        collar = 104.0 + 0.01 * x + 0.01 * y
+        contacts += [["A", x, y, collar - 2.0, 1.0, f"S{i}"], ["B", x, y, 100.0 + 0.012 * x + 0.008 * y, 1.0, f"S{i}"]]
+    spaces = {"a": ("elevation", ["A"]), "b": ("elevation", ["B"])}
+    base = layers_job(ground, dem, contacts, ["T", "A", "B"], spaces=spaces, zmin=90.0, zmax=107.0, dz=0.25, vertical=30.0)
+    plain = engine.run(base, dem)
+    d, a = math.radians(10.0), math.radians(90.0)
+    normal = [math.sin(d) * math.sin(a), math.sin(d) * math.cos(a), math.cos(d)]
+    x, y, z = contacts[1][1:4]
+    dipped = engine.run({**base, "orientations": [["B", x, y, z, *normal]]}, dem)
+    for unit in ("T", "A", "B"):
+        assert dipped.volumes[unit] == pytest.approx(plain.volumes[unit], rel=0.05)
+    assert np.nanmedian(dipped.tops["B"]) < np.nanmedian(dipped.tops["A"]) < np.nanmedian(dem)
+
+
+def _covered_pit(profile: str, truth: str):
+    """A pit of radius 8 under 0.4 m of topsoil, floor of shape ``truth``, built with ``profile``: its
+    fill is seen from 0.4 m down to the floor, at three holes."""
+    ground = Ground(60, 1.0)
+    dem = np.full((60, 60), 10.0)
+    r = np.hypot(ground.X - 30, ground.Y - 30)
+    mask = r < 8.0
+    plan = engine.Plan.of(mask, 1.0, "drawn")
+    depth = 2.5 * np.where(mask, engine.PROFILES[truth](plan.cell_t), 0.0)
+    holes = [(30.0, 30.0), (33.0, 30.0), (27.0, 28.0)]
+    contacts = [["L", x, y, 8.5, 1.0, f"O{i}"] for i, (x, y) in enumerate(ground.holes(4, 0.1))]
+    base = []
+    rows = lambda x, y: (int(60 - y), int(x))  # noqa: E731
+    for i, (x, y) in enumerate(holes):
+        contacts.append(["F", x, y, 9.6, 1.0, f"H{i}"])
+        base.append([x, y, 10.0 - float(depth[rows(x, y)])])
+    job = {"grid": ground.grid, "zmin": 2.0, "zmax": 11.0, "dz": 0.05, "contacts": contacts, "orientations": [],
+           "series": [{"name": "l", "space": "elevation", "units": ["L"]}],
+           "column": [{"unit": "T", "kind": "layer"}, {"unit": "F", "kind": "fill"}, {"unit": "P", "kind": "cut"},
+                      {"unit": "L", "kind": "layer"}, {"unit": "N", "kind": "layer"}],
+           "fills": {"F": "P"}, "cuts": {"P": {"base": base, "outline": mask, "profile": profile, "inside": holes}},
+           "options": {}}
+    job["contacts"] += [["N", x, y, 4.0, 1.0, f"O{i}"] for i, (x, y) in enumerate(ground.holes(4, 0.1))]
+    job["series"].append({"name": "n", "space": "elevation", "units": ["N"]})
+    return job, dem, float((np.maximum(depth - 0.4, 0.0)).sum())
+
+
+@loop
+@pytest.mark.parametrize("profile", ["flat", "bowl", "v"])
+def test_the_range_of_a_covered_fill_holds_the_fill(profile):
+    job, dem, truth = _covered_pit(profile, profile)
+    result = engine.run(job, dem)
+    cut = result.info["cuts"]["P"]
+    fill = result.volumes["F"]
+    span = cut["volume_range"]
+    assert min(span.values()) <= fill <= max(span.values())
+    assert span[profile] == pytest.approx(fill)
+    assert fill == pytest.approx(truth, rel=0.15)  # three holes do not tell a V to better than that
+    assert cut["cut_volume_range"][profile] > span[profile] + 0.5 * cut["plan_area"] * 0.4  # the topsoil is not in it
+    assert max(span.values()) < max(cut["cut_volume_range"].values())
+
+
+@loop
+def test_the_range_of_an_open_pit_is_that_of_the_cut():
+    job, dem, _truth = _covered_pit("flat", "flat")
+    job["column"] = [{"unit": "F", "kind": "fill"}, {"unit": "P", "kind": "cut"}, {"unit": "T", "kind": "layer"},
+                     {"unit": "L", "kind": "layer"}, {"unit": "N", "kind": "layer"}]
+    cut = engine.run(job, dem).info["cuts"]["P"]
+    for p in ("bowl", "v"):
+        assert cut["volume_range"][p] == pytest.approx(cut["cut_volume_range"][p])
+
+
+@loop
+def test_a_field_turned_over_by_a_dip_is_fitted_again_without_it(monkeypatch):
+    ground = Ground(40, 2.0)
+    dem = np.full((40, 40), 20.0)
+    contacts = [["A", x, y, 12.0, 1.0, f"S{i}"] for i, (x, y) in enumerate(ground.holes(4, 0.1))]
+    job = layers_job(ground, dem, contacts, ["T", "A"], zmin=5.0, zmax=22.0, dz=0.5)
+    job["series"][0]["units"] = ["A"]
+    job["orientations"] = [["A", 40.0, 40.0, 12.0, 0.0, 0.0, 1.0]]
+    original = engine._solve
+
+    class Reversed:
+        def __init__(self, feature):
+            self.feature = feature
+
+        def evaluate_value(self, points):
+            return -self.feature.evaluate_value(points)
+
+    def spy(name, rows, *args):  # a measure in the data: the field comes out the wrong way round
+        feature = original(name, rows, *args)
+        return Reversed(feature) if sum(1 for r in rows if r.get("nz") is not None) > 1 else feature
+
+    monkeypatch.setattr(engine, "_solve", spy)
+    result = engine.run(job, dem)
+    assert {"code": "orientation_dropped", "unit": "A", "x": 40.0, "y": 40.0} in result.info["warnings"]
+    assert sum(w["code"] == "orientation_dropped" for w in result.info["warnings"]) == 1
+    assert np.nanmedian(result.tops["A"]) == pytest.approx(12.0, abs=0.3)

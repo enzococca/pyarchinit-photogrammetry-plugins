@@ -64,7 +64,9 @@ Every message is one line on stdout, the prefix ``@ppg-geoarch`` and a JSON obje
 * ``{"type": "error", "error": "...", "phase": "...", "exception": "...", "traceback": "..."}``
 
 ``info["cuts"][cut]`` has ``edge`` (``drawn``, ``estimated``, ``none``: the only key of a cut left out),
-``profile``, ``plan_area`` (m2), ``volume_range`` (m3 by profile, on the plan: an undercut is not in it),
+``profile``, ``plan_area`` (m2), ``volume_range`` (m3 of its fills by profile, the same floor up to what
+covers them; the chosen profile is the voxels of the fills, so they lie inside it; an undercut is not in
+it), ``cut_volume_range`` (m3 by profile of the empty cut, from the ground),
 ``field`` (true for a cut with walls), ``base_miss`` (metres between the floor and each row of the
 base, in order; for a field the nearest zero along the column of each row of the job, null without one)
 and ``base_capped`` (true for the rows the floor does not reach).
@@ -73,7 +75,8 @@ say that the volume may be overstated), ``base_near_edge`` (with ``rows``: the f
 they are next to the edge), ``base_outside_outline`` (with ``x``, ``y``, ``distance``), ``cut_reaches_zmin``,
 ``fill_without_contact`` (with ``cut``), ``cut_without_data``, ``series_without_data``,
 ``unit_without_contact``, ``contact_leaves_box``, ``contact_shares_no_hole``, ``few_holes``,
-``normal_turned_up``, ``column_contradicted`` (with ``holes``): the plugin says them in the language of the
+``normal_turned_up``, ``orientation_dropped`` (with ``x``, ``y``), ``column_contradicted`` (with ``holes``): the
+plugin says them in the language of the
 interface.
 Other lines on stdout and stderr are LoopStructural's own: the plugin keeps the last ones
 for the report of a failure. The exit code is 0 with a result, 1 after an error.

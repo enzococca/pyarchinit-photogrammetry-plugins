@@ -511,6 +511,11 @@ def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, ord
     """The field of a series from ``contacts`` and ``orientations`` (of any series): the units of
     ``order`` (top-down) in ``spec``; None when none of them has a point. ``notes`` collects the warnings.
 
+    The way a field grows never rests on a measured dip: at a vertical scale of x30 a dip of a few degrees
+    is nearly horizontal, and against the contact's own tilt it would turn the field over. So the plane of
+    the points stays at their mean and a measure is added to it; a field that still grows downwards at
+    a contact is fitted again without the orientations of its series (``orientation_dropped``).
+
     Several contacts: every point is asked for the value of its contact (:func:`contact_values`).
     Interface constraints (one unknown value per contact, a normal for the gradient) were tried on the
     18 boreholes of the spike and lose: leave-one-out of the rare contact 0.59 m against 0.29 m, of the
@@ -522,6 +527,7 @@ def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, ord
     if space not in ("depth", "elevation"):
         raise ValueError(f"unknown space of series {spec.get('name')}: {space}")
     notes = notes if notes is not None else []
+    first_note = len(notes)
     names = {str(u) for u in spec["units"]}
     rows = [c for c in contacts if c[0] in names]
     if not rows:
@@ -547,10 +553,12 @@ def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, ord
         measured.append((str(o[0]), x, y, float(probe.coordinate(np.array([x]), np.array([y]), np.array([zo]))[0]), n))
     pts = np.column_stack([xy, scaled])
     _whole, positions_plane = fit_plane(np.column_stack([xy, np.zeros(len(xy))]), weight)
-    planes, centres = {}, {}
+    planes, centres, flat = {}, {}, set()
     for unit in seen:
         mine = unit_of == unit
         plane, is_plane = fit_plane(pts[mine], weight[mine])
+        if not is_plane:
+            flat.add(unit)
         centres[unit] = np.average(xy[mine], axis=0, weights=weight[mine])
         given = [m for m in measured if m[0] == unit] or ([] if is_plane else measured)
         if given and abs(float(np.mean([m[4][2] for m in given]))) > 1e-6:
@@ -578,10 +586,11 @@ def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, ord
         data.append(_row(x, y, at, normal=n) if interface else _row(x, y, at, gradient=n))
     if not positions_plane and not measured:
         notes.append({"code": "few_holes", "series": str(spec.get("name", "series"))})
-    if not measured and (interface or not positions_plane):
-        # nothing says which way the field grows or leans: the plane of the points, at their mean,
-        # and across the grid when they are not a plane themselves, only away from the holes: on a
-        # transect a pin on the line would have the weight of the data
+    if interface or (not positions_plane and not measured):
+        # what says which way the field grows and leans (with several contacts and a measure, the values
+        # do): the plane of the points, at their mean, also beside a measure (points that make no plane
+        # take it from the measure), and across the grid when they are not a plane themselves, only
+        # away from the holes: on a transect a pin on the line would have the weight of the data
         x0, y0, x1, y1 = frame.grid.bounds
         clear = 0.25 * min(x1 - x0, y1 - y0)
         across = [(a, b) for a in (x0, 0.5 * (x0 + x1), x1) for b in (y0, 0.5 * (y0 + y1), y1)
@@ -589,8 +598,11 @@ def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, ord
         for unit in seen:
             mine = unit_of == unit
             normal = plane_normal(pts[mine], weight[mine])
+            if measured and unit in flat:
+                normal = np.array([-planes[unit][0], -planes[unit][1], 1.0])
+                normal /= np.linalg.norm(normal)
             data.append(_row(*(float(v) for v in np.average(pts[mine], axis=0, weights=weight[mine])), normal=normal))
-            if not positions_plane:
+            if not positions_plane and not measured:
                 a, b, c = planes[unit]
                 for px, py in across:
                     height = float(np.clip(a * px + b * py + c, lo[2], hi[2]))
@@ -602,7 +614,20 @@ def fit_series(frame: Frame, spec: dict, contacts: list, orientations: list, ord
     upper = fitted.evaluate(xy[:, 0], xy[:, 1], scaled + h)
     lower = fitted.evaluate(xy[:, 0], xy[:, 1], scaled - h)
     gain = float(np.nanmedian((upper - lower) / (2 * h)))
-    fitted.gain = gain if np.isfinite(gain) and gain > 1e-3 else 1.0
+    at_mean = []
+    for unit in seen:
+        mine = unit_of == unit
+        cx, cy, cz = (np.array([v]) for v in np.average(pts[mine], axis=0, weights=weight[mine]))
+        at_mean.append(float((fitted.evaluate(cx, cy, cz + h) - fitted.evaluate(cx, cy, cz - h))[0]) / (2 * h))
+    if gain <= 0 or any(g <= 0 for g in at_mean):  # NaN is no answer: a voxel out of the support, kept below
+        if measured:
+            del notes[first_note:]
+            kept = [o for o in orientations if str(o[0]) not in names]
+            again = fit_series(frame, spec, contacts, kept, order, k, nelements, notes)
+            notes.extend({"code": "orientation_dropped", "unit": m[0], "x": m[1], "y": m[2]} for m in measured)
+            return again
+    # with no measure a field can only turn over on boreholes against the column, and column_contradicted says it
+    fitted.gain = max(gain, 1e-3) if np.isfinite(gain) and gain > 0 else 1.0
     if interface:
         reached = fitted.evaluate(xy[:, 0], xy[:, 1], scaled)
         values = {u: float(np.nanmean(reached[unit_of == u])) for u in seen}
@@ -960,11 +985,14 @@ def wall_function(frame: Frame, fitted: Fitted, box: Box, seeds: np.ndarray, xyz
 
 @dataclass
 class Cut:
-    """What a cut gives the painter: its signed function, the box of its fills, its report."""
+    """What a cut gives the painter: its signed function, the box of its fills, its report, the depth
+    (m, raster) of its floor for every profile and the cells of its plan under the DEM."""
 
     function: np.ndarray
     box: Box
     info: dict
+    depths: dict = field(default_factory=dict)
+    within: np.ndarray | None = None
 
 
 def build_cut(frame: Frame, name: str, spec: dict, fill_rows: np.ndarray, orientations: list, nelements: int,
@@ -1007,17 +1035,18 @@ def build_cut(frame: Frame, name: str, spec: dict, fill_rows: np.ndarray, orient
     depths = {p: np.minimum(depth, room) for p, depth in depths.items()}
     info = {"edge": plan.edge, "profile": profile, "plan_area": float(plan.mask.sum() * grid.cell ** 2),
             "volume_range": {p: float(depth[within].sum() * grid.cell ** 2) for p, depth in depths.items()}}
+    info["cut_volume_range"] = dict(info["volume_range"])  # fill_ranges() makes the other one that of the fills
     if walls.any():
         fitted, box, seeds = wall_field(frame, name, plan, points, inside, orientations, nelements)
         span = max(float(np.ptp(points[:, 2])), 4 * frame.dz, 1.0)
         info.update(field=True, vertical=box.k, elements=box.elements, base_miss=wall_misses(fitted, points, span),
                     base_capped=[False] * len(points))
-        return Cut(wall_function(frame, fitted, box, seeds, xyz), box, info)
+        return Cut(wall_function(frame, fitted, box, seeds, xyz), box, info, depths, within)
     floor = dem.filled - depths[profile]
     miss = np.abs(floor[table.rows, table.cols] - base[:, 2])
     info.update(field=False, base_miss=[float(v) for v in miss], base_capped=[bool(v) for v in held[profile]])
     box = plan_box(plan, depths[profile], frame, fill_rows, nelements)
-    return Cut(plan_function(frame, plan, depths[profile]), box, info)
+    return Cut(plan_function(frame, plan, depths[profile]), box, info, depths, within)
 
 
 def fit_fills(frame: Frame, name: str, fills: list, contacts: list, box: Box, nelements: int,
@@ -1043,6 +1072,23 @@ def fit_fills(frame: Frame, name: str, fills: list, contacts: list, box: Box, ne
                           normal=plane_normal(np.column_stack([xy, scaled]), weight)))
     feature = _solve(f"fills {name}", table, box.lo, box.hi, nelements)
     return Fitted(feature, "elevation", box.k, frame.dem, box.lo[2], box.hi[2], values=values)
+
+
+def fill_ranges(frame: Frame, cut: Cut, ceiling: np.ndarray | None, painted_volume: float | None) -> dict:
+    """The volume of what fills a cut for every profile: between its floor and ``ceiling``, the top of its
+    youngest fill under what covers it (raster; None: the ground), so a pit under the topsoil does
+    not count the topsoil. ``painted_volume``: the voxels of its fills, which are the value of the chosen
+    profile: they are the fill the model has, so it lies inside its own range. None for a cut with walls:
+    its range is that of its plan, an undercut is not in it."""
+    top = frame.dem.filled if ceiling is None else np.where(np.isfinite(ceiling), ceiling, frame.dem.filled)
+    area = frame.grid.cell ** 2
+    out = {}
+    for profile, depth in cut.depths.items():
+        floor = frame.dem.filled - depth
+        out[profile] = float(np.maximum(top - floor, 0.0)[cut.within].sum() * area)
+    if painted_volume is not None:
+        out[cut.info["profile"]] = float(painted_volume)
+    return out
 
 
 # ---------------------------------------------------------------------- the painter
@@ -1336,6 +1382,7 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
     xyz = frame.points()
     cuts: dict = {}
     fill_fields: dict = {}
+    built_cuts: dict = {}
     cut_info: dict = {}
     listed = {str(c) for c in (job.get("cuts") or {})}
     for cut in (u for u, kind in column if kind == "cut" and u not in listed):
@@ -1351,6 +1398,7 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
             cut_info[cut] = {"edge": "none"}
             continue
         cuts[cut] = built.function
+        built_cuts[cut] = built
         cut_info[cut] = built.info
         covered = bool(own) and any(kind == "layer" for u, kind in column[:order.index(own[0])])
         ordered = fit_fills(frame, cut, own, contacts, built.box, nelements, covered)
@@ -1367,6 +1415,16 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
     meshes = solids(frame, painted, lambda f, _unit: say(0.55 + 0.15 * f, "solids"))
     volume_of_voxel = frame.grid.cell ** 2 * frame.dz
     volumes = {u: float((painted.labels == i).sum() * volume_of_voxel) for i, u in enumerate(painted.units)}
+    for cut, built in built_cuts.items():
+        own = [u for u, _kind in column if fills.get(u) == cut]
+        ceiling = None
+        ordered = fill_fields.get(cut)
+        if own and ordered is not None and own[0] in ordered.values:
+            raw = ordered.at(*xyz)
+            ceiling = top_of(frame, np.nan_to_num((ordered.values[own[0]] - raw) / (ordered.gain * ordered.k),
+                                                  nan=-BIG).astype(np.float32))
+        painted_volume = sum(volumes.get(u, 0.0) for u in own) if own and not built.info.get("field") else None
+        built.info["volume_range"] = fill_ranges(frame, built, ceiling, painted_volume)
     loo: dict = {}
     variance: dict = {}
     folds = options.get("folds")
