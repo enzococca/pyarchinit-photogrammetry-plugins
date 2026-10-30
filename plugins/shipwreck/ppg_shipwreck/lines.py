@@ -150,6 +150,11 @@ def water_of(chunk) -> dict | None:
     return {**water, "level": water["level_world"] - frame.z0}
 
 
+def is_on(chunk) -> bool:
+    water = water_of(chunk)
+    return bool(water and water.get("on"))
+
+
 def set_water(chunk, level: float, n: float = REFRACTION, on: bool = False) -> dict:
     """The water level (ship z), the refractive index and whether the correction is on; the sections
     that exist get their corrected lines. The level is kept as a world height: it stays with a new frame."""
@@ -196,6 +201,6 @@ def note(chunk_or_data) -> str:
     from .texts import num
 
     return t(f"Sotto il livello {num(water['level'], 3)} m le quote sono corrette per la rifrazione (n = {num(water['n'], 2)}), "
-             "prima approssimazione per vista nadirale.",
+             "prima approssimazione per vista nadirale; la linea grezza resta nel layer RAW del DXF.",
              f"Under the level {num(water['level'], 3)} m heights are corrected for refraction (n = {num(water['n'], 2)}), "
-             "a first approximation for a nadir view.")
+             "a first approximation for a nadir view; the raw line stays in the layer RAW of the DXF.")
