@@ -1269,3 +1269,26 @@ def test_a_field_turned_over_by_a_dip_is_fitted_again_without_it(monkeypatch):
     assert {"code": "orientation_dropped", "unit": "A", "x": 40.0, "y": 40.0} in result.info["warnings"]
     assert sum(w["code"] == "orientation_dropped" for w in result.info["warnings"]) == 1
     assert np.nanmedian(result.tops["A"]) == pytest.approx(12.0, abs=0.3)
+
+
+@loop
+def test_two_fills_under_a_layer_follow_their_holes_across_the_pit():
+    """On a slope a field that orders the fills kept them level between three holes: a fill came through the
+    topsoil on one side of the pit and sank under it on the other (Tell Sultan demo, 0.2.0)."""
+    job, dem, _truth = _covered_pit("bowl", "bowl")
+    ground = Ground(60, 1.0)
+    slope = lambda x, y: 0.03 * (x - 30.0) + 0.02 * (y - 30.0)  # noqa: E731
+    dem = dem + slope(ground.X, ground.Y)
+    holes = job["cuts"]["P"]["inside"]
+    job["contacts"] = [c for c in job["contacts"] if c[0] != "F"]
+    job["contacts"] += [["F", x, y, 9.6 + slope(x, y), 1.0, f"H{i}"] for i, (x, y) in enumerate(holes)]
+    job["contacts"] += [["G", x, y, 8.9 + slope(x, y) + d, 1.0, f"H{i}"]
+                        for i, ((x, y), d) in enumerate(zip(holes, (0.1, 0.0, -0.05)))]
+    job["column"].insert(2, {"unit": "G", "kind": "fill"})
+    job["fills"]["G"] = "P"
+    job["cuts"]["P"]["base"] = [[x, y, min(z, 8.4) + slope(x, y)] for x, y, z in job["cuts"]["P"]["base"]]
+    result = engine.run(job, dem)
+    index = {u: i for i, u in enumerate(result.units)}
+    middle = np.hypot(ground.X - 30, ground.Y - 30) < 5.0
+    top = (result.labels == index["T"]).sum(axis=2) * job["dz"]
+    assert top[middle].min() >= 0.35 and top[middle].max() <= 0.45  # the 0.4 m of the three holes

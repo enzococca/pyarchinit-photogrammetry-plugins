@@ -16,8 +16,8 @@ The fields
     holds each contact over the whole grid (:func:`series_box`); beyond it the field goes on along
     its gradient.
 
-    Several fills of one cut are ordered by one more field in a box around the cut. Fields and data stay
-    independent of each other.
+    Fields and data stay independent of each other. The fills of a cut are ordered by rasters of depth
+    (:class:`FillTops`), not by a field.
 
 Cuts
     A cut is not a field: a smooth field cannot draw a thin shape from one to three measures. It is a
@@ -851,21 +851,6 @@ class Box:
     elements: int
 
 
-def plan_box(plan: Plan, depth: np.ndarray, frame: Frame, rows: np.ndarray, nelements: int) -> Box:
-    """The box of the field that orders the fills of a cut: around the plan, from the floor to the
-    ground, and around ``rows`` (x, y, z), its depth spanning six elements."""
-    grid = frame.grid
-    r, c = np.nonzero(plan.mask)
-    ground = frame.dem.filled[r, c]
-    points = np.vstack([np.column_stack([grid.xs[c], grid.ys[r], ground - depth[r, c]]),
-                        np.column_stack([grid.xs[c], grid.ys[r], ground]), rows])
-    lo = points.min(axis=0) - [2 * grid.cell, 2 * grid.cell, 2 * frame.dz]
-    hi = points.max(axis=0) + [2 * grid.cell, 2 * grid.cell, 2 * frame.dz]
-    size = hi - lo
-    k = float(np.clip(math.sqrt(216 * size[0] * size[1] / (nelements * size[2] ** 2)), K_MIN, K_MAX))
-    return Box([float(lo[0]), float(lo[1]), float(lo[2]) * k], [float(hi[0]), float(hi[1]), float(hi[2]) * k], k, nelements)
-
-
 def plan_function(frame: Frame, plan: Plan, depth: np.ndarray) -> np.ndarray:
     """The signed function of a cut at the evaluated voxels: positive inside the plan above the floor."""
     floor = np.where(plan.mask, frame.dem.filled - depth, -BIG)  # past the edge only the edge counts: a wall stands on it
@@ -985,17 +970,16 @@ def wall_function(frame: Frame, fitted: Fitted, box: Box, seeds: np.ndarray, xyz
 
 @dataclass
 class Cut:
-    """What a cut gives the painter: its signed function, the box of its fills, its report, the depth
+    """What a cut gives the painter: its signed function, its report, the depth
     (m, raster) of its floor for every profile and the cells of its plan under the DEM."""
 
     function: np.ndarray
-    box: Box
     info: dict
     depths: dict = field(default_factory=dict)
     within: np.ndarray | None = None
 
 
-def build_cut(frame: Frame, name: str, spec: dict, fill_rows: np.ndarray, orientations: list, nelements: int,
+def build_cut(frame: Frame, name: str, spec: dict, orientations: list, nelements: int,
               xyz, notes: list) -> Cut | None:
     """A cut from its entry in the job, None when there is not enough to place it. The floor is explicit
     on the plan (:func:`floors`) unless rows marked ``wall`` ask for a field (:func:`wall_field`). ``notes``
@@ -1041,37 +1025,55 @@ def build_cut(frame: Frame, name: str, spec: dict, fill_rows: np.ndarray, orient
         span = max(float(np.ptp(points[:, 2])), 4 * frame.dz, 1.0)
         info.update(field=True, vertical=box.k, elements=box.elements, base_miss=wall_misses(fitted, points, span),
                     base_capped=[False] * len(points))
-        return Cut(wall_function(frame, fitted, box, seeds, xyz), box, info, depths, within)
+        return Cut(wall_function(frame, fitted, box, seeds, xyz), info, depths, within)
     floor = dem.filled - depths[profile]
     miss = np.abs(floor[table.rows, table.cols] - base[:, 2])
     info.update(field=False, base_miss=[float(v) for v in miss], base_capped=[bool(v) for v in held[profile]])
-    box = plan_box(plan, depths[profile], frame, fill_rows, nelements)
-    return Cut(plan_function(frame, plan, depths[profile]), box, info, depths, within)
+    return Cut(plan_function(frame, plan, depths[profile]), info, depths, within)
 
 
-def fit_fills(frame: Frame, name: str, fills: list, contacts: list, box: Box, nelements: int,
-              covered: bool = False) -> Fitted | None:
-    """The field that orders the ``fills`` of a cut (top-down), None when they have no contact; one
-    fill needs it only when a layer lies on it (``covered``), else it has all of the cut."""
+class FillTops:
+    """The tops of the fills of a cut: rasters of depth under the ground, each through the holes that saw it,
+    by inverse distance. Not a field, for the reason the floor is not one: two or three holes do not tell how a
+    contact tilts, and a field across a pit on a slope kept it level, so that a fill came through what covers it
+    on one side and sank under it on the other. A depth follows the ground unless the holes say otherwise."""
+
+    def __init__(self, dem: Dem, depths: dict):
+        self.dem = dem
+        self.values = {unit: Dem(dem.grid, depth) for unit, depth in depths.items()}
+
+    def raster(self, unit: str) -> np.ndarray:
+        return self.dem.filled - self.values[unit].filled
+
+    def signed(self, unit: str, x, y, z) -> np.ndarray:
+        """Positive under the top of ``unit``."""
+        return self.dem.at(x, y) - self.values[unit].at(x, y) - np.asarray(z, dtype=np.float64)
+
+
+def fit_fills(frame: Frame, fills: list, contacts: list, covered: bool = False) -> FillTops | None:
+    """The tops that order the ``fills`` of a cut (top-down), None when they have no contact; one fill
+    needs its top only when a layer lies on it (``covered``), else it has all of the cut. A deeper fill
+    stays under the one above it."""
     if len(fills) < 2 and not covered:
         return None
     rows = [c for c in contacts if c[0] in fills]
     if not rows:
         return None
-    xy = np.array([(r[1], r[2]) for r in rows], dtype=np.float64)
-    scaled = np.array([r[3] for r in rows], dtype=np.float64) * box.k
-    weight = np.array([r[4] for r in rows], dtype=np.float64)
-    unit_of = np.array([r[0] for r in rows])
-    seen = [u for u in fills if (unit_of == u).any()]
-    means = {u: float(np.average(scaled[unit_of == u], weights=weight[unit_of == u])) for u in seen}
-    values = _monotonic(means, seen, 0.1 * frame.dz * box.k)
-    table = [_row(xy[i, 0], xy[i, 1], scaled[i], val=values[str(unit_of[i])], weight=weight[i])
-             for i in range(len(rows))]
-    if len(seen) < 2:
-        table.append(_row(float(xy[:, 0].mean()), float(xy[:, 1].mean()), float(scaled.mean()),
-                          normal=plane_normal(np.column_stack([xy, scaled]), weight)))
-    feature = _solve(f"fills {name}", table, box.lo, box.hi, nelements)
-    return Fitted(feature, "elevation", box.k, frame.dem, box.lo[2], box.hi[2], values=values)
+    grid = frame.grid
+    gx, gy = np.meshgrid(grid.xs, grid.ys)
+    depths, last = {}, None
+    for unit in fills:
+        own = [r for r in rows if r[0] == unit]
+        if not own:
+            continue
+        x, y = np.array([r[1] for r in own], float), np.array([r[2] for r in own], float)
+        depth = np.maximum(frame.dem.at(x, y) - np.array([r[3] for r in own], float), 0.0)
+        squared = np.maximum((gx[..., None] - x) ** 2 + (gy[..., None] - y) ** 2, 1e-6)
+        weight = np.array([r[4] for r in own], float) / squared
+        raster = (weight * depth).sum(axis=2) / weight.sum(axis=2)
+        depths[unit] = raster if last is None else np.maximum(raster, last + 0.1 * frame.dz)
+        last = depths[unit]
+    return FillTops(frame.dem, depths)
 
 
 def fill_ranges(frame: Frame, cut: Cut, ceiling: np.ndarray | None, painted_volume: float | None) -> dict:
@@ -1105,11 +1107,13 @@ class Painted:
 def paint(frame: Frame, column: list, fills: dict, series: dict, cuts: dict, fill_fields: dict, xyz) -> Painted:
     """The units on the voxels (see the head of this file). ``series``: unit -> :class:`Fitted` of its
     series; ``cuts``: cut -> signed function at the evaluated voxels; ``fill_fields``: cut ->
-    :class:`Fitted` of its fills. Units without a function take no voxels."""
+    :class:`FillTops` of its fills. Units without a function take no voxels."""
     x, y, z = xyz
     raw: dict = {}
 
-    def signed(unit: str, fitted: Fitted) -> np.ndarray:
+    def signed(unit: str, fitted) -> np.ndarray:
+        if isinstance(fitted, FillTops):
+            return fitted.signed(unit, x, y, z).astype(np.float32)
         key = id(fitted)
         if key not in raw:
             raw[key] = fitted.at(x, y, z).astype(np.float32)
@@ -1391,8 +1395,7 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
     for cut, spec in (job.get("cuts") or {}).items():
         cut = str(cut)
         own = [u for u, _kind in column if fills.get(u) == cut]
-        fill_rows = np.array([c[1:4] for c in contacts if c[0] in own], dtype=np.float64).reshape(-1, 3)
-        built = build_cut(frame, cut, spec, fill_rows, orientations, nelements, xyz, warnings)
+        built = build_cut(frame, cut, spec, orientations, nelements, xyz, warnings)
         if built is None:
             warnings.append({"code": "cut_without_data", "unit": cut})
             cut_info[cut] = {"edge": "none"}
@@ -1401,7 +1404,7 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
         built_cuts[cut] = built
         cut_info[cut] = built.info
         covered = bool(own) and any(kind == "layer" for u, kind in column[:order.index(own[0])])
-        ordered = fit_fills(frame, cut, own, contacts, built.box, nelements, covered)
+        ordered = fit_fills(frame, own, contacts, covered)
         if ordered is not None:
             fill_fields[cut] = ordered
         if len(own) > 1 or covered:
@@ -1420,9 +1423,7 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
         ceiling = None
         ordered = fill_fields.get(cut)
         if own and ordered is not None and own[0] in ordered.values:
-            raw = ordered.at(*xyz)
-            ceiling = top_of(frame, np.nan_to_num((ordered.values[own[0]] - raw) / (ordered.gain * ordered.k),
-                                                  nan=-BIG).astype(np.float32))
+            ceiling = ordered.raster(own[0])
         painted_volume = sum(volumes.get(u, 0.0) for u in own) if own and not built.info.get("field") else None
         built.info["volume_range"] = fill_ranges(frame, built, ceiling, painted_volume)
     loo: dict = {}
