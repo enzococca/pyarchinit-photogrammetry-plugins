@@ -846,7 +846,7 @@ def test_a_drawn_pit_with_the_real_worker(tmp_path, real):
     rows = {r["unit"]: r for r in m["units"]}
     fill = rows["US 7"]["volume_m3"]
     assert rows["T1"]["range_min"] <= fill <= rows["T1"]["range_max"]  # the range of the fill, under the topsoil
-    assert rows["T1"]["range_max"] < max(rows["T1"]["cut_range"].values())
+    assert rows["T1"]["range_max"] == pytest.approx(max(rows["T1"]["cut_range"].values()), rel=0.01)  # from where it opens
     truth = np.pi * RADIUS ** 2 * (PIT - TOP)
     assert fill == pytest.approx(truth, rel=0.25)
     assert reg["cut_results"]["T1"]["edge"] == "drawn" and reg["cut_results"]["T1"]["field"] is False
@@ -870,3 +870,117 @@ def test_a_drawn_pit_with_the_real_worker(tmp_path, real):
     out = tmp_path / "out" / "g.gpkg"
     export.export_gpkg(ch, out)
     assert (tmp_path / "out" / f"g_{reg['surfaces'][0]['id']}.tif").exists()
+
+
+# ------------------------------------------------------------------ the model against the data
+def _rows_at(name: str, dx: float, dy: float, rows: list) -> list:
+    return [f"{name};{CENTRE[0] + dx};{CENTRE[1] + dy};{a};{b};{u}" for a, b, u in rows]
+
+
+def _site(tmp_path: Path, rows: list):
+    doc, ch = project(tmp_path)
+    bh.import_files(ch, [write(tmp_path, "t.csv", "sondaggio;x;y;da;a;us\n" + "\n".join(rows) + "\n")])
+    sf.build(ch)
+    return doc, ch
+
+
+def _intercut(tmp_path: Path):
+    """Pit US 9 (r 8) cut by pit US 7 (r 5), 7 m to the east, a hole through both logged as it was dug."""
+    plain = [(0, 0.4, "US 1"), (0.4, 1.5, "US 2"), (1.5, 5, "US 3")]
+    rows = []
+    k = 0
+    for dx in (-40.0, -20.0, 0.0, 20.0, 40.0):
+        for dy in (-30.0, -15.0, 0.0, 15.0, 30.0):
+            k += 1
+            if dx or dy:
+                rows += _rows_at(f"S{k}", dx, dy, plain)
+    rows += _rows_at("B1", -3, 0, [(0, 0.4, "US 1"), (0.4, 3.0, "US 9"), (3.0, 5, "US 3")])
+    rows += _rows_at("B2", 0, 3, [(0, 0.4, "US 1"), (0.4, 3.0, "US 9"), (3.0, 5, "US 3")])
+    rows += _rows_at("A1", 9, 0, [(0, 0.4, "US 1"), (0.4, 1.8, "US 7"), (1.8, 5, "US 3")])
+    rows += _rows_at("A2", 9, 3, [(0, 0.4, "US 1"), (0.4, 1.8, "US 7"), (1.8, 5, "US 3")])
+    rows += _rows_at("AB", 5, 0, [(0, 0.4, "US 1"), (0.4, 1.8, "US 7"), (1.8, 3.0, "US 9"), (3.0, 5, "US 3")])
+    doc, ch = _site(tmp_path, rows)
+    implicit.mark_fill(ch, "US 7", "T7")
+    implicit.mark_fill(ch, "US 9", "T9")
+    draw(ch, "7", radius=5.0, centre=(CENTRE[0] + 7, CENTRE[1]))
+    draw(ch, "9", radius=8.0, centre=CENTRE)
+    return doc, ch
+
+
+def test_a_fill_and_its_cut_stay_one_block_in_the_column():
+    marks = {"T7": {"kind": "cut", "fills": ["US 7"]}, "US 7": {"kind": "fill", "fills": "T7"},
+             "T9": {"kind": "cut", "fills": ["US 8", "US 9"]}, "US 9": {"kind": "fill", "fills": "T9"},
+             "US 8": {"kind": "fill", "fills": "T9"}}
+    data = implicit.Data(above={"T7": {"US 1"}, "T9": {"US 1", "US 7"}})
+    column = implicit.column_of(["US 1", "US 7", "US 8", "US 9", "US 2", "US 3"], marks, data)
+    assert [e["unit"] for e in column] == ["US 1", "US 7", "T7", "US 8", "US 9", "T9", "US 2", "US 3"]
+
+
+def test_pits_cutting_pits_in_the_order_of_the_logs(tmp_path, real):
+    _doc, ch = _intercut(tmp_path)
+    assert bh.order(ch).index("US 7") < bh.order(ch).index("US 9")
+    implicit.build(ch, cell=1.0, folds=None)
+    rows = {r["unit"]: r for r in model.registry(ch)["units"]}
+    disc = np.pi * RADIUS ** 2 * 2.6
+    assert rows["US 7"]["volume_m3"] > 60
+    assert rows["US 9"]["volume_m3"] < 0.95 * disc  # the younger pit took its part
+    logs_of = {r["unit"]: r for r in implicit.registry(ch)["logs"]}
+    assert logs_of["US 7"]["max"] < 0.3 and logs_of["US 9"]["rmse"] < 0.3
+
+
+def test_fills_side_by_side_are_said(tmp_path, real):
+    plain = [(0, 0.4, "US 1"), (0.4, 1.5, "US 2"), (1.5, 5, "US 3")]
+    rows = []
+    k = 0
+    for dx in (-40.0, -20.0, 20.0, 40.0):
+        for dy in (-30.0, -15.0, 15.0, 30.0):
+            k += 1
+            rows += _rows_at(f"S{k}", dx, dy, plain)
+    rows += _rows_at("X", -4, 0, [(0, 0.4, "US 1"), (0.4, 1.0, "US 6"), (1.0, 2.5, "US 7"), (2.5, 5, "US 3")])
+    rows += _rows_at("F1", -4, 3, [(0, 0.4, "US 1"), (0.4, 2.5, "US 6"), (2.5, 5, "US 3")])
+    rows += _rows_at("F2", 4, 0, [(0, 0.4, "US 1"), (0.4, 2.5, "US 7"), (2.5, 5, "US 3")])
+    rows += _rows_at("F3", 4, 3, [(0, 0.4, "US 1"), (0.4, 2.5, "US 7"), (2.5, 5, "US 3")])
+    _doc, ch = _site(tmp_path, rows)
+    implicit.mark_fill(ch, "US 6", "T1")
+    implicit.mark_fill(ch, "US 7", "T1")
+    draw(ch, "7")
+    reg = implicit.build(ch, cell=1.0, folds=None)
+    thinned = [w for w in reg["warnings"] if w["code"] == "fill_thinned"]
+    assert {w["hole"] for w in thinned} & {"F1", "F2", "F3"}
+    assert all(w["modelled"] < 0.5 * w["logged"] for w in thinned)
+    assert "US" in implicit.warning_text(thinned[0])
+
+
+def test_the_model_is_held_against_its_logs(tmp_path, real):
+    """A lens 1.2 m thick in two patches: the leave-one-out of the contacts cannot show that the model loses it."""
+    rows = []
+    k = 0
+    for dx in (-40.0, -20.0, 0.0, 20.0, 40.0):
+        for dy in (-30.0, -15.0, 0.0, 15.0, 30.0):
+            k += 1
+            lens = (dx <= -20 and dy >= 15) or (dx >= 20 and dy <= -15)
+            found = [(0, 0.3, "US 1"), (0.3, 1.3, "US 2")] + ([(1.3, 2.5, "US 3")] if lens else [])
+            rows += _rows_at(f"S{k}", dx, dy, found + [(2.5 if lens else 1.3, 6, "US 4")])
+    _doc, ch = _site(tmp_path, rows)
+    reg = implicit.build(ch, cell=2.0, folds=None)
+    by_unit = {r["unit"]: r for r in reg["logs"]}
+    assert by_unit["US 1"]["rmse"] < 0.1
+    assert by_unit["US 4"]["rmse"] > 0.25 and by_unit["US 4"]["max"] > 0.5
+    assert {"logs_missed"} & {w["code"] for w in reg["warnings"]}
+    text = implicit.summary_text(ch)
+    assert "rmse" in text
+
+
+def test_the_volumes_file_does_not_count_a_fill_twice(tmp_path, fake):
+    _doc, ch = pit_site(tmp_path)
+    implicit.build(ch, cell=CELL * 2, folds=None)
+    with open(Path(ch.data_dir) / model.registry(ch)["files"]["csv"], encoding="utf-8") as f:
+        rows = {r["unit"]: r for r in csv.DictReader(f)}
+    assert rows["T1"]["volume_m3"] == "" and rows["T1"]["range_max"]
+    assert model.registry(ch)["units"]  # the registry keeps it for the texts
+
+
+def test_a_missing_column_is_named_as_a_file_can_call_it(tmp_path):
+    path = write(tmp_path, "g.csv", "unit;x;y;z;dip\nUS 2;1;2;3;4\n")
+    with pytest.raises(ValueError, match="dip_direction"):
+        implicit.read_orientations(path)

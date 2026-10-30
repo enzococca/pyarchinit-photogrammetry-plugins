@@ -67,6 +67,7 @@ MAX_LEVELS = 200  # levels of voxels
 MIN_OUTLINE_CELLS = 3.0  # the narrowest part of a plan, in cells
 OUTLINE_KEPT = 0.95  # a plan with less than this share of the polygon drawn is said to be cut
 OUTLINE_BUMPS = 0.05  # share of a plan that may be narrower than the width told: the bumps of the line
+LOGS_MISSED = 0.25  # rmse (m) of the model at its own boreholes that deserves a warning
 VOXEL_SHARE = 0.1  # a voxel is at most this share of the thinnest unit and of the shallowest cut
 TOLERANCE = bh.TOLERANCE
 VOLUME_COLUMNS = (*model_mod.VOLUME_COLUMNS, "absent_cells", "same_cells_m3", "method", "kriging_m3", "range_min", "range_max")
@@ -89,10 +90,28 @@ WARNINGS = {
                          "il volume è un'ipotesi, qualunque sia l'intervallo indicato.",
                          "{unit}: all the boreholes are near the edge, the depth of the floor was not measured: the "
                          "volume is a guess, whatever the range says."),
-    "base_near_edge": ("{unit}: {rows} misure del fondo vicino al bordo non vengono raggiunte, per non scavare troppo "
-                       "al centro.",
-                       "{unit}: {rows} measures of the floor next to the edge are not reached, not to dig too much in "
-                       "the middle."),
+    "base_near_edge": ("{unit}: {rows} misure del fondo vicino al bordo non sono usate per la sua profondità, oppure il "
+                       "fondo lì è trattenuto: il bordo non dice quanto scende il centro.",
+                       "{unit}: {rows} measures of the floor next to the edge were not used for its depth, or the "
+                       "floor there is held: the edge does not tell how deep the middle goes."),
+    "floor_past_measure": ("{unit}: il fondo arriva a {floor} m, la misura più profonda è {measure} m: tutte le misure "
+                           "sono vicino al bordo e nulla lo ferma.",
+                           "{unit}: the floor reaches {floor} m, the deepest measure is {measure} m: all the measures "
+                           "are next to the edge and nothing stops it."),
+    "plan_part_unmeasured": ("{unit}: {parts} parti separate del contorno non hanno alcuna misura del fondo: la loro "
+                             "profondità viene da sondaggi lontani.",
+                             "{unit}: {parts} separate parts of the outline have no measure of the floor: their depth "
+                             "comes from boreholes far away."),
+    "fill_thinned": ("{unit}: nel sondaggio {hole} i log danno {logged} m, il modello {modelled} m. I riempimenti sono "
+                     "una pila, uno sull'altro: riempimenti affiancati non si possono rappresentare, e il volume di "
+                     "ciascuno è sbagliato (quello del taglio no).",
+                     "{unit}: in borehole {hole} the logs give {logged} m, the model {modelled} m. Fills are a stack, "
+                     "one over the other: fills side by side cannot be drawn, and the volume of each is wrong (that of "
+                     "the cut is not)."),
+    "logs_missed": ("{unit}: il modello passa lontano dai log dei suoi stessi sondaggi (rmse {rmse} m, massimo {max} m): "
+                    "il leave-one-out da solo non lo mostra.",
+                    "{unit}: the model passes far from the logs of its own boreholes (rmse {rmse} m, maximum {max} m): "
+                    "leave-one-out alone does not show this."),
     "base_outside_outline": ("{unit}: una misura del fondo ({x}, {y}) è {distance} m fuori dal contorno: vale come "
                              "se fosse sul bordo.",
                              "{unit}: a measure of the floor ({x}, {y}) is {distance} m outside the outline: it counts "
@@ -511,6 +530,8 @@ def column_of(codes: list, marks: dict, data: Data) -> list:
         rest = [u for u in column if fill_of.get(u) != cut]
         above = [rest.index(u) for u in data.above.get(cut, ()) if u in rest]
         at = max(above) + 1 if above else 0
+        if at and fill_of.get(rest[at - 1]) in rest:  # a fill and its cut are one block: the younger pit stays whole
+            at = rest.index(fill_of[rest[at - 1]]) + 1
         column = rest[:at] + own + [cut] + rest[at:]
     return [{"unit": u, "kind": "cut" if u in cuts else "fill" if u in fill_of else "layer"} for u in column]
 
@@ -1044,13 +1065,50 @@ def _model(chunk, job: dict, result: dict, run: Path, plan: Plan, out: Path, exp
     if meshes:
         model_mod.write_obj(out / "unita.obj", meshes)
         files["obj"] = str((final / "unita.obj").relative_to(chunk.data_dir))
-    model_mod.write_volumes(out / "volumi.csv", rows, VOLUME_COLUMNS)
+    # the fill of a cut is in the rows of its fills: here only its range, or a sum of the column counts it twice
+    model_mod.write_volumes(out / "volumi.csv", [dict(r, volume_m3=None) if r.get("kind") == "cut" else r for r in rows],
+                            VOLUME_COLUMNS)
     files["csv"] = str((final / "volumi.csv").relative_to(chunk.data_dir))
     if model_mod.write_display(chunk, meshes, explode, out) is not None:
         files["display"] = str((final / model_mod.DISPLAY).relative_to(chunk.data_dir))
     return {"made": time.strftime("%Y-%m-%d %H:%M"), "cell": grid.cell, "factor": plan.factor, "floor": float(job["zmin"]),
             "floor_given": plan.floor_given, "clip": False, "units": rows, "files": files, "method": "implicit",
             "explode": float(explode or 0.0)}
+
+
+def against_logs(holes, marks: dict, job: dict, result: dict, run: Path, grid: sf.Grid) -> tuple[list[dict], list[dict]]:
+    """The model at its own boreholes: per unit, the top of the model against the top in the logs (``{"unit", "n",
+    "rmse", "max"}``), and the warnings: ``logs_missed`` above :data:`LOGS_MISSED` m or two voxels of rmse,
+    ``fill_thinned`` for a fill left with under half of what a hole logged. The leave-one-out cannot see
+    this: it asks of a hole what the others say, not whether the model keeps the hole."""
+    tops = {u: np.load(run / n, allow_pickle=False) for u, n in (result["files"].get("tops") or {}).items()}
+    labels = np.load(run / result["files"]["labels"], allow_pickle=False)
+    index = {u: i for i, u in enumerate(result["units"])}
+    dz = float(job["dz"])
+    misses: dict = {}
+    notes = []
+    for b in holes:
+        row, col = int((grid.y0 - b.y) // grid.cell), int((b.x - grid.x0) // grid.cell)
+        if b.z is None or not (0 <= row < grid.height and 0 <= col < grid.width):
+            continue
+        for unit, top, base in _stretches(b):
+            model = float(tops[unit][row, col]) if unit in tops else float("nan")
+            if np.isfinite(model):
+                misses.setdefault(unit, []).append(model - (b.z - top))
+            if marks.get(unit, {}).get("kind") == "fill" and unit in index:
+                modelled = int((labels[row, col] == index[unit]).sum()) * dz
+                if modelled < 0.5 * (base - top) and base - top - modelled > dz:
+                    notes.append({"code": "fill_thinned", "unit": unit, "hole": b.id, "logged": float(base - top),
+                                  "modelled": float(modelled)})
+    rows = []
+    for entry in job["column"]:
+        values = np.abs(misses.get(entry["unit"], []))
+        if values.size:
+            rows.append({"unit": entry["unit"], "n": int(values.size), "rmse": float(np.sqrt(np.mean(values ** 2))),
+                         "max": float(values.max())})
+    notes += [{"code": "logs_missed", "unit": r["unit"], "rmse": r["rmse"], "max": r["max"]} for r in rows
+              if r["rmse"] > max(LOGS_MISSED, 2 * dz)]
+    return rows, notes
 
 
 def _loo_rows(chunk, result: dict) -> list[dict]:
@@ -1091,6 +1149,7 @@ def build(chunk, cell: float | None = None, folds: int | None = FOLDS, floor: fl
         new_surfaces.mkdir()
         entries = _surfaces(chunk, result, run, plan, new_surfaces)
         model_reg = _model(chunk, job, result, run, plan, new_model, explode)
+        logs, log_notes = against_logs(bh.load(chunk), cuts_of(chunk), job, result, run, plan.grid)
         kept = folder(chunk) / DATA
         if kept.exists():
             shutil.copytree(kept, new_surfaces / DATA)
@@ -1102,7 +1161,8 @@ def build(chunk, cell: float | None = None, folds: int | None = FOLDS, floor: fl
     state.update(made=time.strftime("%Y-%m-%d %H:%M"), stale=False, grid=plan.grid.to_dict(), series=job["series"],
                  absent=dict(info.get("absent") or {}),
                  column=job["column"], surfaces=entries, cut_results=info.get("cuts") or {},
-                 warnings=list(plan.notes) + list(info.get("warnings") or []), loo=_loo_rows(chunk, result),
+                 warnings=list(plan.notes) + list(info.get("warnings") or []) + log_notes, logs=logs,
+                 loo=_loo_rows(chunk, result),
                  versions=result.get("versions") or {}, vertical=info.get("vertical"), dz=job["dz"], zmin=job["zmin"],
                  zmax=job["zmax"], folds=job["options"]["folds"], seconds=result.get("seconds"),
                  drawn=drawn_hash(chunk), spots_ignored=plan.spots_ignored)
@@ -1128,10 +1188,13 @@ def remove(chunk) -> None:
 
 
 # ------------------------------------------------------------------ contacts and orientations from files
+COLUMN_NAMES = {"direction": "dip_direction"}  # as a file has to call them
+
+
 def _rows(path, extra: dict | None, wanted: tuple) -> tuple[list[dict], list[str]]:
     notes: list = []
     rows, names = bh.read_table(path, notes, extra)
-    missing = [f for f in wanted if f not in names]
+    missing = [COLUMN_NAMES.get(f, f) for f in wanted if f not in names]
     if missing:
         raise ValueError(t("{0}: mancano le colonne {1}", "{0}: the columns {1} are missing").format(
             Path(path).name, ", ".join(missing)))
@@ -1249,6 +1312,12 @@ def summary_text(chunk) -> str:
                            "{0}: implicit {1} ({2} boreholes), kriging {3} ({4} boreholes)")
                          .format(r["unit"], _metres(r.get("rmse")), r.get("n", "?"), _metres(r.get("kriging_rmse")),
                                  r.get("kriging_points") or "-"))
+    if reg.get("logs"):
+        lines.append(t("Il modello contro i log, ai suoi sondaggi (da leggere con il leave-one-out, che da solo non lo mostra):",
+                       "The model against the logs, at its own boreholes (to read with the leave-one-out, which alone does not show this):"))
+        for r in reg["logs"]:
+            lines.append(t("{0}: rmse {1}, massimo {2} ({3} sondaggi)", "{0}: rmse {1}, maximum {2} ({3} boreholes)")
+                         .format(r["unit"], _metres(r["rmse"]), _metres(r["max"]), r["n"]))
     model = model_mod.registry(chunk)
     if model.get("method") == "implicit":
         lines.append(t("Volumi:", "Volumes:"))
