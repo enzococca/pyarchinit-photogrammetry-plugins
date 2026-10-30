@@ -98,16 +98,22 @@ WARNINGS = {
                            "sono vicino al bordo e nulla lo ferma.",
                            "{unit}: the floor reaches {floor} m, the deepest measure is {measure} m: all the measures "
                            "are next to the edge and nothing stops it."),
+    "rim_deeper": ("{unit}: una misura accanto al bordo arriva a {depth} m, più di ogni misura lontana dal bordo ({measure} "
+                   "m): nel modello quella profondità sta solo lì, una buca locale. Se è la parete, serve un sondaggio più "
+                   "all'interno; controlla anche il log.",
+                   "{unit}: a measure next to the edge reaches {depth} m, more than any measure away from the edge "
+                   "({measure} m): in the model that depth stands only there, a local sump. If it is the wall, a "
+                   "borehole further in is needed; check the log too."),
     "plan_part_unmeasured": ("{unit}: {parts} parti separate del contorno non hanno alcuna misura del fondo: la loro "
                              "profondità viene da sondaggi lontani.",
                              "{unit}: {parts} separate parts of the outline have no measure of the floor: their depth "
                              "comes from boreholes far away."),
     "fill_thinned": ("{unit}: nel sondaggio {hole} i log danno {logged} m, il modello {modelled} m. I riempimenti sono "
-                     "una pila, uno sull'altro: riempimenti affiancati non si possono rappresentare, e il volume di "
-                     "ciascuno è sbagliato (quello del taglio no).",
+                     "una pila, uno sull'altro: riempimenti affiancati non si possono rappresentare. Il volume di "
+                     "questo riempimento è sbagliato, e può esserlo anche quello del taglio.",
                      "{unit}: in borehole {hole} the logs give {logged} m, the model {modelled} m. Fills are a stack, "
-                     "one over the other: fills side by side cannot be drawn, and the volume of each is wrong (that of "
-                     "the cut is not)."),
+                     "one over the other: fills side by side cannot be drawn. The volume of this fill is wrong, and "
+                     "that of the cut may be too."),
     "logs_missed": ("{unit}: il modello passa lontano dai log dei suoi stessi sondaggi (rmse {rmse} m, massimo {max} m): "
                     "il leave-one-out da solo non lo mostra.",
                     "{unit}: the model passes far from the logs of its own boreholes (rmse {rmse} m, maximum {max} m): "

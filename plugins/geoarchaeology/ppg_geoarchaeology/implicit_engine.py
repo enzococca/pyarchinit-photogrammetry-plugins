@@ -22,8 +22,8 @@ The fields
 Cuts
     A cut is not a field: a smooth field cannot draw a thin shape from one to three measures. It is a
     plan, a boolean raster (:func:`cut_plan`), and an explicit floor on it, ``z = opening - s(x, y) P(t)``
-    (:func:`floors`): ``opening`` where the cut opens, the ground or, under a cover, the top of its
-    youngest fill; ``t`` the distance from the edge of the plan over the local half width, ``P`` the
+    (:func:`floors`): ``opening`` where the cut opens, the ground or, under a cover, the top of the first
+    fill each hole meets; ``t`` the distance from the edge of the plan over the local half width, ``P`` the
     profile of the cut, ``s`` the measured depths over ``P``, spread by inverse distance, so the floor
     passes through its measures. A row by the edge says how steep the wall is, not how deep the middle
     goes: it takes no part in ``s`` as soon as another row stands away from the edge. Few holes cannot
@@ -833,7 +833,8 @@ def floors(plan: Plan, table: BaseRows, grid: Grid, opening: Dem, base: np.ndarr
     from the edge: where a wall stands is what it says, not how deep the middle goes, and a height taken
     on the edge says nothing at all. If it is deeper than the profile the wall is steeper than the profile:
     what it wants more is spread around it, so the floor comes to it without touching the rows that do
-    count. With a row away from the edge no floor goes deeper than the deepest measure of the cut.
+    count. With a row away from the edge no floor goes deeper than the largest scale of such a row: a
+    deep row by the edge is met at its own cell and does not dig the rest (``rim_deeper`` says so).
 
     With only rows by the edge the depth is a guess (``floor_unmeasured``): each counts, its profile at
     least :data:`P_MIN`. A row that is not held is met exactly at its cell."""
@@ -844,6 +845,7 @@ def floors(plan: Plan, table: BaseRows, grid: Grid, opening: Dem, base: np.ndarr
     rows, cols = np.nonzero(plan.mask)
     x, y = grid.xs[cols], grid.ys[rows]
     scales = np.column_stack([table.depth / np.maximum(shares[name], P_MIN) for name in PROFILES])
+    limits = scales[~by_edge].max(axis=0) if measured else None
     trust = np.column_stack([np.where(by_edge, 0.0, shares[name] ** 2) if measured else np.ones(len(by_edge))
                              for name in PROFILES])
     s = _spread(x, y, table.x, table.y, trust, scales)
@@ -859,7 +861,7 @@ def floors(plan: Plan, table: BaseRows, grid: Grid, opening: Dem, base: np.ndarr
             if steeper.any():
                 here = here + _spread(x, y, table.x, table.y, np.ones((len(by_edge), 1)), steeper[:, None])[:, 0]
             held[name] = held[name] & (steeper == 0.0)
-            here = np.minimum(here, table.depth.max())
+            here = np.minimum(here, limits[i])
         depth = np.zeros(plan.mask.shape)
         depth[rows, cols] = here
         exact = met & ~held[name]
@@ -1057,6 +1059,9 @@ def build_cut(frame: Frame, name: str, spec: dict, orientations: list, nelements
         reached, measure = float(depths[profile].max()), float(table.depth.max())
         if reached > measure + frame.dz:  # with a row away from the edge the deepest measure stops it
             notes.append({"code": "floor_past_measure", "unit": name, "floor": reached, "measure": measure})
+    elif float(table.depth[table.t < RIM_T].max(initial=0.0)) > float(table.depth[table.t >= RIM_T].max()) + frame.dz:
+        notes.append({"code": "rim_deeper", "unit": name, "depth": float(table.depth[table.t < RIM_T].max()),
+                      "measure": float(table.depth[table.t >= RIM_T].max())})
     parts = _parts_without_rows(plan, table)
     if parts:
         notes.append({"code": "plan_part_unmeasured", "unit": name, "parts": parts})
@@ -1084,7 +1089,10 @@ class FillTops:
     """The tops of the fills of a cut: rasters of depth under the ground, each through the holes that saw it,
     by inverse distance. Not a field, for the reason the floor is not one: two or three holes do not tell how a
     contact tilts, and a field across a pit on a slope kept it level, so that a fill came through what covers it
-    on one side and sank under it on the other. A depth follows the ground unless the holes say otherwise."""
+    on one side and sank under it on the other. A depth follows the ground unless the holes say otherwise.
+
+    The first raster is :attr:`opening`, where the cut opens: hole by hole the top of the first fill met,
+    whichever it is. It is also the top of the youngest fill, so what covers the cut takes none of its space."""
 
     def __init__(self, dem: Dem, depths: dict):
         self.dem = dem
@@ -1093,6 +1101,10 @@ class FillTops:
     def raster(self, unit: str) -> np.ndarray:
         return self.dem.filled - self.values[unit].filled
 
+    @property
+    def opening(self) -> np.ndarray:
+        return self.raster(next(iter(self.values)))
+
     def signed(self, unit: str, x, y, z) -> np.ndarray:
         """Positive under the top of ``unit``."""
         return self.dem.at(x, y) - self.values[unit].at(x, y) - np.asarray(z, dtype=np.float64)
@@ -1100,8 +1112,8 @@ class FillTops:
 
 def fit_fills(frame: Frame, fills: list, contacts: list, covered: bool = False) -> FillTops | None:
     """The tops that order the ``fills`` of a cut (top-down), None when they have no contact; one fill
-    needs its top only when a layer lies on it (``covered``), else it has all of the cut. A deeper fill
-    stays under the one above it."""
+    needs its top only when a layer lies on it (``covered``), else it has all of the cut. The first fill
+    with a contact has :attr:`FillTops.opening` as its top; a deeper fill stays under the one above it."""
     if len(fills) < 2 and not covered:
         return None
     rows = [c for c in contacts if c[0] in fills]
@@ -1109,16 +1121,27 @@ def fit_fills(frame: Frame, fills: list, contacts: list, covered: bool = False) 
         return None
     grid = frame.grid
     gx, gy = (a.ravel() for a in np.meshgrid(grid.xs, grid.ys))
+
+    def raster(chosen: list) -> np.ndarray:
+        x, y = np.array([r[1] for r in chosen], float), np.array([r[2] for r in chosen], float)
+        depth = np.maximum(frame.dem.at(x, y) - np.array([r[3] for r in chosen], float), 0.0)
+        weight = np.array([r[4] for r in chosen], float)[:, None]
+        return _spread(gx, gy, x, y, weight, depth[:, None])[:, 0].reshape(grid.height, grid.width)
+
+    first: dict = {}  # the highest fill top of each hole; a row without a hole stands alone
+    for i, r in enumerate(rows):
+        key = r[5] if r[5] is not None else ("row", i)
+        if key not in first or r[3] > first[key][3]:
+            first[key] = r
     depths, last = {}, None
     for unit in fills:
         own = [r for r in rows if r[0] == unit]
         if not own:
             continue
-        x, y = np.array([r[1] for r in own], float), np.array([r[2] for r in own], float)
-        depth = np.maximum(frame.dem.at(x, y) - np.array([r[3] for r in own], float), 0.0)
-        weight = np.array([r[4] for r in own], float)[:, None]
-        raster = _spread(gx, gy, x, y, weight, depth[:, None])[:, 0].reshape(grid.height, grid.width)
-        depths[unit] = raster if last is None else np.maximum(raster, last + 0.1 * frame.dz)
+        if last is None:
+            depths[unit] = raster(list(first.values()))
+        else:
+            depths[unit] = np.maximum(raster(own), last + 0.1 * frame.dz)
         last = depths[unit]
     return FillTops(frame.dem, depths)
 
@@ -1481,9 +1504,8 @@ def run(job: dict, dem: np.ndarray, progress=None) -> Result:
         own = [u for u, _kind in column if fills.get(u) == cut]
         covered = bool(own) and any(kind == "layer" for u, kind in column[:order.index(own[0])])
         ordered = fit_fills(frame, own, contacts, covered)
-        sealed = covered and ordered is not None and own[0] in ordered.values
         built = build_cut(frame, cut, spec, orientations, nelements, xyz, warnings,
-                          ordered.raster(own[0]) if sealed else None)
+                          ordered.opening if covered and ordered is not None else None)
         if built is None:
             warnings.append({"code": "cut_without_data", "unit": cut})
             cut_info[cut] = {"edge": "none"}

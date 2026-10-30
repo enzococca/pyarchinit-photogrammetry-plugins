@@ -279,8 +279,65 @@ def test_holes_beside_a_vertical_wall_do_not_dig_the_middle(layout, profile):
     plan = engine.Plan.of(mask, 1.0, "drawn")
     base = np.array([[30.0 + a, 30.0 + b, 7.5] for a, b in layout])
     depths, _held = engine.floors(plan, engine.base_rows(base, plan, grid, dem), grid, dem, base)
-    assert depths[profile].max() <= 2.5 + 1e-9
+    away = engine.base_rows(base, plan, grid, dem).t >= engine.RIM_T
+    t = engine.base_rows(base, plan, grid, dem).t[away]
+    limit = (2.5 / engine.PROFILES[profile](t)).max()  # what a row that counts implies
+    assert depths[profile].max() <= limit + 1e-9
     assert depths[profile].sum() == pytest.approx(2.5 * mask.sum(), rel=0.25)
+
+
+def _shallow_pit(rows: list, profile: str):
+    ground = Ground(60, 1.0)
+    mask = polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0))
+    grid = engine.Grid(ground.grid)
+    dem = engine.Dem(grid, np.full(mask.shape, 10.0))
+    plan = engine.Plan.of(mask, 1.0, "drawn")
+    base = np.array(rows, float)
+    table = engine.base_rows(base, plan, grid, dem)
+    return engine.floors(plan, table, grid, dem, base)[0][profile], table
+
+
+@pytest.mark.parametrize("profile", ["flat", "bowl"])
+@pytest.mark.parametrize("n", [1, 3, 8])
+def test_a_deep_row_by_the_edge_is_a_sump_and_does_not_dig_the_floor(n, profile):
+    ring = [(30 + 5 * math.cos(2 * math.pi * i / n), 30 + 5 * math.sin(2 * math.pi * i / n), 8.5) for i in range(n)]
+    shallow = [(30.0, 30.0, 8.5)] + (ring if n > 1 else [])
+    plain, _table = _shallow_pit(shallow, profile)
+    deep, table = _shallow_pit(shallow + [(37.4, 30.0, 5.0)], profile)
+    assert deep[table.rows[-1], table.cols[-1]] == pytest.approx(5.0)  # met at its cell
+    others = np.ones(deep.shape, dtype=bool)
+    others[table.rows[-1], table.cols[-1]] = False
+    limit = (1.5 / engine.PROFILES[profile](table.t[:-1])).max()
+    assert deep[others].max() <= limit + 1e-9
+    assert deep.sum() <= limit * (plain > 0).sum() + 3.5 * math.pi  # the shallow holes over the plan, and the sump
+
+
+@loop
+def test_a_row_by_the_edge_deeper_than_every_row_that_counts_is_said():
+    ground = Ground(60, 1.0)
+    dem = np.full((60, 60), 10.0)
+    outside = [[5.0, 5.0], [55.0, 55.0], [5.0, 55.0]]
+    base = [[30.0, 30.0, 8.5], [37.4, 30.0, 5.0]]
+    job = _pit_job(ground, dem, {"A": 10.0, "B": 9.0, "C": 8.0}, [b[:2] for b in base], outside, base,
+                   polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0)))
+    job["cuts"]["P"]["profile"] = "flat"
+    said = {w["code"]: w for w in engine.run(job, dem).info["warnings"]}
+    assert said["rim_deeper"]["depth"] == pytest.approx(5.0)
+    assert said["rim_deeper"]["measure"] == pytest.approx(1.5)
+    assert "floor_past_measure" not in said
+
+
+@pytest.mark.parametrize("profile", ["bowl", "v"])
+@pytest.mark.parametrize("r", [5.6, 4.0])
+def test_a_measure_on_the_side_of_a_floor_does_not_flatten_the_middle(profile, r):
+    ground = Ground(60, 1.0)
+    mask = polygon_mask(ground, circle((30.0, 30.0), 8.0, 10.0))
+    t = float(1 - r / 8)
+    depth, table = _shallow_pit([(30 + r, 30.0, 10 - 2.8 * float(engine.PROFILES[profile](np.array(t))))], profile)
+    truth = 2.8 * engine.PROFILES[profile](engine.Plan.of(mask, 1.0, "drawn").cell_t)[mask].sum()
+    assert depth.sum() == pytest.approx(truth, rel=0.15)
+    assert depth.max() > 2.3
+    assert table.t[0] >= engine.RIM_T
 
 
 def test_heights_on_the_edge_of_a_cut_do_not_crush_its_floor():
@@ -1469,6 +1526,20 @@ def test_a_sealed_pit_hangs_from_where_it_opens(truth, holes):
     assert fill.any(axis=2).sum() == pytest.approx(mask.sum(), rel=0.02)
     assert not fill.any(axis=2)[~mask].any()
     assert max(cut["base_miss"]) < 1e-9
+
+
+def test_the_opening_is_the_first_fill_of_each_hole():
+    ground = Ground(60, 1.0)
+    frame = engine.Frame({"grid": ground.grid, "zmin": 0.0, "zmax": 12.0, "dz": 0.05}, np.full((60, 60), 10.0))
+    contacts = [["U7", 30.0, 30.0, 9.0, 1.0, "M"], ["U8", 30.0, 30.0, 8.0, 1.0, "M"]]
+    for i, (x, y) in enumerate(((25.0, 30.0), (35.0, 30.0), (30.0, 25.0), (30.0, 35.0))):
+        contacts.append(["U8", x, y, 9.6, 1.0, f"E{i}"])
+    tops = engine.fit_fills(frame, ["U7", "U8"], contacts, True)
+    reader = engine.Dem(frame.grid, tops.opening)
+    assert float(reader.at(np.array([25.0]), np.array([30.0]))[0]) == pytest.approx(9.6, abs=0.05)
+    assert float(reader.at(np.array([30.0]), np.array([30.0]))[0]) == pytest.approx(9.0, abs=0.05)
+    assert np.array_equal(tops.raster("U7"), tops.opening)
+    assert (tops.raster("U8") < tops.opening).all()
 
 
 @loop

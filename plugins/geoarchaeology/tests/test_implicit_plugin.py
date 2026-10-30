@@ -951,6 +951,32 @@ def test_fills_side_by_side_are_said(tmp_path, real):
     assert "US" in implicit.warning_text(thinned[0])
 
 
+def test_a_sagged_pit_keeps_its_fill(tmp_path, real):
+    """The upper fill seen once in the middle, the lower lining the sides: the cut opens at the first fill of each hole."""
+    plain = [(0, 0.4, "US 1"), (0.4, 1.5, "US 2"), (1.5, 6, "US 3")]
+    rows = []
+    k = 0
+    for dx in (-40.0, -20.0, 20.0, 40.0):
+        for dy in (-30.0, -15.0, 15.0, 30.0):
+            k += 1
+            rows += _rows_at(f"S{k}", dx, dy, plain)
+    rows += _rows_at("M", 0, 0, [(0, 1.0, "US 1"), (1.0, 2.0, "US 7"), (2.0, 2.5, "US 8"), (2.5, 6, "US 3")])
+    for name, dx, dy in (("W", -5, 0), ("E", 5, 0), ("S", 0, -5), ("N", 0, 5)):
+        rows += _rows_at(name, dx, dy, [(0, 0.4, "US 1"), (0.4, 1.0, "US 8"), (1.0, 6, "US 3")])
+    _doc, ch = _site(tmp_path, rows)
+    implicit.mark_fill(ch, "US 7", "T")
+    implicit.mark_fill(ch, "US 8", "T")
+    draw(ch, "7")
+    implicit.build(ch, cell=1.0, folds=None)
+    units = {r["unit"]: r for r in model.registry(ch)["units"]}
+    assert 85 <= units["US 7"]["volume_m3"] + units["US 8"]["volume_m3"] <= 135  # about 105 by the logs
+
+
+def test_the_text_of_a_thinned_fill_does_not_vouch_for_the_cut():
+    text = implicit.WARNINGS["fill_thinned"][1]
+    assert "may be too" in text and "is not" not in text
+
+
 def test_the_model_is_held_against_its_logs(tmp_path, real):
     """A lens 1.2 m thick in two patches: the leave-one-out of the contacts cannot show that the model loses it."""
     rows = []
