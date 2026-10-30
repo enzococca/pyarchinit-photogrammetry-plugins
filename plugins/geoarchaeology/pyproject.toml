@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-geoarchaeology"
-version = "0.1.4"
-description = "pyarchinit-photogrammetry plugin: boreholes, cores and trench logs on the survey - stratigraphic columns, contact surfaces and thicknesses by kriging, sections, a 3D model of the units with their volumes"
+version = "0.2.0"
+description = "pyarchinit-photogrammetry plugin: boreholes, cores and trench logs on the survey - stratigraphic columns, contact surfaces and thicknesses by kriging, an implicit model with LoopStructural for pits, ditches and sparse contacts, sections, a 3D model of the units with their volumes"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
 requires-python = ">=3.10"
 # nothing the program does not already carry (numpy, SciPy, rasterio, shapely, ezdxf, and matplotlib
 # with its interface): the packaged application has no pip. The kriging is written in NumPy.
+# LoopStructural runs in a process of its own: with this Python when installed here, else in an
+# environment the plugin installs on request with uv; never imported by the program.
 dependencies = []
 
 [project.urls]
