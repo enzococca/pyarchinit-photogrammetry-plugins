@@ -601,3 +601,41 @@ def test_a_broken_ring_beats_a_longer_wall_around_it(tmp_path, share):
         assert r["lean_reliable"] and abs(r["radius"] - S.TOWER_RADIUS) < 0.01
     else:  # inside the band: the fit takes the wall, the rings say so
         assert "rings" in r["not_cylinder_by"] and not r["lean_reliable"]
+
+
+# ------------------------------------------------------------------ round 9
+def test_the_rings_that_are_not_the_towers_are_said():
+    ring = {"radius": 10.8, "out_of_round": 0.3, "coverage": 300, "pieces": 3}
+    rings = [{**ring, "height": h} for h in (466.0, 467.0, 468.0, 469.0)]
+    rings[0] = {**rings[0], "radius": 13.8, "out_of_round": 6.9}
+    failed, notes = shape.check_rings(rings)
+    assert failed == [466.0]
+    assert "anello a 466,0 m fuori tondo di 6,900 m" in notes[0]
+    assert any("fra 466,0 e 467,0 m" in n for n in notes)
+    text = shape.rings_text({"note": notes, "failed_heights": failed})
+    assert text.startswith("Asse non affidabile") and "Quote da evitare" in text and "466,0" in text
+    assert shape.check_rings([{**ring, "height": h} for h in (1.0, 2.0)]) == ([], [])
+
+
+def _mound(s, t):  # ground rising to the tower: its contour at the lowest slice a circle at 1.1 r around it
+    rho = 2.8 + 3.2 * s
+    phi = 2 * np.pi * t
+    return S.WORLD + np.column_stack([rho * np.cos(phi), rho * np.sin(phi), 0.5 + (3.3 - rho)])
+
+
+@pytest.mark.parametrize("ground", ["plane", "mound"])
+def test_the_ground_at_the_foot_of_a_tower(tmp_path, ground):
+    if ground == "plane":  # a plane sloping 30 % across the foot of the tower, crossing the lowest slice
+        g = S._grid(lambda s, t: S.WORLD + np.column_stack([-10 + 20 * s, -10 + 20 * t, 0.5 + 0.3 * (-10 + 20 * s)]),
+                    201, 201)
+    else:
+        g = S._grid(_mound, 81, 361)
+    doc, ch = S.project(tmp_path, _two(S.round_tower(), g), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    a = shape.tower_axis(ch, w["id"], heights=[Z0 + h for h in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)])
+    assert abs(a["axis_deg"] - S.TOWER_LEAN_DEG) < 0.2 and abs(a["axis_azimuth"] - S.TOWER_LEAN_AZIMUTH) < 3
+    for c in a["levels"]:  # the ground is not taken into the rings: each one is the tower's (else it is named)
+        assert c["height"] in a["failed_heights"] or abs(c["radius"] - S.TOWER_RADIUS) < 0.01, c
+    assert a["reliable"] == (not a["note"])
+    if a["failed_heights"]:
+        assert not a["reliable"] and "Quote da evitare" in shape.axis_text(a)

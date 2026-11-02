@@ -108,6 +108,7 @@ def arc_coverage(xy: np.ndarray, centre) -> float:
 
 
 REFINE_SHARES = (0.02, 0.04, 0.07, 0.10, 0.13, 0.16, 0.20, 0.25)  # the ring's band, grown pass after pass
+GROWTH_DENSITY = 0.2  # a pass whose new points are sparser than this share of the tight band's stops the growth
 
 
 def _binned_coverage(p: np.ndarray, centre, bins: int = 72) -> float:
@@ -137,8 +138,10 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     ring broken in pieces round the whole tower beats a longer arc of a wall beside it); a candidate whose radius
     differs from ``expect_radius`` by more than 25 % scores half. Then the ring is grown around it: passes with the band
     widening from that tight one (``refine_shares`` of the radius, up to 25 %), each refitting the circle with Huber's
-    loss, until a wider band brings no more points; the last fit is plain least squares on that ring - an oval ring
-    gives its mean circle, not the curve of one end, and another structure beyond the band stays out.
+    loss, until a wider band brings no more points or brings them sparser than a fifth of the ring's density so far (the
+    points per metre of band width: an oval ring keeps it, the ground or a collapse at the foot does not); the last fit
+    is plain least squares on that ring - an oval ring gives its mean circle, not the curve of one end, and another
+    structure beyond the band stays out.
 
     ``centre``, ``radius``, ``inliers`` (mask: the ring), ``residuals`` (of the ring's points), ``rms``, ``coverage``
     (degrees of arc the ring covers)."""
@@ -172,12 +175,22 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     def within(share, floor):
         return np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= max(share * radius, floor)
 
-    inl, previous = within(band_share, band_min), -1
-    for share in refine_shares:  # the ring grown while a wider band brings more points
+    inl = within(band_share, band_min)
+    prev_share = None
+    for share in refine_shares:  # the ring grown while a wider band brings more points, as dense as the ring's
         grown = within(share, band_min)
-        if grown.sum() < 3 or grown.sum() <= previous:
+        n = int(grown.sum())
+        if n < 3:
             break
-        inl, previous = grown, int(grown.sum())
+        if prev_share is not None:  # what this band adds to the last one, both around the circle as it is now
+            base = within(prev_share, band_min)
+            nb = int(base.sum())
+            w0, w1 = max(prev_share * radius, band_min), max(share * radius, band_min)
+            if n <= nb:
+                break
+            if w1 > w0 and nb > 0 and (n - nb) / (2.0 * (w1 - w0)) < GROWTH_DENSITY * nb / (2.0 * w0):
+                break  # what the wider band adds is scattered (the ground, a collapse at the foot), not the ring
+        inl, prev_share = grown, share
         f = robust_circle(p[inl])
         centre, radius = np.asarray(f["centre"]), f["radius"]
     f = robust_circle(p[inl], robust=False)  # plain least squares on the ring: its mean circle

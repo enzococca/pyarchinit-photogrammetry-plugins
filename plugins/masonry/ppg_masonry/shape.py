@@ -160,9 +160,10 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
         ring_r = float(np.median([c["radius"] for c in rings])) if rings else None
         if ring_r is not None and abs(radius - ring_r) > max(RINGS_AGREE_MIN, RINGS_AGREE_SHARE * ring_r):
             why.append("rings")  # the fit took another surface in the band (a structure around the tower)
+        failed, notes = check_rings(rings)
         result.update(lean_reliable=not why, surface_limit_cm=100.0 * limit, rings=rings, not_cylinder_by=why,
                       out_of_round_cm=None if oor is None else 100.0 * oor, out_of_round_limit_cm=100.0 * oor_limit,
-                      rings_radius=ring_r)
+                      rings_radius=ring_r, rings_reliable=not failed, rings_note=notes, failed_heights=failed)
         sign = -1.0 if frame.inside else 1.0
 
         def distance(p):
@@ -318,6 +319,47 @@ def _rings_by_height(chunk, frame, entry, centre, axis, radius, levels: int = 5)
     return out
 
 
+AXIS_MAX_DEG = 10.0  # an axis inclined more than this is not taken as a tower's lean without a second look
+RING_JUMP = 0.20  # the radius changing more than this between two heights: one of the rings is not the tower's
+
+
+def check_rings(rings: list[dict]) -> tuple[list[float], list[str]]:
+    """The rings that are not the tower's: ``(heights, notes)``. A ring out of round by more than max(5 % of its
+    radius, 10 cm) - the ground, a collapse at the foot, a structure taken in - and, where the radius changes by more
+    than 20 % between two heights, the ring of the two farther from the median radius."""
+    bad, notes = [], []
+    if not rings:
+        return bad, notes
+    med = float(np.median([c["radius"] for c in rings]))
+    for c in rings:
+        if c["out_of_round"] > max(OUT_OF_ROUND_SHARE * c["radius"], OUT_OF_ROUND_MIN):
+            bad.append(c["height"])
+            notes.append(t(f"anello a {num(c['height'], 1)} m fuori tondo di {metres(c['out_of_round'])}",
+                           f"ring at {num(c['height'], 1)} m out of round by {metres(c['out_of_round'])}"))
+    ordered = sorted(rings, key=lambda c: c["height"])
+    for a, b in zip(ordered[:-1], ordered[1:]):
+        if abs(b["radius"] - a["radius"]) > RING_JUMP * min(a["radius"], b["radius"]):
+            notes.append(t(f"raggio da {metres(a['radius'])} a {metres(b['radius'])} fra {num(a['height'], 1)} e "
+                           f"{num(b['height'], 1)} m", f"radius from {metres(a['radius'])} to {metres(b['radius'])} "
+                           f"between {num(a['height'], 1)} and {num(b['height'], 1)} m"))
+            worse = a if abs(a["radius"] - med) > abs(b["radius"] - med) else b
+            if worse["height"] not in bad:
+                bad.append(worse["height"])
+    return sorted(bad), notes
+
+
+def rings_text(r: dict) -> str:
+    """The note on the rings of a face or of a tower's axis, when some are not the tower's."""
+    notes = r.get("rings_note") or r.get("note") or []
+    if not notes:
+        return ""
+    heights = ", ".join(num(h, 1) for h in r.get("failed_heights") or [])
+    return t(f"Asse non affidabile: {'; '.join(notes)}." + (f" Quote da evitare (scegli quote sopra il terreno): "
+                                                            f"{heights}." if heights else ""),
+             f"Axis not reliable: {'; '.join(notes)}." + (f" Heights to avoid (choose heights above the ground): "
+                                                          f"{heights}." if heights else ""))
+
+
 def surface_text(r: dict) -> str:
     """What a fit that is not the surface says: oval or battered, the radius by height; or not a plane."""
     if r.get("lean_reliable", True):
@@ -399,6 +441,8 @@ def summary_text(r: dict) -> str:
     if not r.get("lean_reliable", True):
         lines[-1] = lines[-1].rstrip(".") + t(" (non affidabile).", " (not reliable).")
         lines.append(surface_text(r))
+    if r.get("rings_note"):
+        lines.append(rings_text(r))
     if r.get("band_warning"):
         lines.append(band_text(r["band_warning"]))
     if r.get("behind"):
@@ -767,14 +811,22 @@ def tower_axis(chunk, wid: str, heights=None, levels: int = 5, progress=None) ->
     if len(out) < 2:
         raise NotReady(t("Servono almeno due quote con una sezione del modello per l'asse.",
                          "At least two heights with a section of the model are needed for the axis."))
-    centres = np.array([[*c["centre"], c["height"]] for c in out])
+    failed, notes = check_rings(out)
+    good = [c for c in out if c["height"] not in failed]
+    use = good if len(good) >= 2 else out  # the axis from the rings that are the tower's
+    centres = np.array([[*c["centre"], c["height"]] for c in use])
     line = line_through(centres)
     deg, az = tilt(line["axis"])
+    if deg > AXIS_MAX_DEG:
+        notes.append(t(f"inclinazione {degrees(deg)} oltre {num(AXIS_MAX_DEG, 0)}°",
+                       f"inclination {degrees(deg)} over {num(AXIS_MAX_DEG, 0)}°"))
     span = float(centres[:, 2].max() - centres[:, 2].min())
     result = {"levels": out, "skipped": skipped, "axis": line["axis"].tolist(), "point": line["point"].tolist(),
               "axis_deg": deg, "axis_azimuth": az, "lean_cm_per_m": float(100.0 * np.tan(np.radians(deg))),
               "offset": float(np.tan(np.radians(deg)) * span), "span": span,
-              "centre_residuals": [float(x) for x in line["residuals"]], "made": _now()}
+              "centre_residuals": [float(x) for x in line["residuals"]], "made": _now(),
+              "reliable": not notes, "note": notes, "failed_heights": failed,
+              "used_heights": [c["height"] for c in use]}
     walls.set_result(chunk, w["id"], None, "axis", result)
     progress(1.0, t("Asse della torre misurato", "Axis of the tower measured"))
     return result
@@ -795,6 +847,8 @@ def axis_text(a: dict) -> str:
                        f"{cm(c['out_of_round'])}{cov_it}",
                        f"height {num(c['height'], 2)}: radius {metres(c['radius'])}, out-of-round "
                        f"{cm(c['out_of_round'])}{cov_en}"))
+    if a.get("note"):
+        lines.append(rings_text(a))
     return "\n".join(lines)
 
 
