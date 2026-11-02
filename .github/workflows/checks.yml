@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [plugins/blender-em, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/mesh-tools,
+        plugin: [plugins/architecture, plugins/blender-em, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/mesh-tools,
                  plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/landscape, plugins/sentinel2, plugins/shipwreck, plugins/spirula,
                  plugins/terrain, plugins/terrio, plugins/underwater, template]
     services:
@@ -104,6 +104,29 @@ jobs:
       - name: The engine of geoarchaeology, in the Python that has LoopStructural
         if: matrix.plugin == 'plugins/geoarchaeology'
         run: '"$PPG_TEST_LOOP" -m pytest -q -p no:cacheprovider plugins/geoarchaeology/tests/test_implicit_engine.py'
+      - name: The uv cache of CadQuery's environment (architecture)
+        if: matrix.plugin == 'plugins/architecture'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-architecture-${{ hashFiles('plugins/architecture/ppg_architecture/environment.py') }}
+      - name: CadQuery for the tests of architecture (its other tests run without it)
+        # the environment the plugin installs for the user, by environment.install itself (the libraries, then
+        # CadQuery, OpenCascade and VTK with --no-deps, casadi left out): the program never imports it;
+        # PPG_TEST_CADQUERY names its Python for the tests of the real worker. About 900 MB: in this job only
+        if: matrix.plugin == 'plugins/architecture'
+        run: |
+          sudo apt-get install -y libxrender1 libxt6 libxcursor1 libxinerama1 libxft2
+          python -m pip install uv
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from ppg_architecture import environment
+          env = Path(os.environ["RUNNER_TEMP"]) / "cadquery"
+          environment.install(lambda f, m: print(f"{f * 100:5.1f} % {m}", flush=True), env=env)
+          with open(os.environ["GITHUB_ENV"], "a") as fh:
+              fh.write(f"PPG_TEST_CADQUERY={environment.env_python(env)}\n")
+          PY
       - name: s3dgraphy for the em.json test of blender-em
         if: matrix.plugin == 'plugins/blender-em'
         run: python -m pip install --pre "s3dgraphy>=1.6.0.dev40"
