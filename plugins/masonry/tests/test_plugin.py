@@ -27,6 +27,28 @@ def _plugin_folder(root: Path) -> Path:
     return folder
 
 
+class FakePyArchInit:
+    """What the plugin asks of the program's bridge, recorded."""
+
+    def __init__(self):
+        self.forms, self.rels, self.media = {}, [], []
+
+    def us_record(self, sito, area, us, unita_tipo=None):
+        return self.forms.get(str(us))
+
+    def create_us(self, sito, area, us, unita_tipo="US", **fields):
+        self.forms[str(us)] = {"sito": sito, "area": area, "unita_tipo": unita_tipo, **fields}
+        return len(self.forms)
+
+    def add_relationships(self, sito, area, us, rels, unita_tipo=None):
+        self.rels += [(us, *r) for r in rels]
+        return len(rels)
+
+    def register_elevation_media(self, chunk, entry, paths, sito=None, link_us=None):
+        self.media.append((paths["dxf"], paths["svg"], link_us))
+        return [1, 2]
+
+
 def test_typed_numbers():
     assert parse_typed("313,500; 314,250") == [313.5, 314.25]
     assert parse_typed("1.234,5 2,5") == [1234.5, 2.5]
@@ -74,6 +96,25 @@ def test_command_line(tmp_path, monkeypatch):
     r = cli.invoke(app, ["plugin", "masonry", "shape", project, "Nessuno"])
     assert r.exit_code != 0 and "Nessun muro" in r.output
     assert other.label == "Rilievo 2027"
+    # stones and USM on a face of a new wall
+    r = cli.invoke(app, ["plugin", "masonry", "face", project, "Muro est", "--line", line, "--side",
+                         f"{x0 + 3},{y0 - 5}", "--resolution", "0.03"])
+    assert r.exit_code == 0, r.output
+    doc = ppg.Document.open(project)
+    ch = doc.chunk
+    eid = walls.need(ch, "Muro est")["faces"][0]
+    units, notch = S.usm_layout(Z0)
+    S.put_drawings(ch, eid, S.stone_pattern(Z0, hole=notch)[0], units)
+    doc.save()
+    r = cli.invoke(app, ["plugin", "masonry", "stones", project, "Muro est"])
+    assert r.exit_code == 0, r.output
+    assert "5 filari" in r.output and "pietre.xlsx" in r.output
+    r = cli.invoke(app, ["plugin", "masonry", "usm", project, "Muro est", "--accept", "1,3"])
+    assert r.exit_code == 0, r.output
+    assert "4. USM" in r.output and "Accettati: 2" in r.output
+    ch = ppg.Document.open(project).chunk
+    accepted = walls.results(ch, walls.need(ch, "Muro est")["id"], eid)["usm"]["accepted_full"]
+    assert len(accepted) == 2
 
 
 def test_the_pane_in_the_window(tmp_path, monkeypatch):
@@ -144,6 +185,28 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         assert asked[-1] == "Sezioni orizzontali" and "Sezioni a 4 quote" in pane.summary.toPlainText()
         items = plugin._tree_items(ch)
         assert items[0]["label"] == "Murature" and items[0]["children"][0]["children"][0]["label"] == entry["name"]
+        # stones and USM drawn on the face (put in the project while the window shows the plan)
+        plugin._need_plan()
+        units, notch = S.usm_layout(Z0)
+        S.put_drawings(ch, entry["id"], S.stone_pattern(Z0, hole=notch)[0], units)
+        plugin._requested("measure_stones")
+        w.runner.wait()
+        assert pane.stones_table.rowCount() == len(S.stone_pattern(Z0, hole=notch)[0])
+        assert "Le misure suggeriscono" in pane.summary.toPlainText()
+        offered = []
+        monkeypatch.setattr(plugin, "_choose_relations", lambda ps: offered.append(ps) or ps[:2])
+        plugin._requested("propose")
+        assert len(offered[0]) == 4 and "Rapporti accettati" in pane.summary.toPlainText()
+        said = []
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+        plugin._requested("save_pyarchinit")
+        assert "Collegati prima a PyArchInit" in said[-1]
+        fake = FakePyArchInit()
+        w.pa = fake
+        plugin._requested("save_pyarchinit")
+        w.runner.wait()
+        assert sorted(fake.forms) == ["10", "11", "12", "13"] and len(fake.rels) == 4 and fake.media
+        assert "In PyArchInit: 4 schede nuove, 4 rapporti" in pane.summary.toPlainText()
         # the face taken out, the elevation kept
         monkeypatch.setattr(dialogs, "choice", lambda *a, **k: 0)
         plugin._requested("remove_face")

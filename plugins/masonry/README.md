@@ -16,9 +16,23 @@ walls, buildings and stone towers recorded by their faces.
   fitted at several heights (inclination, direction, out-of-round per height); **two surveys** of the same wall (two
   chunks already aligned) compared on the face: the difference as a raster, its median and 90th percentile.
 
+* **Stones and courses**: on the stones drawn on a face (the program's Stones tool on the face's elevation), per stone
+  its width, height, area and best-fit ellipse (elongation, orientation) and rectangularity; the mortar share (1 - the
+  stones' area over the wall's area: the face's bounds or a polygon drawn on it); the courses (the stones' centres
+  split where they are further apart in height than half the median stone height; mean height, count, thickness,
+  slope); tables in CSV and Excel, a GeoPackage, the measures added to the program's export of the face. A face whose
+  elevation is coarser than a quarter of its smallest stone is refused.
+* **Type suggested**, never a verdict: *coursed* when at least 70 % of the stones sit in courses of 3 or more stones
+  sloping less than 2°; *regular* when the courses' thickness varies little (median absolute deviation / median < 20 %);
+  *squared* when the stones' median elongation is under 2 and their median rectangularity over 0.8.
+* **USM**: the units drawn on the face; relationships proposed by their geometry - *si appoggia a* (a unit above
+  another touching it along at least 20 % of its width), *taglia* (a unit that interrupts a course of another),
+  *copre* (a unit that encloses the top of another) - each with its evidence, written only when the user ticks it;
+  *Salva in PyArchInit*: the US forms, the relationships both ways and the face's drawings as media.
+
 The measures say how a wall stands; they are not a verdict on it. The plugin writes only under
 `<chunk data>/masonry/`; the program's elevations keep their format.
 
-Command line: `ppg plugin masonry face|shape|list|remove`.
+Command line: `ppg plugin masonry face|shape|stones|usm|list|remove`.
 
 License: GPL-2.0-or-later.

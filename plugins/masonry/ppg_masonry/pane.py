@@ -4,8 +4,9 @@ asks (``requested``): the plugin does it."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHeaderView, QLabel, QPlainTextEdit, QPushButton,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QHeaderView, QLabel,
+                               QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
 
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
 
@@ -32,6 +33,28 @@ FACE_ACTIONS = (("show", ("Mostra", "Show")),
                 ("compare", ("Confronta rilievi...", "Compare surveys...")),
                 ("folder", ("Apri la cartella", "Open the folder")),
                 ("remove_face", ("Rimuovi faccia", "Remove face")))
+STONE_ACTIONS = (
+    ("find_stones", ("Trova le pietre...", "Find the stones..."),
+     "Lo strumento Pietre del programma (SAM a tasselli) sul prospetto della faccia",
+     "The program's Stones tool (SAM at tiles) on the face's elevation"),
+    ("measure_stones", ("Misura le pietre", "Measure the stones"),
+     "Misure di ogni pietra, filari, quota di malta e il tipo che le misure suggeriscono",
+     "Measures of each stone, courses, mortar share and the type the measures suggest"),
+    ("wall_area", ("Area del muro...", "Wall area..."),
+     "Disegna sulla faccia l'area del muro per la quota di malta (altrimenti i limiti della faccia)",
+     "Draw on the face the wall's area for the mortar share (else the face's bounds)"),
+    ("export_face", ("Esporta faccia...", "Export face..."),
+     "DXF, SVG, GeoPackage dei disegni con le misure delle pietre, tabelle CSV ed Excel",
+     "DXF, SVG, GeoPackage of the drawings with the stones' measures, CSV and Excel tables"))
+USM_ACTIONS = (
+    ("propose", ("Proponi rapporti...", "Propose relationships..."),
+     "Rapporti fra le USM disegnate sulla faccia, proposti dalla geometria: li scegli tu",
+     "Relationships between the USM drawn on the face, proposed by the geometry: you choose them"),
+    ("save_pyarchinit", ("Salva in PyArchInit", "Save in PyArchInit"),
+     "Le schede US delle USM, i rapporti scelti e i disegni della faccia come media",
+     "The US forms of the USM, the relationships chosen and the face's drawings as media"))
+STONE_COLUMNS = (("n", "n"), ("Filare", "Course"), ("Larghezza", "Width"), ("Altezza", "Height"), ("Area", "Area"),
+                 ("Allungamento", "Elongation"))
 COLUMNS = (("Faccia", "Face"), ("Superficie", "Surface"), ("Larghezza", "Width"), ("Altezza", "Height"),
            ("Risoluzione", "Resolution"), ("Disegni", "Drawings"))
 
@@ -82,6 +105,16 @@ class MasonryPane(QWidget):
         self.table.itemSelectionChanged.connect(lambda: self.face_changed.emit(self.face_id() or ""))
         lay.addWidget(self.table)
         lay.addWidget(self._flow([(n, txt, "", "") for n, txt in FACE_ACTIONS]))
+        lay.addWidget(QLabel(f"<b>{t('Pietre e filari', 'Stones and courses')}</b>"))
+        lay.addWidget(self._flow(STONE_ACTIONS))
+        self.stones_table = QTableWidget(0, len(STONE_COLUMNS))
+        self.stones_table.setHorizontalHeaderLabels([t(*c) for c in STONE_COLUMNS])
+        self.stones_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.stones_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.stones_table.setMaximumHeight(160)
+        lay.addWidget(self.stones_table)
+        lay.addWidget(QLabel(f"<b>{t('USM', 'USM')}</b>"))
+        lay.addWidget(self._flow(USM_ACTIONS))
         self.summary = QPlainTextEdit()
         self.summary.setReadOnly(True)
         self.summary.setMinimumHeight(90)
@@ -150,7 +183,7 @@ class MasonryPane(QWidget):
         elif rows:
             self.table.selectRow(0)
         self.table.blockSignals(False)
-        for name, _text in FACE_ACTIONS:
+        for name in [a[0] for a in FACE_ACTIONS + STONE_ACTIONS + USM_ACTIONS]:
             self.buttons[name].setEnabled(bool(rows))
 
     def face_id(self) -> str | None:
@@ -168,3 +201,49 @@ class MasonryPane(QWidget):
 
     def set_state(self, text: str) -> None:
         self.l_state.setText(text)
+
+    def set_stones(self, rows: list[dict]) -> None:
+        self.stones_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            el = r.get("elongation")
+            cells = (str(r["n"]), str(r.get("course") or "-"), metres(r["width"]), metres(r["height"]),
+                     f"{num(r['area'], 3)} m²", "-" if el is None else num(el, 2))
+            for j, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.stones_table.setItem(i, j, item)
+
+
+class RelationsDialog(QDialog):
+    """The relationships proposed by the geometry, each with its evidence and a box to tick: none is ticked, the user
+    chooses (a proposal is not a relationship until accepted)."""
+
+    def __init__(self, proposals: list[dict], parent=None):
+        from .usm import proposal_text
+
+        super().__init__(parent)
+        self.setWindowTitle(t("Rapporti proposti", "Relationships proposed"))
+        self.proposals = list(proposals)
+        lay = QVBoxLayout(self)
+        intro = QLabel(t("Rapporti proposti dalla geometria delle USM sulla faccia. Spunta quelli che hai verificato: "
+                         "solo questi saranno scritti.", "Relationships proposed by the geometry of the USM on the "
+                         "face. Tick those you have checked: only these will be written."))
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        self.list = QListWidget()
+        for p in self.proposals:
+            item = QListWidgetItem(proposal_text(p) + (f" ({p['note']})" if p.get("note") else ""))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.list.addItem(item)
+        self.list.setWordWrap(True)
+        lay.addWidget(self.list)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self.resize(640, 360)
+
+    def chosen(self) -> list[dict]:
+        return [p for i, p in enumerate(self.proposals)
+                if self.list.item(i).checkState() == Qt.CheckState.Checked]

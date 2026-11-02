@@ -137,3 +137,82 @@ def project(folder: Path, mesh, label: str = "Muro"):
     doc.chunk = ch
     doc.save()
     return doc, ch
+
+
+# ------------------------------------------------------------------ stones and units drawn on a face
+COURSES, PITCH, JOINT_H, JOINT_V, CHAMFER = 5, 0.35, 0.025, 0.025, 0.02
+LENGTHS = (0.42, 0.55, 0.48, 0.60, 0.38, 0.51, 0.45)
+STONE_WALL = 6.0
+
+
+def _stone(u0, v0, u1, v1, c=CHAMFER):
+    from shapely.geometry import Polygon
+
+    return Polygon([(u0 + c, v0), (u1 - c, v0), (u1, v0 + c), (u1, v1 - c), (u1 - c, v1), (u0 + c, v1), (u0, v1 - c),
+                    (u0, v0 + c)])
+
+
+def stone_pattern(v_base: float, hole=None):
+    """Stones in ``COURSES`` courses of pitch ``PITCH`` from ``v_base`` along ``STONE_WALL`` metres (``u`` from 0),
+    joints of ``JOINT_H`` and ``JOINT_V``, the lengths of ``LENGTHS`` in turn; none whose centre falls in ``hole`` (a
+    shapely polygon). Returns ``(polygons, truths)``: ``truths`` = per stone (width, height, course centre)."""
+    from shapely.geometry import Point
+
+    polys, truths = [], []
+    k = 0
+    for course in range(COURSES):
+        v0 = v_base + course * PITCH + JOINT_H / 2
+        v1 = v0 + PITCH - JOINT_H
+        u = JOINT_V / 2  # the joints stagger: the lengths go on from the course below
+        while True:
+            length = LENGTHS[k % len(LENGTHS)]
+            k += 1
+            room = STONE_WALL - JOINT_V / 2 - u
+            if room < 0.25:
+                break
+            length = min(length, room)  # the last stone of a course cut to the end of the wall
+            p = _stone(u, v0, u + length, v1)
+            if hole is None or not hole.contains(Point(p.centroid.x, p.centroid.y)):
+                polys.append(p)
+                truths.append((length, v1 - v0, (v0 + v1) / 2))
+            u += length + JOINT_V
+    return polys, truths
+
+
+def irregular_stones(v_base: float, n: int = 60, seed: int = 3):
+    """Stones scattered without courses: ellipse-like outlines of random size (0.12-0.4 m) and rotation."""
+    from shapely import affinity
+    from shapely.geometry import Point
+
+    rng = np.random.default_rng(seed)
+    out = []
+    while len(out) < n:
+        a, b = rng.uniform(0.08, 0.2), rng.uniform(0.03, 0.08)
+        p = affinity.rotate(affinity.scale(Point(0, 0).buffer(1.0, 8), a, b), rng.uniform(0, 180))
+        p = affinity.translate(p, rng.uniform(0.3, STONE_WALL - 0.3), v_base + rng.uniform(0.3, 1.5))
+        if all(not p.intersects(q.buffer(0.01)) for q in out):
+            out.append(p)
+    return out
+
+
+def usm_layout(v_base: float):
+    """Four USM on a face (``u`` from 0): USM 10 the coursed wall with a notch, USM 12 the patch in the notch (it cuts
+    the courses of 10), USM 11 a block on top of 10, USM 13 around the top of 11 and on 10 beside it."""
+    from shapely.geometry import box
+
+    top = v_base + COURSES * PITCH
+    notch = box(4.0, v_base + 0.5, 5.0, top)
+    u10 = box(0.0, v_base, STONE_WALL, top).difference(notch)
+    u11 = box(0.5, top, 2.5, top + 0.8)
+    u13 = box(0.0, top, 3.0, top + 1.4).difference(u11)
+    return {"10": u10, "11": u11, "12": notch, "13": u13}, notch
+
+
+def put_drawings(ch, eid: str, stones=(), units=None, sito: str = "Saggio"):
+    """The stones and the units drawn on the elevation ``eid`` as the window keeps them."""
+    frames = ch.meta.setdefault("drawings", {}).setdefault("frames", {})
+    data = frames.setdefault(eid, {})
+    data["stones"] = {eid: [p.wkt for p in stones]}
+    if units is not None:
+        data["units"] = [{"wkt": g.wkt, "us": us, "tipo": "USM", "area": "1", "sito": sito,
+                          "attributes": {"d_stratigrafica": f"Muratura {us}"}} for us, g in units.items()]

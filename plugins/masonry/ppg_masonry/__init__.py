@@ -9,7 +9,11 @@ faces.
   cm/m, azimuth), the bulge map on the elevation (cm, towards the viewer) shown over it with a diverging palette and a
   legend; horizontal sections stacked in a DXF and an SVG with the offsets between them; the axis of a round tower
   from its circles at several heights and the out-of-round; two surveys of the same wall compared on the face;
-* the *Murature* pane (on the right), the walls in the workspace tree, ``ppg plugin masonry face|shape|list|remove``.
+* stone by stone: the measures of the stones drawn on a face (the program's stone tool), the courses, the mortar share
+  and the type the measures suggest; the USM drawn on a face, the relationships their geometry proposes (accepted by
+  the user) and their saving in PyArchInit with the face's drawings as media;
+* the *Murature* pane (on the right), the walls in the workspace tree,
+  ``ppg plugin masonry face|shape|stones|usm|list|remove``.
 
 The program's elevations and drawings keep their formats; the plugin writes only under ``<chunk data>/masonry/``.
 """
@@ -46,7 +50,8 @@ class MasonryPlugin(Plugin):
         self.context = context
         context.add_action(t("Murature...", "Masonry..."), self.show_pane,
                            tip=t("Il pannello delle murature", "The masonry pane"))
-        context.add_command("masonry", self.command, help="walls by their faces: face, shape, list, remove")
+        context.add_command("masonry", self.command,
+                            help="walls by their faces: face, shape, stones, usm, list, remove")
         if context.window is not None:
             from .pane import MasonryPane
 
@@ -176,7 +181,9 @@ class MasonryPlugin(Plugin):
         if chunk is None or not wid:
             self.pane.set_summary("")
             return
-        parts = []
+        from . import stones, usm
+
+        parts, rows = [], []
         rec = walls.find(chunk, wid) or {}
         if eid:
             res = walls.results(chunk, wid, eid)
@@ -185,8 +192,22 @@ class MasonryPlugin(Plugin):
                 parts.append(shape.sections_text(res["sections"]))
             for r in (res.get("surveys") or {}).values():
                 parts.append(shape.compare_text(r))
+            parts.append(stones.stones_text(res.get("stones") or {}))
+            path = walls.face_folder(chunk, wid, eid) / "pietre.json"
+            if res.get("stones", {}).get("typology") and path.exists():
+                rows = json.loads(path.read_text())["stones"]
+            accepted = (res.get("usm") or {}).get("accepted_full") or []
+            if accepted:
+                parts.append(t("Rapporti accettati:", "Relationships accepted:") + "\n" + "\n".join(
+                    usm.proposal_text(p) for p in accepted))
+            saved = (res.get("usm") or {}).get("saved")
+            if saved:
+                parts.append(t(f"In PyArchInit: {len(saved['created'])} schede nuove, {saved['relations']} rapporti "
+                               f"scritti, {len(saved['media'])} media.", f"In PyArchInit: {len(saved['created'])} new "
+                               f"forms, {saved['relations']} relationships written, {len(saved['media'])} media."))
         if rec.get("axis"):
             parts.append(shape.axis_text(rec["axis"]))
+        self.pane.set_stones(rows)
         self.pane.set_summary("\n\n".join(p for p in parts if p))
 
     def _requested(self, name: str) -> None:
@@ -487,7 +508,7 @@ class MasonryPlugin(Plugin):
 
         chunk = self._need_chunk()
         rec = self._wall()
-        cyl = next((e for e in (walls.elevation(chunk, f) for f in rec["faces"])
+        cyl = next((walls.with_bounds(chunk, e) for e in (walls.elevation(chunk, f) for f in rec["faces"])
                     if e is not None and (e.get("frame") or {}).get("kind") == "cylinder"), None)
         default = "; ".join(num(h, 3) for h in shape.default_heights(shape._frame(cyl), cyl, 5)) if cyl else ""
         v = self._ask(t("Asse della torre", "Axis of the tower"), [
@@ -556,6 +577,130 @@ class MasonryPlugin(Plugin):
         walls.remove_face(chunk, rec["id"], entry["id"], elevation_too=answer == 1)
         self._changed(rec["id"])
 
+    # ------------------------------------------------------------------ stones and courses
+    def _store(self) -> None:
+        """The drawings the window shows into the project first: the stones and the units of the face live there."""
+        try:
+            self.context.store_drawings()
+        except RuntimeError:  # not in the interface thread: the project holds what was stored
+            pass
+
+    def _show_if_hidden(self, entry: dict) -> None:
+        window = self.context.window
+        if getattr(window, "_raster_version", None) != ("elevation", entry["id"]):
+            self._show_face(entry)
+
+    def _do_find_stones(self) -> None:
+        _rec, entry = self._face()
+        window = self.context.window
+        self._show_if_hidden(entry)
+        find = getattr(window, "draw_stones", None)
+        if find is None:
+            raise RuntimeError(t("Usa lo strumento Pietre del programma sul prospetto della faccia, poi Misura le "
+                                 "pietre.", "Use the program's Stones tool on the face's elevation, then Measure the "
+                                 "stones."))
+        find(tuple(entry["bounds"]))
+
+    def _do_measure_stones(self) -> None:
+        from . import stones
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        self._store()
+        self._run(t("Misura delle pietre", "Measuring the stones"),
+                  lambda p: stones.measure_face(chunk, rec["id"], entry["id"], progress=p),
+                  lambda _r: self._changed(rec["id"], entry["id"]))
+
+    def _do_wall_area(self) -> None:
+        from . import stones
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        self._show_if_hidden(entry)
+
+        def drawn(uv):
+            stones.set_region(chunk, rec["id"], entry["id"], uv)
+            self._changed(rec["id"], entry["id"])
+            if (self._results(rec["id"], entry["id"]).get("stones") or {}).get("typology"):
+                self._do_measure_stones()  # measured before: measured again on the area drawn
+
+        self.context.request_polygon(lambda uv: self._guarded(drawn, uv),
+                                     hint=t("Disegna sulla faccia l'area del muro (per la quota di malta); doppio "
+                                            "clic o Invio per finire", "Draw on the face the wall's area (for the "
+                                            "mortar share); double click or Enter ends"))
+
+    def _results(self, wid: str, eid: str) -> dict:
+        from . import walls
+
+        return walls.results(self._need_chunk(), wid, eid)
+
+    def _do_export_face(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from . import stones
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        folder = QFileDialog.getExistingDirectory(self.context.window, t("Cartella per la faccia",
+                                                                         "Folder for the face"))
+        if not folder:
+            return
+        self._store()
+        paths = stones.export_face(chunk, rec["id"], entry["id"], folder)
+        self._message("information", t(f"{len(paths)} file della faccia «{entry['name']}» in {folder}.",
+                                       f"{len(paths)} files of the face «{entry['name']}» in {folder}."))
+
+    # ------------------------------------------------------------------ USM
+    def _choose_relations(self, proposals: list[dict]) -> list[dict] | None:
+        from .pane import RelationsDialog
+
+        dialog = RelationsDialog(proposals, self.context.window)
+        return dialog.chosen() if dialog.exec() else None
+
+    def _do_propose(self) -> None:
+        from . import usm, walls
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        self._store()
+        proposals = usm.propose(chunk, rec["id"], entry["id"])
+        if not proposals:
+            self._message("information", t("La geometria delle USM sulla faccia non propone rapporti.",
+                                           "The geometry of the USM on the face proposes no relationship."))
+            return
+        chosen = self._choose_relations(proposals)
+        if chosen is None:
+            return
+        done = dict(walls.results(chunk, rec["id"], entry["id"]).get("usm") or {})
+        done["accepted_full"] = chosen
+        done["proposed"] = len(proposals)
+        walls.set_result(chunk, rec["id"], entry["id"], "usm", done)
+        self._changed(rec["id"], entry["id"])
+
+    def _do_save_pyarchinit(self) -> None:
+        from . import usm, walls
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        pa = getattr(self.context.window, "pa", None)
+        if pa is None:
+            raise walls.NotReady(t("Collegati prima a PyArchInit (menu PyArchInit > Collega).",
+                                   "Connect to PyArchInit first (menu PyArchInit > Connect)."))
+        self._store()
+        accepted = (walls.results(chunk, rec["id"], entry["id"]).get("usm") or {}).get("accepted_full") or []
+
+        def done(r):
+            self._changed(rec["id"], entry["id"])
+            self._message("information", t(
+                f"PyArchInit: {len(r['created'])} schede nuove, {r['relations']} rapporti scritti, {len(r['media'])} "
+                f"media della faccia." + (f" Senza numero o sito: {', '.join(r['skipped'])}." if r["skipped"] else ""),
+                f"PyArchInit: {len(r['created'])} new forms, {r['relations']} relationships written, "
+                f"{len(r['media'])} media of the face." + (f" Without number or site: {', '.join(r['skipped'])}."
+                                                          if r["skipped"] else "")))
+
+        self._run(t("Salvataggio in PyArchInit", "Saving in PyArchInit"),
+                  lambda _p: usm.save(pa, chunk, rec["id"], entry["id"], accepted), done)
+
     # ------------------------------------------------------------------ the workspace
     def _tree_items(self, chunk) -> list:
         from . import walls
@@ -581,7 +726,7 @@ class MasonryPlugin(Plugin):
         from . import faces, shape, walls
 
         parser = argparse.ArgumentParser(prog="ppg plugin masonry", description="walls by their faces")
-        parser.add_argument("what", choices=["face", "shape", "list", "remove"])
+        parser.add_argument("what", choices=["face", "shape", "stones", "usm", "list", "remove"])
         parser.add_argument("project", help="the .ppg file")
         parser.add_argument("wall", nargs="?", help="the id or the name of a wall (face: made when missing)")
         parser.add_argument("face", nargs="?", help="shape, remove: the id or the name of a face (elevation)")
@@ -606,6 +751,15 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--heights", help="shape --axis: heights of the circles, comma separated")
         parser.add_argument("--compare", help="shape: the label of another chunk (survey) to compare with")
         parser.add_argument("--elevations", action="store_true", help="remove: the program's elevations too")
+        parser.add_argument("--region", help="stones: the wall's area on the face, WKT POLYGON in (u v)")
+        parser.add_argument("--export", help="stones: a folder for the face's drawings, measures and tables")
+        parser.add_argument("--accept", help="usm: the proposals to accept, 'all' or their numbers (1,3)")
+        parser.add_argument("--write", action="store_true", help="usm: write the accepted ones in PyArchInit")
+        parser.add_argument("--config", help="usm --write: PyArchInit's config.cfg (default: PYARCHINIT_HOME's)")
+        parser.add_argument("--db", help="usm --write: an SQLite path or an SQLAlchemy URL instead of the config")
+        parser.add_argument("--media-root", help="usm --write: where media and previews go")
+        parser.add_argument("--sito", help="usm --write: the site (default: the units' own, else the project's)")
+        parser.add_argument("--area", help="usm --write: the area of units without one (default 1)")
         parser.add_argument("--json", action="store_true", help="list: as JSON")
         ns = parser.parse_args(joined_values([str(a) for a in args]))
         import pyarchinit_photogrammetry as ppg
@@ -692,6 +846,53 @@ class MasonryPlugin(Plugin):
                             print("    " + shape.summary_text(res).replace("\n", "\n    "))
                 if not records and not ns.json:
                     print(t("Nessun muro nel chunk.", "No wall in the chunk."))
+            elif ns.what == "stones":
+                from shapely import wkt as swkt
+
+                from . import stones
+
+                rec = walls.need(chunk, ns.wall or "")
+                _w, e = walls.need_face(chunk, rec["id"], ns.face)
+                r = stones.measure_face(chunk, rec["id"], e["id"], swkt.loads(ns.region) if ns.region else None,
+                                        progress=print_progress)
+                print(stones.stones_text(walls.results(chunk, rec["id"], e["id"])["stones"]))
+                for key, path in r["files"].items():
+                    print(f"{key}: {chunk.data_dir / path}")
+                if ns.export:
+                    for key, path in stones.export_face(chunk, rec["id"], e["id"], ns.export).items():
+                        print(f"{key}: {path}")
+                changed = True
+            elif ns.what == "usm":
+                from . import usm
+
+                rec = walls.need(chunk, ns.wall or "")
+                _w, e = walls.need_face(chunk, rec["id"], ns.face)
+                proposals = usm.propose(chunk, rec["id"], e["id"])
+                for i, p in enumerate(proposals, 1):
+                    print(f"{i}. {usm.proposal_text(p)}")
+                if not proposals:
+                    print(t("Nessun rapporto proposto.", "No relationship proposed."))
+                accepted = []
+                if ns.accept:
+                    picks = range(1, len(proposals) + 1) if ns.accept == "all" else \
+                        [int(x) for x in ns.accept.split(",") if x.strip()]
+                    accepted = [proposals[i - 1] for i in picks if 1 <= i <= len(proposals)]
+                    done = dict(walls.results(chunk, rec["id"], e["id"]).get("usm") or {})
+                    done.update(accepted_full=accepted, proposed=len(proposals))
+                    walls.set_result(chunk, rec["id"], e["id"], "usm", done)
+                    changed = True
+                    print(t(f"Accettati: {len(accepted)}", f"Accepted: {len(accepted)}"))
+                if ns.write:
+                    from pyarchinit_photogrammetry.pyarchinit import PyArchInit
+
+                    pa = PyArchInit.connect(ns.db, ns.config, media_root=ns.media_root)
+                    if not accepted:
+                        accepted = (walls.results(chunk, rec["id"], e["id"]).get("usm") or {}).get(
+                            "accepted_full") or []
+                    r = usm.save(pa, chunk, rec["id"], e["id"], accepted, sito=ns.sito, area=ns.area)
+                    print(f"PyArchInit: {len(r['created'])} forms, {r['relations']} relationships, "
+                          f"{len(r['media'])} media")
+                    changed = True
             elif ns.what == "remove":
                 rec = walls.need(chunk, ns.wall or "")
                 if ns.face:
