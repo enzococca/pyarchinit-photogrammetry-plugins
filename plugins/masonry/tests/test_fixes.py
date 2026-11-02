@@ -639,3 +639,30 @@ def test_the_ground_at_the_foot_of_a_tower(tmp_path, ground):
     assert a["reliable"] == (not a["note"])
     if a["failed_heights"]:
         assert not a["reliable"] and "Quote da evitare" in shape.axis_text(a)
+
+
+def test_a_wall_area_in_two_parts(tmp_path):
+    import ezdxf
+    from shapely.geometry import MultiPolygon, box
+
+    doc, ch, w, entry = _face(tmp_path)
+    S.put_drawings(ch, entry["id"], S.stone_pattern(Z0)[0])
+    area = MultiPolygon([box(0.0, Z0, 2.8, Z0 + 1.75), box(3.2, Z0, 6.0, Z0 + 1.75)])
+    r = stones.measure_face(ch, w["id"], entry["id"], region=area)
+    assert r["region_kind"] == "drawn" and abs(r["wall_area"] - area.area) < 1e-9
+    from ppg_masonry import outputs
+
+    out = outputs.plate(ch, w["id"], entry["id"], tmp_path / "plate")
+    assert out["pdf"].exists()
+    path = outputs.dxf(ch, w["id"], entry["id"], tmp_path / "w.dxf")
+    assert len(ezdxf.readfile(path).modelspace().query("LWPOLYLINE[layer=='BORDO']")) == 2
+    files = outputs.export_face(ch, w["id"], entry["id"], tmp_path / "export")
+    assert files["plate_svg"].exists()
+    if HAS_IFC:
+        from ppg_masonry import ifc
+
+        res = ifc.export_wall(ch, w["id"], tmp_path / "w.ifc", thickness=0.5)
+        import ifcopenshell
+
+        rep = ifcopenshell.open(res["path"]).by_type("IfcWall")[0].Representation.Representations[0]
+        assert len(rep.Items) == 2

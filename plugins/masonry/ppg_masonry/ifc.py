@@ -290,14 +290,19 @@ def export_wall(chunk, wid: str, path, thickness: float | None = None, project: 
             model.createIfcDirection(tuple(map(float, solid["into"]))),
             model.createIfcDirection(tuple(map(float, solid["u"])))))
 
-    def extrusion(poly, depth):
-        # local x = u, local z = into the wall, local y = z x x = -v: the outline as (u, -v)
-        ring = [(float(x), float(-y)) for x, y in np.asarray(poly.exterior.coords)[:-1]]
-        pts = model.createIfcCartesianPointList2D(ring + [ring[0]])
-        profile = model.createIfcArbitraryClosedProfileDef("AREA", None, model.createIfcIndexedPolyCurve(pts))
-        solid_e = model.createIfcExtrudedAreaSolid(profile, None, model.createIfcDirection((0.0, 0.0, 1.0)),
-                                                   float(depth))
-        rep = model.createIfcShapeRepresentation(body, "Body", "SweptSolid", [solid_e])
+    def extrusion(geom, depth):
+        # local x = u, local z = into the wall, local y = z x x = -v: the outline as (u, -v); a wall's area in several
+        # parts is one solid per part
+        items = []
+        for poly in getattr(geom, "geoms", [geom]):
+            if poly.geom_type != "Polygon" or poly.is_empty:
+                continue
+            ring = [(float(x), float(-y)) for x, y in np.asarray(poly.exterior.coords)[:-1]]
+            pts = model.createIfcCartesianPointList2D(ring + [ring[0]])
+            profile = model.createIfcArbitraryClosedProfileDef("AREA", None, model.createIfcIndexedPolyCurve(pts))
+            items.append(model.createIfcExtrudedAreaSolid(profile, None, model.createIfcDirection((0.0, 0.0, 1.0)),
+                                                          float(depth)))
+        rep = model.createIfcShapeRepresentation(body, "Body", "SweptSolid", items)
         return model.createIfcProductDefinitionShape(None, None, [rep])
 
     parts_n = relations = 0

@@ -41,6 +41,19 @@ def _bar_length(width_m: float) -> float:
     return float(max(m * e for m in (1, 2, 5) if m * e <= target) if target >= e else e)
 
 
+def _rings_of(geom) -> list[np.ndarray]:
+    """The outlines (exteriors and holes) of a polygon or of every part of a multipolygon; none for None."""
+    if geom is None or geom.is_empty:
+        return []
+    out = []
+    for part in getattr(geom, "geoms", [geom]):
+        if part.geom_type != "Polygon":
+            continue
+        out.append(np.asarray(part.exterior.coords))
+        out += [np.asarray(h.coords) for h in part.interiors]
+    return out
+
+
 def course_lines(courses: list[dict]):
     """``[(n, [(u0, v0), (u1, v1)])]``: the line of each course through its centres, from its first stone to the
     last."""
@@ -212,9 +225,8 @@ def plate(chunk, wid: str, eid: str | None, folder=None, scale: int | None = Non
                 ys = np.linspace(b.top, b.bottom, zz.shape[0])
                 cs = ax.contour(xs, ys, zz, levels=levels, cmap="coolwarm", linewidths=0.5)
                 ax.clabel(cs, fmt=lambda x: f"{x:+.0f}", fontsize=4)
-    if ctx["region"] is not None:
-        xy = np.asarray(ctx["region"].exterior.coords)
-        ax.plot(xy[:, 0], xy[:, 1], color="#555555", lw=0.6)
+    for ring in _rings_of(ctx["region"]):  # the wall's area drawn, every part and hole of it
+        ax.plot(ring[:, 0], ring[:, 1], color="#555555", lw=0.6)
     for qu, qv, label in ctx["quote"]:
         ax.plot([qu], [qv], marker="+", color="#ff7f0e", ms=4)
         ax.text(qu, qv, f" {label}", color="#ff7f0e", fontsize=5)
@@ -302,8 +314,8 @@ def dxf(chunk, wid: str, eid: str | None, path) -> Path:
         msp.add_lwpolyline(line, dxfattribs={"layer": "SEZIONI"})
         msp.add_text(f"{h:.3f}", height=height, dxfattribs={"layer": "SEZIONI"}).set_placement(line[1])
     border = ctx["region"] if ctx["region"] is not None else box(*entry["bounds"])
-    msp.add_lwpolyline([tuple(map(float, q)) for q in np.asarray(border.exterior.coords)[:-1]], close=True,
-                       dxfattribs={"layer": "BORDO"})
+    for ring in _rings_of(border):
+        msp.add_lwpolyline([tuple(map(float, q)) for q in ring[:-1]], close=True, dxfattribs={"layer": "BORDO"})
     for qu, qv, label in ctx["quote"]:
         msp.add_point((qu, qv), dxfattribs={"layer": "QUOTE"})
         msp.add_text(label, height=height, dxfattribs={"layer": "QUOTE"}).set_placement((qu, qv))
