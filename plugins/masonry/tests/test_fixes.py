@@ -703,3 +703,30 @@ def test_a_rough_ground_mesh_at_the_foot(tmp_path, y_off):
     assert a["axis_deg"] is not None and abs(a["axis_deg"] - S.TOWER_LEAN_DEG) < 0.2
     for c in a["levels"]:  # the ring at the ground's heights is the tower's, or that height is set aside
         assert c["height"] in a["failed_heights"] or abs(c["radius"] - S.TOWER_RADIUS) < 0.02, c
+
+
+def test_an_oval_tower_keeps_its_rings_and_its_axis(tmp_path):
+    doc, ch = S.project(tmp_path, S.ellipse_tower(11.88, 9.72), "Torre")  # 10 % out of round, upright
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    a = shape.tower_axis(ch, w["id"], heights=[Z0 + h for h in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)])
+    assert a["failed_heights"] == [] and a["reliable"] and a["axis_deg"] < 0.2
+
+
+def test_contaminated_rings_give_no_axis(tmp_path, monkeypatch):
+    doc, ch = S.project(tmp_path, S.round_tower(), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    heights = (466.0, 466.5, 467.0, 467.5, 468.0)
+    made = dict(zip(heights, ((13.8, 3.2), (13.5, 5.3), (11.5, 5.7), (10.9, 3.6), (10.4, 0.8))))
+
+    def ring(chunk, h, near=None, rings=None):
+        r, oor = made[round(h, 1)]
+        return {"height": h, "centre": [0.0, 0.0], "radius": r, "rms": 0.1, "out_of_round": oor, "points": 100,
+                "pieces": 3, "coverage": 300.0}
+
+    monkeypatch.setattr(faces, "slice_circle", ring)
+    a = shape.tower_axis(ch, w["id"], heights=list(heights))
+    assert a["failed_heights"] == [466.0, 466.5, 467.0, 467.5]
+    assert a["axis_deg"] is None and a["axis"] is None and not a["reliable"]
+    text = shape.axis_text(a)
+    assert "Nessun asse" in text and "nessun anello affidabile" in text
+    assert "Quote da evitare (scegli quote sopra il terreno): 466,0, 466,5, 467,0, 467,5." in text

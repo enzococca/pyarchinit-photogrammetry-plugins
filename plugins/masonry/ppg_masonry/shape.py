@@ -321,21 +321,31 @@ def _rings_by_height(chunk, frame, entry, centre, axis, radius, levels: int = 5)
 
 AXIS_MAX_DEG = 10.0  # an axis inclined more than this is not taken as a tower's lean without a second look
 RING_JUMP = 0.20  # the radius changing more than this between two heights: one of the rings is not the tower's
+RING_BAD_SHARE, RING_BAD_FACTOR = 0.15, 3.0  # a ring this much out of round (of r, of the roundest ring): not the tower
 
 
 def check_rings(rings: list[dict]) -> tuple[list[float], list[str]]:
-    """The rings that are not the tower's: ``(heights, notes)``. A ring out of round by more than max(5 % of its
-    radius, 10 cm) - the ground, a collapse at the foot, a structure taken in - and, where the radius changes by more
-    than 20 % between two heights, the ring of the two farther from the median radius."""
+    """The rings that are not the tower's: ``(heights, notes)``. Contamination (the ground, a collapse at the foot, a
+    structure taken in) is told from the tower's own ovality: a ring is out when it is out of round by more than
+    max(15 % of its radius, 3 x the smallest out-of-round of the rings, 10 cm) - an oval tower has all its rings oval
+    alike - a ring whose radius is more than 20 % from the median radius of the rings, and, where the radius changes by
+    more than 20 % between two heights, the ring of the two farther from the median radius."""
     bad, notes = [], []
     if not rings:
         return bad, notes
     med = float(np.median([c["radius"] for c in rings]))
+    least = float(min(c["out_of_round"] for c in rings))
     for c in rings:
-        if c["out_of_round"] > max(OUT_OF_ROUND_SHARE * c["radius"], OUT_OF_ROUND_MIN):
+        if c["out_of_round"] > max(RING_BAD_SHARE * c["radius"], RING_BAD_FACTOR * least, OUT_OF_ROUND_MIN):
             bad.append(c["height"])
             notes.append(t(f"anello a {num(c['height'], 1)} m fuori tondo di {metres(c['out_of_round'])}",
                            f"ring at {num(c['height'], 1)} m out of round by {metres(c['out_of_round'])}"))
+    for c in rings:  # a radius far from the others' (a circle of the ground's bits): not the tower's either
+        if c["height"] not in bad and abs(c["radius"] - med) > RING_JUMP * med:
+            bad.append(c["height"])
+            notes.append(t(f"anello a {num(c['height'], 1)} m di raggio {metres(c['radius'])} contro "
+                           f"{metres(med)} degli altri", f"ring at {num(c['height'], 1)} m of radius "
+                           f"{metres(c['radius'])} against {metres(med)} of the others"))
     ordered = sorted(rings, key=lambda c: c["height"])
     for a, b in zip(ordered[:-1], ordered[1:]):
         if abs(b["radius"] - a["radius"]) > RING_JUMP * min(a["radius"], b["radius"]):
@@ -813,7 +823,16 @@ def tower_axis(chunk, wid: str, heights=None, levels: int = 5, progress=None) ->
                          "At least two heights with a section of the model are needed for the axis."))
     failed, notes = check_rings(out)
     good = [c for c in out if c["height"] not in failed]
-    use = good if len(good) >= 2 else out  # the axis from the rings that are the tower's
+    if len(good) < 2:  # no axis from rings that are not the tower's
+        notes.append(t("nessun anello affidabile: scegli quote sopra il terreno e il crollo",
+                       "no reliable ring: choose heights above the ground and the collapse"))
+        result = {"levels": out, "skipped": skipped, "axis": None, "point": None, "axis_deg": None,
+                  "axis_azimuth": None, "lean_cm_per_m": None, "offset": None, "span": None, "centre_residuals": [],
+                  "made": _now(), "reliable": False, "note": notes, "failed_heights": failed, "used_heights": []}
+        walls.set_result(chunk, w["id"], None, "axis", result)
+        progress(1.0, t("Nessun asse: anelli non affidabili", "No axis: rings not reliable"))
+        return result
+    use = good  # the axis from the rings that are the tower's
     centres = np.array([[*c["centre"], c["height"]] for c in use])
     line = line_through(centres)
     deg, az = tilt(line["axis"])
@@ -833,12 +852,16 @@ def tower_axis(chunk, wid: str, heights=None, levels: int = 5, progress=None) ->
 
 
 def axis_text(a: dict) -> str:
-    lines = [t(f"Asse da {len(a['levels'])} sezioni: inclinato {degrees(a['axis_deg'])} "
-               f"({num(a['lean_cm_per_m'], 1)} cm/m) verso {azimuth(a['axis_azimuth'])}, "
-               f"{cm(a['offset'])} su {metres(a['span'])} di altezza.",
-               f"Axis from {len(a['levels'])} sections: inclined {degrees(a['axis_deg'])} "
-               f"({num(a['lean_cm_per_m'], 1)} cm/m) towards {azimuth(a['axis_azimuth'])}, "
-               f"{cm(a['offset'])} over {metres(a['span'])} of height.")]
+    if a.get("axis_deg") is None:
+        lines = [t(f"Nessun asse da {len(a['levels'])} sezioni.", f"No axis from {len(a['levels'])} sections.")]
+    else:
+        n = len(a.get("used_heights") or a["levels"])
+        lines = [t(f"Asse da {n} sezioni: inclinato {degrees(a['axis_deg'])} "
+                   f"({num(a['lean_cm_per_m'], 1)} cm/m) verso {azimuth(a['axis_azimuth'])}, "
+                   f"{cm(a['offset'])} su {metres(a['span'])} di altezza.",
+                   f"Axis from {n} sections: inclined {degrees(a['axis_deg'])} "
+                   f"({num(a['lean_cm_per_m'], 1)} cm/m) towards {azimuth(a['axis_azimuth'])}, "
+                   f"{cm(a['offset'])} over {metres(a['span'])} of height.")]
     for c in a["levels"]:
         arc = c.get("coverage")
         cov_it = f", arco {num(arc, 0)}° in {c.get('pieces', 1)} pezzi" if arc is not None else ""
