@@ -3,6 +3,26 @@
   "format": 1,
   "plugins": [
     {
+      "name": "architecture",
+      "version": "0.1.0",
+      "title": "Architectural elements",
+      "description": "Columns by revolution, mouldings swept along a path, arches and barrel vaults from a section, made from the photogrammetric model as STEP (CadQuery, in an environment of its own) and parametric IFC solids, the measured profile kept and the fit always given: how far the model is from the solid",
+      "i18n": {
+        "it": {
+          "title": "Elementi architettonici",
+          "description": "Colonne per rivoluzione, modanature lungo un percorso, archi e volte a botte da una sezione, ricavati dal modello fotogrammetrico come solidi STEP (CadQuery, in un ambiente a parte) e IFC parametrici, con il profilo misurato e sempre lo scarto: quanto il modello si discosta dal solido"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/architecture",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.3.4",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/architecture-v0.1.0/ppg_architecture-0.1.0-py3-none-any.whl",
+      "sha256": "241d89356a47938cf60a40d874c120c4e4b5498ef3a45595fa79abdd7fe86b63"
+    },
+    {
       "name": "blender-em",
       "version": "0.1.2",
       "title": "Blender and EMtools",
