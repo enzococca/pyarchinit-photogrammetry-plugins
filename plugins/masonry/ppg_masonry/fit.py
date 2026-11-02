@@ -145,7 +145,8 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     along it, a contour of the sliced ground crosses it. Then the ring is grown around it: passes with the band
     widening from that tight one (``refine_shares`` of the radius, up to 25 %), each refitting the circle with Huber's
     loss, until a wider band brings no more points or brings them sparser than a fifth of the ring's density so far (the
-    points per metre of band width: an oval ring keeps it, the ground or a collapse at the foot does not); the last fit
+    points per metre of band width: an oval ring keeps it, the ground or a collapse at the foot does not; with
+    ``labels`` only the points of pieces not yet in the ring count, the ring's own pieces grow freely); the last fit
     is plain least squares on that ring - an oval ring gives its mean circle, not the curve of one end, and another
     structure beyond the band stays out.
 
@@ -211,7 +212,11 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
             w0, w1 = max(prev_share * radius, band_min), max(share * radius, band_min)
             if n <= nb:
                 break
-            if w1 > w0 and nb > 0 and (n - nb) / (2.0 * (w1 - w0)) < GROWTH_DENSITY * nb / (2.0 * w0):
+            added = grown & ~base
+            if labels is not None:  # the ring's own pieces grow freely (an oval ring is one piece): the density
+                added &= ~np.isin(labels, np.unique(labels[base]))  # rule weighs the pieces it would take in
+            if w1 > w0 and nb > 0 and 0 < int(added.sum()) and \
+                    added.sum() / (2.0 * (w1 - w0)) < GROWTH_DENSITY * nb / (2.0 * w0):
                 break  # what the wider band adds is scattered (the ground, a collapse at the foot), not the ring
         inl, prev_share = grown, share
         f = robust_circle(p[inl])
