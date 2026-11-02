@@ -564,3 +564,19 @@ def test_the_rings_of_a_leaning_tower_are_looked_for_at_their_height(tmp_path):
         assert abs(c["radius"] - S.TOWER_RADIUS) < 0.005 and 0.008 <= c["out_of_round"] <= 0.012
         assert c["points"] > 0.9 * total, (c["points"], total)
     assert 0.8 <= r["out_of_round_cm"] <= 1.2
+
+
+def test_a_structure_around_the_tower_is_not_taken_for_it(tmp_path):
+    outer_r = 1.15 * S.TOWER_RADIUS  # a concentric wall wrapping 200 degrees, inside the face's default band
+    axis = S.tower_axis()
+    outer = S._grid(lambda s, t: S.WORLD + (t * S.TOWER_HEIGHT / axis[2])[:, None] * axis
+                    + np.column_stack([outer_r * np.cos(np.radians(-10 + 200 * s)),
+                                       outer_r * np.sin(np.radians(-10 + 200 * s)), 0 * s]), 401, 61)
+    doc, ch = S.project(tmp_path, _two(S.round_tower(), outer), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05)
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    assert abs(r["rings_radius"] - S.TOWER_RADIUS) < 0.01
+    assert "rings" in r["not_cylinder_by"] and not r["lean_reliable"]
+    text = shape.summary_text(r)
+    assert "non concorda con gli anelli" in text and "(non affidabile)" in text

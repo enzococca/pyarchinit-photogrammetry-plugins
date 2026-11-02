@@ -33,6 +33,7 @@ BLOCK = 512
 NOT_SURFACE_SHARE = 0.02  # a fit whose rms exceeds this share of the radius (cylinder) or height (plane)...
 NOT_CYLINDER_MIN, NOT_PLANE_MIN = 0.10, 0.05  # ...and these: the surface is not the one fitted
 OUT_OF_ROUND_SHARE, OUT_OF_ROUND_MIN = 0.05, 0.10  # rings out of round by more than both: not a cylinder either
+RINGS_AGREE_SHARE, RINGS_AGREE_MIN = 0.02, 0.10  # the fitted cylinder's radius this far from the rings': not the tower
 TRACE_OFF = 0.15  # the face more than this from its trace at the stations: the trace is not on the face
 
 
@@ -156,8 +157,12 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
         rings = _rings_by_height(chunk, frame, entry, centre, axis, radius)  # the radius by height, from the slices
         oor = float(np.median([c["out_of_round"] for c in rings])) if rings else None
         why = (["rms"] if f["rms"] > limit else []) + (["out_of_round"] if oor is not None and oor > oor_limit else [])
+        ring_r = float(np.median([c["radius"] for c in rings])) if rings else None
+        if ring_r is not None and abs(radius - ring_r) > max(RINGS_AGREE_MIN, RINGS_AGREE_SHARE * ring_r):
+            why.append("rings")  # the fit took another surface in the band (a structure around the tower)
         result.update(lean_reliable=not why, surface_limit_cm=100.0 * limit, rings=rings, not_cylinder_by=why,
-                      out_of_round_cm=None if oor is None else 100.0 * oor, out_of_round_limit_cm=100.0 * oor_limit)
+                      out_of_round_cm=None if oor is None else 100.0 * oor, out_of_round_limit_cm=100.0 * oor_limit,
+                      rings_radius=ring_r)
         sign = -1.0 if frame.inside else 1.0
 
         def distance(p):
@@ -328,6 +333,13 @@ def surface_text(r: dict) -> str:
     by_h = "; ".join(f"{num(c['height'], 2)}: {metres(c['radius'])} ({t('fuori tondo', 'out-of-round')} "
                      f"{cm(c['out_of_round'])})" for c in rings)
     why = r.get("not_cylinder_by") or ["rms"]
+    if why == ["rings"]:
+        return t(f"Il cilindro adattato (r {metres(r.get('radius'))}) non concorda con gli anelli (r "
+                 f"{metres(r.get('rings_radius'))}): un'altra superficie nella fascia? L'inclinazione dell'asse non è "
+                 "affidabile; restringi la fascia della faccia.",
+                 f"The fitted cylinder (r {metres(r.get('radius'))}) does not agree with the rings (r "
+                 f"{metres(r.get('rings_radius'))}): another surface in the band? The axis' inclination is not "
+                 "reliable; narrow the face's band.")
     because_it, because_en = [], []
     if "rms" in why:
         because_it.append(f"rms dell'adattamento {num(r.get('rms_cm', 0), 1)} cm oltre "
@@ -339,6 +351,11 @@ def surface_text(r: dict) -> str:
                           f"{num(r.get('out_of_round_limit_cm', 0), 1)} cm")
         because_en.append(f"median out-of-round of the rings {num(r.get('out_of_round_cm', 0), 1)} cm over "
                           f"{num(r.get('out_of_round_limit_cm', 0), 1)} cm")
+    if "rings" in why:
+        because_it.append(f"il cilindro adattato (r {metres(r.get('radius'))}) non concorda con gli anelli (r "
+                          f"{metres(r.get('rings_radius'))}): un'altra superficie nella fascia?")
+        because_en.append(f"the fitted cylinder (r {metres(r.get('radius'))}) does not agree with the rings (r "
+                          f"{metres(r.get('rings_radius'))}): another surface in the band?")
     return t(f"La superficie non è un cilindro (ovale o a scarpa: {'; '.join(because_it)}): l'inclinazione dell'asse "
              "non è affidabile; la carta dello spanciamento è la distanza dal cilindro migliore."
              + (f" Raggio per quota: {by_h}." if by_h else ""),
