@@ -41,6 +41,20 @@ def _bar_length(width_m: float) -> float:
     return float(max(m * e for m in (1, 2, 5) if m * e <= target) if target >= e else e)
 
 
+MAX_CONTOURS = 12
+
+
+def contour_levels(lo: float, hi: float, max_levels: int = MAX_CONTOURS) -> tuple[list[float], float]:
+    """The bulge's contour levels (cm) over ``lo``-``hi`` (its 0.5th and 99.5th percentiles): the step the smallest
+    of 0.5, 1, 2, 5 x 10^n cm that gives at most ``max_levels`` levels, zero left out. ``(levels, step)``."""
+    steps = sorted(m * 10.0 ** e for e in range(-1, 7) for m in (1.0, 2.0, 5.0) if m * 10.0 ** e >= 0.5)
+    for st in steps:
+        levels = [float(x) for x in np.arange(np.ceil(lo / st) * st, hi + 1e-9, st) if abs(x) > 1e-9]
+        if len(levels) <= max_levels:
+            return levels, st
+    return [], steps[-1]
+
+
 def _rings_of(geom) -> list[np.ndarray]:
     """The outlines (exteriors and holes) of a polygon or of every part of a multipolygon; none for None."""
     if geom is None or geom.is_empty:
@@ -204,6 +218,7 @@ def plate(chunk, wid: str, eid: str | None, folder=None, scale: int | None = Non
         ax.plot(xy[:, 0], xy[:, 1], color="#2ca02c", lw=0.8, ls="-.")
         ax.text(xy[1, 0], xy[1, 1], f" {num(h, 2)}", color="#2ca02c", fontsize=5, va="center")
     bulge_path = chunk.data_dir / ((ctx["results"].get("shape") or {}).get("bulge") or "nessuno")
+    contour_step = None
     if contours and bulge_path.is_file():
         with rasterio.open(bulge_path) as src:
             k = max(1, int(np.ceil(max(src.width, src.height) / 1500)))
@@ -218,13 +233,14 @@ def plate(chunk, wid: str, eid: str | None, folder=None, scale: int | None = Non
             num_ = gaussian_filter(np.where(ok, z, 0.0), sigma)
             den = gaussian_filter(ok.astype(float), sigma)
             zz = np.where(ok & (den > 0.3), num_ / np.maximum(den, 1e-9), np.nan)
-            lim = float(np.nanpercentile(np.abs(zz), 99.5))
-            levels = [x for x in np.arange(-np.ceil(lim), np.ceil(lim) + 1, 1.0) if x != 0]
+            lo, hi = (float(x) for x in np.nanpercentile(zz, [0.5, 99.5]))
+            levels, step = contour_levels(lo, hi)
+            contour_step = step
             if levels:
                 xs = np.linspace(b.left, b.right, zz.shape[1])
                 ys = np.linspace(b.top, b.bottom, zz.shape[0])
                 cs = ax.contour(xs, ys, zz, levels=levels, cmap="coolwarm", linewidths=0.5)
-                ax.clabel(cs, fmt=lambda x: f"{x:+.0f}", fontsize=4)
+                ax.clabel(cs, fmt=lambda x: f"{x:+g}", fontsize=4)
     for ring in _rings_of(ctx["region"]):  # the wall's area drawn, every part and hole of it
         ax.plot(ring[:, 0], ring[:, 1], color="#555555", lw=0.6)
     for qu, qv, label in ctx["quote"]:
@@ -263,8 +279,9 @@ def plate(chunk, wid: str, eid: str | None, folder=None, scale: int | None = Non
             transform=tb.transAxes)
     text = "\n".join(_wrap(x, int(fig_w / 2.1)) for x in measures_lines(ctx))
     tb.text(0.01, 0.48, text, fontsize=6, va="top", transform=tb.transAxes, linespacing=1.3)
-    legend = t("pietre (nero) · filari (blu tratteggio) · USM (rosso) · sezioni (verde) · spanciamento (curve, cm)",
-               "stones (black) · courses (blue dashes) · USM (red) · sections (green) · bulge (contours, cm)")
+    every = (t(f" ogni {num(contour_step, 1)} cm", f" every {num(contour_step, 1)} cm") if contour_step else "")
+    legend = t(f"pietre (nero) · filari (blu tratteggio) · USM (rosso) · sezioni (verde) · spanciamento (curve{every})",
+               f"stones (black) · courses (blue dashes) · USM (red) · sections (green) · bulge (contours{every})")
     tb.text(0.99, 0.88, legend, fontsize=5.5, va="top", ha="right", transform=tb.transAxes)
     tb.text(0.99, 0.06, "pyarchinit-photogrammetry · Murature", fontsize=5, ha="right", transform=tb.transAxes,
             color="#666666")

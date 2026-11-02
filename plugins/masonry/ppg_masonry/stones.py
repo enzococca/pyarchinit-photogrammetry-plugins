@@ -267,6 +267,15 @@ def find_courses(rows: list[dict]) -> list[dict]:
                         "slope_deg": slope, "scatter": scatter,
                         "horizontal": slope is not None and abs(slope) < HORIZONTAL_DEG,
                         "counts": len(idx) >= COURSE_MIN_STONES and scatter <= COURSE_SCATTER * thickness})
+    real = 0  # only the real courses are numbered, from the lowest; the other chains have no number
+    for c, idx in zip(courses, groups):
+        if c["counts"]:
+            real += 1
+            c["n"] = real
+        else:
+            c["n"] = None
+        for i in idx:
+            rows[i]["course"] = c["n"]
     return courses
 
 

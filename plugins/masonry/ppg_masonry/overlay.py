@@ -63,7 +63,7 @@ class Overlay:
         self.key = None
         self.limit = None
 
-    def show(self, path, key: str, title: str, opacity: float = 0.7) -> float:
+    def show(self, path, key: str, title: str, opacity: float = 0.45) -> float:
         from PySide6.QtGui import QPixmap
 
         from pyarchinit_photogrammetry.gui.image_views import to_qimage

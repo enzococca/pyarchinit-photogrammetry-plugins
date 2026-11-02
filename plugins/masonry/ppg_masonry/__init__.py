@@ -896,7 +896,7 @@ class MasonryPlugin(Plugin):
             rasters = [{"name": entry["name"], "path": str(ortho)}] if ortho.exists() else []
             if files.get("bulge"):
                 rasters.append({"name": t("Spanciamento (cm)", "Bulge (cm)"), "path": str(files["bulge"]),
-                                "ramp": "diverging", "opacity": 0.6})
+                                "ramp": "diverging", "opacity": 0.45})
             gpkg = str(files["drawings_gpkg"])
             vectors = [{"name": t(title, title), "path": gpkg, "table": table, "geometry": geometry, "color": colour,
                         "label": "us" if table == "unita" else ""}

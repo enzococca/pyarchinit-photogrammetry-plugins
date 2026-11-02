@@ -666,3 +666,21 @@ def test_a_wall_area_in_two_parts(tmp_path):
 
         rep = ifcopenshell.open(res["path"]).by_type("IfcWall")[0].Representation.Representations[0]
         assert len(rep.Items) == 2
+
+
+def test_a_readable_plate_of_a_big_face():
+    from ppg_masonry import outputs
+
+    levels, step = outputs.contour_levels(-140.0, 160.0)  # a bulge spanning 3 m
+    assert len(levels) <= 12 and step in (50.0,) and 0.0 not in levels
+    levels, step = outputs.contour_levels(-1.4, 2.7)  # the proof's face
+    assert step == 0.5 and len(levels) <= 12
+    assert outputs.contour_levels(-0.2, 0.3)[0] == []
+    # only the real courses are numbered
+    polys = S.stone_pattern(0.0)[0] + S.irregular_stones(3.0, n=20)
+    rows = [stones.measure(p, i + 1) for i, p in enumerate(polys)]
+    courses = stones.find_courses(rows)
+    numbered = [c["n"] for c in courses if c["n"] is not None]
+    assert numbered == list(range(1, len(numbered) + 1)) and len(numbered) >= S.COURSES
+    assert all(c["n"] is None for c in courses if not c["counts"])
+    assert {r["course"] for r in rows} - set(numbered) <= {None}
