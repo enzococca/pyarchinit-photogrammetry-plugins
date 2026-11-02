@@ -45,8 +45,8 @@ def has_only_best(terrio) -> bool:
 
 def _refusal(src: str, dst: str, what: str, error) -> TransformUnavailable:
     return TransformUnavailable(t(
-        "{0}: la trasformazione migliore da {1} a {2} non si puo' usare (la sua griglia manca o non si legge) e terrio "
-        "ne userebbe una piu' approssimativa, anche di decine di metri. Attiva la rete per scaricare la griglia dal "
+        "{0}: la trasformazione migliore da {1} a {2} non si può usare (la sua griglia manca o non si legge) e terrio "
+        "ne userebbe una più approssimativa, anche di decine di metri. Attiva la rete per scaricare la griglia dal "
         "CDN di PROJ, o mettila in una cartella delle griglie. ({3})",
         "{0}: the best transformation from {1} to {2} cannot be used (its grid is missing or unreadable) and terrio "
         "would take a rougher one, even tens of metres off. Allow the network to download the grid from the PROJ "
