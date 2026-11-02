@@ -823,22 +823,32 @@ def tower_axis(chunk, wid: str, heights=None, levels: int = 5, progress=None) ->
                          "At least two heights with a section of the model are needed for the axis."))
     failed, notes = check_rings(out)
     good = [c for c in out if c["height"] not in failed]
-    if len(good) < 2:  # no axis from rings that are not the tower's
-        notes.append(t("nessun anello affidabile: scegli quote sopra il terreno e il crollo",
-                       "no reliable ring: choose heights above the ground and the collapse"))
+    def no_axis(failed_heights):  # no axis: the rings stay, as a table by height
         result = {"levels": out, "skipped": skipped, "axis": None, "point": None, "axis_deg": None,
                   "axis_azimuth": None, "lean_cm_per_m": None, "offset": None, "span": None, "centre_residuals": [],
-                  "made": _now(), "reliable": False, "note": notes, "failed_heights": failed, "used_heights": []}
+                  "made": _now(), "reliable": False, "note": notes, "failed_heights": sorted(failed_heights),
+                  "used_heights": []}
         walls.set_result(chunk, w["id"], None, "axis", result)
         progress(1.0, t("Nessun asse: anelli non affidabili", "No axis: rings not reliable"))
         return result
+
+    if len(good) < 2:  # no axis from rings that are not the tower's
+        notes.append(t("nessun anello affidabile: scegli quote sopra il terreno e il crollo",
+                       "no reliable ring: choose heights above the ground and the collapse"))
+        return no_axis(failed)
     use = good  # the axis from the rings that are the tower's
     centres = np.array([[*c["centre"], c["height"]] for c in use])
     line = line_through(centres)
     deg, az = tilt(line["axis"])
-    if deg > AXIS_MAX_DEG:
-        notes.append(t(f"inclinazione {degrees(deg)} oltre {num(AXIS_MAX_DEG, 0)}°",
-                       f"inclination {degrees(deg)} over {num(AXIS_MAX_DEG, 0)}°"))
+    if deg > AXIS_MAX_DEG:  # centres drifting more than tan 10 degrees per metre: pulled by the ground or a collapse
+        drift = float(np.tan(np.radians(deg)))
+        notes.append(t(f"i centri degli anelli si spostano di {num(drift, 2)} m per metro di altezza (oltre tan "
+                       f"{num(AXIS_MAX_DEG, 0)}°): anelli contaminati dal terreno o dal crollo: scegli quote più "
+                       "alte o una fascia più stretta",
+                       f"the rings' centres move {num(drift, 2)} m per metre of height (over tan "
+                       f"{num(AXIS_MAX_DEG, 0)}°): rings contaminated by the ground or the collapse: choose higher "
+                       "heights or a narrower band"))
+        return no_axis(set(failed) | {c["height"] for c in use})
     span = float(centres[:, 2].max() - centres[:, 2].min())
     result = {"levels": out, "skipped": skipped, "axis": line["axis"].tolist(), "point": line["point"].tolist(),
               "axis_deg": deg, "axis_azimuth": az, "lean_cm_per_m": float(100.0 * np.tan(np.radians(deg))),

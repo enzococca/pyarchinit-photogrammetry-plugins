@@ -730,3 +730,34 @@ def test_contaminated_rings_give_no_axis(tmp_path, monkeypatch):
     text = shape.axis_text(a)
     assert "Nessun asse" in text and "nessun anello affidabile" in text
     assert "Quote da evitare (scegli quote sopra il terreno): 466,0, 466,5, 467,0, 467,5." in text
+
+
+# ------------------------------------------------------------------ round 11
+def test_ring_centres_drifting_with_the_collapse_give_no_axis(tmp_path, monkeypatch):
+    doc, ch = S.project(tmp_path, S.round_tower(), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    c0, c1 = np.array([470808.9, 2574528.8]), np.array([470806.9, 2574527.3])  # Khutm, 467.0 -> 468.0 m
+    heights = (467.0, 467.5, 468.0)
+
+    def ring(chunk, h, near=None, rings=None):
+        f = (h - 467.0) / 1.0
+        return {"height": h, "centre": list(c0 + f * (c1 - c0)), "radius": 11.59 + f * (11.01 - 11.59),
+                "rms": 0.2, "out_of_round": 0.42 + 0.19 * f, "points": 500, "pieces": 3, "coverage": 300.0}
+
+    monkeypatch.setattr(faces, "slice_circle", ring)
+    a = shape.tower_axis(ch, w["id"], heights=list(heights))
+    assert a["axis_deg"] is None and a["axis"] is None and not a["reliable"]
+    assert a["failed_heights"] == list(heights) and len(a["levels"]) == 3
+    text = shape.axis_text(a)
+    assert "i centri degli anelli si spostano di 2,50 m per metro di altezza" in text
+    assert "Quote da evitare (scegli quote sopra il terreno): 467,0, 467,5, 468,0." in text
+    assert "raggio 11,590 m" in text  # the table by height stays
+
+
+@pytest.mark.parametrize("lean", [1.0, 3.0, 8.0])
+def test_leaning_towers_keep_their_axis(tmp_path, monkeypatch, lean):
+    monkeypatch.setattr(S, "TOWER_LEAN_DEG", lean)
+    doc, ch = S.project(tmp_path, S.round_tower(), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    a = shape.tower_axis(ch, w["id"], heights=[Z0 + h for h in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)])
+    assert a["axis_deg"] is not None and abs(a["axis_deg"] - lean) < 0.2 and a["reliable"]

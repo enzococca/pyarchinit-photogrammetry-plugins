@@ -162,7 +162,9 @@ def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
 
     Two arcs that lie on one circle cannot be told apart by geometry: a structure that shares the ring's circle (an arc
     of it within the ring's band) is counted as ring, in the circle and in the coverage. :func:`shape.tower_axis` keeps
-    out the points far from the previous ring, which guards the axis."""
+    out the points far from the previous ring, which guards the axis. A ground contour that runs along the ring within
+    its band (a terrace, a wider foot) joins it too - it is the same geometry as a battered tower - so the radius of a
+    ring at the level of the ground may be the terrace's: choose heights above it."""
     from .fit import ransac_circle
 
     rings = slice_rings(chunk, height) if rings is None else rings
