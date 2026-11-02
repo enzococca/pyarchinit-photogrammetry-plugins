@@ -112,13 +112,18 @@ def measures_lines(ctx: dict) -> list[str]:
         else:
             lean = t(f"Fuori piombo all'indietro {degrees(deg)} ({cmm} cm/m)",
                      f"Leaning back {degrees(deg)} ({cmm} cm/m)")
+        if not sh.get("lean_reliable", True):
+            lean += t(" - non affidabile: la superficie non è piana", " - not reliable: the surface is not a plane")
         lines.append(lean + t(f"; spanciamento p90 {num(sh.get('bulge_p90_cm', 0), 1)} cm, da "
                               f"{num(sh.get('bulge_min_cm', 0), 1)} a {num(sh.get('bulge_max_cm', 0), 1)} cm",
                               f"; bulge p90 {num(sh.get('bulge_p90_cm', 0), 1)} cm, from "
                               f"{num(sh.get('bulge_min_cm', 0), 1)} to {num(sh.get('bulge_max_cm', 0), 1)} cm"))
     elif sh:
-        lines.append(t(f"Asse inclinato {degrees(sh.get('axis_deg'))}, raggio {num(sh.get('radius', 0), 3)} m",
-                       f"Axis inclined {degrees(sh.get('axis_deg'))}, radius {num(sh.get('radius', 0), 3)} m"))
+        bad = not sh.get("lean_reliable", True)
+        lines.append(t(f"Asse inclinato {degrees(sh.get('axis_deg'))}, raggio {num(sh.get('radius', 0), 3)} m"
+                       + (" - non affidabile: la superficie non è un cilindro" if bad else ""),
+                       f"Axis inclined {degrees(sh.get('axis_deg'))}, radius {num(sh.get('radius', 0), 3)} m"
+                       + (" - not reliable: the surface is not a cylinder" if bad else "")))
     st = res.get("stones") or {}
     if st.get("typology"):
         lines.append(t(f"{st['stones']} pietre, {st['courses']} filari, malta {num(100 * (st['mortar'] or 0), 1)} %",

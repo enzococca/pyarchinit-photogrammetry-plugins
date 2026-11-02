@@ -450,3 +450,38 @@ def test_circles_on_a_broken_ring(tmp_path):
     doc, ch = S.project(tmp_path / "arc", S.broken_tower(keep_deg=(0, 60)), "Torre")
     with pytest.raises(walls.NotReady, match="arco di 6[0-9] gradi"):
         faces.slice_circle(ch, Z0 + 3.0)
+
+
+@pytest.mark.parametrize("which", ["ellipse", "cone", "round"])
+def test_a_tower_that_is_not_a_cylinder_says_so(tmp_path, which):
+    mesh = {"ellipse": S.ellipse_tower(), "cone": S.cone_tower(), "round": S.round_tower()}[which]
+    doc, ch = S.project(tmp_path, mesh, "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05, front=0.6, back=0.6)
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    text = shape.summary_text(r)
+    if which == "round":
+        assert r["lean_reliable"] and "non è un cilindro" not in text
+        return
+    assert not r["lean_reliable"] and "non è un cilindro" in text and "(non affidabile)" in text
+    assert "distanza dal cilindro migliore" in text
+    from ppg_masonry import outputs
+
+    ctx = {"results": {"shape": r}, "units": []}
+    assert "non affidabile" in outputs.measures_lines(ctx)[0]
+    if which == "cone":  # the radius by height: 3.4 m at the foot to 2.6 m at the top
+        rings = r["rings"]
+        assert len(rings) >= 4
+        for c in rings:
+            assert abs(c["radius"] - (3.4 - 0.8 * (c["height"] - Z0) / 6.0)) < 0.02
+        assert "Raggio per quota" in text
+
+
+def test_a_face_that_is_not_a_plane_says_so(tmp_path):
+    bowed = S._grid(lambda s, t: S.WORLD + np.column_stack([s * 6.0, -0.3 * (1 - (2 * s - 1) ** 2), t * 3.0]),
+                    241, 121)
+    doc, ch, w, entry = _face(tmp_path, bowed, resolution=0.03)
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    assert not r["lean_reliable"] and "non è piana" in shape.summary_text(r)
+    doc, ch, w, entry = _face(tmp_path / "flat", S.wall(), resolution=0.03)
+    assert shape.face_shape(ch, w["id"], entry["id"])["lean_reliable"]

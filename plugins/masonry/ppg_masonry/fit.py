@@ -104,12 +104,13 @@ def arc_coverage(xy: np.ndarray, centre) -> float:
 
 
 def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_share: float = 0.02,
-                  band_min: float = 0.05) -> dict:
+                  band_min: float = 0.05, refine_share: float = 0.15, refine_min: float = 0.25) -> dict:
     """A circle through the plan points of a slice, all its pieces together: the points centred on their mean (map
     coordinates lose their digits in the products of a fit), circles through three random points, the one with most
-    points within ``max(band_share x radius, band_min)``, then least squares with Huber's loss on those points, once
-    more on the points within the band of the refined circle. ``centre``, ``radius``, ``inliers`` (mask), ``residuals``
-    (of the inliers), ``rms``, ``coverage`` (degrees of arc the inliers cover)."""
+    points within ``max(band_share x radius, band_min)``; then least squares with Huber's loss on the points within
+    ``max(refine_share x radius, refine_min)`` of it, a few times over: on an oval ring the three-point circle may be
+    the curve of one end, the ring around it gives the mean circle. ``centre``, ``radius``, ``inliers`` (mask: the
+    ring), ``residuals`` (of the ring's points), ``rms``, ``coverage`` (degrees of arc the ring covers)."""
     q = np.asarray(xy, np.float64)[:, :2]
     if len(q) < 3:
         raise ValueError("three points at least")
@@ -130,14 +131,14 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     if best is None:
         raise ValueError("no circle through the points")
     centre, radius = best
-    for _ in range(2):
-        band = max(band_share * radius, band_min)
+    for _ in range(4):  # least squares on the ring around the circle found: an oval ring gives its mean circle
+        band = max(refine_share * radius, refine_min)
         inl = np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= band
         if inl.sum() < 3:
             break
         f = robust_circle(p[inl])
         centre, radius = np.asarray(f["centre"]), f["radius"]
-    band = max(band_share * radius, band_min)
+    band = max(refine_share * radius, refine_min)
     inl = np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= band
     r = np.hypot(p[inl, 0] - centre[0], p[inl, 1] - centre[1]) - radius
     return {"centre": origin + centre, "radius": float(radius), "inliers": inl, "residuals": r,

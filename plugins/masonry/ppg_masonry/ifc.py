@@ -225,7 +225,10 @@ def _pset(chunk, w: dict, solid: dict) -> dict:
              "Spessore": round(solid["thickness"], 4), "OrigineSpessore": solid["source"],
              "Facce": len(w["faces"]), "USM": len(face_units(chunk, eid))}
     if sh.get("surface") == "plane":
-        props.update(StrapiomboGradi=round(sh["lean_deg"], 3), StrapiomboCmPerM=round(sh["lean_cm_per_m"], 2),
+        props.update(StrapiomboAffidabile=bool(sh.get("lean_reliable", True)),
+                     StrapiomboNota=None if sh.get("lean_reliable", True) else "non affidabile: la superficie non è "
+                     "piana",
+                     StrapiomboGradi=round(sh["lean_deg"], 3), StrapiomboCmPerM=round(sh["lean_cm_per_m"], 2),
                      StrapiomboVerso="verso chi guarda" if sh.get("lean_toward") == "out" else "all'indietro",
                      StrapiomboAzimut=None if sh.get("lean_azimuth") is None else round(sh["lean_azimuth"], 1),
                      SpanciamentoP90Cm=round(sh.get("bulge_p90_cm", 0.0), 2),

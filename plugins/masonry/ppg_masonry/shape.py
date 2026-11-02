@@ -30,6 +30,8 @@ from .walls import NotReady
 
 MAX_FIT_POINTS = 200_000
 BLOCK = 512
+NOT_SURFACE_SHARE = 0.02  # a fit whose rms exceeds this share of the radius (cylinder) or height (plane)...
+NOT_CYLINDER_MIN, NOT_PLANE_MIN = 0.10, 0.05  # ...and these: the surface is not the one fitted
 TRACE_OFF = 0.15  # the face more than this from its trace at the stations: the trace is not on the face
 
 
@@ -134,6 +136,9 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
                       if lean > 1e-6 else None,
                       facing_azimuth=float(np.degrees(np.arctan2(horizontal[0], horizontal[1])) % 360.0),
                       plane={"centre": centre.tolist(), "normal": n.tolist()}, rms_cm=100.0 * f["rms"])
+        _v0, _v1 = entry["bounds"][1], entry["bounds"][3]
+        limit = max(NOT_PLANE_MIN, NOT_SURFACE_SHARE * (_v1 - _v0))
+        result.update(lean_reliable=f["rms"] <= limit, surface_limit_cm=100.0 * limit)
 
         def distance(p):
             return (p - centre) @ n
@@ -145,6 +150,10 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
                       radius=radius, inside=bool(frame.inside),
                       cylinder={"centre": centre.tolist(), "axis": axis.tolist(), "radius": radius},
                       rms_cm=100.0 * f["rms"])
+        limit = max(NOT_CYLINDER_MIN, NOT_SURFACE_SHARE * radius)
+        result.update(lean_reliable=f["rms"] <= limit, surface_limit_cm=100.0 * limit)
+        if not result["lean_reliable"]:  # oval or battered: the radius by height, from the rings of the slices
+            result["rings"] = _rings_by_height(chunk, frame, entry, centre, radius)
         sign = -1.0 if frame.inside else 1.0
 
         def distance(p):
@@ -278,6 +287,42 @@ def band_text(w: dict) -> str:
              "the cells: part of the wall may be left out. Make the face again with a wider band.")
 
 
+def _rings_by_height(chunk, frame, entry, centre, radius, levels: int = 5) -> list[dict]:
+    """The circles of the model's slices at ``levels`` heights over a cylindrical face: radius, out-of-round, arc."""
+    from .faces import slice_circle
+
+    out = []
+    for h in default_heights(frame, entry, levels):
+        try:
+            c = slice_circle(chunk, h, near=(np.asarray(centre)[:2], radius))
+        except (NotReady, ValueError):
+            continue
+        out.append({k: c[k] for k in ("height", "radius", "out_of_round", "coverage", "pieces")})
+    return out
+
+
+def surface_text(r: dict) -> str:
+    """What a fit that is not the surface says: oval or battered, the radius by height; or not a plane."""
+    if r.get("lean_reliable", True):
+        return ""
+    if r.get("surface") == "plane":
+        return t(f"La superficie non è piana (rms {num(r.get('rms_cm', 0), 1)} cm oltre "
+                 f"{num(r.get('surface_limit_cm', 0), 1)} cm): lo strapiombo non è affidabile; la carta dello "
+                 "spanciamento è la distanza dal piano migliore.",
+                 f"The surface is not a plane (rms {num(r.get('rms_cm', 0), 1)} cm over "
+                 f"{num(r.get('surface_limit_cm', 0), 1)} cm): the lean is not reliable; the bulge map is the distance "
+                 "from the best plane.")
+    rings = r.get("rings") or []
+    by_h = "; ".join(f"{num(c['height'], 2)}: {metres(c['radius'])} ({t('fuori tondo', 'out-of-round')} "
+                     f"{cm(c['out_of_round'])})" for c in rings)
+    return t(f"La superficie non è un cilindro (ovale o a scarpa: rms {num(r.get('rms_cm', 0), 1)} cm oltre "
+             f"{num(r.get('surface_limit_cm', 0), 1)} cm): l'inclinazione dell'asse non è affidabile; la carta dello "
+             "spanciamento è la distanza dal cilindro migliore." + (f" Raggio per quota: {by_h}." if by_h else ""),
+             f"The surface is not a cylinder (oval or battered: rms {num(r.get('rms_cm', 0), 1)} cm over "
+             f"{num(r.get('surface_limit_cm', 0), 1)} cm): the axis' inclination is not reliable; the bulge map is the "
+             "distance from the best cylinder." + (f" Radius by height: {by_h}." if by_h else ""))
+
+
 def signed_cm(value) -> str:
     """``+7,0 cm`` / ``-0,3 cm``."""
     if value is None:
@@ -310,6 +355,9 @@ def summary_text(r: dict) -> str:
                        f"verso {azimuth(r.get('axis_azimuth'))}; raggio {metres(r.get('radius'))}.",
                        f"Axis of the cylinder inclined {degrees(r.get('axis_deg'))} ({num(r['lean_cm_per_m'], 1)} "
                        f"cm/m) towards {azimuth(r.get('axis_azimuth'))}; radius {metres(r.get('radius'))}."))
+    if not r.get("lean_reliable", True):
+        lines[-1] = lines[-1].rstrip(".") + t(" (non affidabile).", " (not reliable).")
+        lines.append(surface_text(r))
     if r.get("band_warning"):
         lines.append(band_text(r["band_warning"]))
     if r.get("behind"):
