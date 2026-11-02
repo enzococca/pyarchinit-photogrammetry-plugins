@@ -1520,54 +1520,36 @@ def intersect_lines(p1, d1, p2, d2) -> np.ndarray:
     return np.asarray(p1, float) + t[0] * np.asarray(d1, float)
 
 
-def _face_beyond(polylines, line_point, line_dir, hits, tol: float, length: float = 0.6):
-    """The two ends of a reveal on the cut: the polyline that holds the reveal's points, the run of it along the
-    reveal's line, and beyond each end of the run the stretch that turns away from the line (more than 45 degrees,
-    at least 3 cm long): a wall face. Returns ``[(end point, face points or None), ...]`` for the two ends."""
-    n = np.array([-line_dir[1], line_dir[0]])
-    best, count = None, 0
-    hit_s = (np.asarray(hits) - line_point) @ line_dir
-    s_lo, s_hi = hit_s.min() - 3 * tol, hit_s.max() + 3 * tol
-    for pl in polylines:
-        q = np.asarray(pl, float)[:, :2]
-        on = (np.abs((q - line_point) @ n) <= tol) & ((q - line_point) @ line_dir >= s_lo) & \
-            ((q - line_point) @ line_dir <= s_hi)
-        if on.sum() > count:
-            best, count = q, int(on.sum())
-    if best is None or count < 2:
+def _face_beyond(polylines, line_point, line_dir, hits, tol: float, centre, cone_deg: float = 30.0,
+                 reach: float = 0.6):
+    """The two ends of a reveal (the extremes of what the point ``centre`` sees of it along its line) and, at each,
+    the wall face: the points of the cut on the wall's side of the reveal (farther from its line than ``tol``, away
+    from the opening), within ``reach`` of the end (and within 0.8 times the reveal's length: never the face at its
+    other end) and inside a cone of ``cone_deg`` around the perpendicular to the reveal there (a face turns away from
+    the reveal; a splay of up to that many degrees is in it). By position, not along a line of the cut: the cut of a
+    model often breaks at a corner. Returns ``[(end point, face points or None), ...]`` for the two ends."""
+    pts = [np.asarray(p, float)[:, :2] for p in polylines if len(p)]
+    if not pts:
         return []
-    q = best
-
-    def middle(q):
-        near = np.abs((q - line_point) @ n) <= tol
-        s = (q - line_point) @ line_dir
-        inside = near & (s >= s_lo) & (s <= s_hi)
-        return near, int(np.flatnonzero(inside)[np.argmin(np.abs(s[inside] - np.median(hit_s)))])
-
-    near, k = middle(q)
-    if len(q) > 3 and np.linalg.norm(q[0] - q[-1]) < 1e-9:  # a closed outline: the reveal in the middle of it
-        q = np.roll(q[:-1], len(q) // 2 - k, axis=0)
-        near, k = middle(q)
-    i0 = k
-    while i0 - 1 >= 0 and near[i0 - 1]:
-        i0 -= 1
-    i1 = k
-    while i1 + 1 < len(q) and near[i1 + 1]:
-        i1 += 1
-    ends = []
-    for end, step in ((i0, -1), (i1, 1)):
-        pts, travelled, j = [], 0.0, end + step
-        while 0 <= j < len(q) and travelled < length:
-            travelled += float(np.linalg.norm(q[j] - q[j - step]))
-            pts.append(q[j])
-            j += step
-        face = None
-        if pts:
-            chord = pts[-1] - q[end]
-            if np.linalg.norm(chord) >= 0.03 and abs(chord @ line_dir) < np.cos(np.radians(45)) * np.linalg.norm(chord):
-                face = np.asarray(pts)
-        ends.append((q[end], face))
-    return ends
+    q = np.vstack(pts)
+    p0 = np.asarray(line_point, float)
+    d = np.asarray(line_dir, float)
+    n = np.array([-d[1], d[0]])
+    # the reveal lies between the point and the wall
+    wall = 1.0 if (p0 - np.asarray(centre, float)[:2]) @ n >= 0 else -1.0
+    s = (np.asarray(hits, float) - p0) @ d
+    radius = min(reach, 0.8 * max(float(np.ptp(s)), 1e-3))
+    out = []
+    for sign, end_s in ((-1.0, s.min()), (1.0, s.max())):
+        end = p0 + end_s * d
+        rel = q - end
+        along = sign * (rel @ d)
+        lateral = wall * (rel @ n)
+        m = (lateral > tol) & (np.hypot(along, lateral) <= radius) & \
+            (np.abs(along) <= np.tan(np.radians(cone_deg)) * lateral + tol)
+        face = q[m] if m.sum() >= 3 and np.ptp(lateral[m]) >= 0.03 else None
+        out.append((end, face))
+    return out
 
 
 @dataclass
@@ -1675,7 +1657,7 @@ def opening_plan(polylines, centre, outward=None, thickness: float | None = None
     faces = {"outer": [], "inner": []}
     for name in ("left", "right"):
         p, d, pts = reveals[name]
-        for end, face in _face_beyond(polylines, p, d, pts, tol):
+        for end, face in _face_beyond(polylines, p, d, pts, tol, c):
             if face is None:
                 continue
             faces["outer" if (end - c) @ a > 0 else "inner"].append(face)
