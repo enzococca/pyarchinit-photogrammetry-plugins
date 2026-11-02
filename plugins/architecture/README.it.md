@@ -18,13 +18,15 @@ elementi architettonici parametrici ricavati dal modello fotogrammetrico, per un
   strombato), chiusi dalle facce del muro (o dallo spessore del muro, da dare quando sul modello c'è una sola faccia);
   soglia e architrave dalla sezione verticale attraverso il muro; la parte alta piana o l'intradosso di un arco.
   Riportati: larghezze alla faccia esterna e a quella interna e vicino a soglia e architrave, altezza, soglia e
-  architrave (quote e altezze dal suolo del DEM del chunk), profondità, strombatura di ogni stipite, area.
+  architrave (quote e altezze dal suolo del DEM del chunk), profondità, strombatura di ogni stipite, area. La
+  faccia esterna è quella che le foto vedono.
 
 Ogni elemento si scrive come **STEP** (AP214 in metri, da CadQuery e OpenCascade), **STL** (il formato non ha unità:
 i suoi numeri sono metri), solido **IFC4** parametrico
 (`IfcColumn` con `IfcRevolvedAreaSolid`, `IfcMember` con `IfcExtrudedAreaSolid` o `IfcFixedReferenceSweptAreaSolid`,
-`IfcBuildingElementProxy` "Arch"/"Vault" con gli archi come `IfcArcIndex`, `IfcOpeningElement` con un `IfcDoor` o
-un `IfcWindow` (`OverallWidth`, `OverallHeight`), `Pset_PyArchInit_Element`, la mesh del
+`IfcBuildingElementProxy` "Arch"/"Vault" con gli archi come `IfcArcIndex`, `IfcOpeningElement` che svuota un
+`IfcWall` sostitutivo (la porzione di muro misurata) ed è riempito da un `IfcDoor` o un `IfcWindow` (`OverallWidth`,
+`OverallHeight`), `Pset_PyArchInit_Element`, la mesh del
 rilievo accanto a richiesta, `IfcMapConversion` sull'origine del chunk) e **DXF** del profilo o della sezione. Porta
 sempre il suo **scarto**: la mediana, il 90° percentile e il massimo della distanza dei punti del modello dal solido.
 Il solido è un'interpretazione del modello misurato; lo scarto dice quanto se ne discosta.
@@ -40,10 +42,10 @@ Su due scene sintetiche fotografate, allineate, densificate e trasformate in mes
 `proof/make_proof.py`): una colonna alta 2 m con entasi è uscita con l'asse entro 0,001 gradi e 0,1 mm, i nodi entro
 1,6 mm, il volume +0,5 %; un arco a sesto acuto (luce 1,6 m) è stato riconosciuto come tale, luce -4 mm, freccia +7 mm,
 spessore della ghiera +4 mm, dove il modello del programma dista lui stesso 2 mm (mediana) dalla superficie vera. Nello
-stesso muro una porta larga 0,9 m è uscita larga 896 mm, soglia e architrave entro 1,1 mm; una finestra strombata di
-10 gradi è uscita con strombature di 9,9 e 10,0 gradi, soglia e architrave entro 2,7 mm e la larghezza alla faccia
-esterna 6 mm più stretta (il modello del programma lì è già circa 4 mm più stretto). La guida del programma ha i
-dettagli.
+stesso muro una porta larga 0,9 m è uscita larga 896 mm, soglia e architrave entro 1 mm; una finestra strombata di
+10 gradi è uscita con strombature di 10,0 e 9,7 gradi, soglia e architrave entro 2,7 mm, la larghezza alla faccia
+esterna 4 mm più stretta e a quella interna 6 mm (il modello del programma lì è già 3,6 + 1,1 mm dentro gli stipiti
+veri). La guida del programma ha i dettagli.
 
 ## L'ambiente
 
@@ -64,8 +66,8 @@ ppg plugin architecture column   PROGETTO --polygon "POLYGON((x y, ...))" --zmin
 ppg plugin architecture moulding PROGETTO --path "LINESTRING(x y, x y)" --height 3.35 [--elevation ID] [--markers A,B]
                                  [--window u0,v0,u1,v1]   (di base: trovata dal taglio)
 ppg plugin architecture arch     PROGETTO --section ID --pick u,v [--type auto|pointed|...] [--thickness T] [--vault]
-ppg plugin architecture opening  PROGETTO --at x,y [--height H] [--top ARCO] [--thickness T] [--kind door|window|opening]
-                                 [--sill S] [--lintel L]
+ppg plugin architecture opening  PROGETTO --at x,y [--height H] [--top ARCO] [--thickness T]
+                                 [--kind door|window|opening] [--outer auto|near|far] [--sill S] [--lintel L]
 ppg plugin architecture rebuild  PROGETTO     (dopo che la trasformazione o il sistema del chunk sono cambiati)
 ppg plugin architecture list | show ID | remove ID PROGETTO
 ppg plugin architecture export   PROGETTO --out elementi.ifc [--mesh] | --out cartella/ | --out arco.dxf --ids Arco

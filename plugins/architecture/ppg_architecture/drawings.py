@@ -47,13 +47,13 @@ def lines_of(e: dict) -> dict:
 
 
 def opening_frame(e: dict):
-    """The opening's own plan frame: ``(centre, along, across)`` - the middle of the outer face, along the wall (the
-    axis turned left), across it towards the outer face."""
+    """The opening's own plan frame: ``(centre, along, across)`` - the middle of the outer face, along the wall (to the
+    right seen from outside: the drawing is seen from outside), across it towards the outer face."""
     lines = e["geometry"]["lines"]
     a = np.asarray(lines["axis"], float)
     left = engine.intersect_lines(*map(np.asarray, lines["left"]), *map(np.asarray, lines["outer"]))
     right = engine.intersect_lines(*map(np.asarray, lines["right"]), *map(np.asarray, lines["outer"]))
-    return 0.5 * (left + right), np.array([-a[1], a[0]]), a
+    return 0.5 * (left + right), -engine.left_of(a), a
 
 
 def _opening_lines(e: dict, out: dict) -> None:

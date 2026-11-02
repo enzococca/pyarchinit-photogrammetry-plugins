@@ -18,7 +18,7 @@ def _check(r, truth, measured=True):
     assert abs(p.width_outer - truth["width"]) < 0.002
     assert abs(p.width_inner - truth["inner_width"]) < 0.002
     assert abs(p.thickness - WALL_T) < 0.002 and p.measured is measured
-    assert abs(p.splay_left - truth["splay"]) < 0.2 and abs(p.splay_right - truth["splay"]) < 0.2
+    assert abs(p.splay_left - truth["splay_left"]) < 0.2 and abs(p.splay_right - truth["splay_right"]) < 0.2
     assert abs(r["sill"] - truth["sill"]) < 0.002
     assert p.axis @ OUT > 0.999  # across the wall, towards the photos
     poly = np.asarray(p.polygon)
@@ -56,8 +56,10 @@ def test_a_given_thickness_and_a_given_height_take_the_place_of_the_measured_one
 
 def test_a_point_not_in_an_opening_is_said():
     mesh, _truth = opening_wall("door")
-    with pytest.raises(ValueError, match="not inside an opening"):
+    with pytest.raises(ValueError, match="not inside an opening at any height"):
         engine.measure_opening(mesh.vertices, mesh.faces, (1.5, 0.25), outward=OUT)
+    with pytest.raises(ValueError, match="at the height given"):  # inside the door's plan, above the lintel
+        engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT, height=2.5)
 
 
 def test_a_window_with_an_arch_top():
@@ -101,3 +103,68 @@ def test_the_volume_of_an_opening():
     plan = np.array([[0, 0], [1, 0], [1, 0.5], [0, 0.5]], float)
     assert engine.opening_volume(plan, 1.0, 3.0) == pytest.approx(1.0)
     assert engine.opening_volume(plan, 1.0, 3.0, 0.25, 0.5) == pytest.approx(1.125)
+
+
+ROOMS = [(4.6, 3.5), (4.6, 2.5), (4.0, 4.0), (3.0, 6.0), (2.4, 3.5), (7.0, 3.5), (2.4, 1.5)]
+
+
+@pytest.mark.parametrize("room", ROOMS, ids=[f"{w}x{d}" for w, d in ROOMS])
+def test_a_door_into_a_room(room):
+    """The walls of a room behind the door are never reveals: they are beyond the far face, or do not start at the
+    gap of the near face. Both faces measured, the width, the splays and the thickness right."""
+    mesh, truth = opening_wall("door", room=room)
+    r = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT)
+    p = r["plan"]
+    assert abs(p.width_outer - 0.9) < 0.005 and abs(p.width_inner - 0.9) < 0.005
+    assert abs(p.splay_left) < 1.0 and abs(p.splay_right) < 1.0
+    assert p.measured and abs(p.thickness - WALL_T) < 0.002
+    assert abs(r["lintel"] - truth["lintel"]) < 0.002
+
+
+@pytest.mark.parametrize("kw", [{"room": (6.0, 1.0)}, {"street": 2.0}, {"street": 1.0, "room": (2.4, 1.5)}],
+                         ids=["corridor-1m", "street-2m", "street-and-room"])
+def test_a_corridor_behind_and_a_street_in_front(kw):
+    mesh, _truth = opening_wall("door", **kw)
+    p = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT)["plan"]
+    assert abs(p.width_outer - 0.9) < 0.005 and p.measured and abs(p.thickness - WALL_T) < 0.002
+    assert abs(p.splay_left) < 1.0 and abs(p.splay_right) < 1.0
+
+
+@pytest.mark.parametrize("splays", [(10.0, -10.0), (15.0, -5.0)], ids=["+10-10", "+15-5"])
+def test_splays_against_the_face_not_a_bisector(splays):
+    """Reveals skewed the same way, or splayed by different angles: each splay against the outer face's normal."""
+    mesh, truth = opening_wall("splayed", splays=splays)
+    r = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT)
+    _check(r, truth)
+    assert abs(r["plan"].splay_left - splays[0]) < 0.2 and abs(r["plan"].splay_right - splays[1]) < 0.2
+
+
+def test_the_outer_face_flipped_keeps_widths_and_splays_with_it():
+    mesh, truth = opening_wall("splayed")
+    out = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT)["plan"]
+    back = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=(0.0, 1.0))["plan"]
+    assert abs(back.width_outer - truth["inner_width"]) < 0.002 and abs(back.splay_left + 10) < 0.2
+    again = back.flipped()
+    assert abs(again.width_outer - out.width_outer) < 1e-9 and abs(again.splay_right - out.splay_right) < 1e-9
+
+
+def test_a_sloped_sill_is_measured_and_its_slope_given():
+    """The window's sill 10 cm lower at the outer face than at the inner one (0.95 and 1.05 m): the height reported is
+    the one at half the thickness, the slope across the wall is given."""
+    import trimesh
+
+    mesh, _truth = opening_wall("splayed")
+    v = np.asarray(mesh.vertices).copy()
+    on = np.abs(v[:, 2] - 1.0) < 1e-9
+    v[on, 2] += 0.2 * (v[on, 1] - WALL_T / 2)  # 0.95 at y = 0 (outside), 1.05 at y = 0.5
+    r = engine.measure_opening(v, trimesh.Trimesh(v, mesh.faces, process=False).faces, INSIDE, outward=OUT)
+    assert abs(r["sill"] - 1.0) < 0.003
+    assert abs(r["sill_slope"] - (-0.2)) < 0.01  # along the axis (out of the wall): it goes down going out
+
+
+def test_a_thin_wall_with_a_coarse_mesh_is_said():
+    mesh, _truth = opening_wall("door", thickness=0.12, edge=0.04)
+    with pytest.raises(ValueError, match="thin wall"):
+        engine.measure_opening(mesh.vertices, mesh.faces, (0.0, 0.06), outward=OUT, resolution=0.03)
+    p = engine.measure_opening(mesh.vertices, mesh.faces, (0.0, 0.06), outward=OUT, resolution=0.005)["plan"]
+    assert abs(p.thickness - 0.12) < 0.002 and abs(p.width_outer - 0.9) < 0.003

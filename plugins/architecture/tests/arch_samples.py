@@ -155,21 +155,27 @@ OPENINGS = {
 }
 
 
-def opening_wall(kind: str, both_faces: bool = True, ground: bool = True, edge: float = 0.04):
+def opening_wall(kind: str, both_faces: bool = True, ground: bool = True, edge: float = 0.04, splays=None,
+                 room=None, street: float | None = None, thickness: float | None = None):
     """A wall with one opening of :data:`OPENINGS` as a photogrammetric mesh would be (triangles of ``edge`` metres),
     standing on a ground plane: built from horizontal slabs (plan polygons extruded between two heights) and, for an
     arched top, the part above the springing line as an elevation extruded across the wall. ``both_faces`` False: the
-    inner face (y = WALL_T) is not there, as when only the outer face was photographed. Returns ``(mesh, truth)``;
-    the truth also holds ``inner_width`` and ``plan`` (the void's corners in plan, outer face first)."""
+    inner face (y = WALL_T) is not there, as when only the outer face was photographed. ``splays``: ``(left, right)``
+    degrees instead of the kind's (positive: wider at the inner face; left seen from outside... at -x). ``room``:
+    ``(width, depth)`` of a room behind the wall (walls 0.2 m thick, centred on the opening); ``street``: a facing
+    wall 0.3 m thick that far in front. ``thickness``: of the wall instead of :data:`WALL_T`. Returns
+    ``(mesh, truth)``; the truth also holds ``inner_width``, ``splay_left``, ``splay_right`` and ``plan`` (the
+    void's corners in plan, outer face first)."""
     import trimesh
     from shapely.geometry import Point, box
 
     eng = _engine()
     o = OPENINGS[kind]
-    x0, x1, top, T = -2.5, 2.5, 3.0, WALL_T
+    x0, x1, top, T = -2.5, 2.5, 3.0, (WALL_T if thickness is None else float(thickness))
     half = o["width"] / 2
-    grow = T * np.tan(np.radians(o["splay"]))
-    plan = np.array([[-half, 0.0], [half, 0.0], [half + grow, T], [-half - grow, T]])
+    sl, sr = (o["splay"], o["splay"]) if splays is None else splays
+    gl, gr = T * np.tan(np.radians(sl)), T * np.tan(np.radians(sr))
+    plan = np.array([[-half, 0.0], [half, 0.0], [half + gr, T], [-half - gl, T]])
     parts = []
 
     def slab(poly, z0, z1):
@@ -178,8 +184,8 @@ def opening_wall(kind: str, both_faces: bool = True, ground: bool = True, edge: 
         parts.append(m)
 
     full = [(x0, 0.0), (x1, 0.0), (x1, T), (x0, T)]
-    left = [(x0, 0.0), (-half, 0.0), (-half - grow, T), (x0, T)]
-    right = [(half, 0.0), (x1, 0.0), (x1, T), (half + grow, T)]
+    left = [(x0, 0.0), (-half, 0.0), (-half - gl, T), (x0, T)]
+    right = [(half, 0.0), (x1, 0.0), (x1, T), (half + gr, T)]
     if o["sill"] > 0:
         slab(full, 0.0, o["sill"])
     upto = o["springing"] if o["top"] == "arch" else o["lintel"]
@@ -192,6 +198,15 @@ def opening_wall(kind: str, both_faces: bool = True, ground: bool = True, edge: 
         parts.append(trimesh.Trimesh(v, np.asarray(m.faces)[:, ::-1], process=False))  # y and z swapped: turned back
     else:
         slab(full, o["lintel"], top)
+    if room is not None:
+        rw, rd = room
+        for poly in ([(-rw / 2 - 0.2, T), (-rw / 2, T), (-rw / 2, T + rd), (-rw / 2 - 0.2, T + rd)],
+                     [(rw / 2, T), (rw / 2 + 0.2, T), (rw / 2 + 0.2, T + rd), (rw / 2, T + rd)],
+                     [(-rw / 2 - 0.2, T + rd), (rw / 2 + 0.2, T + rd), (rw / 2 + 0.2, T + rd + 0.2),
+                      (-rw / 2 - 0.2, T + rd + 0.2)]):
+            slab(poly, 0.0, top)
+    if street is not None:
+        slab([(x0, -street - 0.3), (x1, -street - 0.3), (x1, -street), (x0, -street)], 0.0, top)
     if ground:
         g = np.array([[x0 - 0.5, -2.0, 0.0], [x1 + 0.5, -2.0, 0.0], [x1 + 0.5, T + 2.0, 0.0], [x0 - 0.5, T + 2.0, 0.0]])
         parts.append(trimesh.Trimesh(g, [[0, 1, 2], [0, 2, 3]], process=False))
@@ -204,7 +219,7 @@ def opening_wall(kind: str, both_faces: bool = True, ground: bool = True, edge: 
         tri = np.asarray(mesh.vertices)[np.asarray(mesh.faces)]
         back = np.abs(tri[:, :, 1] - T).max(axis=1) < 1e-6  # the faces lying in the plane of the inner face
         mesh = trimesh.Trimesh(mesh.vertices, np.asarray(mesh.faces)[~back], process=False)
-    truth = dict(o, thickness=T, inner_width=o["width"] + 2 * grow, plan=plan)
+    truth = dict(o, thickness=T, inner_width=o["width"] + gl + gr, plan=plan, splay_left=sl, splay_right=sr)
     return mesh, truth
 
 

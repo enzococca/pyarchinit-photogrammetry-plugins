@@ -348,6 +348,7 @@ def fit(folder: Path, cadquery: Path) -> dict:
     ch = doc.chunk
     for e in elements.elements(ch):
         elements.remove(ch, e["id"])
+    elements.prune_orphans(ch, older_than=0.0)
     square = np.array([[-0.6, -0.6], [0.6, -0.6], [0.6, 0.6], [-0.6, 0.6]])
     col = elements.column(ch, polygon=square, zmin=0.05, zmax=H_COL - 0.05, knots=12, name="Colonna")
     p = col["params"]
@@ -374,8 +375,9 @@ def fit(folder: Path, cadquery: Path) -> dict:
     # the wall: the arch on the archivolt's plane, the cornice along the wall
     doc = ppg.Document.open(folder / "muro" / "muro.ppg")
     ch = doc.chunk
-    for e in elements.elements(ch):
+    for e in sorted(elements.elements(ch), key=lambda x: x["kind"] != "opening"):  # the openings before their arch
         elements.remove(ch, e["id"])
+    elements.prune_orphans(ch, older_than=0.0)
     y = -ARCH["proud"] / 2
     p1, p2 = np.array([-1.8, y]), np.array([1.8, y])
     po, u, vv, _w = elements.plane_of(ch, None, p1, p2)
@@ -451,10 +453,32 @@ def fit(folder: Path, cadquery: Path) -> dict:
             "volume_scarto_percento": 100 * (e["solid"]["volume"] / vol_true - 1),
             "scarto_modello_solido": e["fit"],
             "modello_contro_verita": _model_error(ch, true_mesh, (o["x"] - half, 0.01, o["sill"] - 0.02, o["x"] + half,
-                                                                  T - 0.01, o["lintel"] + 0.02))}
+                                                                  T - 0.01, o["lintel"] + 0.02)),
+            "faccia_esterna": [p["outer_rule"], p["outer_views"], p["inner_views"]],
+            "modello_stipiti_mm": _model_reveals(ch, o, p["cut_height"])}
     doc.save()
     (folder / "results.json").write_text(json.dumps(results, indent=1, ensure_ascii=False))
     return results
+
+
+def _model_reveals(ch, o, height) -> list[float]:
+    """How far the program's model is from each true reveal at the height of the cut (median, millimetres; positive:
+    into the void): the part of an opening's width that is the model's, not the plugin's."""
+    from ppg_architecture import elements, engine
+
+    v, f = elements.local_mesh(ch)
+    og = elements.origin(ch)
+    pts = np.vstack([ln + og[:2] for ln in engine.plan_cut(v, f, height - og[2])])
+    T = WALL["depth"]
+    t = np.tan(np.radians(o["splay"]))
+    out = []
+    for sign in (-1.0, 1.0):  # the left reveal (seen from outside, -x), the right one
+        xo = o["x"] + sign * o["width"] / 2
+        m = (np.abs(pts[:, 0] - xo) < 0.15) & (pts[:, 1] > 0.1 * T) & (pts[:, 1] < 0.9 * T)
+        q = pts[m]
+        true_x = xo + sign * q[:, 1] * t
+        out.append(float(np.median(-sign * (q[:, 0] - true_x)) * np.cos(np.radians(o["splay"])) * 1000))
+    return out
 
 
 def _column_truth():
@@ -827,6 +851,10 @@ def _leggimi_openings(r, it, mm, fit, row, head) -> list[str]:
                 row("punti sulle facce del muro (esclusi dallo scarto)",
                     d["scarto_modello_solido"].get("excluded_faces"), ""),
                 row("modello contro verità (mediana / p90)", fit(d["modello_contro_verita"], ("median", "p90")), ""),
+                row("il modello stesso dentro gli stipiti veri, sinistro / destro, alla quota del taglio",
+                    f"{it(d['modello_stipiti_mm'][0], 1)} / {it(d['modello_stipiti_mm'][1], 1)} mm", "0"),
+                row("faccia esterna", f"{d['faccia_esterna'][0]} ({d['faccia_esterna'][1]} foto contro "
+                    f"{d['faccia_esterna'][2]})", ""),
                 ""]
     return out
 

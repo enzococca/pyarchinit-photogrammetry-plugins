@@ -163,6 +163,8 @@ class ArchitecturePlugin(Plugin):
         self.pane.set_environment(environment.status_text(), problem is None and kind is None, problem is None and
                                   kind is not None)
         chunk = self._chunk()
+        if chunk is not None:
+            elements.prune_orphans(chunk)
         self.pane.set_rows(elements.elements(chunk) if chunk is not None else [])
 
     def _requested(self, name: str) -> None:
@@ -452,11 +454,19 @@ class ArchitecturePlugin(Plugin):
         val = self._ask(t("Porta / finestra", "Door / window"), [
             Field("kind", t("Tipo", "Kind"), "opening", choices=[(k, t(*v)) for k, v in OPENING_TYPES.items()]),
             Field("name", t("Nome (vuoto = automatico)", "Name (empty = automatic)"), "", kind="text"),
-            Field("height", t("Quota del taglio orizzontale (m, 0 = a metà dell'apertura)",
-                              "Height of the horizontal cut (m, 0 = the middle of the opening)"), 0.0, minimum=-1e5,
-                  maximum=1e5, decimals=3,
-                  tip=t("La pianta del vano si legge su questo taglio del modello", "The plan of the void is read on "
-                        "this cut of the model")),
+            Field("auto_height", t("Quota del taglio automatica (a metà dell'apertura)",
+                                   "Height of the cut automatic (the middle of the opening)"), True),
+            Field("height", t("Quota del taglio orizzontale (m)", "Height of the horizontal cut (m)"), 0.0,
+                  minimum=-1e5, maximum=1e5, decimals=3,
+                  tip=t("Usata quando la quota automatica è spenta: la pianta del vano si legge su questo taglio del "
+                        "modello", "Used when the automatic height is off: the plan of the void is read on this cut "
+                        "of the model")),
+            Field("outer", t("Faccia esterna", "Outer face"), "auto",
+                  choices=[("auto", t("auto (quella vista dalle foto)", "auto (the one the photos see)")),
+                           ("near", t("la faccia più vicina al clic", "the face nearer the click")),
+                           ("far", t("l'altra", "the other one"))],
+                  tip=t("Quando le foto non distinguono le facce, auto prende la più vicina al clic",
+                        "When the photos do not tell the faces apart, auto takes the one nearer the click")),
             Field("top", t("Parte alta", "Top"), "flat",
                   choices=[("flat", t("architrave piano", "flat lintel"))] +
                   [(i, t(f"l'arco «{n}»", f"the arch '{n}'")) for i, n in arches]),
@@ -469,8 +479,9 @@ class ArchitecturePlugin(Plugin):
                     "model; the solid is the void, to be subtracted from the wall."))
         if not val:
             return
-        self.opening(chunk, at=xy, height=val["height"] or None, top=None if val["top"] == "flat" else val["top"],
-                     thickness=val["thickness"] or None, kind=val["kind"], name=val["name"].strip() or None)
+        self.opening(chunk, at=xy, height=None if val["auto_height"] else float(val["height"]),
+                     top=None if val["top"] == "flat" else val["top"], thickness=val["thickness"] or None,
+                     kind=val["kind"], outer=val["outer"], name=val["name"].strip() or None)
 
     def opening(self, chunk, **kwargs) -> None:
         from . import elements
@@ -656,6 +667,15 @@ class ArchitecturePlugin(Plugin):
 
         chunk = self._need_chunk()
         if elements.frame_matches(chunk):
+            if any(e.get("stale") for e in elements.elements(chunk)):
+                def redone(made):
+                    self._status(t(f"{len(made)} aperture rifatte sull'arco nuovo",
+                                   f"{len(made)} openings made again on the new arch"))
+                    self._changed()
+
+                self._run(t("Ricostruzione delle aperture", "Rebuilding the openings"),
+                          lambda p: elements.rebuild_stale(chunk, progress=p), redone)
+                return
             self._status(t("Il sistema del chunk non è cambiato: niente da ricostruire.",
                            "The chunk's system did not change: nothing to rebuild."))
             return
@@ -756,6 +776,9 @@ class ArchitecturePlugin(Plugin):
         parser.add_argument("--top", help="opening: the id or name of the arch that closes it (default: a flat lintel)")
         parser.add_argument("--kind", default="opening", choices=["opening", "door", "window"],
                             help="opening: an opening only, a door or a window (IfcDoor / IfcWindow beside it)")
+        parser.add_argument("--outer", default="auto", choices=["auto", "near", "far"],
+                            help="opening: the outer face - auto (the one the photos see; else the nearer), near or "
+                                 "far (to the point)")
         parser.add_argument("--sill", type=float, help="opening: the height of the sill (world; default: measured)")
         parser.add_argument("--lintel", type=float,
                             help="opening: the height of the lintel (world; default: measured)")
@@ -788,6 +811,7 @@ class ArchitecturePlugin(Plugin):
             print(f"no chunk {ns.chunk!r} in the project")
             return 1
         changed = False
+        elements.prune_orphans(chunk)
         try:
             if ns.what == "column":
                 polygon = np.asarray(wkt.loads(ns.polygon).exterior.coords)[:, :2] if ns.polygon else None
@@ -840,7 +864,8 @@ class ArchitecturePlugin(Plugin):
                     raise elements.NotReady("--at x,y (a point inside the opening, world)")
                 at = [float(x) for x in ns.at.split(",")]
                 e = elements.opening(chunk, at, height=ns.height, top=ns.top, thickness=ns.thickness, kind=ns.kind,
-                                     sill=ns.sill, lintel=ns.lintel, name=ns.name, progress=print_progress)
+                                     sill=ns.sill, lintel=ns.lintel, outer=ns.outer, name=ns.name,
+                                     progress=print_progress)
                 print(elements.summary(e))
                 changed = True
             elif ns.what == "list":
@@ -855,7 +880,11 @@ class ArchitecturePlugin(Plugin):
                     raise elements.NotReady(f"no element {ns.element!r}")
                 changed = True
             elif ns.what == "rebuild":
-                if elements.frame_matches(chunk):
+                if elements.frame_matches(chunk) and any(e.get("stale") for e in elements.elements(chunk)):
+                    for e in elements.rebuild_stale(chunk, progress=print_progress):
+                        print(elements.summary(e))
+                    changed = True
+                elif elements.frame_matches(chunk):
                     print("the chunk's system did not change: nothing to rebuild")
                 else:
                     for e in elements.rebuild(chunk, progress=print_progress):

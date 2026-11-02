@@ -34,10 +34,33 @@ CADQUERY = cadquery_python()
 def fake(monkeypatch):
     monkeypatch.setenv("PPG_ARCHITECTURE_FAKE", "")
     monkeypatch.setattr(elements, "WORKER", (Path(sys.executable), FAKE))
-    monkeypatch.setattr(elements, "_photo_direction", lambda chunk, xy: OUTWARD)
 
 
-def _project(tmp_path: Path):
+def add_cameras(ch, poses):
+    """Aligned photos at world poses ``[(eye, target), ...]`` (a pinhole 1600 x 1200, focal 1500 px), in the chunk's
+    internal frame."""
+    from pyarchinit_photogrammetry.core.camera import Camera, Sensor
+    from pyarchinit_photogrammetry.core.geometry import decompose_similarity, look_at
+
+    if not ch.sensors:
+        ch.sensors[0] = Sensor(key=0, label="prova", width=1600, height=1200, model="PINHOLE",
+                               params=[1500.0, 1500.0, 800.0, 600.0])
+    _s, rot, _t = decompose_similarity(ch.transform)
+    for eye, target in poses:
+        pose = look_at(np.asarray(eye, float), np.asarray(target, float))
+        internal = np.eye(4)
+        internal[:3, :3] = rot.T @ pose[:3, :3]
+        internal[:3, 3] = ch.to_internal(np.asarray(eye, float)[None])[0]
+        key = max([c.key for c in ch.cameras], default=-1) + 1
+        ch.cameras.append(Camera(key=key, label=f"F{key}", path=f"F{key}.jpg", sensor_key=0, transform=internal))
+
+
+def front(at, n: int = 5, distance: float = 4.0):
+    """Photos in front of a wall (y less than its outer face), framing its opening."""
+    return [(at + [dx, -distance, 1.5], at + [0.0, WALL_T / 2, 1.2]) for dx in np.linspace(-1.5, 1.5, n)]
+
+
+def _project(tmp_path: Path, cameras: bool = True):
     """The three walls in world coordinates (UTM), the model in the chunk's internal frame through a transform that
     rotates (30 degrees about z, 2 about x), scales (x 2.5) and moves it."""
     import trimesh
@@ -64,6 +87,8 @@ def _project(tmp_path: Path):
     path = write_mesh_ply(ch.data_dir / "model.ply", internal, np.asarray(mesh.faces), double=True)
     ch._set_product("model", path)
     ch.meta["metric"] = True
+    if cameras:
+        add_cameras(ch, [p for at in WALLS.values() for p in front(at)])
     doc.save()
     return doc, ch, truth
 
@@ -96,7 +121,8 @@ def _check(e, tr, tol=0.003):
     p = e["params"]
     assert abs(p["width"] - tr["width"]) < tol and abs(p["width_inner"] - tr["inner_width"]) < tol
     assert abs(p["reveal_depth"] - WALL_T) < tol
-    assert abs(p["splay_left"] - tr["splay"]) < 0.3 and abs(p["splay_right"] - tr["splay"]) < 0.3
+    assert abs(p["splay_left"] - tr["splay_left"]) < 0.3 and abs(p["splay_right"] - tr["splay_right"]) < 0.3
+    assert p["outer_rule"] == "photos" and p["outer_views"] > p["inner_views"]
     assert abs(p["sill"] - (tr["at"][2] + tr["sill"])) < tol and abs(p["lintel"] - (tr["at"][2] + tr["lintel"])) < tol
     assert abs(p["height"] - (tr["lintel"] - tr["sill"])) < tol
     assert abs(e["solid"]["volume"] / _volume(tr) - 1) < 0.01
@@ -213,7 +239,6 @@ def test_edits_a_failed_edit_and_the_rebuild(tmp_path, fake, monkeypatch):
     move = compose_similarity(1.0, rz, [10.0, 0.0, 0.0])
     move[:3, 3] += WORLD - rz @ WORLD
     ch.transform = move @ ch.transform
-    monkeypatch.setattr(elements, "_photo_direction", lambda chunk, xy: rz[:2, :2] @ OUTWARD)
     with pytest.raises(elements.NotReady, match="sistema del chunk è cambiato"):
         elements.edit_opening(ch, door["id"], width=0.9)
     made = elements.rebuild(ch)
@@ -250,7 +275,7 @@ def test_command_line(tmp_path, fake, monkeypatch):
     project = str(doc.path)
     x, y = _inside(truth["door"])
     r = cli.invoke(app, ["plugin", "architecture", "opening", project, "--at", f"{x},{y}", "--kind", "door",
-                         "--name", "P1"])
+                         "--outer", "auto", "--name", "P1"])
     assert r.exit_code == 0, r.output
     assert "Apertura: porta 0,900 m × 2,100 m" in r.output and "scarto mediana" in r.output
     x, y = _inside(truth["splayed"])
@@ -298,6 +323,7 @@ def test_the_dialogs_in_the_window(tmp_path, fake, monkeypatch):
             values = {f.name: f.default for f in fields if f.kind != "heading"}
             if title == "Porta / finestra":
                 values["kind"] = "door"
+                assert values["auto_height"] is True and values["outer"] == "auto"
             return values
 
         monkeypatch.setattr(plugin, "_ask", answer)
@@ -356,7 +382,6 @@ def test_openings_and_their_ifc_through_cadquery(tmp_path, monkeypatch):
     from ppg_architecture import ifc, runner
 
     monkeypatch.setattr(elements, "WORKER", (CADQUERY, Path(runner.__file__).with_name("worker.py")))
-    monkeypatch.setattr(elements, "_photo_direction", lambda chunk, xy: OUTWARD)
     doc, ch, truth = _project(tmp_path)
     window = elements.opening(ch, _inside(truth["splayed"]), kind="window", thickness=WALL_T, name="Finestra")
     arch = _arch_over(ch, truth["arched"])
@@ -371,3 +396,138 @@ def test_openings_and_their_ifc_through_cadquery(tmp_path, monkeypatch):
         np.testing.assert_allclose(bbox, e["solid"]["bbox"], atol=0.01, err_msg=e["name"])
     assert abs(volumes["IfcDoor:Vano"][0] / vano["solid"]["volume"] - 1) < 0.01
     assert not set(FORBIDDEN) & set(sys.modules)
+
+
+def test_the_outer_face_is_the_one_the_photos_see(tmp_path, fake):
+    """More photos behind the wall than in front, but looking away from it: the outer face is the one seen by the
+    photos that frame the opening (the mean direction of all the photos would say the other). Without photos the
+    choice of the dialog decides, and the summary says which rule was used."""
+    doc, ch, truth = _project(tmp_path, cameras=False)
+    at = truth["splayed"]["at"]
+    add_cameras(ch, front(at, n=3))
+    add_cameras(ch, [(at + [dx, 6.0, 1.5], at + [dx, 20.0, 1.5]) for dx in np.linspace(-3, 3, 8)])
+    w = elements.opening(ch, _inside(truth["splayed"]), thickness=WALL_T, name="Finestra")
+    p = w["params"]
+    assert p["outer_rule"] == "photos" and (p["outer_views"], p["inner_views"]) == (3, 0)
+    assert abs(p["width"] - 0.8) < 0.003 and abs(p["splay_left"] - 10) < 0.3
+    assert "la faccia vista da più foto" in elements.summary(w)
+    doc2, ch2, truth2 = _project(tmp_path / "senza", cameras=False)
+    near = elements.opening(ch2, truth2["door"]["at"][:2] + [0.0, 0.1], name="Vicina")  # nearer the outer face
+    assert near["params"]["outer_rule"] == "near-fallback" and near["params"]["world_axis"][1] < -0.99
+    assert "le foto non distinguono le facce" in elements.summary(near)
+    far = elements.opening(ch2, truth2["door"]["at"][:2] + [0.0, 0.1], outer="far", name="Lontana")
+    assert far["params"]["outer_rule"] == "far" and far["params"]["world_axis"][1] > 0.99
+
+
+def test_the_ifc_is_valid_with_a_stand_in_wall(tmp_path, fake):
+    pytest.importorskip("ifcopenshell")
+    import logging
+
+    import ifcopenshell
+    import ifcopenshell.validate
+
+    from ppg_architecture import ifc
+
+    doc, ch, truth = _project(tmp_path)
+    door = elements.opening(ch, _inside(truth["door"]), kind="door", name="Porta")
+    window = elements.opening(ch, _inside(truth["splayed"]), kind="window", thickness=WALL_T, name="Finestra")
+    # a second window in the door's wall, its stretch overlapping the door's: one host for both
+    other = elements.opening(ch, _inside(truth["door"]), kind="window", name="Seconda")
+    out = ifc.export(ch, tmp_path / "aperture.ifc")
+    model = ifcopenshell.open(str(out))
+    problems = []
+
+    class Collect(logging.Handler):
+        def emit(self, record):
+            problems.append(record.getMessage())
+
+    log = logging.getLogger("ppg-ifc-validate")
+    log.addHandler(Collect())
+    log.setLevel(logging.DEBUG)
+    ifcopenshell.validate.validate(model, log, express_rules=False)
+    assert problems == []
+    walls = model.by_type("IfcWall")
+    assert len(walls) == 2 and {x.Name for x in walls} == {"Muro (porzione misurata)"}
+    hosts = {o.Name: o.VoidsElements[0].RelatingBuildingElement for o in model.by_type("IfcOpeningElement")}
+    assert hosts["Porta"] == hosts["Seconda"] and hosts["Porta"] != hosts["Finestra"]
+    door_e = model.by_type("IfcDoor")[0]
+    assert door_e.FillsVoids[0].RelatingOpeningElement.Name == "Porta"
+    import ifcopenshell.util.element
+
+    pset = ifcopenshell.util.element.get_psets(walls[0])["Pset_PyArchInit_Element"]
+    assert pset["Kind"] == "host" and "sostitutivo" in pset["Interpretation"]
+    assert "sostitutivo" in ifcopenshell.util.element.get_psets(door_e)["Pset_PyArchInit_Element"]["Host"]
+    assert not model.by_type("IfcRelContainedInSpatialStructure")[0].RelatedElements[0].is_a("IfcOpeningElement")
+    for rel in model.by_type("IfcRelContainedInSpatialStructure"):
+        assert not any(x.is_a("IfcOpeningElement") for x in rel.RelatedElements)
+    volumes = ifc.read_volumes(out)
+    for e in (door, window, other):
+        assert abs(volumes[f"IfcOpeningElement:{e['name']}"][0] / e["solid"]["volume"] - 1) < 0.01
+
+
+def test_an_opening_follows_its_arch(tmp_path, fake):
+    """The arch of an arched opening cannot be removed while the opening uses it; editing the arch leaves the opening
+    to be rebuilt (said in the pane's text, refused in the exports) until Rebuild makes it again on the new arch."""
+    from ppg_architecture import ifc
+
+    doc, ch, truth = _project(tmp_path)
+    arch = _arch_over(ch, truth["arched"])
+    vano = elements.opening(ch, _inside(truth["arched"]), top=arch["id"], name="Vano")
+    with pytest.raises(elements.NotReady, match="chiude in alto «Vano»"):
+        elements.remove(ch, arch["id"])
+    elements.edit_arch(ch, arch["id"], thickness=0.3, depth=0.6)
+    assert elements.entry(ch, vano["id"])["stale"] is True
+    assert "Da ricostruire" in elements.summary(elements.entry(ch, vano["id"]))
+    with pytest.raises(elements.NotReady, match="Da ricostruire"):
+        elements.export_step(ch, None, tmp_path / "s")
+    if HAS_IFC:
+        with pytest.raises(elements.NotReady, match="Da ricostruire"):
+            ifc.export(ch, tmp_path / "x.ifc")
+    made = elements.rebuild_stale(ch)
+    assert [e["name"] for e in made] == ["Vano"] and not elements.entry(ch, "Vano").get("stale")
+    assert [e["name"] for e in elements.elements(ch)] == ["Arco della finestra", "Vano"]
+    elements.export_step(ch, None, tmp_path / "s")
+    elements.remove(ch, vano["id"])
+    assert elements.remove(ch, arch["id"])
+
+
+def test_rebuild_keeps_the_height_found_and_the_order(tmp_path, fake):
+    from pyarchinit_photogrammetry.core.geometry import compose_similarity
+
+    doc, ch, truth = _project(tmp_path)
+    door = elements.opening(ch, _inside(truth["door"]), name="Porta")  # made before the arch it does not use
+    arch = _arch_over(ch, truth["arched"])
+    vano = elements.opening(ch, _inside(truth["arched"]), top=arch["id"], name="Vano")
+    order = [e["id"] for e in elements.elements(ch)]
+    # the arch's opening first in the registry: the rebuild must still make the arch before it
+    st = elements.state(ch)
+    st["elements"] = [st["elements"][2], st["elements"][0], st["elements"][1]]
+    order = [order[2], order[0], order[1]]
+    ch.transform = compose_similarity(1.0, np.eye(3), [5.0, 0.0, 0.0]) @ ch.transform
+    made = elements.rebuild(ch)
+    assert [e["id"] for e in made] == order and [e["id"] for e in elements.elements(ch)] == order
+    assert elements.entry(ch, "Porta")["source"]["height"] is None  # found again, not frozen as given
+    assert abs(elements.entry(ch, "Porta")["params"]["width"] - door["params"]["width"]) < 1e-6
+    assert elements.entry(ch, "Vano")["params"]["arch"] == arch["id"] and vano
+
+
+def test_warnings_of_an_arched_top_over_a_lintel(tmp_path, fake):
+    doc, ch, truth = _project(tmp_path)
+    arch = _arch_over(ch, truth["arched"])
+    vano = elements.opening(ch, _inside(truth["arched"]), top=arch["id"], name="Vano")
+    assert not vano["warnings"]
+    entry = elements.entry(ch, vano["id"])
+    entry["profile"]["lintel_measured"] = vano["params"]["springing"] - 0.2  # as if a flat lintel were under it
+    again = elements.edit_opening(ch, vano["id"], sill=vano["params"]["sill"])
+    assert any("entrerebbe nella muratura" in w for w in again["warnings"])
+
+
+def test_messages_ask_for_what_helps(tmp_path, fake):
+    doc, ch, truth = _project(tmp_path)
+    with pytest.raises(elements.NotReady) as exc:
+        elements.opening(ch, truth["door"]["at"][:2] + [1.5, WALL_T / 2])  # inside the masonry, beside the door
+    assert "dai la quota" not in str(exc.value) and "fra i due stipiti" in str(exc.value)
+    with pytest.raises(elements.NotReady, match="lascia la quota automatica"):
+        elements.opening(ch, _inside(truth["door"]), height=truth["door"]["at"][2] + 2.6)
+    assert "Dai lo spessore del muro o usa un modello più fitto" in elements._opening_problem(
+        "the faces of a thin wall cannot be told apart at this resolution (edges of 30 mm)")

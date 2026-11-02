@@ -300,7 +300,8 @@ def test_a_changed_system_is_refused_until_the_elements_are_rebuilt(tmp_path, fa
     move = compose_similarity(1.0, rz, [10.0, 0.0, 0.0])
     move[:3, 3] += WORLD - rz @ WORLD  # about the middle of the scene
     ch.transform = move @ ch.transform
-    refused = [lambda: elements.export_step(ch, None, tmp_path / "s"), lambda: elements.edit_column(ch, col["id"], knots=6),
+    refused = [lambda: elements.export_step(ch, None, tmp_path / "s"),
+               lambda: elements.edit_column(ch, col["id"], knots=6),
                lambda: elements.column(ch, polygon=_square(COLUMN_AT, 0.6))]
     if HAS_IFC:  # without ifcopenshell the IFC export says so before anything else
         refused.append(lambda: ifc.export(ch, tmp_path / "x.ifc"))

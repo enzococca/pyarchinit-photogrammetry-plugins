@@ -1357,7 +1357,9 @@ def arch_frame(origin, u_axis, v_axis) -> np.ndarray:
 
 
 # ====================================================================== opening (door, window)
-REACH = 3.0  # how far a ray from the point in an opening looks for the reveals (metres)
+FACE_SEARCH = 4.0  # how far from the point the wall faces around an opening are looked for (metres): any width up to ~6 m
+MAX_THICKNESS = 3.0  # the farthest a second face may be from the first and still be the same wall
+SPLAY_MAX = 35.0  # degrees: a reveal turning more than this from the face's normal is not looked for
 
 
 def _clear_of_vertices(values, at: float, gap: float = 1e-7) -> float:
@@ -1378,121 +1380,6 @@ def plan_cut(vertices, faces, height: float) -> list[np.ndarray]:
     return mesh_section(vertices, faces, (0.0, 0.0, h), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
 
 
-def _segments(polylines, centre, reach: float) -> np.ndarray:
-    """The segments (M, 2, 2) of the polylines that come within ``reach`` of ``centre``."""
-    segs = [np.stack([p[:-1, :2], p[1:, :2]], axis=1) for p in polylines if len(p) > 1]
-    if not segs:
-        return np.zeros((0, 2, 2))
-    s = np.concatenate(segs)
-    c = np.asarray(centre, float)[:2]
-    a, b = s[:, 0] - c, s[:, 1] - c
-    e = b - a
-    t = np.clip(-(a * e).sum(1) / np.maximum((e * e).sum(1), 1e-30), 0.0, 1.0)
-    d = np.linalg.norm(a + t[:, None] * e, axis=1)
-    return s[d <= reach]
-
-
-def first_hits(polylines, centre, rays: int = 720, reach: float = REACH):
-    """What a point sees of the polylines around it, ray by ray: ``(angles, distance, points)``; the distance is inf
-    where a ray meets nothing within ``reach``."""
-    c = np.asarray(centre, float)[:2]
-    ang = np.linspace(0.0, 2 * np.pi, rays, endpoint=False)
-    d = np.column_stack([np.cos(ang), np.sin(ang)])
-    s = _segments(polylines, c, reach)
-    dist = np.full(rays, np.inf)
-    if len(s):
-        a = s[:, 0] - c
-        e = s[:, 1] - s[:, 0]
-
-        def cross(p, q):
-            return p[..., 0] * q[..., 1] - p[..., 1] * q[..., 0]
-
-        den = cross(d[:, None, :], e[None, :, :])
-        ok = np.abs(den) > 1e-15
-        den = np.where(ok, den, 1.0)
-        t = cross(a[None, :, :], e[None, :, :]) / den
-        u = cross(a[None, :, :], d[:, None, :]) / den
-        hit = ok & (t > 1e-9) & (u >= -1e-12) & (u <= 1 + 1e-12) & (t <= reach)
-        t = np.where(hit, t, np.inf)
-        dist = t.min(axis=1)
-    pts = c + d * np.where(np.isfinite(dist), dist, 0.0)[:, None]
-    return ang, dist, pts
-
-
-def _free_runs(free: np.ndarray, least: int) -> list[tuple[int, int]]:
-    """The circular runs of True of ``free`` at least ``least`` long: ``(start, length)``, the longest first."""
-    n = len(free)
-    if free.all():
-        return [(0, n)]
-    if not free.any():
-        return []
-    start = int(np.argmin(free))  # a blocked ray: the runs do not wrap past it
-    runs, k = [], 0
-    while k < n:
-        i = (start + k) % n
-        if free[i]:
-            j = k
-            while j < n and free[(start + j) % n]:
-                j += 1
-            if j - k >= least:
-                runs.append((i, j - k))
-            k = j
-        else:
-            k += 1
-    return sorted(runs, key=lambda r: -r[1])
-
-
-def passage(polylines, centre, reach: float = REACH, rays: int = 720, least_deg: float = 2.0):
-    """Whether ``centre`` is in a passage through a wall at the height of the cut: two opposite fans of rays meet
-    nothing within ``reach`` (the two sides of the wall) and between them the rays meet the reveals on both sides.
-    Returns ``(axis, hits)`` - ``axis`` the unit plan direction across the wall (the bisector of the two free fans),
-    ``hits`` the points of the rays that met something - or None."""
-    ang, dist, pts = first_hits(polylines, centre, rays, reach)
-    free = ~np.isfinite(dist)
-    runs = _free_runs(free, max(2, int(round(least_deg / 360.0 * rays))))
-    if len(runs) < 2 or free.all():
-        return None
-    centres = []
-    for i, n in runs[:2]:
-        a = ang[(i + np.arange(n)) % rays]
-        centres.append(np.arctan2(np.sin(a).mean(), np.cos(a).mean()))
-    diff = np.angle(np.exp(1j * (centres[1] - centres[0])))
-    if abs(diff) < np.radians(120):
-        return None
-    mid = np.angle(np.exp(1j * centres[0]) + np.exp(1j * (centres[1] + np.pi)))
-    axis = np.array([np.cos(mid), np.sin(mid)])
-    hits = pts[np.isfinite(dist)]
-    side = (hits - np.asarray(centre, float)[:2]) @ np.array([-axis[1], axis[0]])
-    if (side > 0).sum() < 4 or (side < 0).sum() < 4:
-        return None
-    return axis, hits
-
-
-def opening_heights(vertices, faces, centre, zmin: float, zmax: float, step: float = 0.05,
-                    reach: float = REACH) -> tuple[float, float] | None:
-    """The heights between ``zmin`` and ``zmax`` at which ``centre`` (plan) is in a passage through the wall: the
-    longest run of them, ``(lowest, highest)``, or None."""
-    ok = []
-    zs = np.arange(zmin + step / 2, zmax, step)
-    for z in zs:
-        ok.append(passage(plan_cut(vertices, faces, z), centre, reach) is not None)
-    ok = np.asarray(ok, bool)
-    best, k = None, 0
-    while k < len(ok):
-        if ok[k]:
-            j = k
-            while j + 1 < len(ok) and ok[j + 1]:
-                j += 1
-            if best is None or j - k > best[1] - best[0]:
-                best = (k, j)
-            k = j + 1
-        else:
-            k += 1
-    if best is None:
-        return None
-    return float(zs[best[0]]), float(zs[best[1]])
-
-
 def fit_line(points, trim: float = 3.0, iterations: int = 3):
     """A plan line through points by orthogonal least squares, trimmed of the points farther than ``trim`` robust
     deviations: ``(point, unit direction, rms, kept mask)``."""
@@ -1504,7 +1391,7 @@ def fit_line(points, trim: float = 3.0, iterations: int = 3):
         if len(q) < 2:
             break
         c = q.mean(axis=0)
-        w, vec = np.linalg.eigh(np.cov((q - c).T))
+        _w, vec = np.linalg.eigh(np.cov((q - c).T))
         d = vec[:, -1]
         r = np.abs((p - c) @ np.array([-d[1], d[0]]))
         mad = 1.4826 * np.median(r[keep]) + 1e-5
@@ -1520,45 +1407,122 @@ def intersect_lines(p1, d1, p2, d2) -> np.ndarray:
     return np.asarray(p1, float) + t[0] * np.asarray(d1, float)
 
 
-def _face_beyond(polylines, line_point, line_dir, hits, tol: float, centre, cone_deg: float = 30.0,
-                 reach: float = 0.6):
-    """The two ends of a reveal (the extremes of what the point ``centre`` sees of it along its line) and, at each,
-    the wall face: the points of the cut on the wall's side of the reveal (farther from its line than ``tol``, away
-    from the opening), within ``reach`` of the end (and within 0.8 times the reveal's length: never the face at its
-    other end) and inside a cone of ``cone_deg`` around the perpendicular to the reveal there (a face turns away from
-    the reveal; a splay of up to that many degrees is in it). By position, not along a line of the cut: the cut of a
-    model often breaks at a corner. Returns ``[(end point, face points or None), ...]`` for the two ends."""
-    pts = [np.asarray(p, float)[:, :2] for p in polylines if len(p)]
-    if not pts:
+def _tolerances(resolution: float) -> tuple[float, float]:
+    """``(on a line, a gap)``: how far a point of the cut may be from a face's line and still be on it; how long a
+    stretch with no point must be to be an opening and not a hole of the mesh."""
+    return max(3.0 * resolution, 0.015), max(4.0 * resolution, 0.05)
+
+
+def face_lines(polylines, centre, resolution: float = 0.005, search: float = FACE_SEARCH) -> list[dict]:
+    """The wall faces around a point on a horizontal cut: straight runs of the cut (lines through its points within a
+    tolerance of the mesh's resolution) on which the point's projection falls in a **gap** with the run present on
+    both sides of it - the near and far faces of the wall the opening goes through. A wall of a room behind the
+    opening, or a facing building, is either across the point's projection (no gap) or ends before it. Each:
+    ``{"point", "dir", "gap": (t0, t1), "offset", "points"}``, ``t`` along ``dir`` from ``point``, ``offset`` the
+    signed distance of the line from the point along the line's left normal."""
+    from shapely.geometry import LineString
+
+    c = np.asarray(centre, float)[:2]
+    on_tol, gap_min = _tolerances(resolution)
+    parts = [np.asarray(p, float)[:, :2] for p in polylines if len(p) > 1]
+    if not parts:
         return []
-    q = np.vstack(pts)
-    p0 = np.asarray(line_point, float)
-    d = np.asarray(line_dir, float)
-    n = np.array([-d[1], d[0]])
-    # the reveal lies between the point and the wall
-    wall = 1.0 if (p0 - np.asarray(centre, float)[:2]) @ n >= 0 else -1.0
-    s = (np.asarray(hits, float) - p0) @ d
-    radius = min(reach, 0.8 * max(float(np.ptp(s)), 1e-3))
-    out = []
-    for sign, end_s in ((-1.0, s.min()), (1.0, s.max())):
-        end = p0 + end_s * d
-        rel = q - end
-        along = sign * (rel @ d)
-        lateral = wall * (rel @ n)
-        m = (lateral > tol) & (np.hypot(along, lateral) <= radius) & \
-            (np.abs(along) <= np.tan(np.radians(cone_deg)) * lateral + tol)
-        face = q[m] if m.sum() >= 3 and np.ptp(lateral[m]) >= 0.03 else None
-        out.append((end, face))
-    return out
+    allpts = np.vstack(parts)
+    near = np.linalg.norm(allpts - c, axis=1) <= search
+    q = allpts[near]
+    if len(q) < 4:
+        return []
+    seeds = []
+    for p in parts:
+        simple = np.asarray(LineString(p).simplify(max(2.0 * resolution, 0.01)).coords)
+        for a, b in zip(simple[:-1], simple[1:]):
+            if np.linalg.norm(b - a) >= max(0.1, 5 * on_tol) and \
+                    min(np.linalg.norm(a - c), np.linalg.norm(b - c)) <= search:
+                seeds.append((a, b))
+    seeds.sort(key=lambda s: -np.linalg.norm(s[1] - s[0]))
+    found: list[dict] = []
+    for a, b in seeds[:400]:
+        d = (b - a) / np.linalg.norm(b - a)
+        n = np.array([-d[1], d[0]])
+        if any(abs(f["dir"] @ n) < np.sin(np.radians(3))
+               and abs((a - f["point"]) @ np.array([-f["dir"][1], f["dir"][0]])) < on_tol for f in found):
+            continue
+        on = np.abs((q - a) @ n) < on_tol
+        if on.sum() < 8:
+            continue
+        p0, d0, _r, keep = fit_line(q[on])
+        n0 = np.array([-d0[1], d0[0]])
+        on = np.abs((q - p0) @ n0) < on_tol
+        t = np.sort((q[on] - p0) @ d0)
+        tc = float((c - p0) @ d0)
+        below, above = t[t < tc], t[t > tc]
+        if len(below) < 4 or len(above) < 4:
+            continue
+        t0, t1 = float(below.max()), float(above.min())
+        # a face goes on from each end of the gap without a break: a run, not points of things crossing the line
+        if t1 - t0 < gap_min or _run_length(below[::-1], gap_min) < RUN_MIN or _run_length(above, gap_min) < RUN_MIN:
+            continue
+        # the line itself, not a crossing of other things: its points are spread along it on both sides
+        found.append({"point": p0, "dir": d0, "gap": (t0, t1), "offset": float((p0 - c) @ n0),
+                      "points": q[on & (np.abs(((q - p0) @ d0) - 0.5 * (t0 + t1)) < 0.5 * (t1 - t0) + 0.6)]})
+    return found
+
+
+RUN_MIN = 0.15  # metres of face, without a break, on each side of an opening
+
+
+def _run_length(t, gap: float) -> float:
+    """How far the sorted positions ``t`` (from the gap outwards) go on without a break longer than ``gap``."""
+    t = np.asarray(t, float)
+    if len(t) < 2:
+        return 0.0
+    breaks = np.flatnonzero(np.abs(np.diff(t)) >= gap)
+    end = breaks[0] if len(breaks) else len(t) - 1
+    return float(abs(t[end] - t[0]))
+
+
+def _pick_faces(lines: list[dict], centre, resolution: float):
+    """The near face (the gap-line nearest the point) and the far face (the nearest line parallel to it, more than a
+    tolerance and less than :data:`MAX_THICKNESS` away, on the point's side of the near face if there is one, else on
+    the other): ``(near, far or None)``."""
+    if not lines:
+        return None, None
+    on_tol, _gap = _tolerances(resolution)
+    c = np.asarray(centre, float)[:2]
+    near = min(lines, key=lambda f: abs(f["offset"]))
+    n = np.array([-near["dir"][1], near["dir"][0]])
+    side_c = np.sign((c - near["point"]) @ n) or 1.0
+    best = {1.0: None, -1.0: None}
+    for f in lines:
+        if f is near or abs(f["dir"] @ near["dir"]) < np.cos(np.radians(10)):
+            continue
+        sep = float((f["point"] - near["point"]) @ n)
+        if not (2 * on_tol < abs(sep) < MAX_THICKNESS):
+            continue
+        # another face, not the near one again at a slant: its points are all off the near face's line
+        if np.percentile(np.abs((f["points"] - near["point"]) @ n), 10) < 1.5 * on_tol:
+            continue
+        s = np.sign(sep) * side_c
+        if best[s] is None or abs(sep) < abs(best[s][1]):
+            best[s] = (f, sep)
+    far = best[1.0] or best[-1.0]
+    return near, None if far is None else far[0]
+
+
+def left_of(axis) -> np.ndarray:
+    """The left of an opening seen from outside (looking along ``-axis``, the axis out of the wall)."""
+    a = np.asarray(axis, float)
+    return np.array([a[1], -a[0]])
 
 
 @dataclass
 class OpeningPlan:
-    """The plan of an opening at the height of a cut (plan metres): ``axis`` across the wall towards the outer face,
-    ``along`` = axis turned left; the two reveals and the two wall faces as lines ``(point, direction)``; ``polygon``
-    the void (outer-left, outer-right, inner-right, inner-left; counter-clockwise); ``thickness`` between the faces,
-    ``measured`` whether both faces were on the model; the splays in degrees (positive: the reveal opens out towards
-    the inner face, an embrasure)."""
+    """The plan of an opening at the height of a cut (plan metres): ``axis`` the outer face's normal, out of the wall;
+    the left and the right as seen from outside (:func:`left_of`); the two reveals and the two wall faces as lines
+    ``(point, direction)``; ``polygon`` the void (counter-clockwise); ``thickness`` between the faces, ``measured``
+    whether both faces were on the model; the splays in degrees against the outer face's normal (positive: the
+    opening widens towards the inner face, an embrasure). ``near``: whether the outer face is the face nearer the
+    point."""
 
     centre: np.ndarray
     axis: np.ndarray
@@ -1575,6 +1539,7 @@ class OpeningPlan:
     splay_right: float
     reveal_rms: float
     points: dict = field(default_factory=dict)
+    near: bool = True
 
     def to_dict(self) -> dict:
         def line(x):
@@ -1584,21 +1549,30 @@ class OpeningPlan:
                 "right": line(self.right), "outer": line(self.outer), "inner": line(self.inner),
                 "polygon": self.polygon.tolist(), "thickness": self.thickness, "measured": self.measured,
                 "width_outer": self.width_outer, "width_inner": self.width_inner, "splay_left": self.splay_left,
-                "splay_right": self.splay_right, "reveal_rms": self.reveal_rms,
+                "splay_right": self.splay_right, "reveal_rms": self.reveal_rms, "near": self.near,
                 "points": {k: np.asarray(v).tolist() for k, v in self.points.items()}}
+
+    def flipped(self) -> "OpeningPlan":
+        """The same plan with the other face as the outer one."""
+        pts = dict(self.points)
+        pts["left"], pts["right"] = self.points.get("right", []), self.points.get("left", [])
+        return opening_plan_from_lines(self.centre, -self.axis, self.right, self.left, self.inner, self.outer,
+                                       self.measured, self.reveal_rms, pts, near=not self.near)
 
 
 def opening_plan_from_lines(centre, axis, left, right, outer, inner, measured: bool, rms: float = 0.0,
-                            points=None) -> OpeningPlan:
-    """The plan of an opening from its four lines (reveals and faces): the void's corners, widths, thickness and
-    splays."""
-    a = np.asarray(axis, float)
-    a = a / np.linalg.norm(a)
-    w = np.array([-a[1], a[0]])  # left
+                            points=None, near: bool = True) -> OpeningPlan:
+    """The plan of an opening from its four lines (reveals and faces): the void's corners, widths, thickness and the
+    splays against the outer face's normal (``axis`` gives only its sense: out of the wall)."""
     lines = {}
     for name, (p, d) in (("left", left), ("right", right), ("outer", outer), ("inner", inner)):
         d = np.asarray(d, float)
         lines[name] = (np.asarray(p, float), d / np.linalg.norm(d))
+    do = lines["outer"][1]
+    a = np.array([-do[1], do[0]])
+    if a @ np.asarray(axis, float) < 0:
+        a = -a
+    w = left_of(a)
     corners = np.array([intersect_lines(*lines[s], *lines[f]) for s, f in
                         (("left", "outer"), ("right", "outer"), ("right", "inner"), ("left", "inner"))])
     poly = corners if polygon_area(corners) > 0 else corners[::-1]
@@ -1613,91 +1587,105 @@ def opening_plan_from_lines(centre, axis, left, right, outer, inner, measured: b
 
     return OpeningPlan(np.asarray(centre, float)[:2], a, lines["left"], lines["right"], lines["outer"], lines["inner"],
                        poly, thickness, measured, width_outer, width_inner, splay(corners[0], corners[3], w),
-                       splay(corners[1], corners[2], -w), float(rms), dict(points or {}))
+                       splay(corners[1], corners[2], -w), float(rms), dict(points or {}), near)
 
 
-def opening_plan(polylines, centre, outward=None, thickness: float | None = None, axis=None, resolution: float = 0.005,
-                 reach: float = REACH) -> OpeningPlan:
-    """The plan of the void of a door or a window from a horizontal cut (plan polylines) and a point inside it: the
-    reveals are what the point sees on either side, each fitted by a line (a splayed reveal stays splayed); the wall
-    faces are the stretches of the cut that turn away from the reveals at their ends, one line through both sides; the
-    inner face ``thickness`` behind the outer one when given (or when only one face is on the model). ``outward``: a
-    plan direction towards the outer face (the photos), else the axis is oriented as found. ``axis``: the direction
-    across the wall when known (a cut at another height of the same opening). Raises ValueError with the reason."""
+def opening_plan(polylines, centre, thickness: float | None = None, resolution: float = 0.005,
+                 search: float = FACE_SEARCH) -> OpeningPlan:
+    """The plan of the void of a door or a window from a horizontal cut (plan polylines) and a point inside it. First
+    the wall faces (:func:`face_lines`): the near face, whose gap around the point is the opening, and the far face
+    parallel to it (or, when only one face is on the model, the given ``thickness`` behind the near one, towards the
+    point). The reveals are only the cut's points between the two faces that start at the gap's ends: each fitted by a
+    line (a splayed reveal stays splayed). Nothing beyond the far face (a room, a street) and nothing away from the
+    gap is a reveal. The outer face here is the near one (the caller decides which is outer:
+    :meth:`OpeningPlan.flipped`).
+    Raises ValueError with the reason."""
     c = np.asarray(centre, float)[:2]
-    found = passage(polylines, c, reach)
-    if found is None:
-        if axis is None:
-            raise ValueError("the point is not inside an opening at this height (no passage through the wall)")
-        _ang, dist, pts = first_hits(polylines, c, 720, reach)
-        hits = pts[np.isfinite(dist)]
-        a = np.asarray(axis, float)
+    on_tol, _gap = _tolerances(resolution)
+    near, far = _pick_faces(face_lines(polylines, c, resolution, search), c, resolution)
+    if near is None:
+        raise ValueError("no gap in a wall face around the point: it is not inside an opening")
+    p0, d0 = near["point"], near["dir"]
+    n0 = np.array([-d0[1], d0[0]])
+    into = -1.0 if (c - p0) @ n0 < 0 else 1.0  # from the near face into the wall
+    if far is None and (c - p0) @ n0 == 0:
+        into = 1.0
+    if far is not None:
+        sep = float((far["point"] - p0) @ n0)
+        into = np.sign(sep)
+        T = abs(sep)
+        far_line = (far["point"], far["dir"] if far["dir"] @ d0 > 0 else -far["dir"])
+    elif thickness:
+        T = float(thickness)
+        far_line = (p0 + into * T * n0, d0)
     else:
-        a, hits = found
-        if axis is not None and a @ np.asarray(axis, float) < 0:
-            a = -a
-    if outward is not None and a @ np.asarray(outward, float)[:2] < 0:
-        a = -a
-    a = a / np.linalg.norm(a)
-    w = np.array([-a[1], a[0]])
-    side = (hits - c) @ w
-    tol = max(3.0 * resolution, 0.01)
+        q = np.vstack([np.asarray(p, float)[:, :2] for p in polylines if len(p)])
+        off = (q - p0) @ n0 * into
+        t = (q - p0) @ d0
+        g0, g1 = near["gap"]
+        clear = 4.0 * on_tol  # the reveals' points near the gap's ends are not a second face
+        beside = ((t < g0 - clear) & (t > g0 - 0.6)) | ((t > g1 + clear) & (t < g1 + 0.6))
+        if (beside & (off > 0.4 * on_tol) & (off < 2.5 * on_tol)).sum() >= 8:
+            raise ValueError(f"the faces of a thin wall cannot be told apart at this resolution (edges of "
+                             f"{resolution * 1000:.0f} mm)")
+        raise ValueError("only one face of the wall is on the model: the thickness of the wall must be given")
+    inward = into * n0
+    g0, g1 = near["gap"]
+    if far is not None:
+        h = sorted(((far["point"] + far["dir"] * t) - p0) @ d0 for t in far["gap"])
+    else:
+        h = [g0, g1]
+    allpts = np.vstack([np.asarray(p, float)[:, :2] for p in polylines if len(p)])
+    t_all = (allpts - p0) @ d0
+    u_all = (allpts - p0) @ inward  # 0 on the near face, T on the far one
+    edge = min(on_tol, T / 4)
+    band = (u_all > edge) & (u_all < T - edge)
+    spread = T * np.tan(np.radians(SPLAY_MAX))
+    margin = max(0.03, 3 * on_tol)
+    mid = 0.25 * (g0 + g1 + h[0] + h[1])
     reveals, rms = {}, []
-    for name, mask in (("left", side > 0), ("right", side < 0)):
-        pts = hits[mask]
+    for name, a_end, b_end in (("first", g0, h[0]), ("second", g1, h[1])):
+        lo = min(a_end, b_end) - margin - (spread if far is None else 0.0)
+        hi = max(a_end, b_end) + margin + (spread if far is None else 0.0)
+        m = band & (t_all >= lo) & (t_all <= hi) & ((t_all < mid) if name == "first" else (t_all > mid))
+        pts = allpts[m]
         if len(pts) < 4:
-            raise ValueError(f"no reveal on the {name} of the point")
+            raise ValueError("no reveal at one end of the gap (an opening at the end of a wall, or a reveal not on "
+                             "the model)")
         p, d, r, keep = fit_line(pts)
-        if abs(d @ a) < np.cos(np.radians(60)):
-            raise ValueError(f"the {name} reveal is not across the wall")
-        if d @ a < 0:
+        if abs(d @ inward) < np.cos(np.radians(SPLAY_MAX + 10)):
+            raise ValueError("a reveal is not across the wall")
+        if d @ inward < 0:
             d = -d
         reveals[name] = (p, d, pts[keep])
         rms.append(r)
-    faces = {"outer": [], "inner": []}
-    for name in ("left", "right"):
-        p, d, pts = reveals[name]
-        for end, face in _face_beyond(polylines, p, d, pts, tol, c):
-            if face is None:
-                continue
-            faces["outer" if (end - c) @ a > 0 else "inner"].append(face)
-    lines = {}
-    for name in ("outer", "inner"):
-        if faces[name]:
-            p, d, _r, _k = fit_line(np.vstack(faces[name]))
-            if abs(d @ a) > np.cos(np.radians(60)):
-                continue  # not a face along the wall
-            lines[name] = (p, d)
-    measured = len(lines) == 2
-    if thickness:
-        if "outer" in lines:
-            p, d = lines["outer"]
-            n = np.array([-d[1], d[0]])
-            n = n if n @ a < 0 else -n
-            lines["inner"] = (p + float(thickness) * n, d)
-        elif "inner" in lines:
-            p, d = lines["inner"]
-            n = np.array([-d[1], d[0]])
-            n = n if n @ a > 0 else -n
-            lines["outer"] = (p + float(thickness) * n, d)
-        measured = False
-    if "outer" not in lines and "inner" not in lines:
-        raise ValueError("no wall face at the ends of the reveals")
-    if len(lines) < 2:
-        raise ValueError("only one face of the wall is on the model: the thickness of the wall must be given")
-    points = {"left": reveals["left"][2], "right": reveals["right"][2]}
-    for name in ("outer", "inner"):
-        if faces[name]:
-            points[f"face_{name}"] = np.vstack(faces[name])
-    return opening_plan_from_lines(c, a, reveals["left"][:2], reveals["right"][:2], lines["outer"], lines["inner"],
-                                   measured, float(np.sqrt(np.mean(np.square(rms)))), points)
+    a = -inward  # out of the wall through the near face: the near face is the outer one here
+    w = left_of(a)
+    first_left = (reveals["first"][0] - c) @ w > (reveals["second"][0] - c) @ w
+    left, right = (reveals["first"], reveals["second"]) if first_left else (reveals["second"], reveals["first"])
+    points = {"left": left[2], "right": right[2], "face_near": near["points"]}
+    if far is not None:
+        points["face_far"] = far["points"]
+    return opening_plan_from_lines(c, a, left[:2], right[:2], (p0, d0), far_line, far is not None,
+                                   float(np.sqrt(np.mean(np.square(rms)))), points, near=True)
+
+
+def with_thickness(plan: OpeningPlan, thickness: float) -> OpeningPlan:
+    """The plan with the inner face ``thickness`` behind the outer one (the outer face and the reveals kept)."""
+    p, d = plan.outer
+    n = np.array([-d[1], d[0]])
+    n = n if n @ plan.axis < 0 else -n
+    return opening_plan_from_lines(plan.centre, plan.axis, plan.left, plan.right, plan.outer,
+                                   (np.asarray(p) + float(thickness) * n, d), False, plan.reveal_rms, plan.points,
+                                   near=plan.near)
 
 
 def vertical_hits(vertices, faces, centre, axis, height: float, u_range, samples: int = 15):
     """Sill and lintel from the vertical section through ``centre`` across the wall (plane spanned by ``axis`` and
     up): vertical rays from the cut height at ``samples`` places across the middle 60 % of ``u_range`` (the faces'
     positions along the axis from the centre), the first line met upwards and downwards. Returns ``(down, up,
-    polylines)``: the heights met (world-local z, NaN where nothing) and the section's polylines in (u, z)."""
+    polylines, us)``: the heights met (world-local z, NaN where nothing), the section's polylines in (u, z) and the
+    places of the rays (u)."""
     c = np.asarray(centre, float)[:2]
     a = np.r_[np.asarray(axis, float)[:2], 0.0]
     across = np.array([-a[1], a[0]])
@@ -1718,13 +1706,13 @@ def vertical_hits(vertices, faces, centre, axis, height: float, u_range, samples
             if not m.any():
                 continue
             f = (u - u0[m]) / (u1[m] - u0[m])
-            v = v0[m] + f * (v1[m] - v0[m])
-            if (v > 1e-9).any():
-                up[k] = v[v > 1e-9].min()
-            if (v < -1e-9).any():
-                down[k] = v[v < -1e-9].max()
+            vv = v0[m] + f * (v1[m] - v0[m])
+            if (vv > 1e-9).any():
+                up[k] = vv[vv > 1e-9].min()
+            if (vv < -1e-9).any():
+                down[k] = vv[vv < -1e-9].max()
     return down + float(height), up + float(height), [np.column_stack([p[:, 0], p[:, 1] + float(height)])
-                                                       for p in lines]
+                                                       for p in lines], us
 
 
 def robust_level(values) -> tuple[float | None, float]:
@@ -1737,24 +1725,67 @@ def robust_level(values) -> tuple[float | None, float]:
     return float(med), float(q3 - q1)
 
 
+def level_slope(us, values) -> float | None:
+    """The slope of a run of hits across the wall (rise over run, a line by least squares), None with fewer than
+    three."""
+    u = np.asarray(us, float)
+    v = np.asarray(values, float)
+    ok = np.isfinite(v)
+    if ok.sum() < 3 or np.ptp(u[ok]) < 1e-6:
+        return None
+    return float(np.polyfit(u[ok], v[ok], 1)[0])
+
+
 def _along_axis(plan: OpeningPlan, line) -> float:
     """Where a face line crosses the axis through the plan's centre: its distance along the axis."""
     q = intersect_lines(plan.centre, plan.axis, *line)
     return float((q - plan.centre) @ plan.axis)
 
 
+def opening_heights(vertices, faces, centre, zmin: float, zmax: float, step: float = 0.05,
+                    thickness: float | None = None, resolution: float = 0.005) -> tuple[float, float] | None:
+    """The heights between ``zmin`` and ``zmax`` at which the plan of an opening around ``centre`` can be read
+    (:func:`opening_plan`): the longest run of them, ``(lowest, highest)``, or None."""
+    zs = np.arange(zmin + step / 2, zmax, step)
+    ok = []
+    for z in zs:
+        try:
+            opening_plan(plan_cut(vertices, faces, z), centre, thickness, resolution)
+            ok.append(True)
+        except ValueError as exc:  # an opening in a wall of which one face is on the model is an opening still
+            ok.append("thickness of the wall must be given" in str(exc) or "thin wall" in str(exc))
+        except np.linalg.LinAlgError:
+            ok.append(False)
+    best, k = None, 0
+    while k < len(ok):
+        if ok[k]:
+            j = k
+            while j + 1 < len(ok) and ok[j + 1]:
+                j += 1
+            if best is None or j - k > best[1] - best[0]:
+                best = (k, j)
+            k = j + 1
+        else:
+            k += 1
+    return None if best is None else (float(zs[best[0]]), float(zs[best[1]]))
+
+
 def measure_opening(vertices, faces, centre, height: float | None = None, thickness: float | None = None,
-                    outward=None, top_limit: float | None = None, sill: float | None = None,
-                    lintel: float | None = None, resolution: float | None = None, reach: float = REACH) -> dict:
+                    top_limit: float | None = None, sill: float | None = None, lintel: float | None = None,
+                    resolution: float | None = None, search: float = FACE_SEARCH, outward=None,
+                    apply_thickness: bool = True) -> dict:
     """Everything the model says of a door or a window around a plan point ``centre`` inside it: the height of the
-    cut (``height``, else the middle of the heights at which the point is in a passage through the wall, below
-    ``top_limit`` when an arch closes it), the plan of the void (:func:`opening_plan`), the sill and the lintel from
-    the vertical section across the wall through the point (the first lines met downwards and upwards; ``sill`` and
-    ``lintel`` given take their place), the widths near the sill and near the lintel (cuts at a tenth of the height
-    from them). Coordinates as the mesh's. Raises ValueError with the reason."""
+    cut (``height``, else the middle of the heights at which its plan can be read, below ``top_limit`` when an arch
+    closes it), the plan of the void (:func:`opening_plan`; the outer face there is the near one), the sill and the
+    lintel from the vertical section across the wall through the point (the first lines met downwards and upwards;
+    ``sill`` and ``lintel`` given take their place) and the sill's slope across the wall, the widths near the sill and
+    near the lintel (cuts at a tenth of the height from them, at both faces: ``widths``). ``outward``: a plan direction
+    out of the wall that makes the face on its side the outer one (else the near face is); ``apply_thickness``: a
+    given ``thickness`` replaces a measured one (the inner face moved). Coordinates as the mesh's. Raises
+    ValueError."""
     v = np.asarray(vertices, np.float64)
     c = np.asarray(centre, float)[:2]
-    r = reach + 0.5
+    r = search + 0.5
     sv, sf = select_faces(v, faces, box=(c[0] - r, c[1] - r, -np.inf, c[0] + r, c[1] + r, np.inf))
     if len(sf) < 10:
         raise ValueError("the model is not around the point")
@@ -1764,15 +1795,25 @@ def measure_opening(vertices, faces, centre, height: float | None = None, thickn
         z0, z1 = float(sv[:, 2].min()), float(sv[:, 2].max())
         if top_limit is not None:
             z1 = min(z1, float(top_limit))
-        found = opening_heights(sv, sf, c, z0, z1, step=max(0.02, min(0.05, (z1 - z0) / 60)), reach=reach)
+        found = opening_heights(sv, sf, c, z0, z1, max(0.02, min(0.05, (z1 - z0) / 60)), thickness, res)
         if found is None:
-            raise ValueError("the point is not inside an opening at any height: give the height of the cut")
+            raise ValueError("the point is not inside an opening at any height (no gap in a wall face around it)")
         height = 0.5 * (found[0] + found[1])
-    plan = opening_plan(plan_cut(sv, sf, height), c, outward, thickness, resolution=res, reach=reach)
+        plan = opening_plan(plan_cut(sv, sf, height), c, thickness, res, search)
+    else:
+        try:
+            plan = opening_plan(plan_cut(sv, sf, height), c, thickness, res, search)
+        except ValueError as exc:
+            raise ValueError(f"at the height given: {exc}") from exc
+    if outward is not None and plan.axis @ np.asarray(outward, float)[:2] < 0:
+        plan = plan.flipped()
+    if thickness and apply_thickness and plan.measured:
+        plan = with_thickness(plan, thickness)
     u_range = (_along_axis(plan, plan.outer), _along_axis(plan, plan.inner))
-    down, up, section = vertical_hits(sv, sf, c, plan.axis, height, u_range)
+    down, up, section, us = vertical_hits(sv, sf, c, plan.axis, height, u_range)
     sill_m, sill_spread = robust_level(down)
     lintel_m, lintel_spread = robust_level(up)
+    slope = level_slope(us, down)
     bottom = float(sill) if sill is not None else sill_m
     top = float(lintel) if lintel is not None else lintel_m
     if bottom is None:
@@ -1783,17 +1824,19 @@ def measure_opening(vertices, faces, centre, height: float | None = None, thickn
     upper = float(top_limit) if top_limit is not None else top
     for name, z in (("sill", bottom + 0.1 * (upper - bottom)), ("lintel", upper - 0.1 * (upper - bottom))):
         try:
-            other = opening_plan(plan_cut(sv, sf, z), c, outward, plan.thickness, axis=plan.axis, resolution=res,
-                                 reach=reach)
-            a = intersect_lines(*other.left, *plan.outer)
-            b = intersect_lines(*other.right, *plan.outer)
-            widths[name] = float(np.linalg.norm(b - a))
+            other = opening_plan(plan_cut(sv, sf, z), c, plan.thickness if not plan.measured else None, res, search)
+            widths[name] = {}
+            for face, line in (("outer", plan.outer), ("inner", plan.inner)):
+                a = intersect_lines(*other.left, *line)
+                b = intersect_lines(*other.right, *line)
+                widths[name][face] = float(np.linalg.norm(b - a))
         except (ValueError, np.linalg.LinAlgError):
-            widths[name] = None
+            widths[name] = {"outer": None, "inner": None}
     return {"plan": plan, "height": float(height), "heights_found": found, "sill": bottom, "lintel": top,
             "sill_measured": sill_m, "lintel_measured": lintel_m, "sill_spread": sill_spread,
-            "lintel_spread": lintel_spread, "width_at_sill": widths["sill"], "width_at_lintel": widths["lintel"],
-            "section": section, "resolution": res, "u_range": u_range,
+            "lintel_spread": lintel_spread, "sill_slope": slope, "width_at_sill": widths["sill"]["outer"],
+            "width_at_lintel": widths["lintel"]["outer"], "widths": widths, "section": section, "resolution": res,
+            "u_range": u_range,
             "cut": [p for p in plan_cut(sv, sf, height) if len(p) > 1]}
 
 

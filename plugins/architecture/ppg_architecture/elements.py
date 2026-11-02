@@ -94,13 +94,54 @@ def _save(chunk, e: dict) -> None:
     (d / "element.json").write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
+def users_of(chunk, eid: str) -> list[dict]:
+    """The openings whose top is the arch ``eid``."""
+    return [x for x in elements(chunk) if x["kind"] == "opening" and (x.get("params") or {}).get("arch") == eid]
+
+
 def remove(chunk, eid: str) -> bool:
     e = entry(chunk, eid)
     if e is None:
         return False
+    users = users_of(chunk, e["id"])
+    if users:
+        names = ", ".join(f"«{x['name']}»" for x in users)
+        raise NotReady(t(f"L'arco «{e['name']}» chiude in alto {names}: rimuovi prima l'apertura, o rifalla con "
+                         "l'architrave piano.", f"The arch '{e['name']}' closes the top of {names}: remove the opening "
+                         "first, or make it again with a flat lintel."))
     shutil.rmtree(element_dir(chunk, e), ignore_errors=True)
     state(chunk)["elements"] = [x for x in elements(chunk) if x["id"] != e["id"]]
     return True
+
+
+def check_fresh(entries) -> None:
+    """:class:`NotReady` when an element is waiting to be made again (an opening whose arch changed)."""
+    stale = [e["name"] for e in entries if e.get("stale")]
+    if stale:
+        raise NotReady(t(f"Da ricostruire (l'arco che le chiude è cambiato): {', '.join(stale)}. Usa Ricostruisci.",
+                         f"To be rebuilt (the arch that closes them changed): {', '.join(stale)}. Use Rebuild."))
+
+
+def prune_orphans(chunk, older_than: float = 3600.0) -> list[str]:
+    """The element folders without an entry in the chunk (left by a run that stopped before the project was saved)
+    removed when they are older than ``older_than`` seconds (a solid being made has its folder before its entry),
+    each one logged. Returns their names."""
+    import logging
+
+    base = folder(chunk)
+    if not base.exists():
+        return []
+    known = {e["id"] for e in elements(chunk)}
+    gone = []
+    for d in base.iterdir():
+        if not d.is_dir() or d.name.startswith(".") or d.name in known:
+            continue
+        if time.time() - d.stat().st_mtime < older_than:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        logging.getLogger(__name__).info("architecture: removed the folder %s, not an element of the chunk", d)
+        gone.append(d.name)
+    return gone
 
 
 def _new_name(chunk, kind: str) -> str:
@@ -883,7 +924,11 @@ def edit_arch(chunk, eid: str, kind: str | None = None, thickness: float | None 
     _edited(e, *[k for k, val in (("type", kind), ("thickness", thickness), ("depth", depth)) if val])
     e["made"] = _now()
     v, _f = local_mesh(chunk)
-    return _finish_arch(chunk, e, v, progress)
+    done = _finish_arch(chunk, e, v, progress)
+    for x in users_of(chunk, e["id"]):  # their voids were made on the old intrados
+        x["stale"] = True
+        _save(chunk, x)
+    return done
 
 
 def _fit_from(d: dict) -> engine.ArchFit:
@@ -896,18 +941,23 @@ OPENING_TYPES = ("opening", "door", "window")
 VOID_OVERLAP = 0.001  # the void under an arch reaches this far into the part below it: one solid, not two touching
 
 
+OUTER_RULES = ("auto", "near", "far")
+
+
 def opening(chunk, at, height: float | None = None, top: str | None = None, thickness: float | None = None,
             kind: str = "opening", sill: float | None = None, lintel: float | None = None, name: str | None = None,
-            notes: str = "", progress=None, _rebuild: dict | None = None) -> dict:
+            notes: str = "", outer: str = "auto", progress=None, _rebuild: dict | None = None) -> dict:
     """A door or a window: the void through the wall around the plan point ``at`` (world x, y, inside the opening).
     The plan of the void from the horizontal cut of the model at ``height`` (world; the middle of the opening when
-    None): the reveals seen from the point, each fitted by a line (a splayed reveal stays splayed), closed by the two
-    wall faces (``thickness`` given: the inner face that far behind the outer one, the side of the photos; needed when
-    only one face is on the model). The sill and the lintel from the vertical section across the wall through the
-    point, or given (``sill``, ``lintel``, world heights). ``top``: None or "flat" (a lintel), or the id or the name of
-    an arch element whose intrados closes the opening above its springing line. ``kind``: "opening", "door" or
-    "window" (how it goes to the IFC). The solid: the plan extruded from the sill to the lintel (or the springing line,
-    the void under the arch above it), in world."""
+    None): the wall faces first (the near one has a gap around the point: the opening), the reveals only between
+    the faces from the gap's ends, each fitted by a line (a splayed reveal stays splayed); ``thickness`` given: the
+    inner face that far behind the outer one (needed when only one face is on the model). ``outer``: which face is
+    the outer one - "auto" (the face seen by more of the aligned photos that frame it; the face nearer the point when
+    the photos do not tell), "near" or "far" (to the point). The sill and the lintel from the vertical section
+    across the wall through the point, or given (``sill``, ``lintel``, world heights). ``top``: None or "flat" (a
+    lintel), or the id or the name of an arch element whose intrados closes the opening above its springing line.
+    ``kind``: "opening", "door" or "window" (how it goes to the IFC). The solid: the plan extruded from the sill to
+    the lintel (or the springing line, the void under the arch above it), in world."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
@@ -926,15 +976,31 @@ def opening(chunk, at, height: float | None = None, top: str | None = None, thic
             raise NotReady(t("La parte alta di un'apertura si prende da un arco.",
                              "The top of an opening is taken from an arch."))
         top_limit = _arch_springing(chunk, arch_e)
-    outward = _photo_direction(chunk, c + o[:2])
+    if outer not in OUTER_RULES:
+        raise NotReady(t(f"Faccia esterna «{outer}»: auto, near o far.", f"Outer face '{outer}': auto, near or far."))
     progress(0.1, t("Pianta e altezze dell'apertura", "Plan and heights of the opening"))
     try:
         r = engine.measure_opening(v, f, c, None if height is None else float(height) - o[2], thickness or None,
-                                   outward, top_limit, None if sill is None else float(sill) - o[2],
-                                   None if lintel is None else float(lintel) - o[2])
+                                   top_limit, None if sill is None else float(sill) - o[2],
+                                   None if lintel is None else float(lintel) - o[2], apply_thickness=False)
     except ValueError as exc:
-        raise NotReady(_opening_problem(str(exc))) from exc
-    plan = r["plan"]
+        raise NotReady(_opening_problem(str(exc), height is not None)) from exc
+    plan = r["plan"]  # the outer face is the near one so far
+    views = _face_views(chunk, v, plan, r["sill"], r["lintel"] if r["lintel"] is not None else top_limit)
+    if outer == "near":
+        flip, rule = False, "near"
+    elif outer == "far":
+        flip, rule = True, "far"
+    elif views[0] != views[1]:
+        flip, rule = views[1] > views[0], "photos"
+    else:
+        flip, rule = False, "near-fallback"
+    widths = {k: r["widths"][k]["inner" if flip else "outer"] for k in ("sill", "lintel")}
+    if flip:
+        plan = plan.flipped()
+        views = views[::-1]
+    if thickness and plan.measured:
+        plan = engine.with_thickness(plan, thickness)
     rb = _rebuild or {}
     if rb.get("width") is not None or rb.get("thickness") is not None:
         plan = _changed_plan(plan, rb.get("width"), rb.get("thickness"))
@@ -944,7 +1010,7 @@ def opening(chunk, at, height: float | None = None, top: str | None = None, thic
                    "top": arch_e["id"] if arch_e else "flat", "thickness_given": bool(thickness),
                    "thickness": float(thickness) if thickness else None, "sill_given": sill is not None,
                    "lintel_given": lintel is not None, "kind": kind, "resolution": r["resolution"],
-                   "outward": None if outward is None else list(map(float, outward))}
+                   "outer": outer, "outer_rule": rule, "views": {"outer": int(views[0]), "inner": int(views[1])}}
     keep = 1.0 + max(plan.width_inner, plan.width_outer, plan.thickness)
 
     def near(lines):
@@ -955,10 +1021,12 @@ def opening(chunk, at, height: float | None = None, top: str | None = None, thic
                     "sill_measured": None if r["sill_measured"] is None else r["sill_measured"] + o[2],
                     "lintel_measured": None if r["lintel_measured"] is None else r["lintel_measured"] + o[2],
                     "sill_spread": r["sill_spread"], "lintel_spread": r["lintel_spread"],
+                    # rise per metre going in (the section's u runs out of the near face)
+                    "sill_slope": None if r["sill_slope"] is None else r["sill_slope"] * (1 if flip else -1),
                     "heights_found": None if r["heights_found"] is None else [z + o[2] for z in r["heights_found"]],
                     "cut": near(r["cut"]), "section": [np.asarray(p).tolist() for p in r["section"]
                                                        if np.min(np.abs(np.asarray(p)[:, 0])) < keep]}
-    e["measured"] = {"width_at_sill": r["width_at_sill"], "width_at_lintel": r["width_at_lintel"]}
+    e["measured"] = {"width_at_sill": widths["sill"], "width_at_lintel": widths["lintel"]}
     _opening_params(chunk, e, plan, r["sill"], r["lintel"], arch_e)
     _edited(e, *(rb.get("edited") or []))
     return _new_element(chunk, e, lambda: _finish_opening(chunk, e, v, progress))
@@ -969,19 +1037,39 @@ OPENING_PROBLEMS = (
                                              "(campo Spessore del muro, --thickness).", "Only one face of the wall is "
                                              "on the model: give the thickness of the wall (field Wall thickness, "
                                              "--thickness).")),
-    ("not inside an opening", ("Il punto non è dentro un'apertura (tra due stipiti, con il muro da una parte e "
-                               "dall'altra): clicca nel vano, o dai la quota del taglio.", "The point is not inside an "
-                               "opening (between two reveals, with the wall on both sides): click in the void, or give "
-                               "the height of the cut.")),
+    ("at any height", ("Il punto non è dentro un'apertura: a nessuna quota una faccia di muro ha un vano intorno a "
+                       "esso. Clicca in pianta fra i due stipiti di una porta o di una finestra.", "The point is not "
+                       "inside an opening: at no height does a wall face have a gap around it. Click in plan between "
+                       "the two reveals of a door or a window.")),
+    ("no gap in a wall face", ("A quella quota nessuna faccia di muro ha un vano intorno al punto: lascia la quota "
+                               "automatica o danne una dentro l'apertura.", "At that height no wall face has a gap "
+                               "around the point: leave the height automatic or give one inside the opening.")),
+    ("no reveal at one end", ("Da una parte del vano non c'è uno stipite sul modello (un'apertura in fondo a un muro, "
+                              "o uno stipite non rilevato): l'apertura non si chiude.", "On one side of the gap there "
+                              "is no reveal on the model (an opening at the end of a wall, or a reveal not surveyed): "
+                              "the opening cannot be closed.")),
+    ("not across the wall", ("Uno stipite non attraversa il muro (più di 45 gradi dalla normale della faccia).",
+                             "A reveal does not cross the wall (more than 45 degrees from the face's normal).")),
     ("give the sill", ("Sotto il punto non si incontra niente (la soglia o il pavimento): dai la quota della soglia.",
                        "Nothing is met under the point (the sill or the floor): give the height of the sill.")),
     ("give the lintel", ("Sopra il punto non si incontra niente (l'architrave): dai la sua quota.",
                          "Nothing is met over the point (the lintel): give its height.")),
+    ("not around the point", ("Il modello non è intorno al punto.", "The model is not around the point.")),
 )
+THIN_WALL = ("Le facce del muro non si distinguono: per un muro sottile la mesh è troppo rada (lati di {res:.0f} mm). "
+             "Dai lo spessore del muro o usa un modello più fitto.", "The faces of the wall cannot be told apart: for "
+             "a thin wall the mesh is too coarse (edges of {res:.0f} mm). Give the thickness of the wall or use a "
+             "denser model.")
 
 
-def _opening_problem(text: str) -> str:
+def _opening_problem(text: str, height_given: bool = False) -> str:
     """What the engine said of an opening it cannot read, in the language of the interface."""
+    import re
+
+    if "thin wall" in text:
+        m = re.search(r"edges of (\d+) mm", text)
+        res = float(m.group(1)) if m else 0.0
+        return t(THIN_WALL[0].format(res=res), THIN_WALL[1].format(res=res))
     for key, (it, en) in OPENING_PROBLEMS:
         if key in text:
             return t(it, en)
@@ -998,41 +1086,71 @@ def _arch_springing(chunk, arch_e) -> float:
     return float(np.asarray(plane["origin"], float)[2] - origin(chunk)[2] + arch_e["arch_fit"]["springing"] * V[2])
 
 
-def _photo_direction(chunk, xy_world):
-    """The plan direction from a point towards the aligned photos (their mean direction), None without photos."""
+def _face_views(chunk, v, plan: engine.OpeningPlan, bottom: float, top: float | None) -> tuple[int, int]:
+    """How many aligned photos see each face of the wall around the opening: the model's points on the face (within 2
+    cm of its line, along the opening and half a metre each side, between the sill and the top) in the frame of the
+    photo (the program's ``project_valid``: at least half of them) from the side the face looks to. ``(outer,
+    inner)``; a face with no points on the model is seen by none."""
+    from pyarchinit_photogrammetry.engine.visibility import project_valid
+
     cams = chunk.aligned_cameras
     if not cams:
-        return None
-    centres = chunk.to_world(np.array([c.center for c in cams]))[:, :2] - np.asarray(xy_world, float)[:2]
-    d = centres / np.maximum(np.linalg.norm(centres, axis=1, keepdims=True), 1e-9)
-    m = d.mean(axis=0)
-    return None if np.linalg.norm(m) < 1e-6 else m / np.linalg.norm(m)
+        return 0, 0
+    o = origin(chunk)
+    v = np.asarray(v, float)
+    half = max(plan.width_outer, plan.width_inner) / 2 + 0.5
+    z1 = float(top) if top is not None else float(bottom) + 2.0
+    centres = chunk.to_world(np.array([c.center for c in cams])) - o
+    out = []
+    for line, facing in ((plan.outer, plan.axis), (plan.inner, -plan.axis)):
+        p, d = np.asarray(line[0], float), np.asarray(line[1], float)
+        n = np.array([-d[1], d[0]])
+        m = (np.abs((v[:, :2] - p) @ n) < 0.02) & (np.abs((v[:, :2] - plan.centre) @ d) < half) & \
+            (v[:, 2] >= float(bottom)) & (v[:, 2] <= z1)
+        pts = v[m]
+        if len(pts) < 10:
+            out.append(0)
+            continue
+        if len(pts) > 200:
+            pts = pts[np.random.default_rng(0).choice(len(pts), 200, replace=False)]
+        internal = chunk.to_internal(pts + o)
+        mid = pts[:, :2].mean(axis=0)
+        k = 0
+        for cam, centre in zip(cams, centres):
+            if (centre[:2] - mid) @ facing <= 0:
+                continue
+            _px, _depth, ok = project_valid(chunk, cam, internal)
+            if np.mean(ok) >= 0.5:
+                k += 1
+        out.append(k)
+    return out[0], out[1]
+
+
+OUTER_TEXTS = {"photos": ("la faccia vista da più foto", "the face seen by more photos"),
+               "near": ("la faccia più vicina al clic, scelta", "the face nearer the click, chosen"),
+               "far": ("l'altra faccia, scelta", "the other face, chosen"),
+               "near-fallback": ("la faccia più vicina al clic (le foto non distinguono le facce)",
+                                 "the face nearer the click (the photos do not tell the faces apart)")}
 
 
 def _changed_plan(plan: engine.OpeningPlan, width: float | None = None, thickness: float | None = None):
     """The plan with another width at the outer face (both reveals moved by half the difference, their splay kept)
     or another thickness (the inner face moved, the outer face kept)."""
     a = plan.axis
-    w = np.array([-a[1], a[0]])
+    w = engine.left_of(a)
     left, right, outer, inner = plan.left, plan.right, plan.outer, plan.inner
     if width is not None:
         dw = (float(width) - plan.width_outer) / 2.0
         left = (np.asarray(left[0]) + dw * w, left[1])
         right = (np.asarray(right[0]) - dw * w, right[1])
-    measured = plan.measured
-    if thickness is not None:
-        p, d = outer
-        n = np.array([-d[1], d[0]])
-        n = n if n @ a < 0 else -n
-        inner = (np.asarray(p) + float(thickness) * n, d)
-        measured = False
-    return engine.opening_plan_from_lines(plan.centre, a, left, right, outer, inner, measured, plan.reveal_rms,
-                                          plan.points)
+    out = engine.opening_plan_from_lines(plan.centre, a, left, right, outer, inner, plan.measured, plan.reveal_rms,
+                                         plan.points, near=plan.near)
+    return out if thickness is None else engine.with_thickness(out, thickness)
 
 
 def _plan_from(d: dict) -> engine.OpeningPlan:
     return engine.opening_plan_from_lines(d["centre"], d["axis"], d["left"], d["right"], d["outer"], d["inner"],
-                                          d["measured"], d.get("reveal_rms", 0.0), {})
+                                          d["measured"], d.get("reveal_rms", 0.0), {}, near=d.get("near", True))
 
 
 def _opening_params(chunk, e, plan: engine.OpeningPlan, sill: float, lintel: float | None, arch_e) -> None:
@@ -1051,7 +1169,7 @@ def _opening_params(chunk, e, plan: engine.OpeningPlan, sill: float, lintel: flo
             raise NotReady(t("Il piano dell'arco non attraversa il muro dell'apertura.",
                              "The plane of the arch does not cross the wall of the opening."))
         crown = po + (fit.centre_u * U) + (fit.springing + fit.rise) * V
-        w = np.array([-plan.axis[1], plan.axis[0]])
+        w = engine.left_of(plan.axis)
         if abs((crown[:2] - plan.centre) @ w) > max(plan.width_outer, plan.width_inner) / 2:
             raise NotReady(t("L'arco non sta sopra questa apertura.", "The arch is not over this opening."))
         springing = float(po[2] + fit.springing * V[2])
@@ -1090,7 +1208,14 @@ def _opening_params(chunk, e, plan: engine.OpeningPlan, sill: float, lintel: flo
          "area": width * (top - bottom) + void_area, "plan_area": abs(engine.polygon_area(plan.polygon)),
          "cut_height": e["source"]["cut_height"], "reveal_rms": plan.reveal_rms,
          "world_threshold": [float(outer_mid[0] + o[0]), float(outer_mid[1] + o[1]), bottom + o[2]],
-         "world_axis": [float(plan.axis[0]), float(plan.axis[1]), 0.0]}
+         "world_axis": [float(plan.axis[0]), float(plan.axis[1]), 0.0],
+         "outer_rule": e["source"].get("outer_rule"), "outer_views": (e["source"].get("views") or {}).get("outer"),
+         "inner_views": (e["source"].get("views") or {}).get("inner")}
+    prof = e.get("profile") or {}
+    slope = prof.get("sill_slope")
+    if slope is not None:
+        p["sill_slope_percent"] = 100.0 * float(slope)
+        p["sill_drop"] = float(slope) * plan.thickness  # the rise from the outer face to the inner one
     e["params"] = p
     e["geometry"] = {"plan": np.asarray(plan.polygon).tolist(), "bottom": bottom, "top": top, "void": void,
                      "placement": np.eye(4).tolist(),
@@ -1100,6 +1225,17 @@ def _opening_params(chunk, e, plan: engine.OpeningPlan, sill: float, lintel: flo
         e["warnings"].append(t(f"La luce dell'arco ({fit.span:.3f} m) non è la larghezza dell'apertura "
                                f"({plan.width_outer:.3f} m).", f"The span of the arch ({fit.span:.3f} m) is not the "
                                f"width of the opening ({plan.width_outer:.3f} m)."))
+    if p.get("sill_drop") is not None and abs(p["sill_drop"]) > 0.01 and not e["source"].get("sill_given"):
+        e["warnings"].append(t(f"La soglia pende di {abs(p['sill_drop']) * 1000:.0f} mm attraverso il muro "
+                               f"({p['sill_slope_percent']:+.1f} % verso l'interno): la quota data è quella a metà "
+                               "spessore.", f"The sill slopes by {abs(p['sill_drop']) * 1000:.0f} mm across the wall "
+                               f"({p['sill_slope_percent']:+.1f} % going in): the height given is the one "
+                               "at half the thickness."))
+    seen = prof.get("lintel_measured")
+    if arch_e is not None and seen is not None and seen - o[2] < springing - 0.03:
+        e["warnings"].append(t(f"Sotto l'imposta dell'arco il modello ha un architrave a {seen:.3f} m: il vano "
+                               "dell'arco entrerebbe nella muratura.", f"Below the arch's springing line the model has "
+                               f"a lintel at {seen:.3f} m: the arch's void would run into the masonry."))
     if p["width_at_sill"] is not None and p["width_at_lintel"] is not None and \
             abs(p["width_at_sill"] - p["width_at_lintel"]) > max(0.01, 0.02 * width):
         e["warnings"].append(t(f"Gli stipiti non sono verticali: larghezza {p['width_at_sill']:.3f} m alla soglia, "
@@ -1220,6 +1356,9 @@ def summary(e: dict) -> str:
             f"fit median {metres(fit.get('median'))}, p90 {metres(fit.get('p90'))}") if fit.get("points") else \
         t("scarto non misurato", "fit not measured")
     warn = " " + " ".join(e.get("warnings") or []) if e.get("warnings") else ""
+    if e.get("stale"):
+        warn += " " + t("Da ricostruire: l'arco che la chiude è cambiato.", "To be rebuilt: the arch that closes it "
+                        "changed.")
     if e.get("edited"):
         warn += " " + t("Parametri modificati a mano mantenuti: " + ", ".join(e["edited"]) + ".",
                         "Parameters edited by hand kept: " + ", ".join(e["edited"]) + ".")
@@ -1235,10 +1374,13 @@ def opening_text(p: dict) -> str:
     if abs(p.get("splay_left") or 0.0) >= 0.5 or abs(p.get("splay_right") or 0.0) >= 0.5:
         splay = t(f", strombatura {degrees(p['splay_left'])} / {degrees(p['splay_right'])}",
                   f", splay {degrees(p['splay_left'])} / {degrees(p['splay_right'])}")
+    rule = OUTER_TEXTS.get(p.get("outer_rule") or "")
+    outer = t(f", esterna: {rule[0]}", f", outer: {rule[1]}") if rule else ""
     return t(f"{kind_title(p.get('opening_type', 'opening')).lower()}{top} {metres(p['width'])} × "
-             f"{metres(p['height'])}, soglia {metres(p['sill'], 0.0)}, profondità {metres(p['reveal_depth'])}{splay}",
+             f"{metres(p['height'])}, soglia {metres(p['sill'], 0.0)}, profondità {metres(p['reveal_depth'])}{splay}"
+             f"{outer}",
              f"{kind_title(p.get('opening_type', 'opening')).lower()}{top} {metres(p['width'])} × "
-             f"{metres(p['height'])}, sill {metres(p['sill'], 0.0)}, depth {metres(p['reveal_depth'])}{splay}")
+             f"{metres(p['height'])}, sill {metres(p['sill'], 0.0)}, depth {metres(p['reveal_depth'])}{splay}{outer}")
 
 
 FAMILY_TITLES = {"circle": ("cerchio", "circle"), "pointed": ("acuto", "pointed"), "ellipse": ("ellisse", "ellipse")}
@@ -1261,6 +1403,7 @@ def export_step(chunk, ids, target) -> list[Path]:
     target = Path(target)
     out = []
     chosen = [need(chunk, i) for i in ids] if ids else elements(chunk)
+    check_fresh(chosen)
     for e in chosen:
         src = path_of(chunk, e, "step")
         if src is None or not src.exists():
@@ -1301,6 +1444,10 @@ def rebuild(chunk, progress=None) -> list[dict]:
     old_entries = copy.deepcopy(st.get("elements") or [])
     if not old_entries:
         return []
+    order = [e["id"] for e in old_entries]
+    # an opening closed by an arch is made after the arch
+    old_entries = [e for e in old_entries if e["kind"] != "opening"] + \
+        [e for e in old_entries if e["kind"] == "opening"]
     fr = st.get("frame") or {"transform": np.asarray(chunk.transform, float).tolist(), "crs": chunk.crs}
     M = np.asarray(chunk.transform, float) @ np.linalg.inv(np.asarray(fr["transform"], float))
     scale = float(np.cbrt(abs(np.linalg.det(M[:3, :3]))))
@@ -1325,6 +1472,22 @@ def rebuild(chunk, progress=None) -> list[dict]:
         st.update(saved)
         raise
     shutil.rmtree(backup, ignore_errors=True)
+    st["elements"] = sorted(st["elements"], key=lambda x: order.index(x["id"]) if x["id"] in order else len(order))
+    return sorted(made, key=lambda x: order.index(x["id"]))
+
+
+def rebuild_stale(chunk, progress=None) -> list[dict]:
+    """The openings waiting to be made again (their arch changed), each in place from what it was made of: on a
+    failure that opening keeps its old entry and files (still marked)."""
+    from pyarchinit_photogrammetry.core.progress import as_progress
+
+    progress = as_progress(progress)
+    check_frame(chunk)
+    stale = [e for e in elements(chunk) if e.get("stale")]
+    made = []
+    for k, e in enumerate(stale):
+        sub = progress.sub(k / len(stale), 1.0 / len(stale))
+        made.append(_rebuild_one(chunk, copy.deepcopy(e), np.eye(4), 1.0, sub))
     return made
 
 
@@ -1374,9 +1537,11 @@ def _rebuild_one(chunk, e: dict, M, scale: float, progress) -> dict:
             carry["width"] = p["width"] * scale
         if "thickness" in edited:
             carry["thickness"] = p["reveal_depth"] * scale
-        return opening(chunk, at[:2], height=float(at[2]), top=None if src.get("top") == "flat" else src.get("top"),
+        # the cut's height again only when the user gave it: else the opening's middle is found again
+        return opening(chunk, at[:2], height=float(at[2]) if src.get("height") is not None else None,
+                       top=None if src.get("top") == "flat" else src.get("top"),
                        thickness=src["thickness"] * scale if src.get("thickness") else None, kind=src["kind"],
-                       sill=sill, lintel=lintel, _rebuild=carry, **common)
+                       sill=sill, lintel=lintel, outer=src.get("outer") or "auto", _rebuild=carry, **common)
     pl = src["plane"]
     o = np.asarray(pl["origin"], float)
     new_o = world(o[None])[0]

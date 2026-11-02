@@ -119,6 +119,8 @@ class ArchitecturePane(QWidget):
 
                 measures = t(f"{arch_title(p.get('type', ''))}, luce {metres(p.get('span'))} ({candidates_text(p)})",
                              f"{arch_title(p.get('type', ''))}, span {metres(p.get('span'))} ({candidates_text(p)})")
+            if e.get("stale"):
+                measures += t(" - da ricostruire", " - to be rebuilt")
             if e.get("warnings"):
                 measures += " ⚠"
             cells = (e.get("name", ""), kind_title(e["kind"]), measures, metres(fit.get("median")),
