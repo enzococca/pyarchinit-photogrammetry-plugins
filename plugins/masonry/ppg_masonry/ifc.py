@@ -62,19 +62,56 @@ def _solid_of(chunk, wid: str, a: dict) -> dict:
             "into": -frame.normal, "start": at + shift * frame.normal, "frame_normal": frame.normal}
 
 
-def _solid_between(chunk, a: dict, b: dict, start: np.ndarray, end: np.ndarray) -> bool | None:
+def _face_point_at(chunk, wid: str, entry: dict, h: float) -> np.ndarray:
+    """The point of the face ``entry`` at its middle column and the world height ``h``, on the wall's surface: on its
+    fitted plane when its shape was measured, else at the depth its elevation's relief has there, else on its frame."""
+    from .shape import _frame, _relief_at, _v_at_height, read_relief
+
+    frame = _frame(entry)
+    u0, _v0, u1, _v1 = entry["bounds"]
+    u = 0.5 * (u0 + u1)
+    v = _v_at_height(frame, u, h)
+    p0 = frame.point(np.array([u]), np.array([v]), np.array([0.0]))[0]
+    plane = (walls.results(chunk, wid, entry["id"]).get("shape") or {}).get("plane")
+    d = None
+    if plane:
+        n, c = np.asarray(plane["normal"], float), np.asarray(plane["centre"], float)
+        den = float(frame.normal @ n)
+        d = float((c - p0) @ n / den) if abs(den) > 1e-6 else None
+    if d is None:
+        try:
+            relief, profile = read_relief(chunk, entry)
+            d = _relief_at(relief, profile["transform"], u, v)
+        except NotReady:
+            d = None
+    return frame.point(np.array([u]), np.array([v]), np.array([d or 0.0]))[0]
+
+
+def _tolerance(chunk, wid: str, entries, length: float) -> float:
+    """How far from each face a slice line still belongs to that face: the larger of the faces' depth bands, their
+    bulge (when measured) and a tenth of the distance between them."""
+    tol = 0.1 * length
+    for e in entries:
+        lo, hi = e.get("depth") or (0.0, 0.0)
+        tol = max(tol, abs(float(lo)), abs(float(hi)))
+        sh = walls.results(chunk, wid, e["id"]).get("shape") or {}
+        if sh.get("bulge_min_cm") is not None:
+            tol = max(tol, abs(sh["bulge_min_cm"]) / 100.0, abs(sh["bulge_max_cm"]) / 100.0)
+    return tol
+
+
+def _solid_between(chunk, wid: str, a: dict, b: dict) -> bool | None:
     """Whether the space between two faces is the wall itself: the model's horizontal slice at the mid-height of the
-    two faces crosses the segment between them only near its ends (within 10 % of its length at each end). A slice
-    line crossing the inner 80 % is another wall, a room, the inside of a building or a tower. None when the model
-    cannot be sliced."""
+    two faces crosses the segment between them - from the surface of one face to that of the other, at that height -
+    only near its ends (within :func:`_tolerance` of each face). A slice line crossing the rest is another wall, a
+    room, the inside of a building. None when the model cannot be sliced."""
     from shapely.geometry import LineString, MultiLineString
 
     from .faces import slice_rings
+    from .shape import _frame
 
     heights = []
     for e in (a, b):
-        from .shape import _frame
-
         frame = _frame(e)
         u0, v0, u1, v1 = e["bounds"]
         um = 0.5 * (u0 + u1)
@@ -84,10 +121,14 @@ def _solid_between(chunk, a: dict, b: dict, start: np.ndarray, end: np.ndarray) 
         rings = slice_rings(chunk, h)
     except Exception:  # noqa: BLE001 - no model to slice
         return None
-    seg = LineString([start[:2], end[:2]])
-    inner = LineString([seg.interpolate(0.1, normalized=True), seg.interpolate(0.9, normalized=True)])
     if not rings:
         return None
+    pa, pb = _face_point_at(chunk, wid, a, h), _face_point_at(chunk, wid, b, h)
+    seg = LineString([pa[:2], pb[:2]])
+    tol = _tolerance(chunk, wid, (a, b), seg.length)
+    if 2 * tol >= seg.length:
+        return True  # nothing between the two faces but their own surfaces
+    inner = LineString([seg.interpolate(tol), seg.interpolate(seg.length - tol)])
     return not inner.intersects(MultiLineString([r for r in rings if len(r) >= 2]))
 
 
@@ -114,7 +155,7 @@ def _pair_thickness(chunk, w: dict, solid: dict, b: dict) -> tuple[float | None,
         return None, "side"
     if thick > PAIR_MAX_DISTANCE:
         return None, "far"
-    solid_between = _solid_between(chunk, solid["entry"], b, solid["start"], solid["start"] + thick * solid["into"])
+    solid_between = _solid_between(chunk, w["id"], solid["entry"], b)
     if solid_between is False:
         return None, "hollow"
     return thick, ""

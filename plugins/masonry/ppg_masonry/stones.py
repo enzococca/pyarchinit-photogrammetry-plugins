@@ -155,44 +155,59 @@ def _merge_chains(groups, u, v, left, right, width: float, height: float) -> lis
     """Chains of one course broken by a missing stone joined again: two chains side by side (not overlapping along
     the face, a gap of at most three median stone widths) whose lines agree - the same height at both ends of the gap
     (within a quarter of the median stone height) and the same slope (within the tolerance of "horizontal") - are one
-    course. Repeated until nothing joins."""
+    course. The chains are taken by their left end: each looks only at those starting within the gap after its right
+    end, their lines are kept and refitted only when merged, and passes repeat while one merges something."""
+    import bisect
+
     tol_h, tol_slope = 0.25 * height, np.tan(np.radians(HORIZONTAL_DEG))
-    groups = [list(g) for g in groups]
-    changed = True
-    while changed:
-        changed = False
-        for i in range(len(groups)):
-            for j in range(len(groups)):
-                if i == j:
-                    continue
-                gi, gj = groups[i], groups[j]
-                end_i, start_j = float(right[gi].max()), float(left[gj].min())
-                if start_j < end_i - 1e-9 or start_j - end_i > 3 * width:  # j must start after i ends
-                    continue
-                li, lj = _chain_line(gi, u, v), _chain_line(gj, u, v)
-                if li is not None and lj is not None and abs(li[0] - lj[0]) > tol_slope:
-                    continue
+    chains = [{"idx": list(g), "left": float(left[g].min()), "right": float(right[g].max()),
+               "line": _chain_line(list(g), u, v)} for g in groups]
 
-                def at(line, idx, x):
-                    if line is None:
-                        return float(np.mean(v[idx]))
-                    return line[0] * x + line[1]
+    def at(c, x):
+        return float(np.mean(v[c["idx"]])) if c["line"] is None else c["line"][0] * x + c["line"][1]
 
-                ref_i = li if li is not None else lj
-                ref_j = lj if lj is not None else li
-                ok = all(abs(at(ref_i, gi, x) - at(ref_j, gj, x)) <= tol_h for x in (end_i, start_j))
-                if ok and (li is None or lj is None):  # a single stone: its own height against the other's line
-                    single, line = (gi, lj) if li is None else (gj, li)
-                    ok = line is None or abs(float(np.mean(v[single])) - (line[0] * float(np.mean(u[single]))
-                                                                          + line[1])) <= tol_h
-                if ok:
-                    groups[i] = gi + gj
-                    del groups[j]
-                    changed = True
-                    break
-            if changed:
-                break
-    return groups
+    def agree(ci, cj) -> bool:
+        li, lj = ci["line"], cj["line"]
+        if li is not None and lj is not None and abs(li[0] - lj[0]) > tol_slope:
+            return False
+        ri = ci if li is not None else cj
+        rj = cj if lj is not None else ci
+        for x in (ci["right"], cj["left"]):
+            if abs(at(ri, x) - at(rj, x)) > tol_h:
+                return False
+        if li is None or lj is None:  # a single stone: its own height against the other's line
+            single, other = (ci, cj) if li is None else (cj, ci)
+            if other["line"] is not None:
+                um = float(np.mean(u[single["idx"]]))
+                if abs(float(np.mean(v[single["idx"]])) - (other["line"][0] * um + other["line"][1])) > tol_h:
+                    return False
+        return True
+
+    merged_any = True
+    while merged_any:
+        merged_any = False
+        chains.sort(key=lambda c: c["left"])
+        lefts = [c["left"] for c in chains]
+        i = 0
+        while i < len(chains):
+            ci = chains[i]
+            k = bisect.bisect_left(lefts, ci["right"] - 1e-9)
+            while k < len(chains) and lefts[k] - ci["right"] <= 3 * width:
+                cj = chains[k]
+                if k != i and cj["left"] >= ci["right"] - 1e-9 and agree(ci, cj):
+                    idx = ci["idx"] + cj["idx"]
+                    chains[i] = ci = {"idx": idx, "left": min(ci["left"], cj["left"]),
+                                      "right": max(ci["right"], cj["right"]), "line": _chain_line(idx, u, v)}
+                    del chains[k]
+                    del lefts[k]
+                    if k < i:
+                        i -= 1
+                    merged_any = True
+                    k = bisect.bisect_left(lefts, ci["right"] - 1e-9)  # go on from the merged chain's new end
+                    continue
+                k += 1
+            i += 1
+    return [c["idx"] for c in chains]
 
 
 def find_courses(rows: list[dict]) -> list[dict]:

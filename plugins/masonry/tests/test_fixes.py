@@ -369,3 +369,45 @@ def test_a_stone_drawn_inside_another_is_left_out(tmp_path):
     r = stones.measure_face(ch, w["id"], entry["id"], region=box(0.0, Z0, 6.0, Z0 + 1.75))
     assert r["stones"] == len(polys) and r["inside"] == [len(polys) + 1]
     assert "dentro un'altra pietra" in " ".join(r["warnings"])
+
+
+# ------------------------------------------------------------------ round 3
+@pytest.mark.parametrize("measured", [False, True])
+def test_leaning_and_bulging_walls_are_paired_measured_or_not(tmp_path, measured):
+    from ppg_masonry import ifc
+
+    for k, (lean, bulge) in enumerate(((False, False), (True, False), (False, True), (True, True))):
+        for thick in (0.3, 0.5, 0.6, 1.0):
+            front = S.wall(lean=lean, bulge=bulge)
+            back = S.wall(base=S.WORLD + [0.0, thick, 0.0], lean=lean, bulge=False)
+            doc, ch = S.project(tmp_path / f"w{k}_{thick}", _two(front, back))
+            w = walls.new_wall(ch, "Muro", kind="wall")
+            a = faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [6, 0], side=S.WORLD[:2] + [3, -5],
+                                 resolution=0.05, back=0.2, front=0.2)
+            b = faces.plane_face(ch, w["id"], S.WORLD[:2] + [0, thick], S.WORLD[:2] + [6, thick],
+                                 side=S.WORLD[:2] + [3, 5], resolution=0.05, back=0.2, front=0.2)
+            if measured:
+                for e in (a, b):
+                    shape.face_shape(ch, w["id"], e["id"])
+            solids = ifc.wall_solids(ch, w["id"])
+            assert len(solids) == 1, (lean, bulge, thick)
+            assert abs(solids[0]["thickness"] - thick) < 0.02, (lean, bulge, thick, solids[0]["thickness"])
+            assert solids[0]["source"].startswith("misurato")
+
+
+def test_courses_of_many_scattered_stones_take_little_time():
+    import time
+
+    from shapely import affinity
+    from shapely.geometry import Point
+
+    rng = np.random.default_rng(1)
+    polys = []
+    for _ in range(1500):
+        a, b = rng.uniform(0.08, 0.25), rng.uniform(0.05, 0.15)
+        p = affinity.rotate(affinity.scale(Point(0, 0).buffer(1.0, 8), a, b), rng.uniform(0, 180))
+        polys.append(affinity.translate(p, rng.uniform(0, 30), rng.uniform(0, 10)))
+    rows = [stones.measure(p, i + 1) for i, p in enumerate(polys)]
+    t0 = time.perf_counter()
+    stones.find_courses(rows)
+    assert time.perf_counter() - t0 < 10.0
