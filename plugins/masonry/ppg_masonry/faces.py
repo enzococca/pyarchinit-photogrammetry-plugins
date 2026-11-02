@@ -16,6 +16,12 @@ from .texts import t
 from .walls import NotReady, add_face, need
 
 DEFAULT_FRONT, DEFAULT_BACK = 0.5, 0.3
+CYLINDER_BAND_SHARE, CYLINDER_BAND_MIN = 0.15, 0.5
+
+
+def cylinder_band(radius: float) -> float:
+    """The default depth band of a cylindrical face on each side: 15 % of the radius, at least half a metre."""
+    return max(CYLINDER_BAND_SHARE * float(radius), CYLINDER_BAND_MIN)
 
 
 def world_vertices(chunk) -> np.ndarray:
@@ -117,10 +123,11 @@ def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
 
 
 def cylinder_face(chunk, wid: str, points=None, height: float | None = None, inside: bool = False,
-                  resolution: float | None = None, front: float = DEFAULT_FRONT, back: float = DEFAULT_BACK,
+                  resolution: float | None = None, front: float | None = None, back: float | None = None,
                   name: str | None = None, near=None, progress=None) -> dict:
     """The developed face of a round tower (``inside`` False) or of a well, an apse (``inside``): a vertical cylinder
-    through ``points`` (three or more on the plan) or fitted to the horizontal slice of the model at ``height``."""
+    through ``points`` (three or more on the plan) or fitted to the horizontal slice of the model at ``height``. The
+    depth band, ``front`` and ``back`` not given: 15 % of the radius each side, at least 0.5 m."""
     from pyarchinit_photogrammetry.engine.elevation import Cylinder
 
     w = need(chunk, wid)
@@ -139,7 +146,8 @@ def cylinder_face(chunk, wid: str, points=None, height: float | None = None, ins
     else:
         raise NotReady(t("Servono tre punti sulla pianta o la quota della sezione.",
                          "Three points on the plan or the height of the slice are needed."))
-    depth = (-float(back), float(front))
+    band = cylinder_band(frame.radius)  # a battered or oval tower leaves a narrow band: 15 % of the radius
+    depth = (-float(back if back else band), float(front if front else band))
     if inside:
         depth = (depth[0], min(depth[1], frame.radius))
     title = t("sviluppo interno", "inner development") if inside else t("sviluppo esterno", "outer development")

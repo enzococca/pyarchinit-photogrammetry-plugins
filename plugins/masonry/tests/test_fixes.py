@@ -485,3 +485,13 @@ def test_a_face_that_is_not_a_plane_says_so(tmp_path):
     assert not r["lean_reliable"] and "non è piana" in shape.summary_text(r)
     doc, ch, w, entry = _face(tmp_path / "flat", S.wall(), resolution=0.03)
     assert shape.face_shape(ch, w["id"], entry["id"])["lean_reliable"]
+
+
+def test_the_default_band_of_a_cylinder_follows_its_radius(tmp_path):
+    assert faces.cylinder_band(10.8) == pytest.approx(1.62) and faces.cylinder_band(2.0) == 0.5
+    doc, ch = S.project(tmp_path, S.cone_tower(), "Torre")  # battered: 3.4 m at the foot, 2.6 m at the top
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05)
+    assert entry["depth"] == [-0.5, 0.5]
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    assert "band_warning" not in r and walls.face_info(ch, entry["id"])["height"] > 5.9  # the whole tower in it

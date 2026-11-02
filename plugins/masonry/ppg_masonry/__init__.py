@@ -298,17 +298,20 @@ class MasonryPlugin(Plugin):
         self._changed()
 
     # ------------------------------------------------------------------ new faces
-    def _face_fields(self):
+    def _face_fields(self, cylinder: bool = False):
         from pyarchinit_photogrammetry.gui.dialogs import Field
 
-        from .faces import DEFAULT_BACK, DEFAULT_FRONT
+        from .faces import CYLINDER_BAND_MIN, CYLINDER_BAND_SHARE, DEFAULT_BACK, DEFAULT_FRONT
 
-        return [Field("resolution", t("Risoluzione (m/px; 0 = dalle foto)", "Resolution (m/px; 0 = from the photos)"),
+        auto = t(f" (0 = {num(100 * CYLINDER_BAND_SHARE, 0)} % del raggio, almeno {num(CYLINDER_BAND_MIN, 1)} m)",
+                 f" (0 = {num(100 * CYLINDER_BAND_SHARE, 0)} % of the radius, at least {num(CYLINDER_BAND_MIN, 1)} m)") \
+            if cylinder else ""
+        return [Field("resolution", t("Risoluzione (m/px; 0 = dal modello)", "Resolution (m/px; 0 = from the model)"),
                       0.0, maximum=10.0, decimals=4),
-                Field("front", t("Fascia davanti al muro (m)", "Band in front of the wall (m)"), DEFAULT_FRONT,
-                      maximum=100.0, decimals=2),
-                Field("back", t("Fascia dietro il muro (m)", "Band behind the wall (m)"), DEFAULT_BACK, maximum=100.0,
-                      decimals=2)]
+                Field("front", t("Fascia davanti al muro (m)", "Band in front of the wall (m)") + auto,
+                      0.0 if cylinder else DEFAULT_FRONT, maximum=100.0, decimals=2),
+                Field("back", t("Fascia dietro il muro (m)", "Band behind the wall (m)") + auto,
+                      0.0 if cylinder else DEFAULT_BACK, maximum=100.0, decimals=2)]
 
     def _made(self, wid: str, entries) -> None:
         entries = entries if isinstance(entries, list) else [entries]
@@ -376,15 +379,15 @@ class MasonryPlugin(Plugin):
             Field("height", t("Quota della sezione (m)", "Height of the slice (m)"), self._model_mid_height(chunk),
                   minimum=-1e5, maximum=1e5, decimals=3),
             Field("inside", t("Visto da dentro (pozzo, abside)", "Seen from inside (well, apse)"), False)]
-            + self._face_fields())
+            + self._face_fields(cylinder=True))
         if not v:
             return
 
         def build(points=None):
             self._run(t("Faccia cilindrica", "Cylindrical face"), lambda p: faces.cylinder_face(
                 chunk, rec["id"], points=points, height=None if points is not None else v["height"],
-                inside=bool(v.get("inside")), resolution=v.get("resolution") or None, front=v.get("front", 0.5),
-                back=v.get("back", 0.3), name=v.get("name") or None, progress=p), lambda e: self._made(rec["id"], e))
+                inside=bool(v.get("inside")), resolution=v.get("resolution") or None, front=v.get("front") or None,
+                back=v.get("back") or None, name=v.get("name") or None, progress=p), lambda e: self._made(rec["id"], e))
 
         if v.get("how") == "points":
             self._need_plan()
@@ -921,8 +924,10 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--min-side", type=float, default=0.5, help="polygonal tower: shortest side (m)")
         parser.add_argument("--tolerance", type=float, help="polygonal tower: simplification of the slice (m)")
         parser.add_argument("--resolution", type=float, help="face: metres per pixel (default from the photos)")
-        parser.add_argument("--front", type=float, default=faces.DEFAULT_FRONT, help="face: band in front (m)")
-        parser.add_argument("--back", type=float, default=faces.DEFAULT_BACK, help="face: band behind (m)")
+        parser.add_argument("--front", type=float, help="face: band in front (m; default 0.5, on a cylinder 15 %% of "
+                                                         "the radius, at least 0.5)")
+        parser.add_argument("--back", type=float, help="face: band behind (m; default 0.3, on a cylinder 15 %% of the "
+                                                        "radius, at least 0.5)")
         parser.add_argument("--sections", help="shape: heights of horizontal sections, comma separated")
         parser.add_argument("--stations", help="shape: stations along the face (u, m), comma separated")
         parser.add_argument("--reach", type=float, default=1.0, help="shape: largest distance from the face (m)")
@@ -963,18 +968,20 @@ class MasonryPlugin(Plugin):
                     rec = walls.new_wall(chunk, ns.wall, ns.kind)
                     new_wall = rec["id"]
                 made = []
+                front_plane = faces.DEFAULT_FRONT if ns.front is None else ns.front
+                back_plane = faces.DEFAULT_BACK if ns.back is None else ns.back
                 if ns.line:
                     x1, y1, x2, y2 = parse_numbers(ns.line)
                     side = parse_numbers(ns.side) if ns.side else None
-                    made.append(faces.plane_face(chunk, rec["id"], (x1, y1), (x2, y2), side, ns.resolution, ns.front,
-                                                 ns.back, ns.name, progress=print_progress))
+                    made.append(faces.plane_face(chunk, rec["id"], (x1, y1), (x2, y2), side, ns.resolution,
+                                                 front_plane, back_plane, ns.name, progress=print_progress))
                 elif ns.circle or ns.slice is not None:
                     pts = np.asarray(parse_numbers(ns.circle)).reshape(-1, 2) if ns.circle else None
                     made.append(faces.cylinder_face(chunk, rec["id"], pts, ns.slice, ns.inside, ns.resolution,
                                                     ns.front, ns.back, ns.name, progress=print_progress))
                 elif ns.polygon is not None:
                     made += faces.polygon_faces(chunk, rec["id"], ns.polygon, ns.min_side, ns.tolerance,
-                                                ns.resolution, ns.front, ns.back, progress=print_progress)
+                                                ns.resolution, front_plane, back_plane, progress=print_progress)
                 else:
                     raise walls.NotReady("--line, --circle, --slice or --polygon")
                 changed = True
