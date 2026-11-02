@@ -14,7 +14,9 @@ env:
   PPG_APP: "pyarchinit-photogrammetry[gui,postgis]>=1.3.3"
   # masonry needs 1.7.0 (drawings kept with the elevations): the program from its development branch until 1.7.0 is on
   # PyPI, then PPG_APP again
-  PPG_APP_DEV: "pyarchinit-photogrammetry[gui,postgis,bim] @ git+https://github.com/enzococca/pyarchinit-photogrammetry.git@assistant"
+  # mesh: Open3D, so the elevations of masonry are ray cast by Open3D as in the app; without it the program falls
+  # back to trimesh's rays, which is far slower and has twice brought the runner down
+  PPG_APP_DEV: "pyarchinit-photogrammetry[gui,postgis,bim,mesh] @ git+https://github.com/enzococca/pyarchinit-photogrammetry.git@assistant"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
