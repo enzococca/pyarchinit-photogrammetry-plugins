@@ -264,7 +264,7 @@
     },
     {
       "name": "terrio",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "title": "terrio",
       "description": "Point clouds of any format (LAS, LAZ, COPC, EPT, PLY, E57, also from the web) into the project; ground classification (SMRF, CSF, PMF); cleaning with LOF and DBSCAN; colours or values (temperature, NDVI) from rasters; ellipsoidal and geoid heights (EGM2008, EGM96); reference rasters from the web and Planetary Computer; E57, EPT, PMTiles exports; through terrio",
       "i18n": {
@@ -279,8 +279,8 @@
       "api": 1,
       "min_app": "1.1.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/terrio-v0.2.1/ppg_terrio-0.2.1-py3-none-any.whl",
-      "sha256": "9828382f691ae9cb1680b56d74a4762c9950bd65179c7941357d2f85307a0d7b"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/terrio-v0.2.2/ppg_terrio-0.2.2-py3-none-any.whl",
+      "sha256": "99f6284c05e4e174406708bbb821b8f246a8cb04ad890ccf55a392bd3db6cb24"
     },
     {
       "name": "underwater",
