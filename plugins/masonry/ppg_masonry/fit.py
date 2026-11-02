@@ -109,6 +109,7 @@ def arc_coverage(xy: np.ndarray, centre) -> float:
 
 REFINE_SHARES = (0.02, 0.04, 0.07, 0.10, 0.13, 0.16, 0.20, 0.25)  # the ring's band, grown pass after pass
 GROWTH_DENSITY = 0.2  # a pass whose new points are sparser than this share of the tight band's stops the growth
+PIECE_SHARE = 0.25  # beyond the tight band a piece of the slice joins the ring only with this share of it in the band
 
 
 def _binned_coverage(p: np.ndarray, centre, bins: int = 72) -> float:
@@ -131,12 +132,17 @@ def _binned_coverage(p: np.ndarray, centre, bins: int = 72) -> float:
 
 
 def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_share: float = 0.02,
-                  band_min: float = 0.05, refine_shares=REFINE_SHARES, expect_radius: float | None = None) -> dict:
+                  band_min: float = 0.05, refine_shares=REFINE_SHARES, expect_radius: float | None = None,
+                  weights=None, labels=None) -> dict:
     """A circle through the plan points of a slice, all its pieces together: the points centred on their mean (map
     coordinates lose their digits in the products of a fit), circles through three random points, the one with most
     points within ``max(band_share x radius, band_min)`` weighted by the arc they cover (points x coverage / 360: a
     ring broken in pieces round the whole tower beats a longer arc of a wall beside it); a candidate whose radius
-    differs from ``expect_radius`` by more than 25 % scores half. Then the ring is grown around it: passes with the band
+    differs from ``expect_radius`` by more than 25 % scores half; ``weights`` (per point, 0-1) count the points of
+    the seed's score (the slice gives less to the points of short pieces: the bits of a rough ground), and the points
+    weighing less than 1 never join the ring beyond the tight band; ``labels`` (the piece of the slice of each point):
+    beyond the tight band a piece joins the ring only when a quarter of it lies in the band - a ring's piece runs
+    along it, a contour of the sliced ground crosses it. Then the ring is grown around it: passes with the band
     widening from that tight one (``refine_shares`` of the radius, up to 25 %), each refitting the circle with Huber's
     loss, until a wider band brings no more points or brings them sparser than a fifth of the ring's density so far (the
     points per metre of band width: an oval ring keeps it, the ground or a collapse at the foot does not); the last fit
@@ -151,7 +157,11 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     origin = q.mean(axis=0)
     p = q - origin
     rng = np.random.default_rng(seed)
-    sample = p if len(p) <= 4000 else p[rng.choice(len(p), 4000, replace=False)]
+    wts = np.ones(len(p)) if weights is None else np.asarray(weights, np.float64)
+    labels = None if labels is None else np.asarray(labels, np.int64)
+    grow = wts >= 1.0  # the points of short pieces join the ring only within the tight band
+    pick = np.arange(len(p)) if len(p) <= 4000 else rng.choice(len(p), 4000, replace=False)
+    sample, sample_w = p[pick], wts[pick]
     extent = float(np.ptp(p, axis=0).max())
     best, best_score = None, -1.0
     for _ in range(iterations):
@@ -160,8 +170,10 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
             continue
         band = max(band_share * c[1], band_min)
         on = np.abs(np.hypot(sample[:, 0] - c[0][0], sample[:, 1] - c[0][1]) - c[1]) <= band
-        n = int(on.sum())
-        if n < 3 or n * 1.0 <= best_score:  # it cannot beat the best: coverage is at most 1
+        if int(on.sum()) < 3:
+            continue
+        n = float(sample_w[on].sum())
+        if n <= best_score:  # it cannot beat the best: coverage is at most 1
             continue
         score = n * _binned_coverage(sample[on], c[0]) / 360.0
         if expect_radius and abs(c[1] - expect_radius) > 0.25 * expect_radius:
@@ -173,7 +185,18 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     centre, radius = best
 
     def within(share, floor):
-        return np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= max(share * radius, floor)
+        dist = np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius)
+        near = dist <= max(share * radius, floor)
+        if share > band_share:  # beyond the tight band: only pieces lying along the ring, not short bits
+            tight = dist <= max(band_share * radius, band_min)
+            if labels is not None:  # a piece joins when a fair share of it lies in the band: not a contour across it
+                inside = np.bincount(labels, weights=near.astype(float), minlength=labels.max() + 1)
+                total = np.bincount(labels, minlength=labels.max() + 1)
+                along = (inside / np.maximum(total, 1))[labels] >= PIECE_SHARE
+            else:
+                along = np.ones(len(p), bool)
+            near &= (grow & along) | tight
+        return near
 
     inl = within(band_share, band_min)
     prev_share = None

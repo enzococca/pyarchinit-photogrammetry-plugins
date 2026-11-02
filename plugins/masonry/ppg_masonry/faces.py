@@ -146,6 +146,7 @@ def slice_rings(chunk, height: float) -> list[np.ndarray]:
 
 
 MIN_COVERAGE = 90.0  # degrees of arc a slice must cover to give a circle
+SHORT_PIECE = 20  # a piece of the slice with fewer points than this weighs less in the choice of the circle
 
 
 def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
@@ -179,7 +180,9 @@ def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
         raise NotReady(t(f"Il modello non ha una sezione a quota {height:.3f}.",
                          f"The model has no slice at height {height:.3f}."))
     expect = float(near[1]) if isinstance(near, tuple) and len(near) == 2 and near[1] is not None else None
-    f = ransac_circle(pts, expect_radius=expect)
+    sizes = np.bincount(label)[label]  # the points of short pieces (a rough ground's bits) weigh less in the seed
+    f = ransac_circle(pts, expect_radius=expect, weights=np.minimum(1.0, sizes / SHORT_PIECE),
+                      labels=np.unique(label, return_inverse=True)[1])
     if f["coverage"] < MIN_COVERAGE:
         raise NotReady(t(f"Sezione a quota {height:.3f}: arco di {f['coverage']:.0f} gradi, troppo poco per un "
                          "cerchio.", f"Slice at height {height:.3f}: an arc of {f['coverage']:.0f} degrees, too little "

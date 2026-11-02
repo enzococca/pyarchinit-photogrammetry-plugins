@@ -684,3 +684,22 @@ def test_a_readable_plate_of_a_big_face():
     assert numbered == list(range(1, len(numbered) + 1)) and len(numbered) >= S.COURSES
     assert all(c["n"] is None for c in courses if not c["counts"])
     assert {r["course"] for r in rows} - set(numbered) <= {None}
+
+
+# ------------------------------------------------------------------ round 10
+@pytest.mark.parametrize("y_off", [2.5, -3.5])
+def test_a_rough_ground_mesh_at_the_foot(tmp_path, y_off):
+    rng = np.random.default_rng(3)
+    noise = rng.normal(0, 0.25, (241, 241)).ravel()  # a 12 x 12 m ground sloping 10 %, 25 cm of roughness
+
+    def ground(s, t):
+        x, y = S.WORLD[0] - 6 + 12 * s, S.WORLD[1] - 6 + 12 * t
+        return np.column_stack([x, y, Z0 + 0.5 + 0.10 * (y - (S.WORLD[1] + y_off)) + noise])
+
+    ring = S.broken_tower(gaps_deg=((20, 40), (80, 95), (140, 160), (200, 215), (260, 280), (320, 335)))
+    doc, ch = S.project(tmp_path, _two(ring, S._grid(ground, 241, 241)), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    a = shape.tower_axis(ch, w["id"], heights=[Z0 + h for h in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)])
+    assert a["axis_deg"] is not None and abs(a["axis_deg"] - S.TOWER_LEAN_DEG) < 0.2
+    for c in a["levels"]:  # the ring at the ground's heights is the tower's, or that height is set aside
+        assert c["height"] in a["failed_heights"] or abs(c["radius"] - S.TOWER_RADIUS) < 0.02, c
