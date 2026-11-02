@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-masonry"
+version = "0.1.0"
+description = """\
+pyarchinit-photogrammetry plugin: walls, buildings and stone towers recorded by their faces - elevations on planes, \
+cylinders and the sides of polygonal towers; lean, bulge, sections, the axis of a round tower and two surveys compared; \
+stones, courses and mortar share with the type the measures suggest; USM relationships proposed for the user to check \
+and saved in PyArchInit; plates at scale, DXF, GeoPackages and an IFC wall"""
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/masonry"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+masonry = "ppg_masonry:MasonryPlugin"
+
+[tool.setuptools]
+packages = ["ppg_masonry"]
