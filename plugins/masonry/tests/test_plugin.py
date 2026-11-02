@@ -151,9 +151,20 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
     app.document = doc
     w = mwmod.MainWindow(doc, autoconnect=False, check_updates=False)
     w.runner.show_dialog = False
+    # the window's dialogs answered by the test: a failed task is said with its message, never a modal box
+    errors, infos = [], []
+    monkeypatch.setattr(w, "_error", lambda summary, details="", logged=True: errors.append(f"{summary}\n{details}"))
+    monkeypatch.setattr(w, "_info", lambda title, text, *a, **k: infos.append(text))
+    monkeypatch.setattr(w, "_warn", lambda text, *a, **k: infos.append(text))
+    monkeypatch.setattr(w, "choice", lambda *a, **k: 0, raising=False)
+
+    def wait():
+        w.runner.wait()
+        assert not errors, "a task of the window failed:\n" + "\n".join(errors) + "\nsaid: " + "\n".join(infos)
     plugin = MasonryPlugin()
     try:
         plugin.activate(Context("masonry", tmp_path / "plugin", window=w))
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: infos.append(f"{kind}: {text}"))
         pane = plugin.pane
         dock = w.panes.groups["right"].dock(pane)
         assert dock is not None and dock.objectName().startswith("pane_plugin_masonry")
@@ -177,7 +188,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
 
         monkeypatch.setattr(plugin, "_ask", answer)
         plugin._requested("plane")
-        w.runner.wait()
+        wait()
         assert asked == ["Faccia su un piano"]
         rec = walls.walls(ch)[0]
         assert rec["name"] == "Muro 1" and len(rec["faces"]) == 1 and w.isWindowModified()
@@ -188,7 +199,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         assert np.allclose(np.cross(entry["frame"]["u_axis"], entry["frame"]["v_axis"]), [0, -1, 0], atol=1e-9)
         # its shape: the bulge over the elevation with its legend, the summary in the pane
         plugin._requested("shape")
-        w.runner.wait()
+        wait()
         assert plugin.overlay is not None and plugin.overlay.shown() and plugin.overlay.legend is not None
         assert "Strapiombo 2,0°" in pane.summary.toPlainText()
         plugin._requested("bulge")
@@ -196,7 +207,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         plugin._requested("bulge")
         assert plugin.overlay.shown()
         plugin._requested("sections")
-        w.runner.wait()
+        wait()
         assert asked[-1] == "Sezioni orizzontali" and "Sezioni a 4 quote" in pane.summary.toPlainText()
         items = plugin._tree_items(ch)
         assert items[0]["label"] == "Murature" and items[0]["children"][0]["children"][0]["label"] == entry["name"]
@@ -205,7 +216,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         units, notch = S.usm_layout(Z0)
         S.put_drawings(ch, entry["id"], S.stone_pattern(Z0, hole=notch)[0], units)
         plugin._requested("measure_stones")
-        w.runner.wait()
+        wait()
         assert pane.stones_table.rowCount() == len(S.stone_pattern(Z0, hole=notch)[0])
         assert "Le misure suggeriscono" in pane.summary.toPlainText()
         offered = []
@@ -219,12 +230,12 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         fake = FakePyArchInit()
         w.pa = fake
         plugin._requested("save_pyarchinit")
-        w.runner.wait()
+        wait()
         assert sorted(fake.forms) == ["10", "11", "12", "13"] and len(fake.rels) == 4 and fake.media
         assert "In PyArchInit: 4 schede nuove, 4 rapporti" in pane.summary.toPlainText()
         # plates and exports
         plugin._requested("plate")
-        w.runner.wait()
+        wait()
         face_dir = walls.face_folder(ch, rec["id"], entry["id"])
         assert (face_dir / "tavola.pdf").exists() and "Tavola in scala 1:" in said[-1]
         from pyarchinit_photogrammetry.io import qgis_link
@@ -239,7 +250,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
             (rasters, k["extra_vectors"])))
         monkeypatch.setattr(qgis_link, "open_in_qgis", lambda project, q: None)
         plugin._requested("qgis")
-        w.runner.wait()
+        wait()
         rasters, vectors = built[-1]
         assert {r["name"] for r in rasters} >= {entry["name"], "Spanciamento (cm)"}
         assert "pietre_misure" in {v["table"] for v in vectors}
@@ -247,7 +258,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         monkeypatch.setattr(plugin, "_ask", lambda title, fields, intro="": {"thickness": 0.6})
         monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "muro.ifc"), ""))
         plugin._requested("ifc")
-        w.runner.wait()
+        wait()
         if HAS_IFC:
             assert (tmp_path / "muro.ifc").exists() and "IFC del muro" in said[-1]
         # the face taken out, the elevation kept
