@@ -68,8 +68,9 @@ def _plain(value):
 
 def properties(e: dict) -> dict:
     """The property set of an element: every scalar parameter, the fit, the source."""
-    props = {"Kind": e["kind"], "Method": str((e.get("params") or {}).get("method") or (e.get("params") or {}).get("type")
-                                              or ""), "Name": e.get("name") or "",
+    params = e.get("params") or {}
+    props = {"Kind": e["kind"], "Method": str(params.get("method") or params.get("type") or ""),
+             "Name": e.get("name") or "",
              "Interpretation": t("Solido idealizzato dal modello fotogrammetrico misurato: lo scarto dice quanto il "
                                  "modello se ne discosta.", "An idealised solid from the measured photogrammetric "
                                  "model: the fit says how far the model is from it.")}
@@ -85,6 +86,9 @@ def properties(e: dict) -> dict:
         if fit.get(k) is not None:
             props[f"Fit_{k}_m"] = float(fit[k])
     props["Fit_points"] = int(fit.get("points") or 0)
+    # parametric for every kind: a raking or turning moulding's fixed-reference sweep is read back with the volume and
+    # the bounding box of CadQuery's solid (tested), so nothing is written as a tessellation
+    props["Representation"] = "parametric"
     props["Source"] = _plain(e.get("source") or {})
     if e.get("notes"):
         props["Notes"] = e["notes"]
@@ -164,8 +168,8 @@ def solid_for(w: _Writer, e: dict):
         # = -u: a section point (u, v) is (v, -u) of the profile
         area = w.closed_polygon(np.column_stack([sec[:, 1], -sec[:, 0]]))
         rel = path - path[0]
-        directrix = w.m.createIfcIndexedPolyCurve(w.m.createIfcCartesianPointList3D([tuple(map(float, p)) for p in rel]),
-                                                  None, False)
+        points = w.m.createIfcCartesianPointList3D([tuple(map(float, p)) for p in rel])
+        directrix = w.m.createIfcIndexedPolyCurve(points, None, False)
         solid = w.m.createIfcFixedReferenceSweptAreaSolid(area, w.axes((0, 0, 0)), directrix, None, None,
                                                           w.d3(*(v0 if abs(t0[2]) > 0.999 else up)))
         return w.representation([solid], "AdvancedSweptSolid"), w.axes(path[0])
@@ -269,8 +273,8 @@ def _write(path, entries, origin, crs, mesh, project, site, colours, progress) -
                                 RelatingPropertyDefinition=qto)
     if mesh is not None:
         progress(0.92, t("IFC: il modello del rilievo", "IFC: the survey model"))
-        prod = ifcopenshell.api.root.create_entity(model, ifc_class="IfcGeographicElement", name=t("Modello del rilievo",
-                                                                                                  "Survey model"),
+        prod = ifcopenshell.api.root.create_entity(model, ifc_class="IfcGeographicElement",
+                                                   name=t("Modello del rilievo", "Survey model"),
                                                    predefined_type="TERRAIN")
         ifcopenshell.api.spatial.assign_container(model, products=[prod], relating_structure=site_e)
         pts = model.createIfcCartesianPointList3D([tuple(map(float, p)) for p in np.asarray(mesh.vertices, float)])

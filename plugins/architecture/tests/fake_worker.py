@@ -22,10 +22,11 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location("ppg_architecture_worker_fake", HERE.parent / "ppg_architecture" / "worker.py")
+PACKAGE = HERE.parent / "ppg_architecture"
+_spec = importlib.util.spec_from_file_location("ppg_architecture_worker_fake", PACKAGE / "worker.py")
 worker = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(worker)
-_spec = importlib.util.spec_from_file_location("ppg_architecture_engine_fake", HERE.parent / "ppg_architecture" / "engine.py")
+_spec = importlib.util.spec_from_file_location("ppg_architecture_engine_fake", PACKAGE / "engine.py")
 engine = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = engine
 _spec.loader.exec_module(engine)

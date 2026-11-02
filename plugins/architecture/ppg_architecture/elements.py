@@ -263,8 +263,9 @@ def column(chunk, polygon=None, zmin=None, zmax=None, box=None, knots: int = 12,
     o = origin(chunk)
     poly = None if polygon is None else np.asarray(polygon, np.float64)[:, :2] - o[:2]
     lbox = None if box is None else np.r_[np.asarray(box[:3], float) - o, np.asarray(box[3:], float) - o]
-    sv, sf = engine.select_faces(v, f, poly, None if zmin is None else zmin - o[2], None if zmax is None else zmax - o[2],
-                                 lbox)
+    lo = None if zmin is None else zmin - o[2]
+    hi = None if zmax is None else zmax - o[2]
+    sv, sf = engine.select_faces(v, f, poly, lo, hi, lbox)
     if len(sf) < 50:
         raise NotReady(t("Nella zona scelta il modello ha troppo poche facce per una colonna.",
                          "The model has too few faces in the chosen region for a column."))
@@ -340,7 +341,8 @@ def edit_column(chunk, eid: str, knot_radii=None, knots: int | None = None, as_m
     e = need(chunk, eid)
     p = e["params"]
     if knots is not None or as_measured is not None:
-        _column_params(e, knots or p["knots"], bool(as_measured) if as_measured is not None else p["method"] == "measured",
+        measured = bool(as_measured) if as_measured is not None else p["method"] == "measured"
+        _column_params(e, knots or p["knots"], measured,
                        np.asarray(p["axis_point"]), np.asarray(p["axis_direction"]), p["axis_rms"], p["height"])
         p = e["params"]
     if knot_radii is not None:
@@ -410,12 +412,13 @@ def moulding(chunk, path, station: float | None = None, window=(-0.5, -0.5, 0.5,
     e["profile"] = {"section": sec.tolist(), "cut": [ln.tolist() for ln in lines][:50],
                     "station_point": (point + o).tolist()}
     _moulding_params(e, pth, sec, straight)
-    return _finish_moulding(chunk, e, v, progress)
+    return _finish_moulding(chunk, e, v, progress, f)
 
 
 def _moulding_params(e, pth, sec, straight) -> None:
     area = abs(engine.polygon_area(sec))
-    e["params"] = {"method": "extrusion" if straight else "sweep", "corners": "mitre", "length": engine.path_length(pth),
+    e["params"] = {"method": "extrusion" if straight else "sweep", "corners": "mitre",
+                   "length": engine.path_length(pth),
                    "section_area": area, "projection": float(np.ptp(np.asarray(sec)[:, 0])),
                    "section_height": float(np.ptp(np.asarray(sec)[:, 1])), "vertices": int(len(sec)),
                    "path_vertices": int(len(pth))}
@@ -423,14 +426,25 @@ def _moulding_params(e, pth, sec, straight) -> None:
                      "placement": np.eye(4).tolist()}
 
 
-def _finish_moulding(chunk, e, v, progress) -> dict:
+def _finish_moulding(chunk, e, v, progress, f=None) -> dict:
     progress(0.3, t("Solido (CadQuery)", "Solid (CadQuery)"))
     g = e["geometry"]
     build_solid(chunk, e, {"placement": g["placement"],
                            "moulding": {"path": g["path"], "section": g["section"]}},
                 progress.sub(0.3, 0.5))
     progress(0.85, t("Distanza del modello dal solido", "Distance of the model from the solid"))
-    measure_fit(chunk, e, _points_near_box(v, e["solid"]["bbox"]))
+    near = _points_near_box(v, e["solid"]["bbox"])
+    # the model behind the back line is the wall, not the moulding: out of the fit (and within the mesh's resolution
+    # of the line, where the cut closes the section)
+    sec = np.asarray(g["section"], float)
+    out = float(e["source"].get("out") or 1.0)
+    back = float(sec[:, 0].max() if out < 0 else sec[:, 0].min())
+    # (a mesh with a few long triangles has a median edge as wide as the section: never more than a quarter of it)
+    margin = min(engine.mesh_resolution(v, f) if f is not None else 0.0, 0.25 * float(np.ptp(sec[:, 0])))
+    behind = engine.behind_back(near, g["path"], back, out, margin) if len(near) else np.zeros(0, bool)
+    measure_fit(chunk, e, near[~behind])
+    e["fit"]["excluded_behind"] = int(behind.sum())
+    e["params"]["back_u"] = back
     _save(chunk, e)
     progress(1.0, t("Modanatura pronta", "Moulding ready"))
     return e
@@ -450,13 +464,14 @@ def edit_moulding(chunk, eid: str, simplify: float | None = None, depth: float |
     pth = np.asarray(e["geometry"]["path"], float)
     if not src.get("section_given") and e["profile"].get("cut"):
         lines = [np.asarray(x, float) for x in e["profile"]["cut"]]
-        sec = engine.moulding_section(lines, src["window"], out=src["out"], depth=src["depth"], simplify=src["simplify"])
+        sec = engine.moulding_section(lines, src["window"], out=src["out"], depth=src["depth"],
+                                      simplify=src["simplify"])
     else:
         sec = np.asarray(e["geometry"]["section"], float)
     _moulding_params(e, pth, sec, engine.is_straight(pth))
     e["made"] = _now()
-    v, _f = local_mesh(chunk)
-    return _finish_moulding(chunk, e, v, progress)
+    v, f = local_mesh(chunk)
+    return _finish_moulding(chunk, e, v, progress, f)
 
 
 def marker_points(chunk, names) -> np.ndarray:
@@ -470,6 +485,54 @@ def marker_points(chunk, names) -> np.ndarray:
             raise NotReady(t(f"Il marker {name} non ha una posizione.", f"Marker {name} has no position."))
         out.append(chunk.to_world(np.asarray(marker.position, float)[None])[0])
     return np.asarray(out)
+
+
+def elevation_entries(chunk) -> list[dict]:
+    """The elevations and sections of the project a path or a point can be drawn on (their frame and raster)."""
+    from pyarchinit_photogrammetry.engine import elevation
+
+    return [x for x in elevation.elevations(chunk) if x.get("frame") and x.get("orthophoto")]
+
+
+def elevation_entry(chunk, eid: str) -> dict:
+    found = next((x for x in elevation_entries(chunk) if eid in (x["id"], x.get("name"))), None)
+    if found is None:
+        raise NotReady(t(f"Nessun prospetto o sezione «{eid}» nel chunk.",
+                         f"No elevation or section '{eid}' in the chunk."))
+    return found
+
+
+def elevation_raster(chunk, eid: str) -> Path:
+    """The orthophoto of an elevation (what the 2D view shows: its coordinates are the frame's u, v)."""
+    return chunk.data_dir / elevation_entry(chunk, eid)["orthophoto"]
+
+
+def from_elevation(chunk, eid: str, uv) -> np.ndarray:
+    """World points of (u, v) drawn on an elevation: through its frame, the depth from the elevation's relief
+    (the surface of the model seen on it) or, where the relief has no value, from the model's vertices near the
+    (u, v) (the one nearest the viewer)."""
+    from pyarchinit_photogrammetry.engine import elevation
+
+    entry = elevation_entry(chunk, eid)
+    frame = elevation.frame_from_dict(entry["frame"])
+    uv = np.asarray(uv, np.float64)[:, :2]
+    d = np.full(len(uv), np.nan)
+    relief = chunk.data_dir / entry["relief"] if entry.get("relief") else None
+    if relief is not None and relief.exists():
+        import rasterio
+
+        with rasterio.open(relief) as src:
+            d = np.array([float(x[0]) for x in src.sample([tuple(p) for p in uv])])
+            if src.nodata is not None and np.isfinite(src.nodata):
+                d[d == src.nodata] = np.nan
+    if not np.all(np.isfinite(d)):
+        v, f = local_mesh(chunk)
+        missing = ~np.isfinite(d)
+        d[missing] = engine.surface_depth(frame.coords(v + origin(chunk)), f, uv[missing])
+        if not np.all(np.isfinite(d)):
+            raise NotReady(t("Il percorso esce dal modello sul prospetto.",
+                             "The path leaves the model on the elevation."))
+    return frame.point(uv[:, 0], uv[:, 1], d)
 
 
 def _path_3d(path, v, f, o, height) -> np.ndarray:

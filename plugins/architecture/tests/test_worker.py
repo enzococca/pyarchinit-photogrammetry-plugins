@@ -81,3 +81,24 @@ def test_an_arch_with_true_arcs(tmp_path):
     assert res["valid"] and abs(res["volume"] / (area * 0.8) - 1) < 1e-4
     bb = res["bbox"]
     assert bb[1] == pytest.approx(2.0 - 0.8, abs=1e-6) and bb[4] == pytest.approx(2.0, abs=1e-6)  # depth along -y
+
+
+RAKING = [[[0, 0, 0], [4, 0, 1.5]], [[0, 0, 0], [3, 0, 1], [3, 3, 2]], [[0, 0, 0], [2, 0, 1], [4, 0, 0]]]
+
+
+@pytest.mark.parametrize("path", RAKING, ids=["raking", "raking-turning", "gable"])
+def test_a_raking_moulding_in_the_ifc_is_cadquerys_solid(tmp_path, path):
+    """A sloped path: CadQuery sweeps with the corrected Frenet frame, the IFC is a fixed-reference sweep (up);
+    ifcopenshell.geom gives back the same volume and bounding box, so the IFC stays parametric."""
+    pytest.importorskip("ifcopenshell")
+    from ppg_architecture import ifc
+
+    sec = np.array([[0, 0], [-0.18, 0], [-0.18, 0.1], [-0.1, 0.18], [0, 0.25]], float)
+    if engine.polygon_area(sec) < 0:
+        sec = sec[::-1]
+    res = _run(tmp_path, "moulding", {"path": path, "section": sec.tolist()})
+    e = {"kind": "moulding", "name": "M", "params": {}, "solid": {"volume": res["volume"]},
+         "geometry": {"path": path, "section": sec.tolist(), "placement": np.eye(4).tolist()}}
+    volume, bbox = ifc.read_volumes(ifc.write(tmp_path / "m.ifc", [e], [0, 0, 0], "LOCAL"))["M"]
+    assert abs(volume / res["volume"] - 1) < 0.01
+    np.testing.assert_allclose(bbox, res["bbox"], atol=0.005)

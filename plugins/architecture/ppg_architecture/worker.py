@@ -111,7 +111,12 @@ def _polyline(wp, pts):
 def moulding(cq, spec: dict):
     """The section swept along the path (an extrusion for a straight path)."""
     path = [tuple(map(float, p)) for p in spec["path"]]
-    sec = [(float(u), float(v)) for u, v in spec["section"]]
+    sec = []
+    for u, v in spec["section"]:  # no edge of zero length: OpenCascade refuses them
+        if not sec or abs(sec[-1][0] - float(u)) + abs(sec[-1][1] - float(v)) > 1e-9:
+            sec.append((float(u), float(v)))
+    while len(sec) > 3 and abs(sec[-1][0] - sec[0][0]) + abs(sec[-1][1] - sec[0][1]) <= 1e-9:
+        sec.pop()
     if len(path) < 2 or len(sec) < 3:
         raise ValueError("a path of two points and a section of three at least")
     t0 = _norm(_sub(path[1], path[0]))

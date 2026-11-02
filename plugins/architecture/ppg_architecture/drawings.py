@@ -21,7 +21,8 @@ def lines_of(e: dict) -> dict:
         half = np.vstack([[0.0, c[0, 1]], c, [0.0, c[-1, 1]]])
         out["SOLIDO"].append((half, False))
         out["SOLIDO"].append((np.column_stack([-half[:, 0], half[:, 1]]), False))
-        out["ASSE"].append((np.array([[0.0, c[0, 1] - 0.05 * p["height"]], [0.0, c[-1, 1] + 0.05 * p["height"]]]), False))
+        tail = 0.05 * p["height"]
+        out["ASSE"].append((np.array([[0.0, c[0, 1] - tail], [0.0, c[-1, 1] + tail]]), False))
         m = np.column_stack([prof["radii"], prof["heights"]])
         out["MISURATO"].append((m, False))
     elif e["kind"] == "moulding":

@@ -46,6 +46,8 @@ def _scene():
     arch.apply_translation(ARCH_AT)
     cornice, plug = cornice_mesh()
     volume = abs(cornice.volume)  # before the move: trimesh's volume of a mesh at UTM coordinates is not exact
+    v, f = trimesh.remesh.subdivide_to_size(cornice.vertices, cornice.faces, max_edge=0.05, max_iter=20)
+    cornice = trimesh.Trimesh(v, f)  # vertices all along it, as a photogrammetric mesh has
     cornice.apply_translation(CORNICE_AT)
     mesh = trimesh.util.concatenate([col, arch, cornice])
     return mesh, truth, plug, volume
@@ -73,6 +75,29 @@ def _project(tmp_path: Path):
     ch.meta["metric"] = True
     doc.save()
     return doc, ch, {"arch": truth, "plug": plug, "cornice_volume": cornice_volume}
+
+
+def _elevation(ch, eid: str, kind: str, origin, u_axis, v_axis, d=None):
+    """An elevation (or section) of the project as the program lists it: its frame, an orthophoto and a relief in
+    frame metres (``d``: the relief's value, NaN by default: the depth then comes from the model)."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from pyarchinit_photogrammetry.engine.elevation import Plane
+
+    frame = Plane(origin, u_axis, v_axis)
+    folder = ch.data_dir / "elevations" / eid
+    folder.mkdir(parents=True, exist_ok=True)
+    tr = from_origin(-5.0, 10.0, 0.05, 0.05)
+    for name, count, dtype, value in (("elevation.tif", 4, "uint8", 128), ("relief.tif", 1, "float32",
+                                                                              np.nan if d is None else d)):
+        with rasterio.open(folder / name, "w", driver="GTiff", height=300, width=200, count=count, dtype=dtype,
+                           transform=tr, nodata=float("nan") if dtype == "float32" else None) as dst:
+            dst.write(np.full((count, 300, 200), value, dtype=dtype))
+    entry = {"id": eid, "name": eid, "kind": kind, "frame": frame.to_dict(), "resolution": 0.05,
+             "orthophoto": f"elevations/{eid}/elevation.tif", "relief": f"elevations/{eid}/relief.tif"}
+    ch.meta.setdefault("elevations", []).append(entry)
+    return frame
 
 
 def _digest(path: Path) -> str:
@@ -126,7 +151,8 @@ def test_elements_from_a_model_in_utm_with_a_rotated_scaled_transform(tmp_path, 
     path = L_PATH[:, :2] + CORNICE_AT[:2]
     m = elements.moulding(ch, path, height=CORNICE_AT[2] + 2.0, station=1.5, window=(-0.6, -0.2, 0.6, 0.5), out=-1,
                           depth=0.1, simplify=0.0)
-    assert m["params"]["method"] == "sweep" and abs(m["params"]["section_area"] - abs(engine.polygon_area(truth["plug"]))) < 1e-5
+    assert m["params"]["method"] == "sweep"
+    assert abs(m["params"]["section_area"] - abs(engine.polygon_area(truth["plug"]))) < 1e-5
     assert abs(m["solid"]["volume"] / truth["cornice_volume"] - 1) < 0.01
     assert m["fit"]["median"] < 0.001
     # the model, its transform and its products never touched; files only in <chunk>/architecture
@@ -341,7 +367,8 @@ def test_the_pane_in_the_window(tmp_path, fake, monkeypatch):
         assert pane.table.rowCount() == 1 and pane.table.item(0, 0).text() == "Colonna"
         assert pane.table.item(0, 3).text().endswith("mm") and w.isWindowModified()
         items = plugin._tree_items(ch)
-        assert items[0]["label"] == "Elementi architettonici" and items[0]["children"][0]["label"].startswith("Colonna (")
+        assert items[0]["label"] == "Elementi architettonici"
+        assert items[0]["children"][0]["label"].startswith("Colonna (")
         # the dialogs, answered with their defaults: a column, a moulding, an arch on a plane through two points
         asked = []
 
@@ -411,3 +438,89 @@ def test_elements_and_their_ifc_through_cadquery(tmp_path, monkeypatch):
         assert abs(vol / e["solid"]["volume"] - 1) < 0.01, (e["name"], vol, e["solid"]["volume"])
         np.testing.assert_allclose(bbox, e["solid"]["bbox"], atol=0.01, err_msg=e["name"])
     assert not set(FORBIDDEN) & set(sys.modules)
+
+
+def test_a_moulding_traced_on_an_elevation_and_an_arch_clicked_on_a_section(tmp_path, fake):
+    doc, ch, truth = _project(tmp_path)
+    # the cornice's first leg seen from -y: u along x from the corner of the L, v the height
+    front = _elevation(ch, "Prospetto sud", "elevation", CORNICE_AT + [0.0, -2.0, -CORNICE_AT[2]], [1, 0, 0], [0, 0, 1])
+    uv = np.array([[0.2, CORNICE_AT[2] + 2.1], [3.6, CORNICE_AT[2] + 2.1]])
+    world = elements.from_elevation(ch, "Prospetto sud", uv)
+    assert np.allclose(world[:, 0], CORNICE_AT[0] + uv[:, 0]) and np.allclose(world[:, 2], uv[:, 1])
+    # no relief value: the depth from the model, the surface nearest the viewer (the cornice's front at that height)
+    assert np.all(world[:, 1] < CORNICE_AT[1] - 0.05) and np.all(world[:, 1] > CORNICE_AT[1] - 0.2)
+    m = elements.moulding(ch, world, station=1.0, window=(-0.6, -0.4, 0.6, 0.5), out=-1, name="Dal prospetto")
+    assert abs(m["params"]["section_area"] - abs(engine.polygon_area(truth["plug"]))) < 1e-4
+    assert m["params"]["method"] == "extrusion" and m["fit"]["median"] < 0.001
+    assert m["fit"]["excluded_behind"] > 0  # the wall's back, behind the back line of the section, is not in the fit
+    # a relief with values: the depth from the elevation itself
+    _elevation(ch, "Con rilievo", "elevation", [0.0, 0.0, 0.0], [1, 0, 0], [0, 0, 1], d=0.5)
+    np.testing.assert_allclose(elements.from_elevation(ch, "Con rilievo", [[1.0, 2.0]]), [[1.0, -0.5, 2.0]], atol=1e-9)
+    assert front.normal @ [0, -1, 0] > 0.99
+    # an arch read on a section of the project, the point clicked on it
+    _elevation(ch, "Sezione arco", "section", ARCH_AT + [0.0, -0.4, -ARCH_AT[2]], [1, 0, 0], [0, 0, 1])
+    assert [s["id"] for s in elements.section_planes(ch)] == ["Sezione arco"]
+    a = elements.arch(ch, (0.0, ARCH_AT[2] + 0.9), section="Sezione arco", name="Arco cliccato")
+    assert a["params"]["type"] == "pointed" and abs(a["params"]["span"] - truth["arch"]["span"]) < 0.002
+
+
+def test_the_gui_draws_on_elevations(tmp_path, fake, monkeypatch):
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_architecture import ArchitecturePlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.plugins import Context
+
+    QApplication.instance() or QApplication([])
+    from pyarchinit_photogrammetry.gui import main_window as mwmod
+
+    doc, ch, truth = _project(tmp_path)
+    _elevation(ch, "Prospetto sud", "elevation", CORNICE_AT + [0.0, -2.0, -CORNICE_AT[2]], [1, 0, 0], [0, 0, 1])
+    _elevation(ch, "Sezione arco", "section", ARCH_AT + [0.0, -0.4, -ARCH_AT[2]], [1, 0, 0], [0, 0, 1])
+    app.document = doc
+    w = mwmod.MainWindow(doc, autoconnect=False, check_updates=False)
+    w.runner.show_dialog = False
+    plugin = ArchitecturePlugin()
+    try:
+        plugin.activate(Context("architecture", tmp_path / "plugin", window=w))
+        shown = []
+        monkeypatch.setattr(plugin.context, "show_raster",
+                            lambda kind=None, chunk=None, path=None: shown.append(path) or True)
+        monkeypatch.setattr(plugin.context, "request_line",
+                            lambda done, hint="": done(np.array([[0.2, CORNICE_AT[2] + 2.1],
+                                                                 [3.6, CORNICE_AT[2] + 2.1]])))
+        monkeypatch.setattr(plugin.context, "request_point",
+                            lambda done, hint="": done(np.array([[0.0, ARCH_AT[2] + 0.9]])))
+        answers = {"Percorso della modanatura": {"how": "elevation", "view": "Prospetto sud"},
+                   "Arco / volta": {"section": "Sezione arco", "pick": "click"}}
+        seen = []
+
+        def answer(title, fields, intro=""):
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            if title in answers and title not in seen:
+                seen.append(title)
+                values.update(answers[title])
+            if title == "Modanatura":
+                assert "height" not in values  # a path drawn on an elevation keeps its heights
+                values.update(side="right", below=0.4, reach=0.6)
+            if title == "Arco / volta" and "pick_u" in values:
+                assert (values["pick_u"], values["pick_v"]) == (0.0, ARCH_AT[2] + 0.9)  # the click, as typed values
+            return values
+
+        monkeypatch.setattr(plugin, "_ask", answer)
+        plugin._do_moulding()
+        w.runner.wait()
+        plugin._do_arch()
+        w.runner.wait()
+        kinds = {e["name"]: e for e in elements.elements(ch)}
+        assert [p.name for p in shown] == ["elevation.tif", "elevation.tif"]
+        m = kinds["Modanatura 1"]
+        assert abs(m["params"]["section_area"] - abs(engine.polygon_area(truth["plug"]))) < 1e-4
+        assert kinds["Arco 1"]["params"]["type"] == "pointed"
+        assert "circa un minuto" in plugin.pane.l_env.text() or "non è installato" not in plugin.pane.l_env.text()
+        plugin.deactivate()
+        plugin.context.release()
+    finally:
+        w.setWindowModified(False)
+        w.close()

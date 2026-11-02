@@ -8,7 +8,8 @@ photogrammetric model, with CadQuery in a process of its own.
   ``IfcExtrudedAreaSolid``, ``IfcFixedReferenceSweptAreaSolid``) beside the mesh, the measured profile kept and the
   fit always given: how far the model is from the solid (median, 90th percentile, maximum);
 * the *Elementi architettonici* pane (on the right), the elements in the workspace tree, *File > Esporta >
-  Elementi architettonici (IFC)*, ``ppg plugin architecture column|moulding|arch|list|show|export|remove|install|status``.
+  Elementi architettonici (IFC)*, ``ppg plugin architecture column|moulding|arch|list|show|export|remove|install|
+  status``.
 
 The program's process never imports CadQuery: it runs in a Python of its own (see :mod:`.environment`). The chunk's
 model, transform and products are never changed; nothing is written outside ``<chunk data>/architecture/`` but what
@@ -185,7 +186,8 @@ class ArchitecturePlugin(Plugin):
         self._need_chunk()
         self._need_view()
         self.context.request_polygon(lambda xy: self._guarded(self._column_dialog, xy),
-                                     hint=t("Disegna in pianta la zona della colonna (o della sua parte); doppio clic o "
+                                     hint=t("Disegna in pianta la zona della colonna (o della sua parte); doppio "
+                                            "clic o "
                                             "Invio per finire", "Draw in plan the region of the column (or of its "
                                             "part); double click or Enter ends"))
 
@@ -199,7 +201,8 @@ class ArchitecturePlugin(Plugin):
         v = elements._world_vertices(chunk)
         inside = v[engine.points_in_polygon(v[:, :2], poly)]
         if not len(inside):
-            raise elements.NotReady(t("Nella zona disegnata non c'è il modello.", "The model is not inside the region drawn."))
+            raise elements.NotReady(t("Nella zona disegnata non c'è il modello.",
+                                      "The model is not inside the region drawn."))
         z0, z1 = float(inside[:, 2].min()), float(inside[:, 2].max())
         columns = [("", t("(misurato su questa parte)", "(measured on this part)"))] + \
             [(e["id"], e["name"]) for e in elements.elements(chunk) if e["kind"] == "column"]
@@ -209,8 +212,10 @@ class ArchitecturePlugin(Plugin):
             Field("zmax", t("Quota massima (m)", "Highest height (m)"), z1, minimum=-1e5, maximum=1e5, decimals=3),
             Field("knots", t("Nodi del profilo", "Knots of the profile"), 12, minimum=2, maximum=60, decimals=0,
                   tip=t("Il profilo è una spline per questi nodi, adattata ai minimi quadrati al profilo misurato",
-                        "The profile is a spline through these knots, fitted by least squares to the measured profile")),
-            Field("measured", t("Come misurato (tutti i punti del profilo)", "As measured (every point of the profile)"),
+                        "The profile is a spline through these knots, fitted by least squares to the measured "
+                        "profile")),
+            Field("measured", t("Come misurato (tutti i punti del profilo)",
+                                "As measured (every point of the profile)"),
                   False),
             Field("axis", t("Stesso asse di", "Same axis as"), "", choices=columns)],
             intro=t("Base, fusto e capitello si fanno come elementi separati sullo stesso asse.",
@@ -238,17 +243,35 @@ class ArchitecturePlugin(Plugin):
 
         chunk = self._need_chunk()
         names = [(m.label, m.label) for m in chunk.markers if m.position is not None]
+        views = [(x["id"], x.get("name") or x["id"]) for x in elements.elevation_entries(chunk)]
+        how = [("trace", t("tracciato sulla pianta", "traced on the plan"))]
+        if views:
+            how.append(("elevation", t("tracciato su un prospetto o una sezione",
+                                       "traced on an elevation or a section")))
         if len(names) >= 2:
-            val = self._ask(t("Percorso della modanatura", "Path of the moulding"), [
-                Field("how", t("Percorso", "Path"), "trace", choices=[
-                    ("trace", t("tracciato sulla pianta", "traced on the plan")),
-                    ("markers", t("dritto, da due marker", "straight, from two markers"))]),
-                Field("a", t("Primo marker", "First marker"), names[0][0], choices=names),
-                Field("b", t("Secondo marker", "Second marker"), names[1][0], choices=names)])
+            how.append(("markers", t("dritto, da due marker", "straight, from two markers")))
+        if len(how) > 1:
+            fields = [Field("how", t("Percorso", "Path"), how[0][0], choices=how)]
+            if views:
+                fields.append(Field("view", t("Prospetto o sezione", "Elevation or section"), views[0][0],
+                                    choices=views))
+            if len(names) >= 2:
+                fields += [Field("a", t("Primo marker", "First marker"), names[0][0], choices=names),
+                           Field("b", t("Secondo marker", "Second marker"), names[1][0], choices=names)]
+            val = self._ask(t("Percorso della modanatura", "Path of the moulding"), fields)
             if not val:
                 return
             if val["how"] == "markers":
                 self._moulding_dialog(elements.marker_points(chunk, [val["a"], val["b"]]))
+                return
+            if val["how"] == "elevation":
+                eid = val["view"]
+                if not self.context.show_raster("ortho", path=elements.elevation_raster(chunk, eid)):
+                    raise elements.NotReady(t("Il prospetto non si può mostrare.", "The elevation cannot be shown."))
+                self.context.request_line(
+                    lambda uv: self._guarded(self._moulding_dialog, elements.from_elevation(chunk, eid, uv), True),
+                    hint=t("Traccia il percorso della modanatura sul prospetto; doppio clic o Invio per finire",
+                           "Trace the path of the moulding on the elevation; double click or Enter ends"))
                 return
         self._need_view()
         self.context.request_line(lambda xy: self._guarded(self._moulding_dialog, xy),
@@ -256,23 +279,29 @@ class ArchitecturePlugin(Plugin):
                                          "finire", "Trace the path of the moulding along the wall; double click or "
                                          "Enter ends"))
 
-    def _moulding_dialog(self, xy) -> None:
+    def _moulding_dialog(self, xy, in_space: bool = False) -> None:
+        """The parameters of a moulding along ``xy`` (plan points, or world points with ``in_space``: a path drawn on
+        an elevation keeps its heights, a raking cornice too)."""
         from pyarchinit_photogrammetry.gui.dialogs import Field
 
         from . import elements, engine
 
         chunk = self._need_chunk()
         xy = np.asarray(xy, float)
-        path = xy[:, :2]
+        path = xy if in_space else xy[:, :2]
         v, f = elements.local_mesh(chunk)
         o = elements.origin(chunk)
-        z = float(xy[:, 2].mean()) - o[2] if xy.shape[1] >= 3 else engine.model_height_at(v, f, path[0] - o[:2], radius=0.2)
-        val = self._ask(t("Modanatura", "Moulding"), [
-            Field("name", t("Nome", "Name"), elements._new_name(chunk, "moulding"), kind="text"),
-            Field("height", t("Quota della modanatura (m)", "Height of the moulding (m)"),
-                  float(z + o[2]) if np.isfinite(z) else float(o[2]), minimum=-1e5, maximum=1e5, decimals=3,
-                  tip=t("La quota del percorso: la sezione si cerca intorno a questa quota",
-                        "The height of the path: the section is looked for around it")),
+        if xy.shape[1] >= 3:
+            z = float(xy[:, 2].mean()) - o[2]
+        else:
+            z = engine.model_height_at(v, f, path[0, :2] - o[:2], radius=0.2)
+        fields = [Field("name", t("Nome", "Name"), elements._new_name(chunk, "moulding"), kind="text")]
+        if not in_space:
+            fields.append(Field("height", t("Quota della modanatura (m)", "Height of the moulding (m)"),
+                                float(z + o[2]) if np.isfinite(z) else float(o[2]), minimum=-1e5, maximum=1e5,
+                                decimals=3, tip=t("La quota del percorso: la sezione si cerca intorno a questa quota",
+                                                  "The height of the path: the section is looked for around it")))
+        fields += [
             Field("station", t("Sezione a (m dall'inizio)", "Section at (m from the start)"),
                   round(0.5 * float(np.linalg.norm(path[1] - path[0])), 3), minimum=0.0, maximum=1e5, decimals=3),
             Field("below", t("Finestra: sotto (m)", "Window: below (m)"), 0.5, minimum=0.0, maximum=100.0, decimals=3),
@@ -280,18 +309,20 @@ class ArchitecturePlugin(Plugin):
             Field("reach", t("Finestra: sporgenza massima (m)", "Window: largest projection (m)"), 0.5, minimum=0.01,
                   maximum=100.0, decimals=3),
             Field("side", t("Sporge verso", "Projects towards"), "auto",
-                  choices=[("auto", t("le foto", "the photos")), ("left", t("sinistra del percorso", "left of the path")),
+                  choices=[("auto", t("le foto", "the photos")),
+                           ("left", t("sinistra del percorso", "left of the path")),
                            ("right", t("destra del percorso", "right of the path"))]),
             Field("depth", t("Profondità nel muro (m)", "Depth into the wall (m)"), 0.1, minimum=0.0, maximum=10.0,
                   decimals=3),
             Field("simplify", t("Semplificazione (m)", "Simplification (m)"), 0.002, minimum=0.0, maximum=1.0,
-                  decimals=4)])
+                  decimals=4)]
+        val = self._ask(t("Modanatura", "Moulding"), fields)
         if not val:
             return
         out = {"auto": None, "left": 1.0, "right": -1.0}[val["side"]]
         win = (-val["reach"], -val["below"], val["reach"], val["above"])
-        self.moulding(chunk, path=path, height=val["height"], station=val["station"], window=win, out=out,
-                      depth=val["depth"], simplify=val["simplify"], name=val["name"])
+        self.moulding(chunk, path=path, height=None if in_space else val["height"], station=val["station"], window=win,
+                      out=out, depth=val["depth"], simplify=val["simplify"], name=val["name"])
 
     def moulding(self, chunk, **kwargs) -> None:
         from . import elements
@@ -313,14 +344,28 @@ class ArchitecturePlugin(Plugin):
         sections = elements.section_planes(chunk)
         choices = [(s["id"], s.get("name") or s["id"]) for s in sections] + \
             [("", t("Un piano per due punti sulla pianta...", "A plane through two points on the plan..."))]
-        val = self._ask(t("Arco / volta", "Arch / vault"), [
-            Field("section", t("Sezione", "Section"), choices[0][0], choices=choices)],
-            intro=t("L'arco si legge su una sezione verticale del modello (Strumenti > Prospetti e sezioni) o su un "
-                    "piano verticale tracciato ora in pianta.", "The arch is read on a vertical section of the model "
-                    "(Tools > Elevations and sections) or on a vertical plane traced now in plan."))
+        fields = [Field("section", t("Sezione", "Section"), choices[0][0], choices=choices)]
+        if sections:
+            fields.append(Field("pick", t("Punto nell'apertura", "Point in the opening"), "click", choices=[
+                ("click", t("cliccato sulla sezione", "clicked on the section")),
+                ("type", t("scritto (u, v)", "typed (u, v)"))]))
+        val = self._ask(t("Arco / volta", "Arch / vault"), fields,
+                        intro=t("L'arco si legge su una sezione verticale del modello (Strumenti > Prospetti e "
+                                "sezioni) "
+                                "o su un piano verticale tracciato ora in pianta.", "The arch is read on a vertical "
+                                "section of the model (Tools > Elevations and sections) or on a vertical plane traced "
+                                "now in plan."))
         if not val:
             return
         if val["section"]:
+            if val.get("pick") == "click":
+                if not self.context.show_raster("ortho", path=elements.elevation_raster(chunk, val["section"])):
+                    raise elements.NotReady(t("La sezione non si può mostrare.", "The section cannot be shown."))
+                self.context.request_point(
+                    lambda uv: self._guarded(self._arch_dialog, chunk, val["section"], None,
+                                             np.asarray(uv, float)[0, :2]),
+                    hint=t("Clic dentro l'apertura, sotto l'arco", "Click inside the opening, under the arch"))
+                return
             self._arch_dialog(chunk, section=val["section"])
             return
         self._need_view()
@@ -328,7 +373,7 @@ class ArchitecturePlugin(Plugin):
                                   hint=t("Due punti: la traccia del piano dell'arco in pianta", "Two points: the trace "
                                          "of the plane of the arch in plan"))
 
-    def _arch_dialog(self, chunk, section=None, xy=None) -> None:
+    def _arch_dialog(self, chunk, section=None, xy=None, pick=None) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field
 
         from . import elements, engine
@@ -341,7 +386,7 @@ class ArchitecturePlugin(Plugin):
         lines = engine.mesh_section(v, f, po, u, vv)
         if not lines:
             raise elements.NotReady(t("Il piano non taglia il modello.", "The plane does not cut the model."))
-        guess = engine.guess_pick(lines)
+        guess = tuple(map(float, pick)) if pick is not None else engine.guess_pick(lines)
         val = self._ask(t("Arco / volta", "Arch / vault"), [
             Field("name", t("Nome", "Name"), elements._new_name(chunk, "arch"), kind="text"),
             Field("pick_u", t("Punto nell'apertura: u (m)", "Point in the opening: u (m)"), guess[0], minimum=-1e5,
@@ -397,9 +442,11 @@ class ArchitecturePlugin(Plugin):
         if e["kind"] == "column":
             fields = [Field("measured", t("Come misurato", "As measured"), p["method"] == "measured"),
                       Field("knots", t("Nodi", "Knots"), p["knots"], minimum=2, maximum=60, decimals=0)]
-            fields += [Field(f"r{k}", t(f"Raggio al nodo {k + 1}, h {num(z, 3)} m", f"Radius at knot {k + 1}, h {num(z, 3)} m"),
+            fields += [Field(f"r{k}", t(f"Raggio al nodo {k + 1}, h {num(z, 3)} m",
+                                        f"Radius at knot {k + 1}, h {num(z, 3)} m"),
                              r, minimum=0.001, maximum=100.0, decimals=4)
-                       for k, (z, r) in enumerate(zip(p["knot_heights"], p["knot_radii"]))] if p["method"] == "spline" else []
+                       for k, (z, r) in enumerate(zip(p["knot_heights"], p["knot_radii"]))] \
+                if p["method"] == "spline" else []
             val = self._ask(t("Parametri della colonna", "Parameters of the column"), fields,
                             intro=t("Il profilo misurato resta com'è: cambia solo il solido.",
                                     "The measured profile stays as it is: only the solid changes."))
@@ -414,14 +461,15 @@ class ArchitecturePlugin(Plugin):
         elif e["kind"] == "moulding":
             src = e["source"]
             val = self._ask(t("Parametri della modanatura", "Parameters of the moulding"), [
-                Field("simplify", t("Semplificazione (m)", "Simplification (m)"), src["simplify"], minimum=0.0, maximum=1.0,
+                Field("simplify", t("Semplificazione (m)", "Simplification (m)"), src["simplify"], minimum=0.0,
+                      maximum=1.0,
                       decimals=4),
                 Field("depth", t("Profondità nel muro (m)", "Depth into the wall (m)"), src["depth"], minimum=0.0,
                       maximum=10.0, decimals=3)])
             if not val:
                 return
-            job = lambda prog: elements.edit_moulding(chunk, e["id"], simplify=val["simplify"], depth=val["depth"],  # noqa: E731
-                                                      progress=prog)
+            job = lambda prog: elements.edit_moulding(chunk, e["id"], simplify=val["simplify"],  # noqa: E731
+                                                      depth=val["depth"], progress=prog)
         else:
             val = self._ask(t("Parametri dell'arco", "Parameters of the arch"), [
                 Field("kind", t("Tipo", "Type"), p["type"],
@@ -429,10 +477,12 @@ class ArchitecturePlugin(Plugin):
                                                             "measured")]),
                 Field("thickness", t("Spessore (m)", "Thickness (m)"), p["thickness"], minimum=0.001, maximum=100.0,
                       decimals=3),
-                Field("depth", t("Profondità (m)", "Depth (m)"), p["depth"], minimum=0.001, maximum=1000.0, decimals=3)])
+                Field("depth", t("Profondità (m)", "Depth (m)"), p["depth"], minimum=0.001, maximum=1000.0,
+                      decimals=3)])
             if not val:
                 return
-            job = lambda prog: elements.edit_arch(chunk, e["id"], kind=val["kind"] if val["kind"] != p["type"] else None,  # noqa: E731
+            kind = val["kind"] if val["kind"] != p["type"] else None
+            job = lambda prog: elements.edit_arch(chunk, e["id"], kind=kind,  # noqa: E731
                                                   thickness=val["thickness"], depth=val["depth"], progress=prog)
 
         def done(new):
@@ -454,10 +504,12 @@ class ArchitecturePlugin(Plugin):
             path, _ = QFileDialog.getSaveFileName(self.context.window, t("Esporta STEP", "Export STEP"),
                                                   f"{elements._safe(e['name'])}.step", "STEP (*.step *.stp)")
         else:
-            path = QFileDialog.getExistingDirectory(self.context.window, t("Cartella degli STEP", "Folder of the STEP files"))
+            path = QFileDialog.getExistingDirectory(self.context.window,
+                                                    t("Cartella degli STEP", "Folder of the STEP files"))
         if path:
             out = elements.export_step(chunk, ids, path)
-            self._status(t(f"{len(out)} file STEP in {Path(out[0]).parent}", f"{len(out)} STEP files in {Path(out[0]).parent}"))
+            where = Path(out[0]).parent
+            self._status(t(f"{len(out)} file STEP in {where}", f"{len(out)} STEP files in {where}"))
 
     def _do_ifc(self) -> None:
         from PySide6.QtWidgets import QFileDialog
@@ -490,7 +542,8 @@ class ArchitecturePlugin(Plugin):
 
         chunk = self._need_chunk()
         e = elements.need(chunk, self._selected(one=True)[0])
-        path, _ = QFileDialog.getSaveFileName(self.context.window, "DXF", f"{elements._safe(e['name'])}.dxf", "DXF (*.dxf)")
+        path, _ = QFileDialog.getSaveFileName(self.context.window, "DXF", f"{elements._safe(e['name'])}.dxf",
+                                              "DXF (*.dxf)")
         if path:
             self._status(str(drawings.write_dxf(e, path)))
 
@@ -549,7 +602,8 @@ class ArchitecturePlugin(Plugin):
 
         parser = argparse.ArgumentParser(prog="ppg plugin architecture",
                                          description="parametric architectural elements from the photogrammetric model")
-        parser.add_argument("what", choices=["column", "moulding", "arch", "list", "show", "export", "remove", "install",
+        parser.add_argument("what", choices=["column", "moulding", "arch", "list", "show", "export", "remove",
+                                             "install",
                                              "status"])
         parser.add_argument("project", nargs="?", help="the .ppg file")
         parser.add_argument("element", nargs="?", help="show, remove: the id or the name of an element")
@@ -560,14 +614,18 @@ class ArchitecturePlugin(Plugin):
         parser.add_argument("--zmax", type=float, help="column: the highest height (world)")
         parser.add_argument("--box", help="column: xmin,ymin,zmin,xmax,ymax,zmax (world) instead of the polygon")
         parser.add_argument("--knots", type=int, default=12, help="column: knots of the spline (default 12)")
-        parser.add_argument("--measured", action="store_true", help="column: the profile as measured; arch: --type measured")
+        parser.add_argument("--measured", action="store_true",
+                            help="column: the profile as measured; arch: --type measured")
         parser.add_argument("--same-axis", help="column: the id or name of a column whose axis this part shares")
         parser.add_argument("--path", help="moulding: WKT LINESTRING (x y, or x y z) world")
         parser.add_argument("--markers", help="moulding: two markers A,B: a straight path between them")
+        parser.add_argument("--elevation",
+                            help="moulding: --path is in (u v) of this elevation or section (id or name)")
         parser.add_argument("--height", type=float, help="moulding: the height of a 2D path (world)")
         parser.add_argument("--station", type=float, help="moulding: the section at this distance from the start (m)")
         parser.add_argument("--window", default="-0.5,-0.5,0.5,0.5", help="moulding: u0,v0,u1,v1 around the path point")
-        parser.add_argument("--out-side", type=float, help="moulding: +1 the moulding projects to the left of the path, "
+        parser.add_argument("--out-side", type=float,
+                            help="moulding: +1 the moulding projects to the left of the path, "
                                                             "-1 to the right (default: the side of the photos)")
         parser.add_argument("--depth", type=float, help="moulding: into the wall (default 0.1 m); arch: of the vault")
         parser.add_argument("--simplify", type=float, default=0.002, help="moulding: Douglas-Peucker tolerance (m)")
@@ -614,12 +672,15 @@ class ArchitecturePlugin(Plugin):
                 if polygon is None and box is None:
                     raise elements.NotReady("--polygon or --box")
                 e = elements.column(chunk, polygon=polygon, zmin=ns.zmin, zmax=ns.zmax, box=box, knots=ns.knots,
-                                    as_measured=ns.measured, same_axis=ns.same_axis, name=ns.name, progress=print_progress)
+                                    as_measured=ns.measured, same_axis=ns.same_axis, name=ns.name,
+                                    progress=print_progress)
                 print(elements.summary(e))
                 changed = True
             elif ns.what == "moulding":
                 if ns.markers:
                     path = elements.marker_points(chunk, [x.strip() for x in ns.markers.split(",")])
+                elif ns.path and ns.elevation:
+                    path = elements.from_elevation(chunk, ns.elevation, np.asarray(wkt.loads(ns.path).coords))
                 elif ns.path:
                     path = np.asarray(wkt.loads(ns.path).coords)
                 else:

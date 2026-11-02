@@ -62,7 +62,8 @@ try:
             out[name] = md.version(name)
         except Exception:
             out[name] = ""
-    solid = cq.Workplane("XZ").moveTo(0, 0).lineTo(1, 0).lineTo(1, 1).lineTo(0, 1).close().revolve(360, (0, 0, 0), (0, 1, 0))
+    square = cq.Workplane("XZ").moveTo(0, 0).lineTo(1, 0).lineTo(1, 1).lineTo(0, 1).close()
+    solid = square.revolve(360, (0, 0, 0), (0, 1, 0))
     out["volume"] = solid.val().Volume()
     with tempfile.TemporaryDirectory() as d:
         cq.exporters.export(solid, os.path.join(d, "x.step"))
@@ -72,6 +73,9 @@ except Exception as exc:
     out["error"] = type(exc).__name__ + ": " + str(exc)
 print(json.dumps(out))
 """
+FIRST_START = ("La prima elaborazione dopo l'installazione richiede circa un minuto (Python prepara i moduli di "
+               "CadQuery).", "The first run after the installation takes about a minute (Python prepares CadQuery's "
+               "modules).")
 _CHECKED: dict[str, dict] = {}  # Python -> what check() found (a failure is looked at again next time)
 
 
@@ -181,12 +185,13 @@ def status_text() -> str:
         return t("CadQuery {0} di questo Python, in un processo separato.",
                  "CadQuery {0} of this Python, in a process of its own.").format(version)
     if kind == "environment":
-        return t("CadQuery {0} nell'ambiente del plugin ({1}).",
+        text = t("CadQuery {0} nell'ambiente del plugin ({1}).",
                  "CadQuery {0} in the environment of the plugin ({1}).").format(version, env_dir())
-    return t("CadQuery non è installato: Installa CadQuery lo scarica in un ambiente del plugin "
-             "(circa 900 MB).",
-             "CadQuery is not installed: Install CadQuery downloads it into an environment of the "
-             "plugin (about 900 MB).")
+        return text if known_usable() else text + " " + t(*FIRST_START)
+    return t("CadQuery non è installato: Installa CadQuery lo scarica in un ambiente del plugin (circa 900 MB, alcuni "
+             "minuti); la prima elaborazione dopo richiede circa un minuto.",
+             "CadQuery is not installed: Install CadQuery downloads it into an environment of the plugin (about "
+             "900 MB, a few minutes); the first run after it takes about a minute.")
 
 
 def _python() -> Path:
@@ -383,14 +388,16 @@ def install(progress=None, env: Path | None = None, uv: Path | None = None) -> P
     _uv(cadquery, clean, progress, 0.4, 0.9, own_cache)
     if clean.get("UV_CACHE_DIR") == str(own_cache):  # the environment does not need the cache any more
         shutil.rmtree(own_cache, ignore_errors=True)
-    progress(0.92, t("Prova di CadQuery", "Trying CadQuery"))
+    progress(0.92, t("Prova di CadQuery: la prima volta circa un minuto",
+                     "Trying CadQuery: about a minute the first time"))
     info = probe(env_python(env))
     _CHECKED[str(env_python(env))] = info
     if not usable(info):
         raise CadQueryMissing(problem_text(info))
     (env / MARKER).write_text(json.dumps({k: info.get(k) for k in ("cadquery", "cadquery-ocp", "numpy", "python")}),
                               encoding="utf-8")
-    progress(1.0, t("CadQuery pronto ({0})", "CadQuery ready ({0})").format(info.get("cadquery", "")))
+    progress(1.0, t("CadQuery pronto ({0}).", "CadQuery ready ({0}).").format(info.get("cadquery", "")) + " " +
+             t(*FIRST_START))
     return env
 
 

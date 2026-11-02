@@ -15,9 +15,9 @@ MAKE = (("column", ("Colonna...", "Column..."), "Una colonna o una sua parte (ba
          "disegna la zona in pianta, l'asse e il profilo si misurano sul modello",
          "A column or a part of it (base, shaft, capital) by revolution: draw the region in plan, the axis and the "
          "profile are measured on the model"),
-        ("moulding", ("Modanatura...", "Moulding..."), "Cornice, modanatura, cornice marcapiano: traccia il percorso, la "
-         "sezione si taglia dal modello", "Cornice, moulding, string course: trace the path, the section is cut from "
-         "the model"),
+        ("moulding", ("Modanatura...", "Moulding..."), "Cornice, modanatura, cornice marcapiano: traccia il percorso, "
+         "la sezione si taglia dal modello", "Cornice, moulding, string course: trace the path, the section is cut "
+         "from the model"),
         ("arch", ("Arco / volta...", "Arch / vault..."), "Un arco o una volta a botte da una sezione del progetto o da "
          "un piano per due punti", "An arch or a barrel vault from a section of the project or a plane through two "
          "points"))
@@ -104,8 +104,8 @@ class ArchitecturePane(QWidget):
             else:
                 measures = t(f"{arch_title(p.get('type', ''))}, luce {metres(p.get('span'))}",
                              f"{arch_title(p.get('type', ''))}, span {metres(p.get('span'))}")
-            cells = (e.get("name", ""), kind_title(e["kind"]), measures, metres(fit.get("median")), metres(fit.get("p90")),
-                     str(fit.get("points") or 0))
+            cells = (e.get("name", ""), kind_title(e["kind"]), measures, metres(fit.get("median")),
+                     metres(fit.get("p90")), str(fit.get("points") or 0))
             for j, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if j >= 3:

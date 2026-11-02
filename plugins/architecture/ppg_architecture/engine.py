@@ -124,8 +124,10 @@ class ColumnMeasure:
                 "step": self.step, "axis_rms": self.axis_rms, "method": self.method}
 
 
-def _circle_fit(xy: np.ndarray):
-    """Circle by algebraic least squares then geometric refinement: ``(cx, cy, r, rms)`` or None."""
+def _circle_fit(xy: np.ndarray, trim: bool = True):
+    """Circle by algebraic least squares then geometric refinement: ``(cx, cy, r, rms)`` or None. ``trim``: twice
+    more on the points within 3 robust deviations of the circle (the fins and the flying points of a photogrammetric
+    mesh at a silhouette, a chip of the shaft), the rms of those."""
     from scipy.optimize import least_squares
 
     if len(xy) < 5:
@@ -140,12 +142,28 @@ def _circle_fit(xy: np.ndarray):
         return None
     c0 = sol[:2]
     r0 = np.sqrt(max(sol[2] + c0 @ c0, 1e-12))
+    if trim:  # a robust start: the median radius around the median centre of the points
+        c0 = np.median(p, axis=0)
+        r0 = float(np.median(np.linalg.norm(p - c0, axis=1)))
+    keep = np.ones(len(p), bool)
+    x = np.r_[c0, r0]
+    for _ in range(3 if trim else 1):
+        q = p[keep]
+        if len(q) < 5:
+            break
 
-    def res(x):
-        return np.linalg.norm(p - x[:2], axis=1) - x[2]
+        def res(x, q=q):
+            return np.linalg.norm(q - x[:2], axis=1) - x[2]
 
-    x = least_squares(res, np.r_[c0, r0], method="lm").x
-    rms = float(np.sqrt(np.mean(res(x) ** 2)))
+        x = least_squares(res, x, loss="soft_l1" if trim else "linear",
+                          f_scale=max(0.002, 0.01 * abs(x[2]))).x
+        if not trim:
+            break
+        r_all = np.linalg.norm(p - x[:2], axis=1) - x[2]
+        mad = 1.4826 * np.median(np.abs(r_all[keep] - np.median(r_all[keep]))) + 1e-5
+        keep = np.abs(r_all) < 3 * mad
+    r_all = np.linalg.norm(p - x[:2], axis=1) - x[2]
+    rms = float(np.sqrt(np.mean(r_all[keep] ** 2))) if keep.any() else float("inf")
     return x[0] + m[0], x[1] + m[1], abs(x[2]), rms
 
 
@@ -198,11 +216,14 @@ def refine_axis(vertices, point, direction, slices: int = 24, iterations: int = 
 
 def column_axis(vertices, faces, initial=None):
     """The axis of a column part: ``(point, direction, rms)``. ``initial`` ``(point, direction)`` skips the
-    search from the normals (the axis of another element: "same axis as element X"). The direction points
-    up (positive z) unless the shaft lies flat, when it keeps the orientation found."""
+    search (the axis of another element: "same axis as element X"). Two starts, each refined on the circles of
+    its slices: the axis the pottery finds from the normals (any direction: a fallen shaft) and the vertical through
+    the middle of the part (a standing column, whose normals the fins of a photogrammetric mesh may spoil); the one
+    whose slices are rounder wins. The direction points up (positive z) unless the shaft lies flat."""
     v = np.asarray(vertices, np.float64)
+    starts = []
     if initial is not None:
-        p0, d0 = np.asarray(initial[0], float), unit(initial[1])
+        starts.append((np.asarray(initial[0], float), unit(initial[1])))
     else:
         try:
             import trimesh
@@ -210,14 +231,19 @@ def column_axis(vertices, faces, initial=None):
             from pyarchinit_photogrammetry.archaeo.pottery import estimate_axis
 
             ax = estimate_axis(trimesh.Trimesh(v, faces, process=False))
-            p0, d0 = ax.point, ax.direction
-        except ImportError:  # pragma: no cover - the program without its pottery: principal direction
-            c = v.mean(axis=0)
-            d0 = np.linalg.eigh((v - c).T @ (v - c))[1][:, -1]
-            p0 = c
-    if abs(d0[2]) > 0.5 and d0[2] < 0:
-        d0 = -d0
-    p, d, rms = refine_axis(v, p0, d0)
+            starts.append((ax.point, ax.direction))
+        except (ImportError, ValueError):  # the program without its pottery, or too flat for the normals
+            pass
+        c = np.median(v, axis=0)
+        starts.append((c, UP.copy()))
+    best = None
+    for p0, d0 in starts:
+        if abs(d0[2]) > 0.5 and d0[2] < 0:
+            d0 = -d0
+        p, d, rms = refine_axis(v, p0, d0)
+        if best is None or rms < best[2]:
+            best = (p, d, rms)
+    p, d, rms = best
     if abs(d[2]) > 0.5 and d[2] < 0:
         d = -d
     return p, d, rms
@@ -225,7 +251,8 @@ def column_axis(vertices, faces, initial=None):
 
 def _profile_points(vertices, faces, point, direction, angles: int):
     """(r, h) points of the model on ``angles`` half-planes through the axis (the pottery's cuts), h from the
-    point on the axis; the vertices themselves when the cut cannot be made."""
+    point on the axis, only where the cut line is steeper than 17 degrees (a bed, a top, a cap cut through the axis
+    would give every radius at one height); the vertices themselves when the cut cannot be made."""
     v = np.asarray(vertices, np.float64)
     d = unit(direction)
     try:
@@ -239,8 +266,14 @@ def _profile_points(vertices, faces, point, direction, angles: int):
         parts = []
         for k in range(angles):
             prof = profile_at(mesh, axis, 360.0 * k / angles)
-            if prof.curves:
-                pts = prof.points.copy()
+            for c in prof.curves:
+                c = np.asarray(c, float)
+                if len(c) < 2:
+                    continue
+                seg = np.diff(c, axis=0)
+                steep = np.abs(seg[:, 1]) > 0.3 * np.abs(seg[:, 0])  # the shaft's surface, not a bed or a top
+                keep = np.r_[steep, False] | np.r_[False, steep]
+                pts = c[keep].copy()
                 pts[:, 1] += h0  # profile_at measures from the lowest vertex: back to the axis point
                 parts.append(pts)
         if parts:
@@ -275,7 +308,7 @@ def column_profile(vertices, faces, point, direction, step: float | None = None,
         m = idx == k
         if m.sum() < 3:
             continue
-        rr = r[m]
+        rr = _shaft_radii(r[m])
         q1, med, q3 = np.percentile(rr, [25, 50, 75])
         heights.append(0.5 * (edges[k] + edges[k + 1]))
         radii.append(med)
@@ -286,6 +319,27 @@ def column_profile(vertices, faces, point, direction, step: float | None = None,
     # the ends of the profile at the ends of the part: the first and last bins moved to 0 and the height
     heights[0], heights[-1] = 0.0, height
     return ColumnMeasure(base, d, height, heights, np.asarray(radii), np.asarray(spread), float(step), float(rms))
+
+
+def _shaft_radii(rr: np.ndarray, band: float | None = None) -> np.ndarray:
+    """The radii of one height that belong to the shaft: around the densest radius (a smoothed histogram's peak at
+    a millimetre), not the fins and the flying points of a photogrammetric mesh at the silhouette, which scatter
+    outwards and pull a median with them. (The beds and tops are left out before: :func:`_profile_points`.)"""
+    rr = np.asarray(rr, float)
+    if band is None:  # 3 mm on a radius of 30 cm
+        band = max(0.003, 0.01 * float(np.median(rr))) if len(rr) else 0.003
+    if len(rr) < 20 or np.ptp(rr) < 2 * band:
+        return rr
+    bins = int(np.clip(np.ptp(rr) / 0.001, 10, 600))
+    hist, edges = np.histogram(rr, bins=bins)
+    smooth = np.convolve(hist, [1, 2, 3, 2, 1], mode="same")
+    k = int(np.argmax(smooth))
+    peak = 0.5 * (edges[k] + edges[k + 1])
+    near = rr[np.abs(rr - peak) < band]
+    if len(near) < 3:
+        return rr
+    centre = np.median(near)
+    return rr[np.abs(rr - centre) < band]
 
 
 def _spline(zk, rk):
@@ -499,9 +553,21 @@ def moulding_section(polylines, window, out: float = 1.0, depth: float = 0.1, si
         if poly.geom_type != "Polygon":
             poly = max(poly.geoms, key=lambda g: g.area)
         ring = np.asarray(poly.exterior.coords)[:-1]
+    ring = drop_repeated(ring)
     if Polygon(ring).exterior.is_ccw is False:
         ring = ring[::-1]
     return ring
+
+
+def drop_repeated(ring, tolerance: float = 1e-7) -> np.ndarray:
+    """A closed outline without points repeated one after the other (or the last on the first): OpenCascade refuses
+    an edge of zero length."""
+    r = np.asarray(ring, np.float64)
+    keep = np.r_[True, np.linalg.norm(np.diff(r, axis=0), axis=1) > tolerance]
+    r = r[keep]
+    while len(r) > 3 and np.linalg.norm(r[-1] - r[0]) <= tolerance:
+        r = r[:-1]
+    return r
 
 
 def polygon_area(ring) -> float:
@@ -637,6 +703,60 @@ def sweep_volume(path, section) -> float:
     return float(abs(sweep_mesh(path, section).volume))
 
 
+def path_coordinates(points, path) -> np.ndarray:
+    """``(station, u, v)`` of points in the frame of the path's nearest segment (u = up x tangent, v = tangent x u):
+    where a point of the model lies with respect to a moulding's section."""
+    p = np.asarray(points, np.float64)
+    pth = np.asarray(path, np.float64)
+    seg = np.diff(pth, axis=0)
+    lengths = np.linalg.norm(seg, axis=1)
+    cum = np.r_[0.0, np.cumsum(lengths)]
+    best = np.full(len(p), np.inf)
+    out = np.zeros((len(p), 3))
+    for i in range(len(seg)):
+        o, u, v, t = section_frame(seg[i], pth[i])
+        q = p - o
+        s = np.clip(q @ t, 0.0, lengths[i])
+        d = np.linalg.norm(q - s[:, None] * t, axis=1)
+        m = d < best
+        best[m] = d[m]
+        out[m] = np.column_stack([cum[i] + s, q @ u, q @ v])[m]
+    return out
+
+
+def behind_back(points, path, back: float, out: float, margin: float) -> np.ndarray:
+    """Which points lie behind the back line of a moulding's section (inside the wall: ``u`` beyond ``back`` on the
+    side away from where the moulding projects, ``out``), or within ``margin`` of it."""
+    u = path_coordinates(points, path)[:, 1]
+    return u > back - margin if out < 0 else u < back + margin
+
+
+def surface_depth(uvd, faces, uv) -> np.ndarray:
+    """The depth ``d`` of a mesh seen along a frame's normal at frame points ``uv``: ``uvd`` are the mesh's vertices
+    in the frame (u, v, d towards the viewer); for each point the triangles whose (u, v) contain it, the largest d (the
+    surface nearest the viewer); NaN where no triangle is."""
+    q = np.asarray(uvd, np.float64)
+    f = np.asarray(faces, np.int64)
+    a, b, c = q[f[:, 0]], q[f[:, 1]], q[f[:, 2]]
+    det = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1])
+    ok = np.abs(det) > 1e-18
+    lo = np.minimum(np.minimum(a[:, :2], b[:, :2]), c[:, :2])
+    hi = np.maximum(np.maximum(a[:, :2], b[:, :2]), c[:, :2])
+    out = np.full(len(uv), np.nan)
+    for i, (x, y) in enumerate(np.asarray(uv, np.float64)[:, :2]):
+        m = ok & (lo[:, 0] <= x) & (hi[:, 0] >= x) & (lo[:, 1] <= y) & (hi[:, 1] >= y)
+        if not m.any():
+            continue
+        aa, bb, cc, dd = a[m], b[m], c[m], det[m]
+        w1 = ((x - aa[:, 0]) * (cc[:, 1] - aa[:, 1]) - (cc[:, 0] - aa[:, 0]) * (y - aa[:, 1])) / dd
+        w2 = ((bb[:, 0] - aa[:, 0]) * (y - aa[:, 1]) - (x - aa[:, 0]) * (bb[:, 1] - aa[:, 1])) / dd
+        inside = (w1 >= -1e-12) & (w2 >= -1e-12) & (w1 + w2 <= 1 + 1e-12)
+        if inside.any():
+            d = aa[:, 2] + w1 * (bb[:, 2] - aa[:, 2]) + w2 * (cc[:, 2] - aa[:, 2])
+            out[i] = float(d[inside].max())
+    return out
+
+
 def is_straight(path, tolerance: float = 1e-6) -> bool:
     p = np.asarray(path, float)
     if len(p) == 2:
@@ -657,7 +777,8 @@ def model_height_at(vertices, faces, xy, radius: float = 0.05) -> float:
 # ====================================================================== arch
 def visible_points(polylines, pick, rays: int = 1440, down: float = 60.0):
     """What a point inside an opening sees of a section: the first crossing of each ray (the intrados and the
-    jambs) and the last one (beyond the ring: the extrados when the arch stands free). The rays go all round but
+    jambs) and the second one (where the ray leaves the ring: the extrados of a ring or an archivolt that stands
+    out of the cut). The rays go all round but
     for a cone of ``down`` degrees under the point (the floor, the sill). Returns ``(near, far)`` (N, 2)."""
     from shapely.geometry import LineString, MultiLineString
 
@@ -685,17 +806,17 @@ def visible_points(polylines, pick, rays: int = 1440, down: float = 60.0):
         if not pts:
             continue
         pts = np.asarray(pts)
-        d = np.hypot(*(pts - pick).T)
-        near.append(pts[d.argmin()])
+        order = np.argsort(np.hypot(*(pts - pick).T))
+        near.append(pts[order[0]])
         if len(pts) > 1:
-            far.append(pts[d.argmax()])
+            far.append(pts[order[1]])  # where the ray leaves the ring: not what lies beyond it (a cornice above)
     return np.asarray(near).reshape(-1, 2), np.asarray(far).reshape(-1, 2)
 
 
 def guess_pick(polylines, grid: int = 40) -> tuple[float, float]:
     """A point inside an opening of a section, for the dialog to start from: among the points of a grid that see a
-    line above, to the left and to the right of them (and are not inside closed material: an even number of
-    crossings upwards), the one farthest from every line (the middle of the largest opening)."""
+    line above, to the left and to the right of them, the one farthest from every line (the middle of the largest
+    opening); a point with an odd number of crossings upwards may be inside material and counts half."""
     from shapely.geometry import LineString, MultiLineString, Point
 
     lines = MultiLineString([LineString(p) for p in polylines if len(p) > 1])
@@ -707,12 +828,14 @@ def guess_pick(polylines, grid: int = 40) -> tuple[float, float]:
     for x in np.linspace(x0, x1, grid + 2)[1:-1]:
         for y in np.linspace(y0, y1, grid + 2)[1:-1]:
             up = lines.intersection(LineString([(x, y), (x, y + reach)]))
-            if up.is_empty or len(getattr(up, "geoms", [up])) % 2:
+            if up.is_empty:
                 continue
             if lines.intersection(LineString([(x, y), (x - reach, y)])).is_empty or \
                     lines.intersection(LineString([(x, y), (x + reach, y)])).is_empty:
                 continue
             d = lines.distance(Point(x, y))
+            if len(getattr(up, "geoms", [up])) % 2:  # maybe inside material (open curves make the parity unsure)
+                d *= 0.5
             if d > score:
                 best, score = (float(x), float(y)), d
     return best
@@ -751,7 +874,7 @@ def _fit_circle_family(P, scale):
 
     u, v = P[:, 0], P[:, 1]
     top = v > np.percentile(v, 40)
-    c = _circle_fit(P[top]) or _circle_fit(P)
+    c = _circle_fit(P[top], trim=False) or _circle_fit(P, trim=False)
     if c is None:
         return None
     cx, cy, r, _ = c
@@ -821,7 +944,7 @@ def _fit_ellipse(P, scale):
     from scipy.optimize import least_squares
 
     u, v = P[:, 0], P[:, 1]
-    c = _circle_fit(P[v > np.percentile(v, 40)]) or _circle_fit(P)
+    c = _circle_fit(P[v > np.percentile(v, 40)], trim=False) or _circle_fit(P, trim=False)
     if c is None:
         return None
     cx, cy, r, _ = c

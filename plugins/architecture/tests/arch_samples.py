@@ -12,7 +12,8 @@ HEIGHT = 3.0
 
 
 def column_radius(z):
-    """A shaft 3 m high: 0.30 m at the base, 0.26 at the top, swelling about 19 mm over the chord from base to top (the entasis)."""
+    """A shaft 3 m high: 0.30 m at the base, 0.26 at the top, swelling about 19 mm over the chord from base to top
+    (the entasis)."""
     z = np.asarray(z, float)
     return 0.30 - 0.04 * (z / HEIGHT) ** 2 + 0.009 * np.sin(np.pi * z / HEIGHT)
 

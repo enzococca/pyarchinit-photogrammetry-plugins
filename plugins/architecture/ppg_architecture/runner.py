@@ -60,10 +60,10 @@ def hint_for(text: str, output=()) -> str:
         return t("CadQuery non c'è più nell'ambiente: installalo di nuovo.",
                  "CadQuery is no longer in the environment: install it again.")
     if "not valid" in low or "self-intersect" in low or "brep_api" in low or "stdfail_notdone" in low:
-        return t("La sezione o il percorso si intrecciano: semplifica la sezione (tolleranza più grande), togli i "
-                 "vertici troppo vicini del percorso o scegli gli angoli arrotondati.",
-                 "The section or the path cross themselves: simplify the section (a larger tolerance), remove the "
-                 "vertices of the path that are too close or choose the round corners.")
+        return t("La sezione o il percorso si intrecciano: semplifica la sezione (tolleranza più grande) o togli i "
+                 "vertici troppo vicini del percorso.",
+                 "The section or the path cross themselves: simplify the section (a larger tolerance) or remove the "
+                 "vertices of the path that are too close.")
     if "memoryerror" in low or "cannot allocate" in low:
         return t("Memoria insufficiente: semplifica il profilo o la sezione.",
                  "Not enough memory: simplify the profile or the section.")

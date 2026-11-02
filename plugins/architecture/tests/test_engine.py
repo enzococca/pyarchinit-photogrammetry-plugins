@@ -142,3 +142,45 @@ def test_the_frames_of_a_path():
     assert fr["mitre"][1] == pytest.approx(np.sqrt(2.0))
     assert engine.is_straight(L_PATH[:2]) and not engine.is_straight(L_PATH)
     assert engine.path_length(L_PATH) == pytest.approx(7.0)
+
+
+def test_what_lies_behind_the_back_of_a_section():
+    path = np.array([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]])  # u = +y, v = up
+    pts = np.array([[1.0, -0.1, 0.1], [1.0, 0.05, 0.1], [1.0, 0.2, 0.1], [2.0, 0.099, 0.0]])
+    behind = engine.behind_back(pts, path, back=0.1, out=-1, margin=0.005)  # projects to -u: the wall is towards +u
+    assert behind.tolist() == [False, False, True, True]
+    np.testing.assert_allclose(engine.path_coordinates(pts[:1], path), [[1.0, -0.1, 0.1]])
+    assert engine.behind_back(pts, path, back=0.0, out=1, margin=0.0).tolist() == [True, False, False, False]
+
+
+def test_a_section_closed_on_its_last_point_has_no_repeated_point():
+    # the back line starts where the profile ends: the corner is not written twice (OpenCascade refuses it)
+    profile = np.array([[-0.001, 0.3], [-0.18, 0.25], [-0.04, 0.0], [-0.001, -0.03]])
+    sec = engine.moulding_section([profile], (-0.4, -0.03, 0.02, 0.4), out=-1, depth=0.0)
+    edges = np.linalg.norm(np.diff(np.vstack([sec, sec[:1]]), axis=0), axis=1)
+    assert edges.min() > 1e-7 and len(sec) == 4
+
+
+def test_a_column_with_the_fins_of_a_photogrammetric_mesh():
+    """Flying points at the silhouette make thin radial fins around a shaft: they spoil the normals the first axis
+    comes from and pull a median radius outwards. The vertical start, the trimmed circles and the densest radius
+    per height keep the column."""
+    import trimesh
+
+    mesh, base, d = column_mesh(tilt_deg=0.0)
+    rng = np.random.default_rng(3)
+    fins = []
+    for _ in range(400):  # thin slivers at 1-1.6 m, from the surface out to 0.2 m beyond it
+        a, z = rng.uniform(0, 2 * np.pi), rng.uniform(1.0, 1.6)
+        r0 = column_radius(z)
+        e = np.array([np.cos(a), np.sin(a), 0.0])
+        t = np.array([-np.sin(a), np.cos(a), 0.0]) * 0.002
+        p0 = e * r0 + [0, 0, z]
+        p1 = e * (r0 + rng.uniform(0.05, 0.2)) + [0, 0, z + rng.uniform(-0.15, 0.15)]
+        fins.append(trimesh.Trimesh([p0, p1, p0 + t + [0, 0, 0.05]], [[0, 1, 2]], process=False))
+    m = trimesh.util.concatenate([mesh] + fins)
+    p, dd, rms = engine.column_axis(m.vertices, m.faces)
+    assert np.degrees(np.arccos(min(abs(dd @ d), 1.0))) < 0.1 and _line_distance(p, base, d) < 0.001
+    meas = engine.column_profile(m.vertices, m.faces, p, dd, rms=rms)
+    zk, rk = engine.fit_knots(meas.heights, meas.radii, 12)
+    assert np.abs(rk - column_radius(zk)).max() < 0.002
