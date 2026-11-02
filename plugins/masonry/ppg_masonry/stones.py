@@ -7,16 +7,17 @@ polygons in the face's ``(u, v)`` metres): found by its stone tool (SAM at tiles
 * each stone: its centre, width and height (its extent along ``u`` and ``v``), area, the best-fit ellipse (the ellipse
   with the same second moments: major and minor axis, elongation = major / minor, orientation of the major axis from
   the horizontal of the face, degrees), rectangularity (area / area of the smallest enclosing rectangle);
-* the mortar share: 1 - the stones' area / the wall's area (the face's bounds, or a polygon drawn on the face);
-* the courses: the stones' centres sorted by ``v`` and split where two neighbours are further apart than half the
-  median stone height; each course with its mean height (``v`` of its centres), its number of stones, its thickness
-  (the median height of its stones) and the slope of the line through its centres (horizontal within 2 degrees); a
-  group is a course when it has 3 stones or more whose centres lie within a quarter of its thickness (rms) of that
-  line - stones scattered at every height are not a course;
+* the mortar share: 1 - the stones' area (their union: a stone drawn twice counts once) / the wall's area (the face's
+  bounds, or a polygon drawn on the face);
+* the courses: each stone joined to its neighbour on the right that shares at least half its height, the chains so
+  made being the courses (a course sloping a few degrees stays one course); each course with its mean height (``v``
+  of its centres), its number of stones, its thickness (the median height of its stones) and the slope of the line
+  through its centres (horizontal within 2 degrees); a chain is a course when it has 3 stones or more whose centres
+  lie within a quarter of its thickness (rms) of that line - stones scattered at every height are not a course;
 * the masonry type, as the measures suggest it - never a verdict - with the rules said with it (:data:`RULES`).
 
-A face whose elevation is coarser than a quarter of its smallest stone is refused, with the numbers: the measures
-would be those of the pixels."""
+Stones smaller than four pixels of the face's elevation are left out of the measures and named; a face where most
+stones are is refused, with the numbers: the measures would be those of the pixels."""
 from __future__ import annotations
 
 import csv
@@ -37,47 +38,84 @@ REGULAR_SPREAD = 0.20
 SQUARED_ELONGATION = 2.0
 SQUARED_RECTANGULARITY = 0.8
 RESOLUTION_SHARE = 0.25
+DUPLICATE_IOU = 0.5  # two outlines overlapping more than this are the same stone drawn twice: the later is kept
 RULES = (("A filari: almeno il 70 % delle pietre sta in filari (3 pietre o più) inclinati meno di 2°.",
           "Coursed: at least 70 % of the stones sit in courses (3 stones or more) sloping less than 2°."),
-         ("Regolare: l'altezza dei filari varia poco (deviazione mediana assoluta / mediana < 20 %).",
-          "Regular: the height of the courses varies little (median absolute deviation / median < 20 %)."),
-         ("A conci squadrati: allungamento mediano delle pietre < 2 e rettangolarità mediana > 0,8.",
-          "Squared: median elongation of the stones < 2 and median rectangularity > 0.8."))
+         ("Regolare: lo spessore dei filari varia poco (deviazione mediana assoluta / mediana sotto il 20 %, "
+          "arrotondata al punto percentuale).", "Regular: the courses' thickness varies little (median absolute "
+          "deviation / median under 20 %, rounded to the percent)."),
+         ("A conci squadrati: rettangolarità mediana delle pietre > 0,8; allungate se l'allungamento mediano è 2 o "
+          "più.", "Squared: median rectangularity of the stones > 0.8; elongated when the median elongation is 2 or "
+          "more."))
 
 
-def face_stones(chunk, eid: str) -> list:
-    """The stones kept with the elevation ``eid``, as shapely polygons in its ``(u, v)``."""
+def stone_items(chunk, eid: str) -> tuple[list[tuple[int, object]], dict]:
+    """The stones kept with the elevation ``eid``: ``[(n, polygon in (u, v))]`` with ``n`` the stone's number in the
+    program's ``pietre`` table (its place in the list, from 1), and what was set aside: ``{"multipart": [n], "merged":
+    [n]}``. A stone drawn as several parts counts as its largest part; two outlines that overlap by more than
+    ``DUPLICATE_IOU`` (intersection over union) are the same stone drawn twice: the later one is kept."""
     from shapely import wkt
 
     from pyarchinit_photogrammetry.engine.elevation import frame_drawings
 
-    out = []
-    for text in (frame_drawings(chunk, eid).get("stones") or {}).get(eid) or []:
+    items, multipart = [], []
+    for i, text in enumerate((frame_drawings(chunk, eid).get("stones") or {}).get(eid) or []):
         try:
             g = wkt.loads(text)
         except Exception:  # noqa: BLE001 - a broken outline is left out
             continue
-        for part in getattr(g, "geoms", [g]):
-            if part.geom_type == "Polygon" and part.area > 0:
-                out.append(part)
-    return out
+        parts = [p for p in getattr(g, "geoms", [g]) if p.geom_type == "Polygon" and p.area > 0]
+        if not parts:
+            continue
+        if len(parts) > 1:
+            multipart.append(i + 1)
+        items.append((i + 1, max(parts, key=lambda p: p.area)))
+    merged = []
+    if len(items) > 1:
+        from shapely.strtree import STRtree
+
+        polys = [p for _n, p in items]
+        tree = STRtree(polys)
+        dropped = set()
+        for j in range(len(polys) - 1, -1, -1):  # the later ones first: they are kept
+            if j in dropped:
+                continue
+            for k in tree.query(polys[j]):
+                k = int(k)
+                if k >= j or k in dropped:
+                    continue
+                inter = polys[j].intersection(polys[k]).area
+                if inter > 0 and inter / polys[j].union(polys[k]).area > DUPLICATE_IOU:
+                    dropped.add(k)
+        merged = [items[k][0] for k in sorted(dropped)]
+        items = [it for k, it in enumerate(items) if k not in dropped]
+    return items, {"multipart": multipart, "merged": merged}
+
+
+def face_stones(chunk, eid: str) -> list:
+    """The stones kept with the elevation ``eid``, as shapely polygons in its ``(u, v)`` (see :func:`stone_items`)."""
+    return [p for _n, p in stone_items(chunk, eid)[0]]
 
 
 def ellipse(poly) -> tuple[float, float, float]:
     """``(major, minor, orientation)`` of the ellipse with the second moments of the polygon's area: axis lengths in
     metres (for a rectangle ``w`` x ``h`` they are ``w`` and ``h``), orientation of the major axis in degrees from
     the horizontal (-90 to 90)."""
-    xy = np.asarray(poly.exterior.coords)[:-1]
+    from shapely.geometry.polygon import orient
+
+    poly = orient(poly, 1.0)  # the outline anticlockwise, the holes clockwise: their moments are taken away
     c = np.asarray(poly.centroid.coords[0])
-    x, y = (xy - c).T
-    x1, y1 = np.roll(x, -1), np.roll(y, -1)
-    cross = x * y1 - x1 * y
-    area = cross.sum() / 2.0
+    area = ixx = iyy = ixy = 0.0
+    for ring in [poly.exterior, *poly.interiors]:
+        x, y = (np.asarray(ring.coords)[:-1] - c).T
+        x1, y1 = np.roll(x, -1), np.roll(y, -1)
+        cross = x * y1 - x1 * y
+        area += cross.sum() / 2.0
+        ixx += (cross * (y * y + y * y1 + y1 * y1)).sum() / 12.0  # integral of y^2
+        iyy += (cross * (x * x + x * x1 + x1 * x1)).sum() / 12.0  # integral of x^2
+        ixy += (cross * (x * y1 + 2 * x * y + 2 * x1 * y1 + x1 * y)).sum() / 24.0
     if abs(area) < 1e-15:
         return 0.0, 0.0, 0.0
-    ixx = (cross * (y * y + y * y1 + y1 * y1)).sum() / 12.0  # integral of y^2
-    iyy = (cross * (x * x + x * x1 + x1 * x1)).sum() / 12.0  # integral of x^2
-    ixy = (cross * (x * y1 + 2 * x * y + 2 * x1 * y1 + x1 * y)).sum() / 24.0
     cov = np.array([[iyy, ixy], [ixy, ixx]]) / area
     w, vecs = np.linalg.eigh(cov)
     w = np.clip(w, 0, None)
@@ -99,23 +137,47 @@ def measure(poly, n: int) -> dict:
 
 
 def find_courses(rows: list[dict]) -> list[dict]:
-    """The courses of the stones (``rows`` of :func:`measure`, their ``course`` set): centres sorted by ``v``, a new
-    course where the gap to the previous centre is more than half the median stone height."""
+    """The courses of the stones (``rows`` of :func:`measure`, their ``course`` set): each stone is joined to its
+    neighbour on the right along the face - the nearest stone that starts after it (by less than half the median
+    stone width) and shares at least half of the smaller height with it - and the chains so made are the courses. A
+    course sloping a few degrees stays one course, and stays apart from the courses above and below it."""
     if not rows:
         return []
-    gap = 0.5 * float(np.median([r["height"] for r in rows]))
-    order = sorted(range(len(rows)), key=lambda i: rows[i]["v"])
-    groups, current = [], [order[0]]
-    for a, b in zip(order[:-1], order[1:]):
-        if rows[b]["v"] - rows[a]["v"] > gap:
-            groups.append(current)
-            current = []
-        current.append(b)
-    groups.append(current)
+    n = len(rows)
+    width = float(np.median([r["width"] for r in rows]))
+    lo = np.array([r["v"] - r["height"] / 2 for r in rows])
+    hi = np.array([r["v"] + r["height"] / 2 for r in rows])
+    left = np.array([r["u"] - r["width"] / 2 for r in rows])
+    right = np.array([r["u"] + r["width"] / 2 for r in rows])
+    height = hi - lo
+    parent = list(range(n))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        start = left > right[i] - 0.25 * (right[i] - left[i])
+        near = start & (left - right[i] <= 0.5 * width)
+        near[i] = False
+        overlap = np.minimum(hi, hi[i]) - np.maximum(lo, lo[i])
+        ok = near & (overlap >= 0.5 * np.minimum(height, height[i]))
+        if ok.any():
+            cand = np.nonzero(ok)[0]
+            j = int(cand[np.lexsort((-overlap[cand], left[cand]))[0]])  # the nearest, then the most overlapping
+            parent[root(j)] = root(i)
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(root(i), []).append(i)
+    v_all = np.array([r["v"] for r in rows])
+    u_all = np.array([r["u"] for r in rows])
+    groups = sorted(groups.values(), key=lambda idx: float(np.mean(v_all[idx])))
     courses = []
     for k, idx in enumerate(groups):
-        u = np.array([rows[i]["u"] for i in idx])
-        v = np.array([rows[i]["v"] for i in idx])
+        u = u_all[idx]
+        v = v_all[idx]
         slope, scatter = None, float(v.std())
         if len(idx) >= 2 and np.ptp(u) > 1e-6:
             b, a = np.polyfit(u, v, 1)
@@ -147,17 +209,21 @@ def typology(rows: list[dict], courses: list[dict]) -> dict:
     rect = [r["rectangularity"] for r in rows if r["rectangularity"] is not None]
     med_elong = float(np.median(elong)) if elong else None
     med_rect = float(np.median(rect)) if rect else None
-    coursed = share >= COURSED_SHARE
-    regular = None if spread is None else spread < REGULAR_SPREAD
-    squared = bool(med_elong is not None and med_rect is not None and med_elong < SQUARED_ELONGATION
-                   and med_rect > SQUARED_RECTANGULARITY)
+    coursed = round(100 * share) >= round(100 * COURSED_SHARE)  # compared as the line shows them
+    regular = None if spread is None else round(100 * spread) < round(100 * REGULAR_SPREAD)
+    squared = bool(med_rect is not None and round(med_rect, 2) > SQUARED_RECTANGULARITY)
+    elongated = bool(med_elong is not None and round(med_elong, 2) >= SQUARED_ELONGATION)
     words = [t("a filari", "coursed") if coursed else t("senza filari evidenti", "uncoursed")]
     if regular is None:
         words.append(t("regolarità dei filari non valutabile", "regularity of the courses not assessable"))
     else:
         words.append(t("regolare", "regular") if regular else t("irregolare", "irregular"))
-    words.append(t("a conci squadrati", "of squared stones") if squared else t("di pietre non squadrate",
-                                                                               "of unsquared stones"))
+    if squared:
+        words.append(t("a conci squadrati allungati", "of elongated squared stones") if elongated
+                     else t("a conci squadrati", "of squared stones"))
+    else:
+        words.append(t("di pietre non squadrate allungate", "of elongated unsquared stones") if elongated
+                     else t("di pietre non squadrate", "of unsquared stones"))
     why = [t(f"{num(100 * share, 0)} % delle pietre in filari orizzontali",
              f"{num(100 * share, 0)} % of the stones in horizontal courses")]
     if spread is not None:
@@ -169,7 +235,8 @@ def typology(rows: list[dict], courses: list[dict]) -> dict:
         why.append(t(f"rettangolarità mediana {num(med_rect, 2)}", f"median rectangularity {num(med_rect, 2)}"))
     line = t(f"Le misure suggeriscono una muratura {', '.join(words)} ({'; '.join(why)}).",
              f"The measures suggest a masonry {', '.join(words)} ({'; '.join(why)}).")
-    return {"coursed": coursed, "regular": regular, "squared": squared, "share_in_courses": share,
+    return {"coursed": coursed, "regular": regular, "squared": squared, "elongated": elongated,
+            "share_in_courses": share,
             "course_spread": spread, "median_elongation": med_elong, "median_rectangularity": med_rect, "line": line}
 
 
@@ -187,40 +254,76 @@ def region_of(entry: dict, region=None):
 def measure_face(chunk, wid: str, eid: str | None = None, region=None, progress=None) -> dict:
     """The measures of the stones of a face, its courses, the mortar share and the type suggested; the tables in the
     face's folder (``pietre.csv``, ``filari.csv``, ``pietre.xlsx``, ``pietre_misure.gpkg``, ``pietre.json``); the
-    summary kept with the wall. ``region``: the wall's area on the face (default: the region kept from a previous
-    run, else the face's bounds)."""
+    summary kept with the wall. ``region``: the wall's area on the face, drawn (kept for the next runs); without it
+    the area drawn before, else the face's bounds as they are now.
+
+    The stones' area is their union within the wall's area: a stone drawn twice counts once (:func:`stone_items`).
+    Stones smaller than four pixels of the elevation on their smaller side are left out of the measures and named; the
+    face is refused only when most of its stones are."""
     from shapely import wkt as swkt
+    from shapely.ops import unary_union
 
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
     w, entry = walls.need_face(chunk, wid, eid)
-    stones = face_stones(chunk, entry["id"])
-    if not stones:
+    items, set_aside = stone_items(chunk, entry["id"])
+    if not items:
         raise NotReady(t("La faccia non ha pietre: usa lo strumento Pietre del programma sul prospetto della faccia "
                          "(Trova le pietre), poi Misura le pietre.", "The face has no stones: use the program's "
                          "Stones tool on the face's elevation (Find the stones), then Measure the stones."))
     res = float(entry.get("resolution") or 0.0)
-    rows = [measure(p, i + 1) for i, p in enumerate(stones)]
-    smallest = min(min(r["width"], r["height"]) for r in rows)
-    if res > RESOLUTION_SHARE * smallest:
-        raise NotReady(t(f"Il prospetto della faccia ha {num(res * 1000, 1)} mm per pixel, più di un quarto della "
-                         f"pietra più piccola ({num(smallest * 1000, 0)} mm): le misure sarebbero quelle dei pixel. "
-                         f"Rifai la faccia a {num(RESOLUTION_SHARE * smallest * 1000, 1)} mm per pixel o meno.",
-                         f"The face's elevation has {num(res * 1000, 1)} mm per pixel, more than a quarter of the "
-                         f"smallest stone ({num(smallest * 1000, 0)} mm): the measures would be the pixels'. Make "
-                         f"the face again at {num(RESOLUTION_SHARE * smallest * 1000, 1)} mm per pixel or finer."))
+    all_rows = [measure(p, n) for n, p in items]
+    limit = res / RESOLUTION_SHARE  # the smallest side a stone may have at this resolution
+    small = [r for r in all_rows if min(r["width"], r["height"]) < limit]
+    if len(small) > 0.5 * len(all_rows):
+        smallest = min(min(r["width"], r["height"]) for r in all_rows)
+        raise NotReady(t(f"Il prospetto della faccia ha {num(res * 1000, 1)} mm per pixel: {len(small)} pietre su "
+                         f"{len(all_rows)} hanno il lato minore sotto {num(limit * 1000, 0)} mm (quattro pixel; la più "
+                         f"piccola {num(smallest * 1000, 0)} mm): le misure sarebbero quelle dei pixel. Rifai la "
+                         "faccia "
+                         f"a {num(RESOLUTION_SHARE * smallest * 1000, 1)} mm per pixel o meno.",
+                         f"The face's elevation has {num(res * 1000, 1)} mm per pixel: {len(small)} stones of "
+                         f"{len(all_rows)} have their smaller side under {num(limit * 1000, 0)} mm (four pixels; the "
+                         f"smallest {num(smallest * 1000, 0)} mm): the measures would be the pixels'. Make the face "
+                         f"again at {num(RESOLUTION_SHARE * smallest * 1000, 1)} mm per pixel or finer."))
+    small_n = {r["n"] for r in small}
+    rows = [r for r in all_rows if r["n"] not in small_n]
+    stones = [p for n, p in items if n not in small_n]
     previous = walls.results(chunk, w["id"], entry["id"]).get("stones") or {}
-    if region is None and previous.get("region"):
-        area_poly = swkt.loads(previous["region"])
-        region_kind = "drawn"
+    if region is not None:
+        area_poly, region_kind = region_of(entry, region), "drawn"
+    elif previous.get("region_kind") == "drawn" and previous.get("region"):
+        area_poly, region_kind = swkt.loads(previous["region"]), "drawn"
     else:
-        area_poly = region_of(entry, region)
-        region_kind = "bounds" if region is None else "drawn"
+        area_poly, region_kind = region_of(entry, None), "bounds"
     progress(0.3, t("Filari", "Courses"))
     courses = find_courses(rows)
-    stones_area = float(sum(p.intersection(area_poly).area for p in stones))
+    stones_area = float(unary_union([p for _n, p in items]).intersection(area_poly).area)
     mortar = 1.0 - stones_area / area_poly.area if area_poly.area > 0 else None
+    warnings = []
+    if mortar is not None and not 0.0 <= mortar <= 1.0:
+        warnings.append(t(f"La quota di malta calcolata ({num(100 * mortar, 1)} %) esce da 0-100 %: controlla l'area "
+                          "del muro.", f"The mortar share computed ({num(100 * mortar, 1)} %) is outside 0-100 %: "
+                          "check the wall's area."))
+        mortar = min(max(mortar, 0.0), 1.0)
+    if set_aside["merged"]:
+        warnings.append(t(f"{len(set_aside['merged'])} pietre disegnate due volte (sovrapposte per più di metà) "
+                          "contate "
+                          f"una volta: n. {', '.join(map(str, set_aside['merged']))}.",
+                          f"{len(set_aside['merged'])} stones drawn twice (overlapping by more than half) counted "
+                          "once: "
+                          f"no. {', '.join(map(str, set_aside['merged']))}."))
+    if set_aside["multipart"]:
+        warnings.append(t(f"Pietre disegnate in più parti, misurate sulla parte maggiore: n. "
+                          f"{', '.join(map(str, set_aside['multipart']))}.", f"Stones drawn in several parts, measured "
+                          f"on their largest part: no. {', '.join(map(str, set_aside['multipart']))}."))
+    if small:
+        listed = "; ".join(f"n. {r['n']} (u {num(r['u'], 2)}, v {num(r['v'], 2)})" for r in small[:10])
+        warnings.append(t(f"{len(small)} pietre più piccole di quattro pixel ({num(limit * 1000, 0)} mm) lasciate "
+                          "fuori "
+                          f"dalle misure: {listed}.", f"{len(small)} stones smaller than four pixels "
+                          f"({num(limit * 1000, 0)} mm) left out of the measures: {listed}."))
     typ = typology(rows, courses)
     folder = walls.face_folder(chunk, w["id"], entry["id"])
     folder.mkdir(parents=True, exist_ok=True)
@@ -228,11 +331,15 @@ def measure_face(chunk, wid: str, eid: str | None = None, region=None, progress=
     write_csv(folder / "pietre.csv", rows, STONE_COLUMNS)
     write_csv(folder / "filari.csv", courses, COURSE_COLUMNS)
     summary = {"stones": len(rows), "courses": len([c for c in courses if c["counts"]]), "mortar": mortar,
-               "wall_area": float(area_poly.area), "stones_area": stones_area, "region": area_poly.wkt,
-               "region_kind": region_kind, "resolution": res, "smallest": smallest,
+               "wall_area": float(area_poly.area), "stones_area": stones_area, "region_kind": region_kind,
+               "resolution": res, "smallest": min(min(r["width"], r["height"]) for r in rows),
                "median_width": float(np.median([r["width"] for r in rows])),
                "median_height": float(np.median([r["height"] for r in rows])),
+               "merged": set_aside["merged"], "multipart": set_aside["multipart"],
+               "too_small": [{"n": r["n"], "u": r["u"], "v": r["v"]} for r in small], "warnings": warnings,
                "typology": typ, "made": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if region_kind == "drawn":
+        summary["region"] = area_poly.wkt
     write_xlsx(folder / "pietre.xlsx", rows, courses, summary, entry)
     write_gpkg(folder / "pietre_misure.gpkg", stones, rows)
     write_world_gpkg(chunk, entry, folder / "pietre_misure_mondo.gpkg", stones, rows)
@@ -245,6 +352,14 @@ def measure_face(chunk, wid: str, eid: str | None = None, region=None, progress=
     walls.set_result(chunk, w["id"], entry["id"], "stones", summary)
     progress(1.0, t("Pietre misurate", "Stones measured"))
     return {**summary, "rows": rows}
+
+
+def drawn_region(chunk, wid: str, eid: str):
+    """The wall's area drawn on the face (shapely, ``(u, v)``), None when none was drawn."""
+    from shapely import wkt
+
+    st = walls.results(chunk, wid, eid).get("stones") or {}
+    return wkt.loads(st["region"]) if st.get("region_kind") == "drawn" and st.get("region") else None
 
 
 def set_region(chunk, wid: str, eid: str, region) -> None:
@@ -386,9 +501,10 @@ def export_face(chunk, wid: str, eid: str | None, folder, stem: str | None = Non
 
     w, entry = walls.need_face(chunk, wid, eid)
     paths = export_drawings(chunk, entry, folder, stem=stem)
-    stones = face_stones(chunk, entry["id"])
+    items, _set_aside = stone_items(chunk, entry["id"])
+    stones = [p for _n, p in items]
     if stones:
-        rows = [measure(p, i + 1) for i, p in enumerate(stones)]
+        rows = [measure(p, n) for n, p in items]
         find_courses(rows)
         add_to_export(chunk, entry, paths, rows, stones)
     face = walls.face_folder(chunk, w["id"], entry["id"])
@@ -420,4 +536,5 @@ def stones_text(s: dict) -> str:
                        f"course {c['n']}: height {num(c['height'], 3)}, {c['stones']} stones, thickness "
                        f"{metres(c['thickness'])}, slope {slope}"))
     lines.append(s["typology"]["line"])
+    lines += list(s.get("warnings") or [])
     return "\n".join(lines)

@@ -7,9 +7,13 @@ Rules of the proposals (on the face, ``v`` upwards):
 * **si appoggia a**: a unit above another and touching it along at least 20 % of its own width;
 * **taglia**: a unit whose outline interrupts a course of the stones of another (the line through the course's
   centres, within the other unit, enters the first);
-* **copre**: a unit that encloses the top of another (it runs along the other's top and down beside it on both sides).
+* **copre**: a unit above another (its lowest point not below the other's top) that runs along the other's top and
+  spans its whole width;
+* **riempie**: a unit enclosed by another (within it, the other running along at least 90 % of its outline): an
+  opening or a gap blocked inside a wall. The wall around it gets no other relationship to it.
 
-For one pair the strongest is proposed (taglia, then copre, then si appoggia a), each with its evidence. Nothing is
+For one pair the strongest is proposed (riempie, taglia, copre, then si appoggia a), each with its evidence. The rules
+read shapes: they cannot tell a cut from a straight joint where one unit abuts another. Nothing is
 written without the user's check: the relationships are proposals until accepted."""
 from __future__ import annotations
 
@@ -20,8 +24,10 @@ from .texts import metres, num, t
 from .walls import NotReady
 
 TOUCH_SHARE = 0.20
-INVERSE = {"Si appoggia a": "Gli si appoggia", "Taglia": "Tagliato da", "Copre": "Coperto da"}
-RELATION_EN = {"Si appoggia a": "abuts", "Taglia": "cuts", "Copre": "covers"}
+INVERSE = {"Si appoggia a": "Gli si appoggia", "Taglia": "Tagliato da", "Copre": "Coperto da",
+           "Riempie": "Riempito da"}
+RELATION_EN = {"Si appoggia a": "abuts", "Taglia": "cuts", "Copre": "covers", "Riempie": "fills"}
+ENCLOSED_SHARE = 0.9  # a unit whose outline runs along another for this share of its length, inside it: enclosed
 
 
 def face_units(chunk, eid: str) -> list[tuple[object, dict]]:
@@ -82,7 +88,10 @@ def _rests_on(a, b, tol: float):
     va, vb = a.centroid.y, b.centroid.y
     if va <= vb:
         return None
-    contact = _touching(a, b, tol).intersection(_below(a, va))
+    from shapely.geometry import box
+
+    bu0, _bv0, bu1, _bv1 = b.bounds  # the contact within b's own width: the tolerance does not run past its corners
+    contact = _touching(a, b, tol).intersection(_below(a, va)).intersection(box(bu0, -1e9, bu1, 1e9))
     if contact.is_empty:
         return None
     u0, _v0, u1, _v1 = a.bounds
@@ -127,12 +136,32 @@ def _cuts(a, b, courses: list[dict], stones_uv: list) -> dict | None:
     return None
 
 
-def _encloses_top(a, b, tol: float) -> dict | None:
-    """Whether ``a`` encloses the top of ``b``: ``b``'s top line (its highest point at each ``u``) runs along ``a``
-    and ``a`` goes down beside ``b`` on both sides below that top."""
+def _outer(g):
+    """``g`` with its holes filled (a wall drawn around the opening it holds)."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    return unary_union([Polygon(p.exterior) for p in getattr(g, "geoms", [g])])
+
+
+def _enclosed(outer, inner, tol: float) -> float | None:
+    """Whether ``inner`` lies within ``outer`` (holes filled) and ``outer`` runs along at least ``ENCLOSED_SHARE`` of
+    its outline - an opening blocked inside a wall: the share, or None."""
+    if not _outer(outer).buffer(tol).contains(inner):
+        return None
+    along = inner.boundary.intersection(outer.buffer(tol)).length / max(inner.boundary.length, 1e-12)
+    return float(along) if along >= ENCLOSED_SHARE else None
+
+
+def _covers(a, b, tol: float) -> dict | None:
+    """Whether ``a`` covers ``b``: ``a`` lies above ``b`` (its lowest point not below ``b``'s top, within ``tol``), runs
+    along at least 90 % of ``b``'s top line (its highest point at each ``u``) and spans ``b``'s whole width."""
     from shapely.geometry import Point, box
 
     u0, v0, u1, v1 = b.bounds
+    au0, av0, au1, _av1 = a.bounds
+    if av0 < v1 - tol or au0 > u0 + tol or au1 < u1 - tol:
+        return None
     us = np.linspace(u0 + 0.05 * (u1 - u0), u1 - 0.05 * (u1 - u0), 21)
     tops = []
     for u in us:
@@ -143,16 +172,7 @@ def _encloses_top(a, b, tol: float) -> dict | None:
         return None
     grown = a.buffer(tol)
     along = sum(grown.contains(Point(u, v)) for u, v in tops) / len(tops)
-    if along < 0.9:
-        return None
-    top_low = min(v for _u, v in tops)
-    width = max(u1 - u0, 1e-6)
-    side = max(tol * 3, 0.05 * width)
-    left = a.intersection(box(u0 - side - tol, v0 - 1, u0 + tol, top_low))
-    right = a.intersection(box(u1 - tol, v0 - 1, u1 + side + tol, top_low))
-    if left.area <= 0 or right.area <= 0:
-        return None
-    return {"along": float(along)}
+    return {"along": float(along)} if along >= 0.9 else None
 
 
 def propose(chunk, wid: str, eid: str | None = None) -> list[dict]:
@@ -179,19 +199,29 @@ def propose(chunk, wid: str, eid: str | None = None) -> list[dict]:
             if i == j:
                 continue
             found = None
-            cut = _cuts(a, b, courses, stones_uv) if stones_uv else None
+            if _enclosed(a, b, tol) is not None:
+                continue  # a wall around an opening blocked in it: the fill speaks for itself (below)
+            fill = _enclosed(b, a, tol)
+            if fill is not None:
+                found = ("Riempie", t(f"{unit_label(ra)} sta dentro {unit_label(rb)}, che la circonda per il "
+                                      f"{num(100 * fill, 0)} % del contorno: un'apertura o una lacuna tamponata (il "
+                                      "taglio nel muro, se c'è, è un'altra unità)",
+                                      f"{unit_label(ra)} lies within {unit_label(rb)}, which surrounds it along "
+                                      f"{num(100 * fill, 0)} % of its outline: a blocked opening or gap (the cut in "
+                                      "the wall, if any, is another unit)"))
+            cut = _cuts(a, b, courses, stones_uv) if stones_uv and found is None else None
             if cut is not None:
                 found = ("Taglia", t(f"il filare {cut['course']} (quota {num(cut['height'], 2)}) di {unit_label(rb)} "
                                      f"si interrompe contro {unit_label(ra)}",
                                      f"course {cut['course']} (height {num(cut['height'], 2)}) of {unit_label(rb)} "
                                      f"stops against {unit_label(ra)}"))
             if found is None:
-                enc = _encloses_top(a, b, tol)
-                if enc is not None:
-                    found = ("Copre", t(f"{unit_label(ra)} racchiude la sommità di {unit_label(rb)} "
-                                        f"({num(100 * enc['along'], 0)} % della sommità) e scende ai suoi lati",
-                                        f"{unit_label(ra)} encloses the top of {unit_label(rb)} "
-                                        f"({num(100 * enc['along'], 0)} % of the top) and goes down beside it"))
+                cov = _covers(a, b, tol)
+                if cov is not None:
+                    found = ("Copre", t(f"{unit_label(ra)} sta sopra {unit_label(rb)}, ne segue la sommità per il "
+                                        f"{num(100 * cov['along'], 0)} % e lo copre per tutta la larghezza",
+                                        f"{unit_label(ra)} lies above {unit_label(rb)}, runs along "
+                                        f"{num(100 * cov['along'], 0)} % of its top and spans its whole width"))
             if found is None:
                 rest = _rests_on(a, b, tol)
                 if rest is not None:

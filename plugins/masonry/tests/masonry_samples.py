@@ -197,14 +197,14 @@ def irregular_stones(v_base: float, n: int = 60, seed: int = 3):
 
 def usm_layout(v_base: float):
     """Four USM on a face (``u`` from 0): USM 10 the coursed wall with a notch, USM 12 the patch in the notch (it cuts
-    the courses of 10), USM 11 a block on top of 10, USM 13 around the top of 11 and on 10 beside it."""
+    the courses of 10), USM 11 a block on top of 10, USM 13 lying on the top of 11 and wider than it."""
     from shapely.geometry import box
 
     top = v_base + COURSES * PITCH
     notch = box(4.0, v_base + 0.5, 5.0, top)
     u10 = box(0.0, v_base, STONE_WALL, top).difference(notch)
     u11 = box(0.5, top, 2.5, top + 0.8)
-    u13 = box(0.0, top, 3.0, top + 1.4).difference(u11)
+    u13 = box(0.0, top + 0.8, 3.0, top + 1.4)
     return {"10": u10, "11": u11, "12": notch, "13": u13}, notch
 
 

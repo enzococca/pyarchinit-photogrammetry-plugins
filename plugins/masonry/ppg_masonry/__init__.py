@@ -766,7 +766,7 @@ class MasonryPlugin(Plugin):
         rec = self._wall()
         thickness = None
         try:
-            ifc.wall_solid(chunk, rec["id"])
+            ifc.wall_solids(chunk, rec["id"])
         except ifc.NotReady as exc:
             if "spessore" not in str(exc) and "thickness" not in str(exc):
                 raise
@@ -792,15 +792,19 @@ class MasonryPlugin(Plugin):
                       f"{metres(r['thickness'])} ({r['source']}), {r['parts']} USM, {r['relations']} relationships.")))
 
     def _export_ifc(self, chunk, path, progress=None):
-        """*File > Esporta > Muro (IFC)*: the wall chosen in the pane (else the first with a plane face); a wall with
-        one face surveyed goes behind it by the thickness last given (0,6 m at first)."""
+        """*File > Esporta > Muro (IFC)*: the wall chosen in the pane (else the first); a wall whose thickness is not
+        measured between two faces is refused (the pane's *IFC del muro...* asks it)."""
         from . import ifc, walls
 
         wid = self.pane.wall_id() if self.pane is not None else None
         records = [w for w in walls.walls(chunk) if not wid or w["id"] == wid] or walls.walls(chunk)
         if not records:
             raise walls.NotReady(t("Nessun muro nel chunk.", "No wall in the chunk."))
-        return ifc.export_wall(chunk, records[0]["id"], path, float(self.context.settings.get("thickness", 0.6)))
+        try:
+            return ifc.export_wall(chunk, records[0]["id"], path)
+        except ifc.NotReady as exc:  # a thickness never given is never written: the pane asks it
+            raise ifc.NotReady(f"{exc} " + t("Usa Murature > IFC del muro..., che chiede lo spessore.",
+                                             "Use Masonry > Wall IFC..., which asks the thickness.")) from exc
 
     def _export_plate(self, chunk, path, progress=None):
         """*File > Esporta > Tavola della faccia (PDF)*: the face chosen in the pane (else the first face)."""
@@ -811,8 +815,9 @@ class MasonryPlugin(Plugin):
         wid = self.pane.wall_id() if self.pane is not None else None
         eid = self.pane.face_id() if self.pane is not None else None
         rec = walls.find(chunk, wid) if wid else next((w for w in walls.walls(chunk) if w["faces"]), None)
-        if rec is None:
-            raise walls.NotReady(t("Nessuna faccia nel chunk.", "No face in the chunk."))
+        if rec is None or not rec["faces"]:
+            raise walls.NotReady(t("Nessuna faccia nel muro scelto: fai prima una faccia.",
+                                   "No face in the wall chosen: make a face first."))
         path = Path(path)
         return outputs.plate(chunk, rec["id"], eid or rec["faces"][0], path.parent, stem=path.stem, formats=("pdf",))
 
@@ -848,12 +853,12 @@ class MasonryPlugin(Plugin):
         folder = walls.face_folder(chunk, rec["id"], entry["id"]) / "qgis"
 
         def job(p):
-            from pyarchinit_photogrammetry.engine.elevation import export_drawings
+            from pyarchinit_photogrammetry.engine.elevation import elevation_paths
 
             p(0.1, t("File della faccia", "Files of the face"))
             files = outputs.export_face(chunk, rec["id"], entry["id"], folder)
-            ortho = export_drawings(chunk, entry, folder, stem="ortofoto_tmp", raster=True).get("ortho")
-            rasters = [{"name": entry["name"], "path": str(ortho)}] if ortho else []
+            ortho, _relief = elevation_paths(chunk, entry)  # the elevation's own orthophoto, in the face's frame
+            rasters = [{"name": entry["name"], "path": str(ortho)}] if ortho.exists() else []
             if files.get("bulge"):
                 rasters.append({"name": t("Spanciamento (cm)", "Bulge (cm)"), "path": str(files["bulge"]),
                                 "ramp": "diverging", "opacity": 0.6})
@@ -950,12 +955,13 @@ class MasonryPlugin(Plugin):
             return 1
         walls.prune(chunk)
         changed = False
+        new_wall = None
         try:
             if ns.what == "face":
                 rec = walls.find(chunk, ns.wall) if ns.wall else None
-                if rec is None:
+                if rec is None:  # made with the face: a face refused leaves no empty wall
                     rec = walls.new_wall(chunk, ns.wall, ns.kind)
-                    changed = True
+                    new_wall = rec["id"]
                 made = []
                 if ns.line:
                     x1, y1, x2, y2 = parse_numbers(ns.line)
@@ -1103,6 +1109,8 @@ class MasonryPlugin(Plugin):
                 changed = True
         except walls.NotReady as exc:
             print(exc)
+            if new_wall:
+                walls.remove_wall(chunk, new_wall)
             if changed:
                 doc.save()
             return 1

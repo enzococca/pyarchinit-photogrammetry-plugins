@@ -115,7 +115,7 @@ def test_command_line(tmp_path, monkeypatch):
     assert "5 filari" in r.output and "pietre.xlsx" in r.output
     r = cli.invoke(app, ["plugin", "masonry", "usm", project, "Muro est", "--accept", "1,3"])
     assert r.exit_code == 0, r.output
-    assert "4. USM" in r.output and "Accettati: 2" in r.output
+    assert "3. USM" in r.output and "Accettati: 2" in r.output
     ch = ppg.Document.open(project).chunk
     accepted = walls.results(ch, walls.need(ch, "Muro est")["id"], eid)["usm"]["accepted_full"]
     assert len(accepted) == 2
@@ -211,7 +211,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         offered = []
         monkeypatch.setattr(plugin, "_choose_relations", lambda ps: offered.append(ps) or ps[:2])
         plugin._requested("propose")
-        assert len(offered[0]) == 4 and "Rapporti accettati" in pane.summary.toPlainText()
+        assert len(offered[0]) == 3 and "Rapporti accettati" in pane.summary.toPlainText()
         said = []
         monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
         plugin._requested("save_pyarchinit")

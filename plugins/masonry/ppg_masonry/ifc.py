@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from . import walls
-from .texts import t
+from .texts import num, t
 from .walls import NotReady
 
 
@@ -34,61 +34,107 @@ def _plane_of(chunk, wid: str, entry: dict) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _outline(chunk, wid: str, entry: dict):
-    from shapely import wkt
     from shapely.geometry import box
 
-    st = walls.results(chunk, wid, entry["id"]).get("stones") or {}
-    if st.get("region"):
-        return wkt.loads(st["region"])
-    return box(*entry["bounds"])
+    from .stones import drawn_region
+
+    region = drawn_region(chunk, wid, entry["id"])
+    return region if region is not None else box(*entry["bounds"])
 
 
-def wall_solid(chunk, wid: str, thickness: float | None = None) -> dict:
-    """The slab of the wall: ``{"entry", "outline" (u, v), "origin", "u", "v", "into", "thickness", "source"}`` -
-    the outline lies on the first face's fitted plane (moved along the frame's normal to it at the outline's centre),
-    ``into`` points into the wall."""
+PAIR_ANGLE_DEG = 15.0  # two faces are the two sides of one wall when they look within this of opposite ways
+PAIR_MAX_DISTANCE = 3.0  # and are closer than this (m): a tower's opposite sides, a building's facades are not
+
+
+def _solid_of(chunk, wid: str, a: dict) -> dict:
+    """The slab of the face ``a`` without its thickness: the outline on its fitted plane."""
     from .shape import _frame
 
+    frame = _frame(a)
+    outline = _outline(chunk, wid, a)
+    c = outline.centroid
+    pa, na = _plane_of(chunk, wid, a)
+    at = frame.point(np.array([c.x]), np.array([c.y]), np.array([0.0]))[0]
+    denom = float(frame.normal @ na)  # the frame point moved along the frame's normal onto the fitted plane
+    shift = float((pa - at) @ na / denom) if abs(denom) > 1e-6 else 0.0
+    origin = frame.point(np.array([0.0]), np.array([0.0]), np.array([shift]))[0]
+    return {"entry": a, "other": None, "outline": outline, "origin": origin, "u": frame.u_axis, "v": frame.v_axis,
+            "into": -frame.normal, "start": at + shift * frame.normal, "frame_normal": frame.normal}
+
+
+def _pair_thickness(chunk, wid: str, solid: dict, b: dict) -> tuple[float | None, str]:
+    """The thickness between the face of ``solid`` and the face ``b`` when they are the two sides of one wall: they
+    look within ``PAIR_ANGLE_DEG`` of opposite ways and are closer than ``PAIR_MAX_DISTANCE``. ``(None, why)``
+    otherwise."""
+    from .shape import _frame
+
+    cos = float(_frame(b).normal @ solid["frame_normal"])
+    if cos > -np.cos(np.radians(PAIR_ANGLE_DEG)):
+        return None, "angle"
+    pb, nb = _plane_of(chunk, wid, b)
+    den = float(solid["into"] @ nb)
+    if abs(den) < 1e-6:
+        return None, "angle"
+    thick = float((pb - solid["start"]) @ nb / den)
+    if thick <= 0:
+        return None, "side"
+    if thick > PAIR_MAX_DISTANCE:
+        return None, "far"
+    return thick, ""
+
+
+def wall_solids(chunk, wid: str, thickness: float | None = None) -> list[dict]:
+    """The slabs of the wall: ``[{"entry", "other", "outline" (u, v), "origin", "u", "v", "into", "thickness",
+    "source"}]``. Two plane faces that are the two sides of one wall (they look within 15 degrees of opposite ways
+    and lie less than 3 m apart) make one slab, its thickness measured between their fitted planes; every other
+    plane face (a wall surveyed on one side, each side of a polygonal tower) makes a slab of the ``thickness``
+    given - without it the faces that need it are named."""
     w = walls.need(chunk, wid)
     planes = [walls.with_bounds(chunk, e) for e in (walls.elevation(chunk, f) for f in w["faces"])
               if e is not None and (e.get("frame") or {}).get("kind") == "plane"]
     if not planes:
         raise NotReady(t("Il muro non ha facce piane: l'IFC del muro si fa da una faccia su un piano.",
                          "The wall has no plane face: the wall's IFC is made from a face on a plane."))
-    a = planes[0]
-    frame = _frame(a)
-    outline = _outline(chunk, w["id"], a)
-    c = outline.centroid
-    pa, na = _plane_of(chunk, w["id"], a)
-    at = frame.point(np.array([c.x]), np.array([c.y]), np.array([0.0]))[0]
-    # the frame point moved along the frame's normal onto the fitted plane
-    denom = float(frame.normal @ na)
-    shift = float((pa - at) @ na / denom) if abs(denom) > 1e-6 else 0.0
-    other = None
-    for b in planes[1:]:
-        if float(_frame(b).normal @ frame.normal) < -0.9:  # it looks the other way: the other side of the wall
-            other = b
-            break
-    if other is not None:
-        pb, nb = _plane_of(chunk, w["id"], other)
-        start = at + shift * frame.normal
-        into = -frame.normal
-        den = float(into @ nb)
-        thick = float((pb - start) @ nb / den) if abs(den) > 1e-6 else None
-        source = t(f"misurato fra le facce «{a['name']}» e «{other['name']}»",
-                   f"measured between the faces «{a['name']}» and «{other['name']}»")
-        if thick is None or thick <= 0:
-            raise NotReady(t("Le due facce non racchiudono un muro: controlla da che parte guardano.",
-                             "The two faces do not enclose a wall: check which way they look."))
-    else:
-        if not thickness or thickness <= 0:
-            raise NotReady(t("Il muro ha una sola faccia rilevata: dai lo spessore del muro.",
-                             "The wall has one face surveyed only: give the wall's thickness."))
-        thick = float(thickness)
-        source = t(f"dato ({a['name']} rilevata da una parte sola)", f"given ({a['name']} surveyed on one side only)")
-    origin = frame.point(np.array([0.0]), np.array([0.0]), np.array([shift]))[0]
-    return {"entry": a, "other": other, "outline": outline, "origin": origin, "u": frame.u_axis, "v": frame.v_axis,
-            "into": -frame.normal, "thickness": thick, "source": source}
+    out, used, need, refused = [], set(), [], []
+    for i, a in enumerate(planes):
+        if i in used:
+            continue
+        solid = _solid_of(chunk, w["id"], a)
+        for j in range(i + 1, len(planes)):
+            if j in used:
+                continue
+            thick, why = _pair_thickness(chunk, w["id"], solid, planes[j])
+            if thick is not None:
+                used.add(j)
+                solid.update(other=planes[j], thickness=thick,
+                             source=t(f"misurato fra le facce «{a['name']}» e «{planes[j]['name']}»",
+                                      f"measured between the faces «{a['name']}» and «{planes[j]['name']}»"))
+                break
+            if why == "far":
+                refused.append(planes[j]["name"])
+        if solid["other"] is None:
+            if not thickness or thickness <= 0:
+                need.append(a["name"])
+                continue
+            solid.update(thickness=float(thickness),
+                         source=t(f"dato ({a['name']} rilevata da una parte sola)",
+                                  f"given ({a['name']} surveyed on one side only)"))
+        out.append(solid)
+    if need:
+        extra = t(" Facce opposte troppo lontane per essere le due parti di un muro (oltre "
+                  f"{num(PAIR_MAX_DISTANCE, 0)} "
+                  "m): " + ", ".join(sorted(set(refused))) + ".", f" Opposite faces too far apart to be the two sides "
+                  f"of one wall (over {num(PAIR_MAX_DISTANCE, 0)} m): " + ", ".join(sorted(set(refused))) + ".") \
+            if refused else ""
+        raise NotReady(t(f"Dai lo spessore del muro: le facce {', '.join(need)} non hanno la faccia dell'altra parte "
+                         "del muro." + extra, f"Give the wall's thickness: the faces {', '.join(need)} have no face on "
+                         "the other side of the wall." + extra))
+    return out
+
+
+def wall_solid(chunk, wid: str, thickness: float | None = None) -> dict:
+    """The first slab of :func:`wall_solids`."""
+    return wall_solids(chunk, wid, thickness)[0]
 
 
 def _pset(chunk, w: dict, solid: dict) -> dict:
@@ -114,7 +160,8 @@ def _pset(chunk, w: dict, solid: dict) -> dict:
 
 def export_wall(chunk, wid: str, path, thickness: float | None = None, project: str | None = None,
                 site: str | None = None) -> dict:
-    """The wall's IFC in ``path``. Returns ``{"path", "thickness", "source", "parts", "relations"}``."""
+    """The wall's IFC in ``path``: an ``IfcWall`` per slab of :func:`wall_solids`. Returns ``{"path", "thickness",
+    "source" (of the first slab), "parts", "relations", "walls", "sources"}``."""
     import ifcopenshell
     import ifcopenshell.api.aggregate
     import ifcopenshell.api.context
@@ -130,7 +177,8 @@ def export_wall(chunk, wid: str, path, thickness: float | None = None, project: 
     from .usm import face_units, unit_label
 
     w = walls.need(chunk, wid)
-    solid = wall_solid(chunk, w["id"], thickness)
+    solids = wall_solids(chunk, w["id"], thickness)
+    solid = solids[0]
     doc = getattr(chunk, "document", None)
     model = ifcopenshell.file(schema="IFC4")
     proj = ifcopenshell.api.root.create_entity(model, ifc_class="IfcProject", name=project or "Rilievo")
@@ -154,7 +202,7 @@ def export_wall(chunk, wid: str, path, thickness: float | None = None, project: 
     site_e = ifcopenshell.api.root.create_entity(model, ifc_class="IfcSite", name=site_name)
     ifcopenshell.api.aggregate.assign_object(model, products=[site_e], relating_object=proj)
 
-    def placement():
+    def placement(solid):
         loc = solid["origin"] - origin
         return model.createIfcLocalPlacement(None, model.createIfcAxis2Placement3D(
             model.createIfcCartesianPoint(tuple(map(float, loc))),
@@ -171,39 +219,44 @@ def export_wall(chunk, wid: str, path, thickness: float | None = None, project: 
         rep = model.createIfcShapeRepresentation(body, "Body", "SweptSolid", [solid_e])
         return model.createIfcProductDefinitionShape(None, None, [rep])
 
-    wall_e = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name=w["name"],
-                                                 predefined_type="SOLIDWALL")
-    ifcopenshell.api.spatial.assign_container(model, products=[wall_e], relating_structure=site_e)
-    wall_e.ObjectPlacement = placement()
-    wall_e.Representation = extrusion(solid["outline"], solid["thickness"])
-    pset = ifcopenshell.api.pset.add_pset(model, product=wall_e, name="Pset_PyArchInit_Masonry")
-    ifcopenshell.api.pset.edit_pset(model, pset=pset, properties=_pset(chunk, w, solid))
-    parts, by_label = [], {}
-    for g, rec in face_units(chunk, solid["entry"]["id"]):
-        poly = g if g.geom_type == "Polygon" else max(g.geoms, key=lambda x: x.area)
-        part = ifcopenshell.api.root.create_entity(model, ifc_class="IfcBuildingElementPart", name=unit_label(rec))
-        part.ObjectPlacement = placement()
-        part.Representation = extrusion(poly, solid["thickness"])
-        ps = ifcopenshell.api.pset.add_pset(model, product=part, name="Pset_PyArchInit_US")
-        attrs = rec.get("attributes") or {}
-        ifcopenshell.api.pset.edit_pset(model, pset=ps, properties={k: str(v) for k, v in {
-            "us": rec.get("us"), "unita_tipo": rec.get("tipo"), "area": rec.get("area"), "sito": rec.get("sito"),
-            "d_stratigrafica": attrs.get("d_stratigrafica")}.items() if v not in (None, "")})
-        parts.append(part)
-        by_label[unit_label(rec)] = part
-    if parts:
-        ifcopenshell.api.aggregate.assign_object(model, products=parts, relating_object=wall_e)
-    relations = 0
-    usm_res = walls.results(chunk, w["id"], solid["entry"]["id"]).get("usm") or {}
-    for r in usm_res.get("accepted_full") or []:
-        a, b = by_label.get(r["unit"]), by_label.get(r["other"])
-        if a is not None and b is not None:
-            model.create_entity("IfcRelConnectsElements", GlobalId=ifcopenshell.guid.new(), Name=r["relation"],
-                                Description="rapporto stratigrafico proposto dalla geometria e accettato",
-                                RelatingElement=a, RelatedElement=b)
-            relations += 1
+    parts_n = relations = 0
+    for solid in solids:
+        name = w["name"] if len(solids) == 1 else f"{w['name']} - {solid['entry'].get('name', '')}"
+        wall_e = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name=name,
+                                                     predefined_type="SOLIDWALL")
+        ifcopenshell.api.spatial.assign_container(model, products=[wall_e], relating_structure=site_e)
+        wall_e.ObjectPlacement = placement(solid)
+        wall_e.Representation = extrusion(solid["outline"], solid["thickness"])
+        pset = ifcopenshell.api.pset.add_pset(model, product=wall_e, name="Pset_PyArchInit_Masonry")
+        ifcopenshell.api.pset.edit_pset(model, pset=pset, properties=_pset(chunk, w, solid))
+        parts, by_label = [], {}
+        for g, rec in face_units(chunk, solid["entry"]["id"]):
+            poly = g if g.geom_type == "Polygon" else max(g.geoms, key=lambda x: x.area)
+            part = ifcopenshell.api.root.create_entity(model, ifc_class="IfcBuildingElementPart",
+                                                       name=unit_label(rec))
+            part.ObjectPlacement = placement(solid)
+            part.Representation = extrusion(poly, solid["thickness"])
+            ps = ifcopenshell.api.pset.add_pset(model, product=part, name="Pset_PyArchInit_US")
+            attrs = rec.get("attributes") or {}
+            ifcopenshell.api.pset.edit_pset(model, pset=ps, properties={k: str(v) for k, v in {
+                "us": rec.get("us"), "unita_tipo": rec.get("tipo"), "area": rec.get("area"), "sito": rec.get("sito"),
+                "d_stratigrafica": attrs.get("d_stratigrafica")}.items() if v not in (None, "")})
+            parts.append(part)
+            by_label[unit_label(rec)] = part
+        if parts:
+            ifcopenshell.api.aggregate.assign_object(model, products=parts, relating_object=wall_e)
+        parts_n += len(parts)
+        usm_res = walls.results(chunk, w["id"], solid["entry"]["id"]).get("usm") or {}
+        for r in usm_res.get("accepted_full") or []:
+            a, b = by_label.get(r["unit"]), by_label.get(r["other"])
+            if a is not None and b is not None:
+                model.create_entity("IfcRelConnectsElements", GlobalId=ifcopenshell.guid.new(), Name=r["relation"],
+                                    Description="rapporto stratigrafico proposto dalla geometria e accettato",
+                                    RelatingElement=a, RelatedElement=b)
+                relations += 1
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     model.write(str(path))
-    return {"path": path, "thickness": solid["thickness"], "source": solid["source"], "parts": len(parts),
-            "relations": relations, "area": float(solid["outline"].area)}
+    return {"path": path, "thickness": solid["thickness"], "source": solid["source"], "parts": parts_n,
+            "relations": relations, "area": float(solid["outline"].area), "walls": len(solids),
+            "sources": [s_["source"] for s_ in solids]}

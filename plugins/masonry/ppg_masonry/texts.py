@@ -72,4 +72,4 @@ def cm(value, decimals: int = 1) -> str:
 
 def azimuth(value) -> str:
     """A direction for the user: ``180°`` from the north of the grid, clockwise."""
-    return "-" if value is None else f"{num(value, 0)}°"
+    return "-" if value is None else f"{num(round(float(value)) % 360, 0)}°"

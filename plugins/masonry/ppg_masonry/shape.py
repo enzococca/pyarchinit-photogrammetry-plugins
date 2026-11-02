@@ -30,6 +30,7 @@ from .walls import NotReady
 
 MAX_FIT_POINTS = 200_000
 BLOCK = 512
+TRACE_OFF = 0.15  # the face more than this from its trace at the stations: the trace is not on the face
 
 
 def _now() -> str:
@@ -104,6 +105,10 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
     progress(0.0, t("Lettura del rilievo della faccia", "Reading the relief of the face"))
     d, profile = read_relief(chunk, entry)
     tr = profile["transform"]
+    warning = band_contact(d, entry)  # on the whole relief, before what lies behind is set aside
+    behind = second_surface(d)
+    if behind is not None:  # a structure behind the wall within the band: the face is the front surface only
+        d = np.where(np.isfinite(d) & (d < behind["threshold"]), np.nan, d)
     rows, cols = _fit_sample(d, max_points)
     if len(rows) < 100:
         raise NotReady(t("La faccia ha troppo poca superficie del modello per misurarne la forma.",
@@ -145,9 +150,10 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
             q = p - centre
             radial = q - (q @ axis)[:, None] * axis
             return sign * (np.linalg.norm(radial, axis=1) - radius)
-    warning = band_contact(d, entry)
     if warning is not None:
         result["band_warning"] = warning
+    if behind is not None:
+        result["behind"] = behind
     progress(0.5, t("Carta dello spanciamento", "Bulge map"))
     bulge = np.full(d.shape, np.nan, np.float32)
     for r0 in range(0, d.shape[0], BLOCK):
@@ -190,6 +196,58 @@ def band_contact(d: np.ndarray, entry: dict) -> dict | None:
         return None
     return {"front": front, "back": back, "share": float((front + back) / n),
             "depth": [float(lo), float(hi)]}
+
+
+SECOND_SURFACE_GAP = 0.10  # two surfaces of the face more than this apart in depth are two structures
+
+
+def second_surface(d: np.ndarray, bin_m: float = 0.01) -> dict | None:
+    """A second surface behind the face within its depth band (a set-back storey, the wall behind a parapet, a
+    risega): two modes of the depths more than ``SECOND_SURFACE_GAP`` apart, each holding at least 10 % of the cells,
+    with a valley between them below half the smaller one. ``{"threshold": depth of the valley, "cells", "share",
+    "gap": distance of the modes (m)}`` - the cells behind the threshold are not the face - or None."""
+    vals = d[np.isfinite(d)]
+    if vals.size < 100 or np.ptp(vals) < SECOND_SURFACE_GAP:
+        return None
+    edges = np.arange(vals.min(), vals.max() + bin_m, bin_m)
+    if len(edges) < 4:
+        return None
+    hist, edges = np.histogram(vals, bins=edges)
+    hist = np.convolve(hist, np.array([1, 2, 3, 2, 1]) / 9.0, mode="same")
+    centres = (edges[:-1] + edges[1:]) / 2
+    peaks = [i for i in range(len(hist)) if hist[i] > 0 and hist[i] >= hist[max(i - 1, 0)]
+             and hist[i] >= hist[min(i + 1, len(hist) - 1)]]
+    gap_bins = int(round(SECOND_SURFACE_GAP / bin_m))
+    best = None
+    for a in peaks:
+        for b in peaks:
+            if b - a <= gap_bins:
+                continue
+            valley = a + int(np.argmin(hist[a:b + 1]))
+            if hist[valley] >= 0.5 * min(hist[a], hist[b]):
+                continue
+            back = float((vals < centres[valley]).sum())
+            front = vals.size - back
+            if min(back, front) < 0.1 * vals.size:
+                continue
+            score = min(hist[a], hist[b]) - hist[valley]
+            if best is None or score > best[0]:
+                best = (score, valley, back, centres[b] - centres[a])
+    if best is None:
+        return None
+    _score, valley, back, gap = best
+    return {"threshold": float(centres[valley]), "cells": int(back), "share": float(back / vals.size),
+            "gap": float(gap)}
+
+
+def behind_text(b: dict) -> str:
+    return t(f"Attenzione: dietro la faccia, nella fascia di profondità, c'è una seconda superficie "
+             f"{num(100 * b['gap'], 0)} cm più indietro ({num(100 * b['share'], 0)} % delle celle): lasciata fuori "
+             "dall'adattamento e dalla carta dello spanciamento. Se è parte della faccia, rifai la faccia con una "
+             "fascia diversa.",
+             f"Warning: behind the face, within the depth band, there is a second surface {num(100 * b['gap'], 0)} cm "
+             f"further back ({num(100 * b['share'], 0)} % of the cells): left out of the fit and of the bulge map. If "
+             "it is part of the face, make the face again with another band.")
 
 
 def band_text(w: dict) -> str:
@@ -240,6 +298,8 @@ def summary_text(r: dict) -> str:
                        f"cm/m) towards {azimuth(r.get('axis_azimuth'))}; radius {metres(r.get('radius'))}."))
     if r.get("band_warning"):
         lines.append(band_text(r["band_warning"]))
+    if r.get("behind"):
+        lines.append(behind_text(r["behind"]))
     lo, hi = r.get("bulge_min_cm"), r.get("bulge_max_cm")
     if lo is not None:
         lines.append(t(f"Spanciamento (scarto dalla superficie adattata, verso chi guarda): da {signed_cm(lo / 100)} "
@@ -276,10 +336,9 @@ def _station_ray(frame, u: float, h: float):
     return p[:2], hor / norm
 
 
-def _crossing(lines: list[np.ndarray], p: np.ndarray, n: np.ndarray, reach: float) -> float | None:
-    """The distance along ``n`` from ``p`` where the line through them first meets ``lines`` (the nearest to ``p``
-    within ``reach``)."""
-    best = None
+def _crossings(lines: list[np.ndarray], p: np.ndarray, n: np.ndarray, reach: float) -> list[float]:
+    """The distances along ``n`` from ``p`` where the line through them meets ``lines`` (within ``reach``)."""
+    out = []
     for line in lines:
         a, b = line[:-1], line[1:]
         e = b - a
@@ -291,11 +350,32 @@ def _crossing(lines: list[np.ndarray], p: np.ndarray, n: np.ndarray, reach: floa
         s = (w[:, 0] * (-e[:, 1]) - w[:, 1] * (-e[:, 0])) / np.where(ok, den, 1.0)
         tt = (n[0] * w[:, 1] - n[1] * w[:, 0]) / np.where(ok, den, 1.0)
         hit = ok & (tt >= -1e-9) & (tt <= 1 + 1e-9) & (np.abs(s) <= reach)
-        if hit.any():
-            s_hit = s[hit][np.argmin(np.abs(s[hit]))]
-            if best is None or abs(s_hit) < abs(best):
-                best = float(s_hit)
-    return best
+        out += [float(x) for x in s[hit]]
+    return out
+
+
+def _crossing(lines, p, n, reach, surface: float | None = None, front: float = np.inf) -> float | None:
+    """The crossing of the face's own surface at a station: the one nearest to the depth ``surface`` the face's relief
+    has there (within 10 cm), else the one nearest to the viewer within the band (not beyond ``front``) - never a
+    surface behind the face, such as the back of a thick wall traced on its axis."""
+    cands = [c for c in _crossings(lines, p, n, reach) if c <= front + 0.02]
+    if not cands:
+        return None
+    if surface is not None and np.isfinite(surface):
+        best = min(cands, key=lambda c: abs(c - surface))
+        if abs(best - surface) <= 0.10:
+            return best
+    return max(cands)
+
+
+def _relief_at(d: np.ndarray, transform, u: float, v: float) -> float | None:
+    col = int(np.floor((u - transform.c) / transform.a))
+    row = int(np.floor((v - transform.f) / transform.e))
+    if 0 <= row < d.shape[0] and 0 <= col < d.shape[1]:
+        win = d[max(row - 1, 0):row + 2, max(col - 1, 0):col + 2]
+        if np.isfinite(win).any():
+            return float(np.nanmedian(win))
+    return None
 
 
 def _band(frame, entry: dict, h: float, reach: float):
@@ -364,25 +444,43 @@ def sections(chunk, wid: str, eid: str | None = None, heights=None, stations=Non
     for i, h in enumerate(heights):
         progress(0.8 * i / len(heights), t(f"Sezione a quota {num(h, 3)}", f"Section at height {num(h, 3)}"))
         cuts.append(_clip(slice_rings(chunk, h), _band(frame, entry, h, reach)))
-    out_stations = []
+    try:
+        relief, profile = read_relief(chunk, entry)
+        rtr = profile["transform"]
+    except NotReady:
+        relief = rtr = None
+    front = float((entry.get("depth") or (-np.inf, np.inf))[1])
+    out_stations, chosen = [], []
     for u in stations:
         found = []
         for h, lines in zip(heights, cuts):
             p, n = _station_ray(frame, u, h)
-            found.append((h, p, n, _crossing(lines, p, n, reach)))
-        ref = next((f[3] for f in found if f[3] is not None), None)
+            surface = None if relief is None else _relief_at(relief, rtr, u, _v_at_height(frame, u, h))
+            s_ = _crossing(lines, p, n, reach, surface, front)
+            found.append((h, p, n, s_))
+        ref = next(((f[0], f[3]) for f in found if f[3] is not None), (None, None))
+        if ref[1] is not None:  # the face at the lowest section: where a trace on the face would be
+            chosen.append(ref[1])
         offsets = []
-        for h, p, n, s in found:
-            pos = None if s is None else p + s * n
-            offsets.append({"height": h, "d": s, "offset": None if s is None or ref is None else s - ref,
+        for h, p, n, s_ in found:
+            pos = None if s_ is None else p + s_ * n
+            offsets.append({"height": h, "d": s_, "offset": None if s_ is None or ref[1] is None else s_ - ref[1],
                             "point": None if pos is None else [float(pos[0]), float(pos[1]), h]})
-        out_stations.append({"u": u, "offsets": offsets})
+        out_stations.append({"u": u, "offsets": offsets, "reference_height": ref[0]})
+    warnings = []
+    if chosen and float(np.median(np.abs(chosen))) > TRACE_OFF:
+        warnings.append(t(f"La faccia sta in media {num(100 * float(np.median(chosen)), 0)} cm dalla traccia: la "
+                          "traccia non è sulla faccia (forse sull'asse del muro). Gli scarti sono misurati sulla "
+                          "superficie che la faccia vede.", f"The face lies {num(100 * float(np.median(chosen)), 0)} "
+                          "cm from the trace on average: the trace is not on the face (perhaps on the wall's axis). "
+                          "The "
+                          "offsets are measured on the surface the face sees."))
     folder = walls.face_folder(chunk, w["id"], entry["id"])
     folder.mkdir(parents=True, exist_ok=True)
     progress(0.85, t("Scrittura di DXF e SVG", "Writing the DXF and the SVG"))
     dxf = _sections_dxf(folder / "sezioni.dxf", heights, cuts, out_stations, frame, reach)
     svg = _sections_svg(folder / "sezioni.svg", heights, cuts, out_stations, frame, reach, entry.get("name", ""))
-    result = {"heights": heights, "stations": out_stations, "reach": reach, "made": _now(),
+    result = {"heights": heights, "stations": out_stations, "reach": reach, "made": _now(), "warnings": warnings,
               "dxf": str(dxf.relative_to(chunk.data_dir)), "svg": str(svg.relative_to(chunk.data_dir)),
               "lines": [len(c) for c in cuts]}
     (folder / "sezioni.json").write_text(json.dumps(result, indent=1))
@@ -506,8 +604,17 @@ def sections_text(r: dict) -> str:
     lines = [t(f"Sezioni a {len(r['heights'])} quote: ", f"Sections at {len(r['heights'])} heights: ")
              + ", ".join(num(h, 2) for h in r["heights"])]
     for st in r["stations"]:
-        lines.append(f"u {num(st['u'], 2)} m: " + ", ".join(f"{num(o['height'], 2)} {signed_cm(o['offset'])}"
-                                                           for o in st["offsets"][1:]))
+        ref = st.get("reference_height")
+        offs = [o for o in st["offsets"] if o["height"] != ref]
+        line = f"u {num(st['u'], 2)} m: " + ", ".join(f"{num(o['height'], 2)} {signed_cm(o['offset'])}" for o in offs)
+        if ref is None:
+            line = f"u {num(st['u'], 2)} m: " + t("nessuna sezione incontra la faccia",
+                                                   "no section meets the face")
+        elif ref != r["heights"][0]:
+            line += t(f" (dalla sezione a quota {num(ref, 2)}: la più bassa non incontra la faccia)",
+                      f" (from the section at {num(ref, 2)}: the lowest does not meet the face)")
+        lines.append(line)
+    lines += list(r.get("warnings") or [])
     return "\n".join(lines)
 
 

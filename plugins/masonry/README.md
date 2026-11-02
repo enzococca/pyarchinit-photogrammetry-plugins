@@ -18,22 +18,25 @@ walls, buildings and stone towers recorded by their faces.
 
 * **Stones and courses**: on the stones drawn on a face (the program's Stones tool on the face's elevation), per stone
   its width, height, area and best-fit ellipse (elongation, orientation) and rectangularity; the mortar share (1 - the
-  stones' area over the wall's area: the face's bounds or a polygon drawn on it); the courses (the stones' centres
-  split where they are further apart in height than half the median stone height; mean height, count, thickness,
-  slope); tables in CSV and Excel, a GeoPackage, the measures added to the program's export of the face. A face whose
-  elevation is coarser than a quarter of its smallest stone is refused.
+  stones' union over the wall's area: the face's bounds or a polygon drawn on it; a stone drawn twice counts once);
+  the courses (each stone joined to its neighbour on the right sharing at least half its height: sloping courses stay
+  courses; mean height, count, thickness, slope); tables in CSV and Excel, a GeoPackage, the measures added to the
+  program's export of the face. Stones smaller than four pixels of the face are left out and named.
 * **Type suggested**, never a verdict: *coursed* when at least 70 % of the stones sit in courses of 3 or more stones
   sloping less than 2°; *regular* when the courses' thickness varies little (median absolute deviation / median < 20 %);
-  *squared* when the stones' median elongation is under 2 and their median rectangularity over 0.8.
+  *squared* when the stones' median rectangularity is over 0.8, *elongated* when their median elongation is 2 or more.
 * **USM**: the units drawn on the face; relationships proposed by their geometry - *si appoggia a* (a unit above
   another touching it along at least 20 % of its width), *taglia* (a unit that interrupts a course of another),
-  *copre* (a unit that encloses the top of another) - each with its evidence, written only when the user ticks it;
+  *copre* (a unit above another along its whole top and width), *riempie* (a unit enclosed by another: a blocked
+  opening) - each with its evidence, written only when the user ticks it; the rules read shapes and cannot tell a
+  cut from a straight-joint abutment;
   *Salva in PyArchInit*: the US forms, the relationships both ways and the face's drawings as media.
 
 * **Outputs**: per face a plate at scale (SVG and PDF: the orthophoto at the largest standard scale that fits A3, the
   stones, courses, USM, sections and bulge contours, a scale bar and a title block with the measures), a DXF with the
   layers PIETRE, CORSI, USM, SEZIONI, BORDO, QUOTE, the GeoPackages, the tables and the rasters; for the wall an IFC4
-  `IfcWall` - the slab between two surveyed faces, or behind one face by a thickness given - with
+  `IfcWall` - the slab between two surveyed faces (looking within 15° of opposite ways, less than 3 m apart), or
+  behind each other face by a thickness given (each side of a polygonal tower) - with
   `Pset_PyArchInit_Masonry` and the USM as `IfcBuildingElementPart`; the face opened in QGIS, unfolded.
 
 The proof through the program's pipeline (a synthetic wall photographed, aligned, densified, meshed; stones found by

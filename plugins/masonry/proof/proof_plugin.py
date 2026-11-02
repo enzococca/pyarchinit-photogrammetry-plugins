@@ -148,7 +148,7 @@ def run_plugin(folder: Path, use_sam: bool = True) -> dict:
     # the USM
     found_rel = usm.propose(ch, w["id"], entry["id"])
     r["usm"] = {"proposti": [usm.proposal_text(p) for p in found_rel],
-                "atteso": "USM 2 si appoggia a USM 1"}
+                "atteso": "USM 2 copre USM 1"}  # it lies on the whole top of the coursed wall
     walls.set_result(ch, w["id"], entry["id"], "usm", {"accepted_full": found_rel, "proposed": len(found_rel)})
     # the outputs
     out = folder / "esportazioni"

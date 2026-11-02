@@ -11,8 +11,7 @@ import masonry_samples as S  # noqa: E402
 from ppg_masonry import faces, stones, usm, walls  # noqa: E402
 
 Z0 = S.WORLD[2]
-EXPECTED = {("USM 11", "Si appoggia a", "USM 10"), ("USM 13", "Si appoggia a", "USM 10"),
-            ("USM 13", "Copre", "USM 11"), ("USM 12", "Taglia", "USM 10")}
+EXPECTED = {("USM 11", "Si appoggia a", "USM 10"), ("USM 13", "Copre", "USM 11"), ("USM 12", "Taglia", "USM 10")}
 
 
 def _face(tmp_path, with_stones=True):
@@ -35,9 +34,8 @@ def test_the_three_rules(tmp_path):
     assert {(p["unit"], p["relation"], p["other"]) for p in found} == EXPECTED
     by = {(p["unit"], p["other"]): p for p in found}
     assert "si interrompe contro USM 12" in by[("USM 12", "USM 10")]["evidence"]
-    assert "racchiude la sommità di USM 11" in by[("USM 13", "USM 11")]["evidence"]
+    assert "sta sopra USM 11" in by[("USM 13", "USM 11")]["evidence"]
     assert "100 % della sua larghezza" in by[("USM 11", "USM 10")]["evidence"]
-    assert "33 % della sua larghezza" in by[("USM 13", "USM 10")]["evidence"]
     assert "USM 13 copre USM 11" in usm.proposal_text(by[("USM 13", "USM 11")])
 
 
@@ -58,7 +56,7 @@ def test_the_dialog_keeps_what_the_user_ticks(tmp_path):
     from ppg_masonry.pane import RelationsDialog
 
     doc, ch, w, entry = _face(tmp_path)
-    found = [p for p in usm.propose(ch, w["id"], entry["id"]) if p["unit"] != "USM 13" or p["relation"] == "Copre"]
+    found = usm.propose(ch, w["id"], entry["id"])
     assert len(found) == 3
     dialog = RelationsDialog(found)
     assert dialog.list.count() == 3 and all(dialog.list.item(i).checkState() == Qt.CheckState.Unchecked

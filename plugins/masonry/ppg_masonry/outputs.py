@@ -21,7 +21,7 @@ from . import walls
 from .texts import degrees, num, t
 
 SCALES = (10, 20, 25, 50, 100, 200, 250, 500, 1000)
-SHEET = (380.0, 210.0)  # the drawing on an A3 sheet, landscape, millimetres
+SHEET = (384.0, 199.0)  # the drawing on an A3 sheet (420 x 297 mm, landscape) beside its margins and title block
 TITLE_MM = 62.0
 MARGIN_MM = 18.0
 
@@ -78,11 +78,7 @@ def _context(chunk, wid: str, eid: str | None):
     w, entry = walls.need_face(chunk, wid, eid)
     res = walls.results(chunk, w["id"], entry["id"])
     st = res.get("stones") or {}
-    region = None
-    if st.get("region"):
-        from shapely import wkt
-
-        region = wkt.loads(st["region"])
+    region = stones.drawn_region(chunk, w["id"], entry["id"])
     return {"wall": w, "entry": entry, "results": res, "stones": stones.face_stones(chunk, entry["id"]),
             "courses": st.get("course_rows") or [], "units": usm.face_units(chunk, entry["id"]), "region": region,
             "quote": _quote(chunk, entry["id"])}
@@ -107,14 +103,19 @@ def measures_lines(ctx: dict) -> list[str]:
     sh = res.get("shape") or {}
     lines = []
     if sh.get("surface") == "plane":
-        lines.append(t(f"Strapiombo {degrees(sh.get('lean_deg'))} ({num(sh.get('lean_cm_per_m', 0), 1)} cm/m, "
-                       f"{'verso chi guarda' if sh.get('lean_toward') == 'out' else 'all indietro'}); spanciamento "
-                       f"p90 {num(sh.get('bulge_p90_cm', 0), 1)} cm, da {num(sh.get('bulge_min_cm', 0), 1)} a "
-                       f"{num(sh.get('bulge_max_cm', 0), 1)} cm",
-                       f"Lean {degrees(sh.get('lean_deg'))} ({num(sh.get('lean_cm_per_m', 0), 1)} cm/m, "
-                       f"{'towards the viewer' if sh.get('lean_toward') == 'out' else 'backwards'}); bulge p90 "
-                       f"{num(sh.get('bulge_p90_cm', 0), 1)} cm, from {num(sh.get('bulge_min_cm', 0), 1)} to "
-                       f"{num(sh.get('bulge_max_cm', 0), 1)} cm"))
+        deg, cmm = sh.get("lean_deg") or 0.0, num(sh.get("lean_cm_per_m", 0), 1)
+        if deg < 0.05:
+            lean = t("A piombo (entro 0,05°)", "Plumb (within 0.05°)")
+        elif sh.get("lean_toward") == "out":
+            lean = t(f"Strapiombo {degrees(deg)} ({cmm} cm/m, verso chi guarda)",
+                     f"Overhang {degrees(deg)} ({cmm} cm/m, towards the viewer)")
+        else:
+            lean = t(f"Fuori piombo all'indietro {degrees(deg)} ({cmm} cm/m)",
+                     f"Leaning back {degrees(deg)} ({cmm} cm/m)")
+        lines.append(lean + t(f"; spanciamento p90 {num(sh.get('bulge_p90_cm', 0), 1)} cm, da "
+                              f"{num(sh.get('bulge_min_cm', 0), 1)} a {num(sh.get('bulge_max_cm', 0), 1)} cm",
+                              f"; bulge p90 {num(sh.get('bulge_p90_cm', 0), 1)} cm, from "
+                              f"{num(sh.get('bulge_min_cm', 0), 1)} to {num(sh.get('bulge_max_cm', 0), 1)} cm"))
     elif sh:
         lines.append(t(f"Asse inclinato {degrees(sh.get('axis_deg'))}, raggio {num(sh.get('radius', 0), 3)} m",
                        f"Axis inclined {degrees(sh.get('axis_deg'))}, radius {num(sh.get('radius', 0), 3)} m"))

@@ -11,7 +11,8 @@ in three arcs, aligned, densified and meshed by the program; then the plugin:
 * the stones: with the program's stone tool (``archaeo.stones.find_stones``, SAM 2.1 at tiles) on the face's
   elevation when the SAM environment of the program exists on this computer, else the generated outlines are put on
   the face as drawn stones (and ``LEGGIMI.md`` says so); their measures, courses and mortar against the truth;
-* two USM drawn on the face with a known relationship (the rubble rests on the coursed wall), the proposal;
+* two USM drawn on the face with a known relationship (the rubble lies on the whole top of the coursed wall: it
+  covers it), the proposal;
 * the plate (SVG, PDF), the DXF, the GeoPackages, the IFC (validated).
 
     python make_proof.py [--folder /Users/Shared/ppg_demo_masonry] [--stage all|scene|process|plugin|figures]
