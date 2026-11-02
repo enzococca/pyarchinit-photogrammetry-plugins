@@ -157,7 +157,11 @@ def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
     cylinder, the circle at the previous height): the points farther than 1.5 radii + 1 m from that centre are left
     out. ``centre``, ``radius``,
     ``rms``, ``out_of_round`` (the spread of the inliers' radius, 0.5th to 99.5th percentile), ``points``, ``pieces``
-    (the lines of the slice holding inliers), ``coverage`` (degrees of arc). An arc under 90 degrees is refused."""
+    (the lines of the slice holding inliers), ``coverage`` (degrees of arc). An arc under 90 degrees is refused.
+
+    Two arcs that lie on one circle cannot be told apart by geometry: a structure that shares the ring's circle (an arc
+    of it within the ring's band) is counted as ring, in the circle and in the coverage. :func:`shape.tower_axis` keeps
+    out the points far from the previous ring, which guards the axis."""
     from .fit import ransac_circle
 
     rings = slice_rings(chunk, height) if rings is None else rings
