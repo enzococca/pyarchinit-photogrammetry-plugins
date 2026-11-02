@@ -551,3 +551,16 @@ def test_an_oval_ring_gives_its_mean_circle(tmp_path):
     c = faces.slice_circle(ch, Z0 + 3.0)
     assert abs(c["radius"] - 3.0) < 0.02 and abs(c["coverage"] - 360.0) < 10.0
     assert np.linalg.norm(np.array(c["centre"]) - S.WORLD[:2]) < 0.02
+
+
+def test_the_rings_of_a_leaning_tower_are_looked_for_at_their_height(tmp_path):
+    doc, ch = S.project(tmp_path, S.round_tower(), "Torre")  # leaning 1 degree, its axis far off at z = 0
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05)
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    assert len(r["rings"]) == 5
+    for c in r["rings"]:
+        total = sum(len(p) for p in faces.slice_rings(ch, c["height"]))
+        assert abs(c["radius"] - S.TOWER_RADIUS) < 0.005 and 0.008 <= c["out_of_round"] <= 0.012
+        assert c["points"] > 0.9 * total, (c["points"], total)
+    assert 0.8 <= r["out_of_round_cm"] <= 1.2

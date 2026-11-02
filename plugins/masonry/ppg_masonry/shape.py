@@ -153,7 +153,7 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
                       rms_cm=100.0 * f["rms"])
         limit = max(NOT_CYLINDER_MIN, NOT_SURFACE_SHARE * radius)
         oor_limit = max(OUT_OF_ROUND_MIN, OUT_OF_ROUND_SHARE * radius)
-        rings = _rings_by_height(chunk, frame, entry, centre, radius)  # the radius by height, from the slices
+        rings = _rings_by_height(chunk, frame, entry, centre, axis, radius)  # the radius by height, from the slices
         oor = float(np.median([c["out_of_round"] for c in rings])) if rings else None
         why = (["rms"] if f["rms"] > limit else []) + (["out_of_round"] if oor is not None and oor > oor_limit else [])
         result.update(lean_reliable=not why, surface_limit_cm=100.0 * limit, rings=rings, not_cylinder_by=why,
@@ -291,17 +291,25 @@ def band_text(w: dict) -> str:
              "the cells: part of the wall may be left out. Make the face again with a wider band.")
 
 
-def _rings_by_height(chunk, frame, entry, centre, radius, levels: int = 5) -> list[dict]:
-    """The circles of the model's slices at ``levels`` heights over a cylindrical face: radius, out-of-round, arc."""
+def _rings_by_height(chunk, frame, entry, centre, axis, radius, levels: int = 5) -> list[dict]:
+    """The circles of the model's slices at ``levels`` heights over a cylindrical face: radius, out-of-round, arc. Each
+    ring is looked for around the fitted axis at its own height (``centre`` + ``axis`` x (h - z) / axis_z); an axis
+    nearly horizontal (axis_z under 0.5) gives way to the face's frame."""
     from .faces import slice_circle
 
+    centre, axis = np.asarray(centre, np.float64), np.asarray(axis, np.float64)
     out = []
     for h in default_heights(frame, entry, levels):
+        if axis[2] >= 0.5:
+            at = centre + axis * (h - centre[2]) / axis[2]
+        else:
+            fa = np.asarray(frame.axis, np.float64)
+            at = frame.centre + fa * (h - frame.centre[2]) / fa[2] if abs(fa[2]) > 1e-6 else frame.centre
         try:
-            c = slice_circle(chunk, h, near=(np.asarray(centre)[:2], radius))
+            c = slice_circle(chunk, h, near=(np.asarray(at)[:2], radius))
         except (NotReady, ValueError):
             continue
-        out.append({k: c[k] for k in ("height", "radius", "out_of_round", "coverage", "pieces")})
+        out.append({k: c[k] for k in ("height", "radius", "out_of_round", "coverage", "pieces", "points")})
     return out
 
 
