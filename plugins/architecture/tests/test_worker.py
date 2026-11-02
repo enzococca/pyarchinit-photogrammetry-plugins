@@ -47,7 +47,16 @@ def test_a_column_by_revolution(tmp_path):
     assert res["valid"] and abs(res["volume"] / engine.revolved_volume(curve) - 1) < 0.002
     out = Path(res["output"])
     assert (out / "solid.step").read_text(errors="replace").startswith("ISO-10303-21")
-    assert "AUTOMOTIVE_DESIGN" in (out / "solid.step").read_text(errors="replace")[:2000]  # AP214
+    step = (out / "solid.step").read_text(errors="replace")
+    assert "AUTOMOTIVE_DESIGN" in step[:2000]  # AP214
+    # metres: the file says so and the numbers are those of the solid (CadQuery's exporter would say millimetres)
+    import re
+
+    units = re.findall(r"LENGTH_UNIT\(\)[^;]*", step)
+    assert units and "SI_UNIT($,.METRE.)" in units[0].replace(" ", ""), units
+    points = np.array([[float(x) for x in m.split(",")] for m in re.findall(r"CARTESIAN_POINT\('',\(([^)]*)\)", step)
+                       if m.count(",") == 2])
+    assert np.abs(points - [10.0, 20.0, 30.0]).min(axis=0).max() < 0.5  # the solid's own coordinates, not x 1000
     stl = _stl(res)
     assert stl.is_watertight and abs(stl.volume / res["volume"] - 1) < 0.002
     centre = stl.center_mass

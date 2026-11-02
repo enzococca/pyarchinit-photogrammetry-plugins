@@ -19,6 +19,7 @@ degrees), ``profile`` (the measured points, kept), ``geometry`` (what the solid 
 """
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import time
@@ -115,12 +116,37 @@ def _new_name(chunk, kind: str) -> str:
 
 # ====================================================================== the model of the chunk
 def origin(chunk) -> np.ndarray:
-    """The chunk's export origin (see the module): chosen once, from the model."""
+    """The chunk's export origin (see the module): chosen once, from the model, with the chunk's transform and system
+    of that moment (:func:`check_frame`)."""
     st = state(chunk)
-    if st.get("origin") is None:
+    if st.get("origin") is None or (not st.get("elements") and not frame_matches(chunk)):
         v = _world_vertices(chunk)
         st["origin"] = np.floor(v.min(axis=0)).tolist()
+        st["frame"] = {"transform": np.asarray(chunk.transform, float).tolist(), "crs": chunk.crs}
     return np.asarray(st["origin"], np.float64)
+
+
+def frame_matches(chunk) -> bool:
+    """Whether the chunk is still in the transform and the system the elements were made in."""
+    fr = state(chunk).get("frame")
+    if fr is None:
+        return True  # elements of a project older than the check: nothing to compare
+    old = np.asarray(fr["transform"], float)
+    new = np.asarray(chunk.transform, float)
+    scale = max(1.0, float(np.abs(old[:3, 3]).max()))
+    return fr.get("crs") == chunk.crs and old.shape == new.shape and np.allclose(old[:3, :3], new[:3, :3], atol=1e-9) \
+        and np.allclose(old[:3, 3], new[:3, 3], atol=1e-9 * scale)
+
+
+def check_frame(chunk) -> None:
+    """:class:`NotReady` when the chunk's transform or system changed after the elements were made (georeferenced,
+    *Sistema e quote*): their solids and the IFC's origin would be in the old frame. :func:`rebuild` makes them
+    again."""
+    if state(chunk).get("elements") and not frame_matches(chunk):
+        raise NotReady(t("Il sistema del chunk è cambiato dopo che gli elementi sono stati fatti: ricostruisci gli "
+                         "elementi (Ricostruisci, «ppg plugin architecture rebuild»).",
+                         "The chunk's system changed after the elements were made: rebuild the elements (Rebuild, "
+                         "'ppg plugin architecture rebuild')."))
 
 
 def _world_vertices(chunk) -> np.ndarray:
@@ -242,6 +268,17 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _new_element(chunk, e: dict, build):
+    """Build a new element; on any failure (the worker, a cancel, the fit) its folder goes away with whatever the
+    worker wrote, and no entry is left."""
+    try:
+        return build()
+    except BaseException:
+        if entry(chunk, e["id"]) is None:
+            shutil.rmtree(element_dir(chunk, e), ignore_errors=True)
+        raise
+
+
 def _base_entry(chunk, kind: str, name: str | None, notes: str = "") -> dict:
     return {"id": uuid.uuid4().hex[:8], "kind": kind, "name": name or _new_name(chunk, kind), "notes": notes,
             "made": _now(), "chunk": chunk.label}
@@ -258,6 +295,7 @@ def column(chunk, polygon=None, zmin=None, zmax=None, box=None, knots: int = 12,
 
     progress = as_progress(progress)
     check_metric(chunk)
+    check_frame(chunk)
     progress(0.02, t("Lettura del modello", "Reading the model"))
     v, f = local_mesh(chunk)
     o = origin(chunk)
@@ -292,7 +330,7 @@ def column(chunk, polygon=None, zmin=None, zmax=None, box=None, knots: int = 12,
                     "step": meas.step}
     e["axis"] = {"point": (meas.point).tolist(), "direction": meas.direction.tolist()}  # export frame, base point
     _column_params(e, knots, as_measured, meas.point + o, meas.direction, rms, meas.height)
-    return _finish_column(chunk, e, sv, progress)
+    return _new_element(chunk, e, lambda: _finish_column(chunk, e, sv, progress))
 
 
 def _column_params(e, knots, as_measured, base_world, direction, rms, height) -> None:
@@ -313,6 +351,30 @@ def _column_params(e, knots, as_measured, base_world, direction, rms, height) ->
                    "entasis": engine.entasis(curve), "axis_point": list(map(float, base_world)),
                    "axis_direction": list(map(float, direction)), "tilt_deg": tilt, "axis_rms": float(rms)}
     e["geometry"] = {"profile": curve.tolist(), "smooth": method == "spline"}
+    top = np.asarray(base_world) + float(height) * np.asarray(direction)
+    e["params"]["world_top"] = list(map(float, top))
+    e["warnings"] = column_warnings(z, r, direction)
+
+
+def column_warnings(heights, radii, direction) -> list[str]:
+    """What the user should know of a column's profile: a step in it (a base, an abacus, a capital in the region:
+    parts are better made as separate elements on the same axis) and, for a shaft lying down, that which end is the
+    base is arbitrary."""
+    out = []
+    r = np.asarray(radii, float)
+    if len(r) > 2:
+        jump = np.abs(np.diff(r))
+        if jump.max() > max(0.01, 0.05 * float(np.median(r))):
+            k = int(np.argmax(jump))
+            out.append(t(f"Il profilo ha un gradino di {jump[k] * 1000:.0f} mm a {heights[k]:.2f} m: base, fusto e "
+                         "capitello vanno fatti come elementi separati sullo stesso asse.",
+                         f"The profile has a step of {jump[k] * 1000:.0f} mm at {heights[k]:.2f} m: base, shaft and "
+                         "capital are better made as separate elements on the same axis."))
+    if abs(float(np.asarray(direction)[2])) <= 0.5:
+        out.append(t("Il fusto è coricato: quale capo è la base è arbitrario (raggio alla base e in cima possono "
+                     "essere scambiati).", "The shaft lies down: which end is the base is arbitrary (the radius at "
+                     "the base and at the top may be the other way round)."))
+    return out
 
 
 def _finish_column(chunk, e, points, progress) -> dict:
@@ -338,7 +400,8 @@ def edit_column(chunk, eid: str, knot_radii=None, knots: int | None = None, as_m
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
-    e = need(chunk, eid)
+    check_frame(chunk)
+    e = copy.deepcopy(need(chunk, eid))  # the project's entry changes only when the new solid is there
     p = e["params"]
     if knots is not None or as_measured is not None:
         measured = bool(as_measured) if as_measured is not None else p["method"] == "measured"
@@ -351,7 +414,12 @@ def edit_column(chunk, eid: str, knot_radii=None, knots: int | None = None, as_m
             raise NotReady(t(f"Servono {len(p['knot_heights'])} raggi, uno per nodo.",
                              f"{len(p['knot_heights'])} radii are needed, one per knot."))
         zk = np.asarray(p["knot_heights"])
-        curve = engine.profile_curve(zk, rk) if p["method"] == "spline" else np.column_stack([rk, zk])
+        if np.any(rk <= 0):
+            raise NotReady(t("Un raggio è zero o negativo.", "A radius is zero or negative."))
+        try:
+            curve = engine.profile_curve(zk, rk) if p["method"] == "spline" else np.column_stack([rk, zk])
+        except ValueError as exc:
+            raise NotReady(str(exc)) from exc
         p.update(knot_radii=list(map(float, rk)), radius_base=float(curve[0, 0]), radius_top=float(curve[-1, 0]),
                  radius_max=float(curve[:, 0].max()), entasis=engine.entasis(curve))
         e["geometry"]["profile"] = curve.tolist()
@@ -373,22 +441,26 @@ def _column_points(chunk, e, v, f):
 
 
 # ====================================================================== moulding
-def moulding(chunk, path, station: float | None = None, window=(-0.5, -0.5, 0.5, 0.5), out: float | None = None,
+def moulding(chunk, path, station: float | None = None, window=None, out: float | None = None,
              depth: float = 0.1, simplify: float = 0.002, section=None, height: float | None = None,
              name: str | None = None, notes: str = "", progress=None) -> dict:
     """A moulding along ``path`` (world points, (N, 2) in plan with ``height``, or (N, 3)). The section: the model
     cut by the plane normal to the path at ``station`` metres from its start (the middle of the first segment when
-    None), kept in ``window`` ``(u0, v0, u1, v1)`` around the path point (u = up x tangent, v up), the polyline
-    nearest the path closed against the wall ``depth`` metres inside it, simplified (Douglas-Peucker, ``simplify``
-    metres); ``out`` +1 / -1: the side where it projects (default: the side of the photos); or ``section`` given as
-    (u, v) points. The solid: the section swept along the path with mitred corners (an extrusion when straight)."""
+    None), the line of the cut nearest the path's point (inside ``window`` ``(u0, v0, u1, v1)`` around it when given,
+    u = up x tangent, v up), the stretch of it that stands out of the wall face (:func:`engine.wall_section`), closed
+    against the wall ``depth`` metres behind the face, simplified (Douglas-Peucker, ``simplify`` metres); ``out`` +1 /
+    -1: the side where it projects (default: the side of the photos); or ``section`` given as (u, v) points. The
+    solid: the section swept along the path with mitred corners (an extrusion when straight)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
     check_metric(chunk)
+    check_frame(chunk)
     o = origin(chunk)
     v, f = local_mesh(chunk)
-    pth = _path_3d(np.asarray(path, np.float64), v, f, o, height)
+    pth = engine.drop_repeated_path(_path_3d(np.asarray(path, np.float64), v, f, o, height))
+    if len(pth) < 2:
+        raise NotReady(t("Il percorso ha un solo punto.", "The path has a single point."))
     progress(0.1, t("Sezione della modanatura", "Section of the moulding"))
     if station is None:
         station = 0.5 * float(np.linalg.norm(pth[1] - pth[0]))
@@ -396,81 +468,97 @@ def moulding(chunk, path, station: float | None = None, window=(-0.5, -0.5, 0.5,
     so, u, vv, _n = engine.section_frame(tangent, point)
     if out is None:
         out = _photo_side(chunk, point + o, u)
-    lines = []
+    res = engine.mesh_resolution(v, f)
+    e = _base_entry(chunk, "moulding", name, notes)
+    e["source"] = {"chunk": chunk.label, "path": (pth + o).tolist(), "station": float(station),
+                   "window": None if window is None else list(window), "out": float(out), "depth": float(depth),
+                   "simplify": float(simplify), "height": height, "section_given": section is not None,
+                   "resolution": res}
     if section is None:
-        lines = engine.mesh_section(v, f, so, u, vv)
-        sec = engine.moulding_section(lines, window, out=out, depth=depth, simplify=simplify)
+        try:
+            cut = engine.wall_section(engine.mesh_section(v, f, so, u, vv), out, depth, simplify, res, window)
+        except ValueError as exc:
+            raise NotReady(t(f"La sezione non si legge: {exc}.", f"The section cannot be read: {exc}.")) from exc
     else:
         sec = np.asarray(section, float)
         if engine.polygon_area(sec) < 0:
             sec = sec[::-1]
-    e = _base_entry(chunk, "moulding", name, notes)
+        lo, hi = sec.min(axis=0), sec.max(axis=0)
+        cut = {"section": sec, "wall_u": None, "v_range": [float(lo[1]), float(hi[1])],
+               "projection": float(hi[0] - lo[0]), "height": float(hi[1] - lo[1]), "window": None, "line": None}
+    e["profile"] = {"line": cut["line"], "station_point": (point + o).tolist()}
+    _moulding_params(e, pth, cut)
+    return _new_element(chunk, e, lambda: _finish_moulding(chunk, e, v, progress, f))
+
+
+def _moulding_params(e, pth, cut) -> None:
+    sec = np.asarray(cut["section"], float)
     straight = engine.is_straight(pth)
-    e["source"] = {"chunk": chunk.label, "path": (pth + o).tolist(), "station": float(station), "window": list(window),
-                   "out": float(out), "depth": float(depth), "simplify": float(simplify), "height": height,
-                   "section_given": section is not None}
-    e["profile"] = {"section": sec.tolist(), "cut": [ln.tolist() for ln in lines][:50],
-                    "station_point": (point + o).tolist()}
-    _moulding_params(e, pth, sec, straight)
-    return _finish_moulding(chunk, e, v, progress, f)
-
-
-def _moulding_params(e, pth, sec, straight) -> None:
-    area = abs(engine.polygon_area(sec))
     e["params"] = {"method": "extrusion" if straight else "sweep", "corners": "mitre",
-                   "length": engine.path_length(pth),
-                   "section_area": area, "projection": float(np.ptp(np.asarray(sec)[:, 0])),
-                   "section_height": float(np.ptp(np.asarray(sec)[:, 1])), "vertices": int(len(sec)),
-                   "path_vertices": int(len(pth))}
-    e["geometry"] = {"path": np.asarray(pth).tolist(), "section": np.asarray(sec).tolist(),
-                     "placement": np.eye(4).tolist()}
+                   "length": engine.path_length(pth), "section_area": abs(engine.polygon_area(sec)),
+                   "projection": float(cut["projection"]), "section_height": float(cut["height"]),
+                   "wall_u": cut["wall_u"], "v_range": list(cut["v_range"]), "window_used": cut["window"],
+                   "vertices": int(len(sec)), "path_vertices": int(len(pth))}
+    e["geometry"] = {"path": np.asarray(pth).tolist(), "section": sec.tolist(), "placement": np.eye(4).tolist()}
+    e["_world_path"] = True  # the world ends of the path are added by _finish_moulding (it knows the origin)
 
 
 def _finish_moulding(chunk, e, v, progress, f=None) -> dict:
     progress(0.3, t("Solido (CadQuery)", "Solid (CadQuery)"))
     g = e["geometry"]
+    e.pop("_world_path", None)
+    pth = np.asarray(g["path"], float) + origin(chunk)
+    e["params"].update(world_start=pth[0].tolist(), world_end=pth[-1].tolist())
     build_solid(chunk, e, {"placement": g["placement"],
                            "moulding": {"path": g["path"], "section": g["section"]}},
                 progress.sub(0.3, 0.5))
     progress(0.85, t("Distanza del modello dal solido", "Distance of the model from the solid"))
     near = _points_near_box(v, e["solid"]["bbox"])
-    # the model behind the back line is the wall, not the moulding: out of the fit (and within the mesh's resolution
-    # of the line, where the cut closes the section)
-    sec = np.asarray(g["section"], float)
+    # the wall is not the moulding: the model's points on the wall face (within the mesh's resolution of it) and
+    # behind it stay out of the fit; they lie on the solid by construction and would make it look better
+    p = e["params"]
     out = float(e["source"].get("out") or 1.0)
-    back = float(sec[:, 0].max() if out < 0 else sec[:, 0].min())
-    # (a mesh with a few long triangles has a median edge as wide as the section: never more than a quarter of it)
-    margin = min(engine.mesh_resolution(v, f) if f is not None else 0.0, 0.25 * float(np.ptp(sec[:, 0])))
-    behind = engine.behind_back(near, g["path"], back, out, margin) if len(near) else np.zeros(0, bool)
+    sec = np.asarray(g["section"], float)
+    face = p["wall_u"] if p.get("wall_u") is not None else float(sec[:, 0].max() if out < 0 else sec[:, 0].min())
+    res = float(e["source"].get("resolution") or (engine.mesh_resolution(v, f) if f is not None else 0.0))
+    margin = min(res, 0.25 * max(float(p["projection"]), 1e-3))
+    behind = engine.behind_back(near, g["path"], face, out, margin) if len(near) else np.zeros(0, bool)
     measure_fit(chunk, e, near[~behind])
     e["fit"]["excluded_behind"] = int(behind.sum())
-    e["params"]["back_u"] = back
     _save(chunk, e)
     progress(1.0, t("Modanatura pronta", "Moulding ready"))
     return e
 
 
 def edit_moulding(chunk, eid: str, simplify: float | None = None, depth: float | None = None, progress=None) -> dict:
-    """The solid of a moulding again with another simplification or wall depth, from the cut kept in the element."""
+    """The solid of a moulding again with another simplification or wall depth, from the line of the cut kept in the
+    element (the one that was used, not a new search)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
-    e = need(chunk, eid)
+    check_frame(chunk)
+    e = copy.deepcopy(need(chunk, eid))  # the project's entry changes only when the new solid is there
     src = e["source"]
     if simplify is not None:
         src["simplify"] = float(simplify)
     if depth is not None:
         src["depth"] = float(depth)
     pth = np.asarray(e["geometry"]["path"], float)
-    if not src.get("section_given") and e["profile"].get("cut"):
-        lines = [np.asarray(x, float) for x in e["profile"]["cut"]]
-        sec = engine.moulding_section(lines, src["window"], out=src["out"], depth=src["depth"],
-                                      simplify=src["simplify"])
-    else:
-        sec = np.asarray(e["geometry"]["section"], float)
-    _moulding_params(e, pth, sec, engine.is_straight(pth))
-    e["made"] = _now()
     v, f = local_mesh(chunk)
+    if not src.get("section_given") and e["profile"].get("line"):
+        line = np.asarray(e["profile"]["line"], float)
+        res = float(src.get("resolution") or engine.mesh_resolution(v, f))
+        try:
+            cut = engine.wall_section([line], src["out"], src["depth"], src["simplify"], res)
+        except ValueError as exc:
+            raise NotReady(t(f"La sezione non si legge: {exc}.", f"The section cannot be read: {exc}.")) from exc
+    else:
+        p = e["params"]
+        cut = {"section": np.asarray(e["geometry"]["section"], float), "wall_u": p.get("wall_u"),
+               "v_range": p.get("v_range") or [0, 0], "projection": p["projection"], "height": p["section_height"],
+               "window": p.get("window_used"), "line": None}
+    _moulding_params(e, pth, cut)
+    e["made"] = _now()
     return _finish_moulding(chunk, e, v, progress, f)
 
 
@@ -588,18 +676,25 @@ def plane_of(chunk, section: str | None = None, p1=None, p2=None) -> tuple[np.nd
 
 def arch(chunk, pick, section: str | None = None, p1=None, p2=None, kind: str = "auto", thickness: float | None = None,
          depth: float | None = None, vault: bool = False, name: str | None = None, notes: str = "",
-         progress=None) -> dict:
+         progress=None, plane=None) -> dict:
     """An arch (or, ``vault``, a barrel vault) on a section plane: ``pick`` (u, v of the plane) a point inside the
     opening, under the intrados. The intrados is what the point sees of the model's cut (the jambs below the
-    springing line are part of the fit), the extrados what lies beyond it. ``kind``: "auto", "semicircular",
-    "segmental", "pointed", "elliptical", "measured". ``thickness``: of the ring (the median distance to the extrados
-    when None); ``depth``: along the plane's normal (the extent of the model's points within the ring when None)."""
+    springing line are part of the fit), the extrados where the rays leave the ring. ``kind``: "auto",
+    "semicircular", "segmental", "pointed", "elliptical", "measured" (a type asked for is enforced). ``thickness``:
+    of the ring (measured from the extrados only when it is consistent, else asked for: :class:`NotReady`);
+    ``depth``: along the plane's normal (the extent of the model's points within the ring when None). ``plane``:
+    ``(origin, u, v)`` in world coordinates instead of a section or two points (a rebuild)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
     check_metric(chunk)
+    check_frame(chunk)
     v, f = local_mesh(chunk)
-    po, u, vv, what = plane_of(chunk, section, p1, p2)
+    if plane is not None:
+        po = np.asarray(plane[0], float) - origin(chunk)
+        u, vv, what = engine.unit(plane[1]), engine.unit(plane[2]), {"rebuilt": True}
+    else:
+        po, u, vv, what = plane_of(chunk, section, p1, p2)
     progress(0.1, t("Taglio del modello", "Cutting the model"))
     lines = engine.mesh_section(v, f, po, u, vv)
     if not lines:
@@ -610,18 +705,23 @@ def arch(chunk, pick, section: str | None = None, p1=None, p2=None, kind: str = 
                          "l'arco.", "Too little intrados is seen from the chosen point: choose a point inside the "
                          "opening, under the arch."))
     progress(0.2, t("Adattamento dell'arco", "Fitting the arch"))
-    fit = engine.fit_arch(near, kind)
-    measured_thickness = engine.arch_thickness(fit, far)
+    try:
+        fit = engine.fit_arch(near, kind)
+    except ValueError as exc:
+        raise NotReady(t(f"L'arco non si adatta: {exc}.", f"The arch does not fit: {exc}.")) from exc
+    measured_thickness, why = engine.arch_thickness(fit, far)
     th = float(thickness) if thickness else measured_thickness
     if not th:
-        raise NotReady(t("Lo spessore dell'arco non si misura (nessun estradosso visibile): dallo tu.",
-                         "The thickness of the arch cannot be measured (no extrados seen): give it."))
+        raise NotReady(t(f"Lo spessore dell'arco non si misura ({why}): dallo tu (campo Spessore, --thickness).",
+                         f"The thickness of the arch cannot be measured ({why}): give it (field Thickness, "
+                         f"--thickness)."))
     e = _base_entry(chunk, "vault" if vault else "arch", name, notes)
     e["source"] = {"chunk": chunk.label, **what, "pick": list(map(float, pick)), "kind_asked": kind,
-                   "plane": {"origin": (po + origin(chunk)).tolist(), "u": u.tolist(), "v": vv.tolist()}}
+                   "plane": {"origin": (po + origin(chunk)).tolist(), "u": u.tolist(), "v": vv.tolist()},
+                   "resolution": engine.mesh_resolution(v, f), "thickness_given": thickness is not None and
+                   bool(thickness), "depth_given": bool(depth)}
     e["profile"] = {"intrados": near.tolist(), "extrados": far.tolist(), "fit": fit.to_dict(),
-                    "thickness_measured": measured_thickness}
-    e["_plane"] = {"origin": po.tolist(), "u": u.tolist(), "v": vv.tolist()}
+                    "thickness_measured": measured_thickness, "thickness_note": why}
     _arch_params(e, fit, th)
     outline = e["geometry"]["outline"]
     n = np.cross(u, vv)
@@ -639,8 +739,7 @@ def arch(chunk, pick, section: str | None = None, p1=None, p2=None, kind: str = 
     e["params"].update(depth=float(d1 - d0), depth_measured=depth_measured, depth_from=float(d0))
     e["geometry"]["depth"] = float(d1 - d0)
     e["geometry"]["placement"] = engine.arch_frame(po + d0 * n, u, vv).tolist()
-    e.pop("_plane")
-    return _finish_arch(chunk, e, v, progress)
+    return _new_element(chunk, e, lambda: _finish_arch(chunk, e, v, progress))
 
 
 def _buffer(poly, d):
@@ -654,7 +753,8 @@ def _arch_params(e, fit: engine.ArchFit, thickness: float) -> None:
     poly = engine.outline_polygon(outline)
     p = {"type": fit.type, "family": fit.family, "span": fit.span, "rise": fit.rise, "springing": fit.springing,
          "centre_u": fit.centre_u, "thickness": float(thickness), "rms": fit.rms, "points": fit.points,
-         "section_area": abs(engine.polygon_area(poly))}
+         "section_area": abs(engine.polygon_area(poly)),
+         "candidates_rms": {k: float(c["rms"]) for k, c in (fit.candidates or {}).items()}}
     fp = fit.params
     if fit.family == "circle":
         p.update(radius=fp["R"], centre_v=fp["vc"])
@@ -664,19 +764,45 @@ def _arch_params(e, fit: engine.ArchFit, thickness: float) -> None:
         p.update(semi_axis_u=fp["a"], semi_axis_v=fp["b"], centre_v=fp["vc"])
     e["params"] = p
     e["geometry"] = {"outline": outline}
+    e["arch_fit"] = fit.to_dict()  # the fit the solid is made of now: an edit starts from it
+
+
+def _arch_world(chunk, e) -> None:
+    """World coordinates (the chunk's system) beside the plane's (u, v): the springing points and the apex."""
+    g, p = e["geometry"], e["params"]
+    pl = np.asarray(g["placement"])
+    half = p["span"] / 2.0
+    local = np.array([[p["centre_u"] - half, p["springing"], 0.0], [p["centre_u"] + half, p["springing"], 0.0],
+                      [p["centre_u"], p["springing"] + p["rise"], 0.0]])
+    w = engine.apply(pl, local) + origin(chunk)
+    p.update(world_springing_left=w[0].tolist(), world_springing_right=w[1].tolist(), world_apex=w[2].tolist())
 
 
 def _finish_arch(chunk, e, v, progress) -> dict:
     progress(0.3, t("Solido (CadQuery)", "Solid (CadQuery)"))
     g = e["geometry"]
+    _arch_world(chunk, e)
     build_solid(chunk, e, {"placement": g["placement"], "arch": {"outline": g["outline"], "depth": g["depth"]}},
                 progress.sub(0.3, 0.5))
     progress(0.85, t("Distanza del modello dal solido", "Distance of the model from the solid"))
+    # the fit on the ring's curved faces only: points within 3 mesh edges of the intrados or the extrados, not on the
+    # two plane faces (a ring flush with a wall shares them with the wall: they would say nothing of the arch)
     pl = np.asarray(g["placement"])
     rel = engine.apply(np.linalg.inv(pl), v)
-    poly = _buffer(engine.outline_polygon(g["outline"]), 0.02)
-    inside = engine.points_in_polygon(rel[:, :2], poly) & (rel[:, 2] > -0.02) & (rel[:, 2] < g["depth"] + 0.02)
-    measure_fit(chunk, e, v[inside])
+    res = float(e["source"].get("resolution") or 0.01)
+    tol = 3.0 * res
+    poly = _buffer(engine.outline_polygon(g["outline"]), tol)
+    box = engine.points_in_polygon(rel[:, :2], poly) & (rel[:, 2] > -tol) & (rel[:, 2] < g["depth"] + tol)
+    faces = box & ((rel[:, 2] < res) | (rel[:, 2] > g["depth"] - res))
+    fit = engine.ArchFit(**{k: e["arch_fit"][k] for k in ("type", "family", "params", "rms", "springing", "span",
+                                                          "rise", "centre_u", "points")},
+                         measured=e["arch_fit"].get("measured"))
+    ring = np.zeros(len(v), bool)
+    idx = np.flatnonzero(box & ~faces)
+    if len(idx):
+        ring[idx] = engine.near_ring(rel[idx, :2], fit, e["params"]["thickness"], tol)
+    measure_fit(chunk, e, v[ring])
+    e["fit"]["excluded_faces"] = int(faces.sum())
     _save(chunk, e)
     progress(1.0, t("Arco pronto", "Arch ready"))
     return e
@@ -684,13 +810,22 @@ def _finish_arch(chunk, e, v, progress) -> dict:
 
 def edit_arch(chunk, eid: str, kind: str | None = None, thickness: float | None = None, depth: float | None = None,
               progress=None) -> dict:
-    """The solid of an arch again with another type, thickness or depth: the intrados as measured stays."""
+    """The solid of an arch again with another type, thickness or depth: the intrados as measured stays, and so does
+    the type of the solid unless another one is asked for."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
-    e = need(chunk, eid)
+    check_frame(chunk)
+    e = copy.deepcopy(need(chunk, eid))  # the project's entry changes only when the new solid is there
     near = np.asarray(e["profile"]["intrados"], float)
-    fit = engine.fit_arch(near, kind or e["params"]["type"]) if kind else _fit_from(e)
+    current = e.get("arch_fit") or e["profile"]["fit"]
+    if kind and kind != e["params"]["type"]:
+        try:
+            fit = engine.fit_arch(near, kind)
+        except ValueError as exc:
+            raise NotReady(t(f"L'arco non si adatta: {exc}.", f"The arch does not fit: {exc}.")) from exc
+    else:
+        fit = _fit_from(current)
     th = float(thickness) if thickness else e["params"]["thickness"]
     keep = {k: e["params"].get(k) for k in ("depth", "depth_measured", "depth_from")}
     _arch_params(e, fit, th)
@@ -714,8 +849,7 @@ def edit_arch(chunk, eid: str, kind: str | None = None, thickness: float | None 
     return _finish_arch(chunk, e, v, progress)
 
 
-def _fit_from(e) -> engine.ArchFit:
-    d = dict(e["profile"]["fit"])
+def _fit_from(d: dict) -> engine.ArchFit:
     return engine.ArchFit(d["type"], d["family"], d["params"], d["rms"], d["springing"], d["span"], d["rise"],
                           d["centre_u"], d["points"], d.get("candidates") or {}, d.get("measured"))
 
@@ -734,17 +868,34 @@ def summary(e: dict) -> str:
         main = t(f"lunghezza {metres(p['length'])}, sporgenza {metres(p['projection'])}",
                  f"length {metres(p['length'])}, projection {metres(p['projection'])}")
     else:
-        main = t(f"{arch_title(p['type'])}, luce {metres(p['span'])}, freccia {metres(p['rise'])}, spessore "
-                 f"{metres(p['thickness'])}", f"{arch_title(p['type'])}, span {metres(p['span'])}, rise "
+        main = t(f"{arch_title(p['type'])} ({candidates_text(p)}), luce {metres(p['span'])}, freccia "
+                 f"{metres(p['rise'])}, spessore {metres(p['thickness'])}",
+                 f"{arch_title(p['type'])} ({candidates_text(p)}), span {metres(p['span'])}, rise "
                  f"{metres(p['rise'])}, thickness {metres(p['thickness'])}")
     gap = t(f"scarto mediana {metres(fit.get('median'))}, p90 {metres(fit.get('p90'))}",
             f"fit median {metres(fit.get('median'))}, p90 {metres(fit.get('p90'))}") if fit.get("points") else \
         t("scarto non misurato", "fit not measured")
-    return f"{kind_title(e['kind'])}: {main}; {gap}"
+    warn = " " + " ".join(e.get("warnings") or []) if e.get("warnings") else ""
+    return f"{kind_title(e['kind'])}: {main}; {gap}.{warn}"
+
+
+FAMILY_TITLES = {"circle": ("cerchio", "circle"), "pointed": ("acuto", "pointed"), "ellipse": ("ellisse", "ellipse")}
+
+
+def candidates_text(p: dict) -> str:
+    """The RMS of the fitted type and of the others tried: "rms 1,3 mm; cerchio 45,8, ellisse 9,9"."""
+    from .texts import num
+
+    rms = p.get("rms")
+    head = f"rms {num((rms or 0.0) * 1000, 1)} mm"
+    others = [f"{t(*FAMILY_TITLES[k])} {num(v * 1000, 1)}" for k, v in (p.get("candidates_rms") or {}).items()
+              if k != p.get("family") and k in FAMILY_TITLES]
+    return head + ("; " + ", ".join(others) if others else "")
 
 
 def export_step(chunk, ids, target) -> list[Path]:
     """The STEP files of the elements ``ids`` copied to ``target`` (a folder, or a file for one element)."""
+    check_frame(chunk)
     target = Path(target)
     out = []
     chosen = [need(chunk, i) for i in ids] if ids else elements(chunk)
@@ -760,9 +911,91 @@ def export_step(chunk, ids, target) -> list[Path]:
             dst = target / f"{_safe(e['name'])}.step"
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
+        # the STEP's numbers are metres from the chunk's origin: the origin goes with it, in a file beside it
+        side = dst.with_name(dst.stem + ".origin.json")
+        side.write_text(json.dumps({"element": e["name"], "units": "metres", "origin": origin(chunk).tolist(),
+                                    "crs": chunk.crs, "placement": (e.get("geometry") or {}).get("placement"),
+                                    "note": "world = STEP coordinates + origin (in the CRS)"}, indent=1),
+                        encoding="utf-8")
         out.append(dst)
     return out
 
 
 def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip() or "elemento"
+
+
+# ====================================================================== rebuild after the chunk's system changed
+def rebuild(chunk, progress=None) -> list[dict]:
+    """Every element made again after the chunk's transform or system changed: what each was made from (region,
+    path, plane, point, knots, type, given thickness and depth) carried from the old frame to the new one through the
+    model (old world -> the chunk's internal frame -> new world), then measured again on the model. All or nothing:
+    on a failure the elements stay as they were."""
+    from pyarchinit_photogrammetry.core.progress import as_progress
+
+    progress = as_progress(progress)
+    st = state(chunk)
+    old_entries = copy.deepcopy(st.get("elements") or [])
+    if not old_entries:
+        return []
+    fr = st.get("frame") or {"transform": np.asarray(chunk.transform, float).tolist(), "crs": chunk.crs}
+    M = np.asarray(chunk.transform, float) @ np.linalg.inv(np.asarray(fr["transform"], float))
+    scale = float(np.cbrt(abs(np.linalg.det(M[:3, :3]))))
+    saved = {k: copy.deepcopy(st.get(k)) for k in ("elements", "origin", "frame")}
+    st["elements"], st["origin"], st["frame"] = [], None, None
+    made = []
+    try:
+        for k, e in enumerate(old_entries):
+            sub = progress.sub(k / len(old_entries), 1.0 / len(old_entries))
+            made.append(_rebuild_one(chunk, e, M, scale, sub))
+    except BaseException:
+        for e in made:
+            shutil.rmtree(element_dir(chunk, e), ignore_errors=True)
+        st.update(saved)
+        raise
+    for e in old_entries:
+        shutil.rmtree(element_dir(chunk, e), ignore_errors=True)
+    return made
+
+
+def _rebuild_one(chunk, e: dict, M, scale: float, progress) -> dict:
+    src, p = e["source"], e.get("params") or {}
+
+    def world(points):
+        return engine.apply(M, np.asarray(points, float))
+
+    common = {"name": e["name"], "notes": e.get("notes", ""), "progress": progress}
+    if e["kind"] == "column":
+        box = poly = zmin = zmax = None
+        if src.get("box"):
+            b = np.asarray(src["box"], float)
+            corners = np.array([[x, y, z] for x in b[[0, 3]] for y in b[[1, 4]] for z in b[[2, 5]]])
+            w = world(corners)
+            box = [*w.min(axis=0), *w.max(axis=0)]
+        else:
+            zl = src.get("zmin") if src.get("zmin") is not None else p["axis_point"][2]
+            zh = src.get("zmax") if src.get("zmax") is not None else p["world_top"][2] if p.get("world_top") else zl
+            mid = 0.5 * (zl + zh)
+            poly = world(np.column_stack([np.asarray(src["polygon"], float), np.full(len(src["polygon"]), mid)]))
+            zc = world(np.array([[*np.mean(src["polygon"], axis=0), zl], [*np.mean(src["polygon"], axis=0), zh]]))[:, 2]
+            zmin, zmax = (float(zc.min()), float(zc.max())) if src.get("zmin") is not None or \
+                src.get("zmax") is not None else (None, None)
+            poly = poly[:, :2]
+        return column(chunk, polygon=poly, zmin=zmin, zmax=zmax, box=box, knots=p.get("knots", 12),
+                      as_measured=p.get("method") == "measured", same_axis=src.get("same_axis"), **common)
+    if e["kind"] == "moulding":
+        win = src.get("window")
+        return moulding(chunk, world(src["path"]), station=src["station"] * scale,
+                        window=None if win is None else [x * scale for x in win], out=src["out"],
+                        depth=src["depth"] * scale, simplify=src["simplify"] * scale,
+                        section=(np.asarray(e["geometry"]["section"]) * scale) if src.get("section_given") else None,
+                        **common)
+    pl = src["plane"]
+    o = np.asarray(pl["origin"], float)
+    new_o = world(o[None])[0]
+    new_u = world((o + np.asarray(pl["u"]))[None])[0] - new_o
+    new_v = world((o + np.asarray(pl["v"]))[None])[0] - new_o
+    return arch(chunk, [x * scale for x in src["pick"]], kind=p.get("type") or src.get("kind_asked") or "auto",
+                thickness=p["thickness"] * scale, depth=p["depth"] * scale, vault=e["kind"] == "vault",
+                plane=(new_o, new_u, new_v), **common)
+

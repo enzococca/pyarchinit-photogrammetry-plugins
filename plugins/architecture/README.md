@@ -13,12 +13,17 @@ parametric architectural elements made from the photogrammetric model, for an HB
   plane through two points; the intrados is fitted as a circle (semicircular or segmental), a pointed arch, an ellipse,
   or kept as measured, the type chosen by the fit; the thickness and the depth are measured or given.
 
-Every element is written as **STEP** (AP214, from CadQuery and OpenCascade), **STL**, a parametric **IFC4** solid
+Every element is written as **STEP** (AP214 in metres, from CadQuery and OpenCascade), **STL** (no unit in the
+format: its numbers are metres), a parametric **IFC4** solid
 (`IfcColumn` with `IfcRevolvedAreaSolid`, `IfcMember` with `IfcExtrudedAreaSolid` or `IfcFixedReferenceSweptAreaSolid`,
 `IfcBuildingElementProxy` "Arch"/"Vault" with arcs as `IfcArcIndex`, `Pset_PyArchInit_Element`, the survey mesh
 beside on request, `IfcMapConversion` on the chunk's origin) and **DXF** of its profile or section. It always carries
 its **fit**: the median, 90th percentile and maximum distance of the model's points from the solid. The solid is an
 interpretation of the measured model; the fit says how far.
+
+The coordinates of the files are those of the chunk's system minus a round origin kept per chunk: an exported STEP
+gets a `<name>.origin.json` beside it with that origin. When the chunk is georeferenced or moved to another system after
+the elements were made, the plugin refuses to export or edit them until *Rebuild* makes them again in the new system.
 
 ## The proof
 
@@ -44,7 +49,9 @@ Windows on ARM**: there the pane says that the elements are not available.
 ppg plugin architecture install | status
 ppg plugin architecture column   PROJECT --polygon "POLYGON((x y, ...))" --zmin 0.05 --zmax 1.95 --knots 12
 ppg plugin architecture moulding PROJECT --path "LINESTRING(x y, x y)" --height 3.35 [--elevation ID] [--markers A,B]
-ppg plugin architecture arch     PROJECT --section ID --pick u,v [--type auto|pointed|...] [--vault]
+                                 [--window u0,v0,u1,v1]   (default: found from the cut)
+ppg plugin architecture arch     PROJECT --section ID --pick u,v [--type auto|pointed|...] [--thickness T] [--vault]
+ppg plugin architecture rebuild  PROJECT     (after the chunk's transform or system changed)
 ppg plugin architecture list | show ID | remove ID PROJECT
 ppg plugin architecture export   PROJECT --out elementi.ifc [--mesh] | --out folder/ | --out arco.dxf --ids Arco
 ```

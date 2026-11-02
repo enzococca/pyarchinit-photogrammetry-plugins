@@ -75,21 +75,40 @@ def test_the_cornice_section_and_its_sweep_back():
         point, tangent = engine.point_at(L_PATH, station)
         o, u, v, _n = engine.section_frame(tangent, point)
         lines = engine.mesh_section(mesh.vertices, mesh.faces, o, u, v)
-        sec = engine.moulding_section(lines, (-0.6, -0.2, 0.6, 0.5), out=-1, depth=0.1)
+        cut = engine.wall_section(lines, out=-1, depth=0.1, window=(-0.6, -0.2, 0.6, 0.5))
+        sec = cut["section"]
+        assert cut["wall_u"] is None  # a closed outline: a free-standing member, kept whole
         assert abs(abs(engine.polygon_area(sec)) - abs(engine.polygon_area(plug))) < 1e-6
         volume = engine.sweep_volume(L_PATH, sec)
         assert abs(volume / abs(mesh.volume) - 1) < 0.01
 
 
-def test_a_cornice_against_the_wall_is_closed_by_the_given_depth():
-    # only the visible profile: an open line from the wall face out and back
-    profile = np.column_stack([-CORNICE[:-1, 0], CORNICE[:-1, 1]])
-    sec = engine.moulding_section([profile], (-0.5, -0.1, 0.2, 0.4), out=-1, depth=0.05)
-    assert sec[:, 0].max() == pytest.approx(0.05)
-    area = abs(engine.polygon_area(np.column_stack([CORNICE[:, 0], CORNICE[:, 1]])))
-    assert abs(engine.polygon_area(sec)) == pytest.approx(area + 0.05 * 0.25, rel=1e-6)
-    simple = engine.moulding_section([profile], (-0.5, -0.1, 0.2, 0.4), out=-1, depth=0.05, simplify=0.02)
-    assert len(simple) < len(sec)
+def test_a_cornice_against_the_wall_is_cut_from_the_wall_face():
+    """The cut of a wall with a cornice: the wall face below and above, the cornice between. The section is the
+    cornice only (its own height), closed by the back line ``depth`` behind the face; the projection is measured
+    from the face, not from the back line."""
+    cornice = np.column_stack([-CORNICE[:, 0], CORNICE[:, 1]])  # from (0, 0) out and back to (0, 0.25)
+    below = np.column_stack([np.zeros(20), np.linspace(-0.8, 0.0, 20, endpoint=False)])
+    above = np.column_stack([np.zeros(20), np.linspace(0.25, 1.2, 21)[1:]])
+    wall = np.vstack([below, cornice, above])
+    for depth in (0.0, 0.05):
+        cut = engine.wall_section([wall], out=-1, depth=depth, resolution=0.002)
+        assert cut["wall_u"] == pytest.approx(0.0, abs=1e-9)
+        assert cut["projection"] == pytest.approx(0.18) and cut["height"] == pytest.approx(0.25)
+        assert cut["v_range"] == pytest.approx([0.0, 0.25])
+        area = abs(engine.polygon_area(np.column_stack([CORNICE[:, 0], CORNICE[:, 1]])))
+        assert abs(engine.polygon_area(cut["section"])) == pytest.approx(area + depth * 0.25, rel=1e-6)
+        u0, v0, u1, v1 = cut["window"]
+        assert (u0, v0, u1, v1) == pytest.approx((-0.28, -0.1, 0.1, 0.35))
+    simple = engine.wall_section([wall], out=-1, depth=0.05, simplify=0.02, resolution=0.002)
+    assert len(simple["section"]) < len(engine.wall_section([wall], out=-1, depth=0.05, resolution=0.002)["section"])
+    # a second moulding lower down the wall: the one at the path's point is taken
+    other = np.column_stack([-CORNICE[:, 0], CORNICE[:, 1] - 0.6])
+    wall2 = np.vstack([np.column_stack([np.zeros(5), np.linspace(-0.9, -0.6, 5, endpoint=False)]), other,
+                       np.column_stack([np.zeros(5), np.linspace(-0.35, 0.0, 5, endpoint=False)]), cornice, above])
+    assert engine.wall_section([wall2], out=-1, resolution=0.002)["v_range"] == pytest.approx([0.0, 0.25])
+    with pytest.raises(ValueError, match="stands out"):
+        engine.wall_section([np.column_stack([np.zeros(10), np.linspace(-1, 1, 10)])], out=-1, resolution=0.002)
 
 
 @pytest.mark.parametrize("kind", ["semicircular", "segmental", "pointed", "elliptical"])
@@ -104,7 +123,8 @@ def test_arches_are_recognised_and_measured(kind):
     assert abs(fit.span - truth["span"]) < 0.002 and abs(fit.rise - truth["rise"]) < 0.002
     if truth["radius"] is not None:
         assert abs(fit.params["R"] - truth["radius"]) < 0.002
-    assert abs(engine.arch_thickness(fit, far) - truth["thickness"]) < 0.002
+    thickness, why = engine.arch_thickness(fit, far)
+    assert why == "" and abs(thickness - truth["thickness"]) < 0.002
     outline = engine.arch_outline(fit, truth["thickness"])
     ring = engine.outline_polygon(outline, arc_points=400)
     from shapely.geometry import Polygon, box
@@ -155,8 +175,8 @@ def test_what_lies_behind_the_back_of_a_section():
 
 def test_a_section_closed_on_its_last_point_has_no_repeated_point():
     # the back line starts where the profile ends: the corner is not written twice (OpenCascade refuses it)
-    profile = np.array([[-0.001, 0.3], [-0.18, 0.25], [-0.04, 0.0], [-0.001, -0.03]])
-    sec = engine.moulding_section([profile], (-0.4, -0.03, 0.02, 0.4), out=-1, depth=0.0)
+    profile = np.array([[0.0, 0.4], [0.0, 0.3], [-0.18, 0.25], [-0.04, 0.0], [0.0, -0.03], [0.0, -0.3]])
+    sec = engine.wall_section([profile], out=-1, depth=0.0, resolution=0.002)["section"]
     edges = np.linalg.norm(np.diff(np.vstack([sec, sec[:1]]), axis=0), axis=1)
     assert edges.min() > 1e-7 and len(sec) == 4
 
@@ -184,3 +204,28 @@ def test_a_column_with_the_fins_of_a_photogrammetric_mesh():
     meas = engine.column_profile(m.vertices, m.faces, p, dd, rms=rms)
     zk, rk = engine.fit_knots(meas.heights, meas.radii, 12)
     assert np.abs(rk - column_radius(zk)).max() < 0.002
+
+
+def test_a_ring_flush_with_a_wall_has_no_measured_thickness():
+    """A semicircular opening (span 2 m) in a wall 5 m wide and 3.6 m high, cut inside the wall: from a point in the
+    opening the rays leave the material at the wall's sides and top, not at an extrados. The thickness is refused,
+    with the reason, instead of a ring 1.5 m thick."""
+    a = np.linspace(np.pi, 0, 200)
+    opening = np.vstack([[[-1.0, 0.0]], np.column_stack([np.cos(a), 1.5 + np.sin(a)]), [[1.0, 0.0]]])
+    wall = np.array([[-2.5, 0.0], [-2.5, 3.6], [2.5, 3.6], [2.5, 0.0]])
+    near, far = engine.visible_points([opening, wall], (0.0, 0.8))
+    fit = engine.fit_arch(near)
+    assert fit.type == "semicircular" and abs(fit.span - 2.0) < 0.002
+    thickness, why = engine.arch_thickness(fit, far)
+    assert thickness is None and ("wall" in why or "not a ring" in why)
+
+
+def test_a_type_asked_for_is_enforced():
+    pts, truth = arch_points("segmental")
+    semi = engine.fit_arch(pts, "semicircular")
+    assert semi.type == "semicircular" and abs(semi.params["vs"] - semi.params["vc"]) < 1e-6
+    seg = engine.fit_arch(arch_points("semicircular")[0], "segmental")
+    assert seg.type == "segmental" and seg.params["vs"] - seg.params["vc"] >= 0.02 * seg.params["R"] - 1e-9
+    auto = engine.fit_arch(pts)
+    assert auto.type == "segmental" and abs(auto.span - truth["span"]) < 0.002
+    assert set(auto.candidates) == {"circle", "pointed", "ellipse"}

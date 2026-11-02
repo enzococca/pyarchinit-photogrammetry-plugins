@@ -21,7 +21,8 @@ The frames: a column is the profile ``(r, z)`` revolved 360 degrees about the lo
 swept along the path (given in the export frame: the placement is then the identity), the section in the plane normal
 to the path at its first point with ``u`` = up x tangent and ``v`` = tangent x u, mitred corners; an arch is the
 outline in the local xy plane extruded along z by
-``depth``. ``output`` must not exist: the files (``solid.step``, AP214, and ``solid.stl``) are written in
+``depth``. ``output`` must not exist: the files (``solid.step``, AP214 in metres, and ``solid.stl``, whose numbers are
+metres) are written in
 ``<output>.partial`` and the folder is renamed at the end, so a run stopped half-way never leaves a result that looks
 complete.
 
@@ -173,6 +174,23 @@ def place(cq, shape, matrix):
     return cq.Shape.cast(BRepBuilderAPI_Transform(shape.wrapped, trsf, True).Shape())
 
 
+def write_step(shape, path) -> None:
+    """STEP AP214 in METRES: the numbers of the solid are metres and the file says so (``LENGTH_UNIT`` = metre).
+    CadQuery's own exporter declares millimetres by default (its geometry is unitless): every CAD program would read the
+    solid a thousand times too small."""
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    writer = STEPControl_Writer()
+    Interface_Static.SetCVal_s("xstep.cascade.unit", "M")  # the unit of the numbers of the shape
+    Interface_Static.SetCVal_s("write.step.unit", "M")  # the unit the file declares
+    Interface_Static.SetIVal_s("write.surfacecurve.mode", 1)
+    writer.Transfer(shape.wrapped, STEPControl_AsIs)
+    if writer.Write(str(path)) != IFSelect_RetDone:
+        raise RuntimeError(f"OpenCascade could not write the STEP file {path}")
+
+
 def stub_casadi() -> bool:
     """CadQuery imports casadi (its assembly solver and a NURBS helper, neither used here): the plugin's
     environment does not install it (183 MB, LGPL-3). When it is missing a stub takes its place, whose every name
@@ -225,7 +243,7 @@ def run_job(job: dict) -> dict:
         partial.mkdir(parents=True)
         where["phase"] = "step"
         emit("progress", fraction=0.6, phase="step")
-        cq.exporters.export(shape, str(partial / "solid.step"), exportType="STEP")
+        write_step(shape, partial / "solid.step")
         where["phase"] = "stl"
         emit("progress", fraction=0.8, phase="stl")
         tol = float(job.get("tolerance") or 0.0005)

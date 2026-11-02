@@ -367,15 +367,19 @@ def fit(folder: Path, cadquery: Path) -> dict:
                        "scarto_modello_solido": arch["fit"],
                        "modello_contro_verita": _model_error(ch, true_mesh, (-1.1, -0.16, 1.2, 1.1, 0.0, 3.2))}
     path = np.array([[-1.8, 0.0], [1.8, 0.0]])
-    mould = elements.moulding(ch, path, height=CORNICE_Z, station=1.0, window=(-0.4, -0.03, 0.02, 0.3), out=-1,
-                              depth=0.0, simplify=0.002, name="Cornice")
+    # the dialog's defaults: the window found from the cut, 10 cm into the wall
+    mould = elements.moulding(ch, path, height=CORNICE_Z, station=1.0, out=-1, name="Cornice")
+    mp = mould["params"]
     sec = np.asarray(mould["geometry"]["section"])
     from shapely.geometry import Polygon, box
 
-    # in front of the wall face (u < 0) and above the cornice's underside (the window takes a strip of the wall below)
-    front = Polygon(sec).intersection(box(-1, 0.0, 0.0, 1))
+    # the part of the section in front of the wall face the plugin found (behind it is the back line's slab)
+    front = Polygon(sec).intersection(box(-1, -1, mp["wall_u"], 1))
     truth = Polygon(np.column_stack([-CORNICE[:, 0], CORNICE[:, 1]]))
-    results["cornice"] = {"sporgenza_m": [float(-sec[:, 0].min()), float(CORNICE[:, 0].max())],
+    results["cornice"] = {"sporgenza_m": [mp["projection"], float(CORNICE[:, 0].max())],
+                          "altezza_m": [mp["section_height"], float(CORNICE[:, 1].max())],
+                          "quote_della_sezione_m": mp["v_range"], "faccia_del_muro_u_m": mp["wall_u"],
+                          "finestra_trovata": mp["window_used"],
                           "area_davanti_al_muro_m2": [float(front.area), float(truth.area)],
                           "area_scarto_percento": 100 * (front.area / truth.area - 1),
                           "differenza_simmetrica_m2": float(front.symmetric_difference(truth).area),
@@ -480,9 +484,9 @@ def figures(folder: Path) -> None:
     corn = elements.entry(ch, "Cornice")
     src = corn["source"]
     fig, ax = plt.subplots(figsize=(4.8, 4.4))
-    for ln in corn["profile"]["cut"]:
-        ln = np.asarray(ln)
-        ax.plot(ln[:, 0], ln[:, 1], color="#999999", lw=0.8)
+    ln = np.asarray(corn["profile"]["line"])
+    ax.plot(ln[:, 0], ln[:, 1], color="#999999", lw=0.8, label="taglio del modello")
+    ax.axvline(corn["params"]["wall_u"], color="#2e7d32", lw=0.8, ls="--", label="faccia del muro trovata")
     sec = np.asarray(corn["geometry"]["section"])
     sec = np.vstack([sec, sec[:1]])
     ax.plot(sec[:, 0], sec[:, 1], color="#1f4e79", lw=1.5, label="sezione del solido")
@@ -490,8 +494,8 @@ def figures(folder: Path) -> None:
     truth = np.vstack([truth, truth[:1]])
     ax.plot(truth[:, 0], truth[:, 1], "--", color="#c0392b", lw=1.0, label="verità")
     ax.set_aspect("equal")
-    ax.set_xlim(-0.35, 0.12)
-    ax.set_ylim(-0.12, 0.35)
+    ax.set_xlim(-0.3, 0.15)
+    ax.set_ylim(-0.12, 0.38)
     ax.grid(alpha=0.3)
     ax.set_xlabel("u (m): fuori dal muro verso sinistra")
     ax.set_ylabel("v (m) dalla quota del percorso")
@@ -572,13 +576,17 @@ def _pane_figure(folder: Path) -> None:
     from ppg_architecture import elements
 
     pane = ArchitecturePane()
-    pane.resize(460, 620)
+    pane.resize(560, 760)
+    pane.show()
+    QApplication.processEvents()
     ch = ppg.Document.open(folder / "muro" / "muro.ppg").chunk
     rows = elements.elements(ch) + elements.elements(ppg.Document.open(folder / "colonna" / "colonna.ppg").chunk)
     pane.set_environment("CadQuery 2.8.0 nell'ambiente del plugin.", False, True)
     pane.set_rows(rows)
     pane.table.selectRow(0)
+    QApplication.processEvents()
     pane.grab().save(str(folder / "figure_pannello.png"))
+    pane.close()
 
 
 def leggimi(folder: Path, r: dict) -> None:
@@ -635,18 +643,23 @@ def leggimi(folder: Path, r: dict) -> None:
         row("raggio", mm(a["raggio_m"][0]), mm(a["raggio_m"][1])),
         row("linea d'imposta", mm(a["imposta_m"][0]), mm(a["imposta_m"][1])),
         row("spessore della ghiera", mm(a["spessore_m"][0]), mm(a["spessore_m"][1])),
-        row("scarto modello-solido (mediana / p90)", fit(a["scarto_modello_solido"], ("median", "p90")), ""),
+        row("scarto modello-solido sulle facce curve (mediana / p90)", fit(a["scarto_modello_solido"],
+                                                                           ("median", "p90")), ""),
+        row("punti sulle due facce piane (esclusi dallo scarto)", a["scarto_modello_solido"].get("excluded_faces"), ""),
         row("modello contro verità (mediana / p90)", fit(a["modello_contro_verita"], ("median", "p90")), ""), "",
-        "Cornice lungo il muro (sezione a 1 m dall'inizio del percorso):", "", *head,
-        row("sporgenza", mm(k["sporgenza_m"][0]), mm(k["sporgenza_m"][1])),
+        "Cornice lungo il muro (sezione a 1 m dall'inizio del percorso, con i valori predefiniti del dialogo: "
+        "finestra trovata dal taglio, 10 cm nel muro):", "", *head,
+        row("sporgenza dalla faccia del muro", mm(k["sporgenza_m"][0]), mm(k["sporgenza_m"][1])),
+        row("altezza della cornice", mm(k["altezza_m"][0]), mm(k["altezza_m"][1])),
         row("area della sezione davanti al muro", f"{it(k['area_davanti_al_muro_m2'][0] * 1e4, 1)} cm²",
             f"{it(k['area_davanti_al_muro_m2'][1] * 1e4, 1)} cm² (+{it(k['area_scarto_percento'], 1)} %)"),
         row("distanza di Hausdorff dei profili", mm(k["hausdorff_profilo_m"]), ""),
         row("scarto modello-solido (mediana / p90)", fit(k["scarto_modello_solido"], ("median", "p90")), ""),
-        row("punti del modello dietro la sezione (esclusi dallo scarto)", k["scarto_modello_solido"].get(
+        row("punti del modello sulla faccia del muro o dietro (esclusi dallo scarto)", k["scarto_modello_solido"].get(
             "excluded_behind"), ""),
         row("modello contro verità (mediana / p90 / max)", fit(k["modello_contro_verita"]), ""), "",
-        "La sezione della cornice segue il modello: la sporgenza e l'area in più vengono dal bordo superiore del muro "
+        "La sezione della cornice segue il modello: sporgenza, altezza e area in più vengono dal bordo superiore "
+        "del muro "
         "e della cornice, ricostruito dal programma fino a 2 cm più alto (lo si vede solo di scorcio dalle foto più "
         "alte; vedi il massimo di «modello contro verità»), non dal plugin, il cui scarto dal modello resta di pochi "
         "millimetri.", "",

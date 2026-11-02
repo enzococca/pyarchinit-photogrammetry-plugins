@@ -27,6 +27,7 @@ ACTIONS = (("show", ("Mostra nella vista 3D", "Show in the 3D view")),
            ("ifc", ("Esporta IFC...", "Export IFC...")),
            ("dxf", ("DXF...", "DXF...")),
            ("folder", ("Apri la cartella", "Open the folder")),
+           ("rebuild", ("Ricostruisci", "Rebuild")),
            ("remove", ("Rimuovi", "Remove")))
 COLUMNS = (("Nome", "Name"), ("Tipo", "Kind"), ("Misure", "Measures"), ("Scarto mediana", "Fit median"),
            ("Scarto p90", "Fit p90"), ("Punti", "Points"))
@@ -102,12 +103,18 @@ class ArchitecturePane(QWidget):
                 measures = t(f"L {metres(p.get('length'))}, sporgenza {metres(p.get('projection'))}",
                              f"L {metres(p.get('length'))}, projection {metres(p.get('projection'))}")
             else:
-                measures = t(f"{arch_title(p.get('type', ''))}, luce {metres(p.get('span'))}",
-                             f"{arch_title(p.get('type', ''))}, span {metres(p.get('span'))}")
+                from .elements import candidates_text
+
+                measures = t(f"{arch_title(p.get('type', ''))}, luce {metres(p.get('span'))} ({candidates_text(p)})",
+                             f"{arch_title(p.get('type', ''))}, span {metres(p.get('span'))} ({candidates_text(p)})")
+            if e.get("warnings"):
+                measures += " ⚠"
             cells = (e.get("name", ""), kind_title(e["kind"]), measures, metres(fit.get("median")),
                      metres(fit.get("p90")), str(fit.get("points") or 0))
             for j, text in enumerate(cells):
                 item = QTableWidgetItem(text)
+                if e.get("warnings"):
+                    item.setToolTip(" ".join(e["warnings"]))
                 if j >= 3:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if j == 0:
@@ -115,8 +122,7 @@ class ArchitecturePane(QWidget):
                 self.table.setItem(i, j, item)
             if e["id"] in keep:
                 self.table.selectRow(i)
-        if not entries:
-            self.l_state.setText(t("Nessun elemento nel chunk.", "No element in the chunk."))
+        self.l_state.setText("" if entries else t("Nessun elemento nel chunk.", "No element in the chunk."))
 
     def set_state(self, text: str) -> None:
         self.l_state.setText(text)

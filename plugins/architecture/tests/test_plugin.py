@@ -163,7 +163,7 @@ def test_elements_from_a_model_in_utm_with_a_rotated_scaled_transform(tmp_path, 
         d = elements.element_dir(ch, e)
         assert {q.name for q in d.iterdir()} == {"solid", "model.ply", "element.json"}
         record = json.loads((d / "element.json").read_text())
-        assert record["origin"] == elements.origin(ch).tolist() and record["fit"] == e["fit"]
+        assert record["origin"] == elements.origin(ch).tolist() and record["fit"] == elements.entry(ch, e["id"])["fit"]
     doc.save()
     again = ppg.Document.open(doc.path).chunk
     assert [e["name"] for e in elements.elements(again)] == ["Colonna A", "Colonna 1", "Arco", "Modanatura 1"]
@@ -230,20 +230,81 @@ def test_ifc_round_trip_and_dxf(tmp_path, fake):
 
 
 def test_a_failed_solid_changes_nothing(tmp_path, fake, monkeypatch):
+    import copy
+
     from ppg_architecture import runner
 
     doc, ch, _truth = _project(tmp_path)
     col = elements.column(ch, polygon=_square(COLUMN_AT, 0.6), name="Colonna")
+    p1, p2 = ARCH_AT[:2] + [-2.0, -0.4], ARCH_AT[:2] + [2.0, -0.4]
+    arch = elements.arch(ch, (2.0, ARCH_AT[2] + 0.9), p1=p1, p2=p2, name="Arco")
     files = sorted(q for q in elements.element_dir(ch, col).rglob("*"))
+    before = copy.deepcopy(elements.elements(ch))
     monkeypatch.setenv("PPG_ARCHITECTURE_FAKE", "fail")
     with pytest.raises(runner.WorkerError):
+        elements.edit_column(ch, col["id"], knot_radii=[r * 1.05 for r in col["params"]["knot_radii"]])
+    with pytest.raises(runner.WorkerError):
         elements.edit_column(ch, col["id"], knots=6)
+    with pytest.raises(runner.WorkerError):
+        elements.edit_arch(ch, arch["id"], kind="elliptical")
     assert sorted(q for q in elements.element_dir(ch, col).rglob("*")) == files  # the old solid stays
+    assert elements.elements(ch) == before  # and so do the entries: parameters, geometry, solid agree
     with pytest.raises(runner.WorkerError):
         elements.column(ch, polygon=_square(COLUMN_AT, 0.6), name="Altra")
-    assert [e["name"] for e in elements.elements(ch)] == ["Colonna"]
-    assert sorted(q.name for q in elements.folder(ch).iterdir()) == [col["id"]] or \
-        all(not (q / "solid").exists() for q in elements.folder(ch).iterdir() if q.name != col["id"])
+    assert [e["name"] for e in elements.elements(ch)] == ["Colonna", "Arco"]
+    assert sorted(q.name for q in elements.folder(ch).iterdir()) == sorted([col["id"], arch["id"]])  # no orphan
+    monkeypatch.setenv("PPG_ARCHITECTURE_FAKE", "")
+    # a path with a vertex repeated: no segment of zero length reaches the engine
+    path = L_PATH[:, :2] + CORNICE_AT[:2]
+    m = elements.moulding(ch, np.vstack([path[:2], path[1:]]), height=CORNICE_AT[2] + 2.0, station=1.5,
+                          window=(-0.6, -0.2, 0.6, 0.5), out=-1, name="Ripetuto")
+    assert m["params"]["path_vertices"] == 3
+
+
+def test_an_edit_keeps_the_type_and_the_step_carries_its_origin(tmp_path, fake):
+    doc, ch, _truth = _project(tmp_path)
+    p1, p2 = ARCH_AT[:2] + [-2.0, -0.4], ARCH_AT[:2] + [2.0, -0.4]
+    a = elements.arch(ch, (2.0, ARCH_AT[2] + 0.9), p1=p1, p2=p2, name="Arco")
+    assert a["params"]["type"] == "pointed" and "ellipse" in a["params"]["candidates_rms"]
+    assert "rms" in elements.summary(a) and "cerchio" in elements.summary(a)
+    assert a["fit"]["excluded_faces"] > 0 and a["fit"]["points"] > 0  # the plane faces are not the ring
+    semi = elements.edit_arch(ch, a["id"], kind="semicircular")
+    assert semi["params"]["type"] == "semicircular"
+    thicker = elements.edit_arch(ch, a["id"], thickness=0.5)  # only the thickness: the type stays
+    assert thicker["params"]["type"] == "semicircular" and thicker["params"]["thickness"] == 0.5
+    apex = a["params"]["world_apex"]
+    assert len(apex) == 3 and abs(apex[2] - (ARCH_AT[2] + 1.5 + np.sqrt(3.0))) < 0.01
+    out = elements.export_step(ch, [a["id"]], tmp_path / "out" / "arco.step")
+    side = json.loads((tmp_path / "out" / "arco.origin.json").read_text())
+    assert out[0].exists() and side["origin"] == elements.origin(ch).tolist() and side["units"] == "metres"
+
+
+def test_a_changed_system_is_refused_until_the_elements_are_rebuilt(tmp_path, fake):
+    from pyarchinit_photogrammetry.core.geometry import compose_similarity
+    from ppg_architecture import ifc
+
+    doc, ch, _truth = _project(tmp_path)
+    col = elements.column(ch, polygon=_square(COLUMN_AT, 0.6), knots=8, name="Colonna")
+    p1, p2 = ARCH_AT[:2] + [-2.0, -0.4], ARCH_AT[:2] + [2.0, -0.4]
+    elements.arch(ch, (2.0, ARCH_AT[2] + 0.9), p1=p1, p2=p2, name="Arco")
+    old_axis = np.asarray(col["params"]["axis_point"])
+    # the chunk georeferenced again: everything moves 10 m east and turns 90 degrees about the vertical
+    rz = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    move = compose_similarity(1.0, rz, [10.0, 0.0, 0.0])
+    move[:3, 3] += WORLD - rz @ WORLD  # about the middle of the scene
+    ch.transform = move @ ch.transform
+    for call in (lambda: ifc.export(ch, tmp_path / "x.ifc"), lambda: elements.export_step(ch, None, tmp_path / "s"),
+                 lambda: elements.edit_column(ch, col["id"], knots=6),
+                 lambda: elements.column(ch, polygon=_square(COLUMN_AT, 0.6))):
+        with pytest.raises(elements.NotReady, match="sistema del chunk è cambiato"):
+            call()
+    made = elements.rebuild(ch)
+    assert [e["name"] for e in made] == ["Colonna", "Arco"] and elements.frame_matches(ch)
+    new_axis = np.asarray(elements.entry(ch, "Colonna")["params"]["axis_point"])
+    np.testing.assert_allclose(new_axis, engine.apply(move, old_axis[None])[0], atol=0.002)
+    assert elements.entry(ch, "Arco")["params"]["type"] == "pointed"
+    assert {q.name for q in elements.folder(ch).iterdir()} == {e["id"] for e in made}
+    ifc.export(ch, tmp_path / "x.ifc")  # allowed again
 
 
 def _plugin_folder(root: Path) -> Path:
@@ -513,8 +574,13 @@ def test_the_gui_draws_on_elevations(tmp_path, fake, monkeypatch):
         w.runner.wait()
         plugin._do_arch()
         w.runner.wait()
+        # after an elevation was shown, a column's region is asked on the chunk's own plan, not on the elevation
+        asked = []
+        monkeypatch.setattr(plugin.context, "request_polygon", lambda done, hint="": asked.append(list(shown)))
+        plugin._do_column()
+        assert asked and asked[0][-1] is None  # show_raster(None): the chunk's orthophoto or DEM
         kinds = {e["name"]: e for e in elements.elements(ch)}
-        assert [p.name for p in shown] == ["elevation.tif", "elevation.tif"]
+        assert [p.name for p in shown[:2]] == ["elevation.tif", "elevation.tif"]
         m = kinds["Modanatura 1"]
         assert abs(m["params"]["section_area"] - abs(engine.polygon_area(truth["plug"]))) < 1e-4
         assert kinds["Arco 1"]["params"]["type"] == "pointed"

@@ -28,12 +28,16 @@ import numpy as np
 from .texts import t
 
 PSET = "Pset_PyArchInit_Element"
+FRAMES = ("Lengths in metres. P_world_*, P_axis_point and P_axis_direction: the CRS of the map conversion (world). "
+          "P_springing, P_centre_u, P_centre_v, P_span, P_rise and the other arch values: the section plane, u "
+          "along it and v up, from the plane's origin (Source.plane, world); P_wall_u, P_v_range, P_window_used of a "
+          "moulding: the plane normal to its path at the station, u = up x tangent, v up, from the path's point. The "
+          "geometry: the IFC's local coordinates, the map conversion's origin added.")
 QTO = "Qto_PyArchInit_Element"
 
 
 def _require():
     try:
-        import ifcopenshell  # noqa: F401
         import ifcopenshell.api  # noqa: F401
     except ImportError as exc:  # pragma: no cover
         raise ImportError(t("L'IFC richiede ifcopenshell: pip install 'pyarchinit-photogrammetry[bim]'.",
@@ -86,6 +90,13 @@ def properties(e: dict) -> dict:
         if fit.get(k) is not None:
             props[f"Fit_{k}_m"] = float(fit[k])
     props["Fit_points"] = int(fit.get("points") or 0)
+    if e["kind"] in ("arch", "vault"):
+        from .elements import candidates_text
+
+        props["Fit_candidates"] = candidates_text(e.get("params") or {})
+    if e.get("warnings"):
+        props["Warnings"] = " ".join(e["warnings"])
+    props["Frames"] = FRAMES
     # parametric for every kind: a raking or turning moulding's fixed-reference sweep is read back with the volume and
     # the bounding box of CadQuery's solid (tested), so nothing is written as a tessellation
     props["Representation"] = "parametric"
@@ -295,6 +306,7 @@ def export(chunk, path, ids=None, with_mesh: bool = False, progress=None) -> Pat
     ``with_mesh``."""
     from . import elements
 
+    elements.check_frame(chunk)
     chosen = [elements.need(chunk, i) for i in ids] if ids else elements.elements(chunk)
     if not chosen:
         raise elements.NotReady(t("Nessun elemento da esportare.", "No element to export."))

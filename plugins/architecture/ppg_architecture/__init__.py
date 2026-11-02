@@ -118,7 +118,7 @@ class ArchitecturePlugin(Plugin):
 
         try:
             function(*args)
-        except (NotReady, CadQueryMissing) as exc:
+        except (NotReady, CadQueryMissing, ValueError) as exc:
             self._message("warning", str(exc))
 
     def _run(self, title: str, job, done) -> None:
@@ -134,10 +134,9 @@ class ArchitecturePlugin(Plugin):
         return ParamDialog.ask(self.context.window, title, fields, intro=intro)
 
     def _need_view(self) -> None:
-        """Something to draw on: the orthophoto or the DEM, else an empty frame around the model."""
-        view = getattr(self.context.window, "ortho_view", None)
-        if view is not None and getattr(view, "tr", None) is not None:
-            return
+        """The plan to draw on: the chunk's own orthophoto or DEM, shown again even when the view has something else
+        (an elevation shown for a path or a point: its coordinates are (u, v), not plan x, y); without either, an
+        empty frame around the model."""
         if self.context.show_raster(None):
             return
         from . import elements
@@ -304,10 +303,16 @@ class ArchitecturePlugin(Plugin):
         fields += [
             Field("station", t("Sezione a (m dall'inizio)", "Section at (m from the start)"),
                   round(0.5 * float(np.linalg.norm(path[1] - path[0])), 3), minimum=0.0, maximum=1e5, decimals=3),
-            Field("below", t("Finestra: sotto (m)", "Window: below (m)"), 0.5, minimum=0.0, maximum=100.0, decimals=3),
-            Field("above", t("Finestra: sopra (m)", "Window: above (m)"), 0.5, minimum=0.0, maximum=100.0, decimals=3),
-            Field("reach", t("Finestra: sporgenza massima (m)", "Window: largest projection (m)"), 0.5, minimum=0.01,
-                  maximum=100.0, decimals=3),
+            Field("below", t("Finestra: sotto (m, 0 = automatica)", "Window: below (m, 0 = automatic)"), 0.0,
+                  minimum=0.0, maximum=100.0, decimals=3,
+                  tip=t("Automatica: la parte del taglio che sporge dal muro più vicina al percorso, con 10 cm "
+                        "intorno", "Automatic: the part of the cut standing out of the wall nearest the path, with "
+                        "10 cm around it")),
+            Field("above", t("Finestra: sopra (m, 0 = automatica)", "Window: above (m, 0 = automatic)"), 0.0,
+                  minimum=0.0, maximum=100.0, decimals=3),
+            Field("reach", t("Finestra: sporgenza massima (m, 0 = automatica)",
+                             "Window: largest projection (m, 0 = automatic)"), 0.0, minimum=0.0, maximum=100.0,
+                  decimals=3),
             Field("side", t("Sporge verso", "Projects towards"), "auto",
                   choices=[("auto", t("le foto", "the photos")),
                            ("left", t("sinistra del percorso", "left of the path")),
@@ -320,7 +325,11 @@ class ArchitecturePlugin(Plugin):
         if not val:
             return
         out = {"auto": None, "left": 1.0, "right": -1.0}[val["side"]]
-        win = (-val["reach"], -val["below"], val["reach"], val["above"])
+        if val["reach"] or val["below"] or val["above"]:
+            reach = val["reach"] or 1.0
+            win = (-reach, -(val["below"] or 1.0), reach, val["above"] or 1.0)
+        else:
+            win = None  # found from the cut
         self.moulding(chunk, path=path, height=None if in_space else val["height"], station=val["station"], window=win,
                       out=out, depth=val["depth"], simplify=val["simplify"], name=val["name"])
 
@@ -422,6 +431,8 @@ class ArchitecturePlugin(Plugin):
         from . import elements
 
         chunk = self._chunk()
+        if chunk is not None:
+            elements.check_frame(chunk)
         path = elements.path_of(chunk, e, "ply") if chunk is not None else None
         if path is not None and path.exists():
             self.context.show_model("model", path=path, title=e["name"])
@@ -559,6 +570,30 @@ class ArchitecturePlugin(Plugin):
         target.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
+    def _do_rebuild(self) -> None:
+        from pyarchinit_photogrammetry.gui import dialogs
+
+        from . import elements
+
+        chunk = self._need_chunk()
+        if elements.frame_matches(chunk):
+            self._status(t("Il sistema del chunk non è cambiato: niente da ricostruire.",
+                           "The chunk's system did not change: nothing to rebuild."))
+            return
+        if dialogs.choice(self.context.window, "question", self.title,
+                          t("Il sistema del chunk è cambiato. Ricostruire tutti gli elementi nel sistema nuovo, "
+                            "misurandoli di nuovo sul modello?", "The chunk's system changed. Rebuild every element in "
+                            "the new system, measuring them again on the model?"),
+                          [t("Ricostruisci", "Rebuild")]) != 0:
+            return
+
+        def done(made):
+            self._status(t(f"{len(made)} elementi ricostruiti", f"{len(made)} elements rebuilt"))
+            self._changed()
+
+        self._run(t("Ricostruzione degli elementi", "Rebuilding the elements"),
+                  lambda p: elements.rebuild(chunk, progress=p), done)
+
     def _do_remove(self) -> None:
         from pyarchinit_photogrammetry.gui import dialogs
 
@@ -603,8 +638,7 @@ class ArchitecturePlugin(Plugin):
         parser = argparse.ArgumentParser(prog="ppg plugin architecture",
                                          description="parametric architectural elements from the photogrammetric model")
         parser.add_argument("what", choices=["column", "moulding", "arch", "list", "show", "export", "remove",
-                                             "install",
-                                             "status"])
+                                             "rebuild", "install", "status"])
         parser.add_argument("project", nargs="?", help="the .ppg file")
         parser.add_argument("element", nargs="?", help="show, remove: the id or the name of an element")
         parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
@@ -623,7 +657,8 @@ class ArchitecturePlugin(Plugin):
                             help="moulding: --path is in (u v) of this elevation or section (id or name)")
         parser.add_argument("--height", type=float, help="moulding: the height of a 2D path (world)")
         parser.add_argument("--station", type=float, help="moulding: the section at this distance from the start (m)")
-        parser.add_argument("--window", default="-0.5,-0.5,0.5,0.5", help="moulding: u0,v0,u1,v1 around the path point")
+        parser.add_argument("--window", help="moulding: u0,v0,u1,v1 around the path point (default: found from the "
+                                             "cut, the moulding's extent and 10 cm)")
         parser.add_argument("--out-side", type=float,
                             help="moulding: +1 the moulding projects to the left of the path, "
                                                             "-1 to the right (default: the side of the photos)")
@@ -685,7 +720,7 @@ class ArchitecturePlugin(Plugin):
                     path = np.asarray(wkt.loads(ns.path).coords)
                 else:
                     raise elements.NotReady("--path or --markers")
-                win = [float(x) for x in ns.window.split(",")]
+                win = [float(x) for x in ns.window.split(",")] if ns.window else None
                 e = elements.moulding(chunk, path, station=ns.station, window=win, out=ns.out_side,
                                       depth=0.1 if ns.depth is None else ns.depth, simplify=ns.simplify,
                                       height=ns.height, name=ns.name, progress=print_progress)
@@ -723,6 +758,13 @@ class ArchitecturePlugin(Plugin):
                 if not ns.element or not elements.remove(chunk, ns.element):
                     raise elements.NotReady(f"no element {ns.element!r}")
                 changed = True
+            elif ns.what == "rebuild":
+                if elements.frame_matches(chunk):
+                    print("the chunk's system did not change: nothing to rebuild")
+                else:
+                    for e in elements.rebuild(chunk, progress=print_progress):
+                        print(elements.summary(e))
+                    changed = True
             elif ns.what == "export":
                 if not ns.out:
                     raise elements.NotReady("--out FILE (.ifc, .step, .dxf) or a folder")
@@ -741,7 +783,7 @@ class ArchitecturePlugin(Plugin):
             else:
                 for e in elements.elements(chunk):
                     print(elements.summary(e))
-        except (elements.NotReady, environment.CadQueryMissing) as exc:
+        except (elements.NotReady, environment.CadQueryMissing, ValueError) as exc:
             print(exc)
             return 1
         if changed:

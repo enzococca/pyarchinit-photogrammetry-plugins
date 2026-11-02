@@ -103,6 +103,7 @@ def arch(cq, spec):
 
 worker.BUILDERS = {"column": column, "moulding": moulding, "arch": arch}
 worker.place = place
+worker.write_step = lambda shape, path: Exporters.export(shape, str(path), exportType="STEP")
 worker.versions = lambda: {"cadquery": "0.0-fake", "python": "3"}
 sys.modules["cadquery"] = FakeCadQuery  # "import cadquery as cq" inside the worker
 

@@ -515,14 +515,25 @@ def mesh_section(vertices, faces, origin, u_axis, v_axis) -> list[np.ndarray]:
     return [np.asarray(g.coords) for g in parts if not g.is_empty and len(g.coords) > 1]
 
 
-def moulding_section(polylines, window, out: float = 1.0, depth: float = 0.1, simplify: float = 0.0) -> np.ndarray:
-    """The section of a moulding from the cut of the model: the parts inside ``window`` ``(u0, v0, u1, v1)``, the
-    polyline nearest the path point (0, 0) kept, closed against the wall: its two ends joined by a back line
-    ``depth`` metres inside the wall (``out`` = +1 when the moulding projects towards +u, -1 towards -u).
-    Returns the closed outline (N, 2) counter-clockwise, without the repeated first point."""
-    from shapely.geometry import LineString, Point, Polygon, box
+SEARCH = (-1.0, -1.0, 1.0, 1.0)  # where the cut is looked at around the path's point when no window is given
+MARGIN = 0.1  # the window reported: the moulding's extent and this much around it
 
-    win = box(*window)
+
+def wall_section(polylines, out: float, depth: float = 0.1, simplify: float = 0.0, resolution: float = 0.005,
+                 window=None) -> dict:
+    """The section of a moulding standing out of a wall, from the cut of the model: the line of the cut nearest the
+    path's point inside ``window`` (default :data:`SEARCH`); the **wall face** on it (the u where its near-vertical
+    stretches are, weighted by their length); the stretch of the line that stands out of the face by more than the
+    mesh's ``resolution`` towards ``out`` (+1: towards +u), the one nearest the path's point; its two ends brought
+    onto the face, the stretch simplified (Douglas-Peucker, ``simplify``) and closed by a back line ``depth`` behind
+    the face. A closed line (a free-standing member) is kept as it is.
+
+    Returns ``{"section", "wall_u", "v_range", "projection", "height", "window", "line"}``: the projection is
+    measured from the wall face, the height is the moulding's own (``v_range``), ``window`` is the moulding's extent
+    plus :data:`MARGIN` (u0, v0, u1, v1), ``line`` the line of the cut that was used (for an edit)."""
+    from shapely.geometry import LineString, Point, box
+
+    win = box(*(window if window is not None else SEARCH))
     best, dist = None, np.inf
     for pl in polylines:
         if len(pl) < 2:
@@ -532,31 +543,86 @@ def moulding_section(polylines, window, out: float = 1.0, depth: float = 0.1, si
             if part.is_empty or part.geom_type != "LineString":
                 continue
             d = part.distance(Point(0.0, 0.0))
-            if d < dist or (d == dist and part.length > best.length):
+            if d < dist:
                 best, dist = part, d
     if best is None:
-        raise ValueError("the model has no section inside the window around the path")
-    if simplify > 0:
-        best = best.simplify(simplify, preserve_topology=False)
+        raise ValueError("the model has no section around the path's point")
     c = np.asarray(best.coords)
-    if np.linalg.norm(c[0] - c[-1]) < 1e-9:  # already a closed outline (a free-standing member)
+    if np.linalg.norm(c[0] - c[-1]) < 1e-9:  # a free-standing member: its whole outline
         ring = c[:-1]
-    else:
-        if out >= 0:
-            back = c[:, 0].min() - depth
+        if simplify > 0:
+            from shapely.geometry import Polygon
+
+            simple = Polygon(ring).simplify(simplify, preserve_topology=True)
+            if simple.geom_type == "Polygon" and not simple.is_empty:
+                ring = np.asarray(simple.exterior.coords)[:-1]
+        ring = drop_repeated(ring, 1e-6)
+        if polygon_area(ring) < 0:
+            ring = ring[::-1]
+        lo, hi = ring.min(axis=0), ring.max(axis=0)
+        return {"section": ring, "wall_u": None, "v_range": [float(lo[1]), float(hi[1])],
+                "projection": float(hi[0] - lo[0]), "height": float(hi[1] - lo[1]),
+                "window": [float(lo[0] - MARGIN), float(lo[1] - MARGIN), float(hi[0] + MARGIN), float(hi[1] + MARGIN)],
+                "line": c.tolist()}
+    sign = -1.0 if out < 0 else 1.0  # the moulding stands towards sign * u
+    seg = np.diff(c, axis=0)
+    length = np.linalg.norm(seg, axis=1)
+    vertical = np.abs(seg[:, 1]) > 3 * np.abs(seg[:, 0])
+    tol = max(2.0 * resolution, 0.003)
+    if vertical.any() and length[vertical].sum() > 0:
+        mid = 0.5 * (c[:-1, 0] + c[1:, 0])[vertical]
+        w = length[vertical]
+        bins = np.arange(mid.min() - tol, mid.max() + 2 * tol, tol)
+        if len(bins) < 2:
+            wall_u = float(np.median(mid))
         else:
-            back = c[:, 0].max() + depth
-        ring = np.vstack([c, [[back, c[-1, 1]], [back, c[0, 1]]]])
-    poly = Polygon(ring)
-    if not poly.is_valid:
-        poly = poly.buffer(0)
-        if poly.geom_type != "Polygon":
-            poly = max(poly.geoms, key=lambda g: g.area)
-        ring = np.asarray(poly.exterior.coords)[:-1]
-    ring = drop_repeated(ring)
-    if Polygon(ring).exterior.is_ccw is False:
+            hist, edges = np.histogram(mid, bins=bins, weights=w)
+            k = int(np.argmax(hist))
+            near = (mid >= edges[k] - tol) & (mid <= edges[k + 1] + tol)
+            wall_u = float(np.average(mid[near], weights=w[near]))
+    else:  # no wall in the window: the extreme of the line on the wall's side
+        wall_u = float(c[:, 0].min() if sign > 0 else c[:, 0].max())
+    dep = sign * (c[:, 0] - wall_u)  # how far each point stands out of the face
+    stands = dep > tol
+    if not stands.any():
+        raise ValueError("no part of the cut stands out of the wall face near the path")
+    runs, start = [], None
+    for i, flag in enumerate(stands):
+        if flag and start is None:
+            start = i
+        if not flag and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(c) - 1))
+    i0, i1 = min(runs, key=lambda r: np.hypot(*c[r[0]:r[1] + 1].T).min())
+
+    def on_face(i, j):  # the point of the segment i-j where it meets the face (dep = 0), j outside the run
+        if j < 0 or j >= len(c):
+            return np.array([wall_u, c[i, 1]])
+        a, b = dep[i], dep[j]
+        f = a / (a - b) if a != b else 0.0
+        p = c[i] + f * (c[j] - c[i])
+        return np.array([wall_u, p[1]])
+
+    stretch = np.vstack([on_face(i0, i0 - 1), c[i0:i1 + 1], on_face(i1, i1 + 1)])
+    if simplify > 0 and len(stretch) > 2:
+        stretch = np.asarray(LineString(stretch).simplify(simplify, preserve_topology=False).coords)
+    back = wall_u - sign * float(depth)
+    if depth > 0:
+        ring = np.vstack([stretch, [[back, stretch[-1, 1]], [back, stretch[0, 1]]]])
+    else:
+        ring = stretch
+    ring = drop_repeated(ring, 1e-6)
+    if polygon_area(ring) < 0:
         ring = ring[::-1]
-    return ring
+    v_lo, v_hi = float(min(stretch[0, 1], stretch[-1, 1], stretch[:, 1].min())), float(stretch[:, 1].max())
+    projection = float((sign * (stretch[:, 0] - wall_u)).max())
+    u_out = wall_u + sign * projection
+    u0, u1 = sorted((wall_u, u_out))
+    return {"section": ring, "wall_u": wall_u, "v_range": [v_lo, v_hi], "projection": projection,
+            "height": v_hi - v_lo, "window": [u0 - MARGIN, v_lo - MARGIN, u1 + MARGIN, v_hi + MARGIN],
+            "line": c.tolist()}
 
 
 def drop_repeated(ring, tolerance: float = 1e-7) -> np.ndarray:
@@ -570,6 +636,15 @@ def drop_repeated(ring, tolerance: float = 1e-7) -> np.ndarray:
     return r
 
 
+def drop_repeated_path(path, tolerance: float = 1e-7) -> np.ndarray:
+    """A path without a point repeated right after itself (a segment of zero length has no direction)."""
+    p = np.asarray(path, np.float64)
+    if len(p) < 2:
+        return p
+    keep = np.r_[True, np.linalg.norm(np.diff(p, axis=0), axis=1) > tolerance]
+    return p[keep]
+
+
 def polygon_area(ring) -> float:
     r = np.asarray(ring, float)
     x, y = r[:, 0], r[:, 1]
@@ -578,8 +653,9 @@ def polygon_area(ring) -> float:
 
 def sweep_mesh(path, section):
     """The section ``(u, v)`` swept along ``path`` with mitred corners, as a closed triangle mesh: the solid to
-    expect (its volume) and the tessellation for checks. Each vertex of the path carries the section in its mitre
-    plane, stretched across the bisector by the mitre scale."""
+    expect (its volume) and the tessellation for checks (the fake worker of the tests). The mitre is exact for turns
+    about the vertical (a level path); the real solids are CadQuery's. Each vertex of the path carries the section in
+    its mitre plane, stretched across the bisector by the mitre scale."""
     import trimesh
 
     fr = path_frames(path)
@@ -869,7 +945,10 @@ def _jamb_res(u, uL, uR):
     return np.minimum(np.abs(u - uL), np.abs(u - uR))
 
 
-def _fit_circle_family(P, scale):
+def _fit_circle_family(P, scale, mode: str | None = None):
+    """A circle with the jambs below its springing line. ``mode``: None (the centre at or below the springing line,
+    the data decide), "semicircular" (the centre on the springing line), "segmental" (the centre below it by at least
+    2 % of the radius)."""
     from scipy.optimize import least_squares
 
     u, v = P[:, 0], P[:, 1]
@@ -878,20 +957,22 @@ def _fit_circle_family(P, scale):
     if c is None:
         return None
     cx, cy, r, _ = c
+    k_lo, k_hi = {"semicircular": (0.0, 1e-9), "segmental": (0.02, 0.999)}.get(mode, (0.0, 1.0))
 
     def model(x):
-        uc, vc, R, s = x
+        uc, vc, R, k = x
+        s = k * R  # the springing line k radii above the centre
         vs = vc + s
         half = np.sqrt(max(R * R - s * s, 0.0))
         arc = v >= vs
-        res = np.where(arc, np.hypot(u - uc, v - vc) - R, _jamb_res(u, uc - half, uc + half))
-        return res
+        return np.where(arc, np.hypot(u - uc, v - vc) - R, _jamb_res(u, uc - half, uc + half))
 
     best = None
-    for s0 in (0.0, 0.2 * r, 0.5 * r, 0.8 * r):
-        x0 = np.array([cx, cy, r, s0])
+    for k0 in (0.0, 0.2, 0.5, 0.8):
+        k0 = float(np.clip(k0, k_lo, k_hi))
+        x0 = np.array([cx, cy, r, k0])
         try:
-            sol = least_squares(model, x0, bounds=([-np.inf, -np.inf, 1e-4, 0.0], [np.inf, np.inf, np.inf, np.inf]),
+            sol = least_squares(model, x0, bounds=([-np.inf, -np.inf, 1e-4, k_lo], [np.inf, np.inf, np.inf, k_hi]),
                                 loss="soft_l1", f_scale=scale)
         except ValueError:
             continue
@@ -900,9 +981,8 @@ def _fit_circle_family(P, scale):
             best = (sol.x, rms)
     if best is None:
         return None
-    (uc, vc, R, s), rms = best
-    s = min(s, R)
-    return {"uc": float(uc), "vc": float(vc), "R": float(R), "vs": float(vc + s)}, rms
+    (uc, vc, R, k), rms = best
+    return {"uc": float(uc), "vc": float(vc), "R": float(R), "vs": float(vc + k * R)}, rms
 
 
 def _fit_pointed(P, scale):
@@ -978,14 +1058,13 @@ def _fit_ellipse(P, scale):
     return {"uc": float(uc), "vc": float(vc), "a": float(a), "b": float(b), "vs": float(vc + s)}, rms
 
 
-def _arch_from(family: str, params: dict, rms: float, n: int, lowest: float | None = None) -> ArchFit:
+def _arch_from(family: str, params: dict, rms: float, n: int, kind: str | None = None) -> ArchFit:
     if family == "circle":
         uc, vc, R, vs = params["uc"], params["vc"], params["R"], params["vs"]
-        if lowest is not None and vs < lowest and vs - vc < 0.02 * R:
-            pass
         s = vs - vc
         half = float(np.sqrt(max(R * R - s * s, 0.0)))
-        kind = "semicircular" if s < 0.02 * R else "segmental"
+        if kind not in ("semicircular", "segmental"):
+            kind = "semicircular" if s < 0.02 * R else "segmental"
         return ArchFit(kind, family, params, rms, vs, 2 * half, vc + R - vs, uc, n)
     if family == "pointed":
         um, vs, s, R = params["um"], params["vs"], params["s"], params["R"]
@@ -1016,7 +1095,10 @@ def fit_arch(points, kind: str = "auto", noise: float = 0.002) -> ArchFit:
                 "measured": FIT_FAMILIES}[kind]
     fits = {}
     for fam in families:
-        f = {"circle": _fit_circle_family, "pointed": _fit_pointed, "ellipse": _fit_ellipse}[fam](P, noise)
+        if fam == "circle":
+            f = _fit_circle_family(P, noise, kind if kind in ("semicircular", "segmental") else None)
+        else:
+            f = {"pointed": _fit_pointed, "ellipse": _fit_ellipse}[fam](P, noise)
         if f is not None:
             fits[fam] = f
     if not fits:
@@ -1028,15 +1110,17 @@ def fit_arch(points, kind: str = "auto", noise: float = 0.002) -> ArchFit:
             chosen = fam
             break
     params, rms = fits[chosen]
-    fit = _arch_from(chosen, params, rms, len(P))
+    forced = kind if kind in ("semicircular", "segmental") else None  # the type asked for, enforced by the fit
+    fit = _arch_from(chosen, params, rms, len(P), forced)
     # no jamb under the springing line: the springing line is the chord through the lowest points of the arc
     if not (P[:, 1] < fit.springing - 3 * max(rms, 1e-4)).any():
         left = P[P[:, 0] < fit.centre_u]
         right = P[P[:, 0] >= fit.centre_u]
         if len(left) and len(right):
             vs = 0.5 * (left[:, 1].min() + right[:, 1].min())
-            params = dict(params, vs=float(max(vs, params.get("vc", -np.inf))))
-            fit = _arch_from(chosen, params, rms, len(P))
+            if forced != "semicircular":
+                params = dict(params, vs=float(max(vs, params.get("vc", -np.inf))))
+                fit = _arch_from(chosen, params, rms, len(P), forced)
     fit.candidates = {fam: {"rms": r, "params": p} for fam, (p, r) in fits.items()}
     arc = _arc_only(P, fit)
     order = np.argsort(arc[:, 0])
@@ -1090,22 +1174,39 @@ def _left_to_right(m) -> bool:
     return bool(m[-1, 0] >= m[0, 0])
 
 
-def arch_thickness(fit: ArchFit, extrados) -> float | None:
-    """The thickness of the ring: the median distance of the extrados points (above the springing line) to the
-    intrados; None without extrados points."""
+def arch_thickness(fit: ArchFit, extrados) -> tuple[float | None, str]:
+    """The thickness of the ring from the extrados points (where the rays leave the ring, above the springing
+    line): their median distance to the intrados, ``(thickness, "")`` when they agree (interquartile range under 20 %
+    of the median, the median under half the span), else ``(None, reason)``: a ring flush with the wall around it
+    gives the wall's sides and top, not an extrados, and the thickness must then be given."""
     from scipy.spatial import cKDTree
 
     e = np.asarray(extrados, float).reshape(-1, 2)
     e = e[e[:, 1] > fit.springing + 0.02 * max(fit.rise, 1e-3)]
     if len(e) < 5:
-        return None
+        return None, "no extrados is seen from the point"
     curve = arch_curve(fit, 0.0, n=2000)
     d, _ = cKDTree(curve).query(e)
-    # only the points beyond the intrados, near it (the far side of a wall around an opening is not an extrados)
     d = d[d > 1e-4]
     if len(d) < 5:
-        return None
-    return float(np.median(d))
+        return None, "no extrados is seen from the point"
+    q1, med, q3 = np.percentile(d, [25, 50, 75])
+    if q3 - q1 > 0.2 * med:
+        return None, f"the far side is not a ring: its distance from the intrados varies from {q1:.3f} to {q3:.3f} m"
+    if med > 0.5 * fit.span:
+        return None, f"the far side is {med:.3f} m from the intrados, more than half the span: a wall, not a ring"
+    return float(med), ""
+
+
+def near_ring(points_uv, fit: ArchFit, thickness: float, tolerance: float) -> np.ndarray:
+    """Which (u, v) points lie within ``tolerance`` of the intrados or of the extrados curve (the ring's curved faces,
+    where the solid says something about the model)."""
+    from scipy.spatial import cKDTree
+
+    q = np.asarray(points_uv, float).reshape(-1, 2)
+    curves = np.vstack([arch_curve(fit, 0.0, n=4000), arch_curve(fit, float(thickness), n=4000)])
+    d, _ = cKDTree(curves).query(q)
+    return d <= tolerance
 
 
 def arch_outline(fit: ArchFit, thickness: float) -> dict:
