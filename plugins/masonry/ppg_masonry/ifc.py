@@ -88,12 +88,12 @@ def _face_point_at(chunk, wid: str, entry: dict, h: float) -> np.ndarray:
 
 
 def _tolerance(chunk, wid: str, entries, length: float) -> float:
-    """How far from each face a slice line still belongs to that face: the larger of the faces' depth bands, their
-    bulge (when measured) and a tenth of the distance between them."""
-    tol = 0.1 * length
+    """How far from each face a slice line still belongs to that face: the larger of a tenth of the distance between
+    them, 5 cm and the faces' bulge (when measured). The segment's ends are on the faces' surfaces at the slice's
+    height, so lean and bulge need no more; the faces' depth bands are not used (with a band of half a metre the outer
+    faces of a corridor or of a cavity wall would pass for one wall)."""
+    tol = max(0.1 * length, 0.05)
     for e in entries:
-        lo, hi = e.get("depth") or (0.0, 0.0)
-        tol = max(tol, abs(float(lo)), abs(float(hi)))
         sh = walls.results(chunk, wid, e["id"]).get("shape") or {}
         if sh.get("bulge_min_cm") is not None:
             tol = max(tol, abs(sh["bulge_min_cm"]) / 100.0, abs(sh["bulge_max_cm"]) / 100.0)

@@ -379,7 +379,7 @@ def test_leaning_and_bulging_walls_are_paired_measured_or_not(tmp_path, measured
     for k, (lean, bulge) in enumerate(((False, False), (True, False), (False, True), (True, True))):
         for thick in (0.3, 0.5, 0.6, 1.0):
             front = S.wall(lean=lean, bulge=bulge)
-            back = S.wall(base=S.WORLD + [0.0, thick, 0.0], lean=lean, bulge=False)
+            back = S.wall(base=S.WORLD + [0.0, thick, 0.0], lean=lean, bulge=bulge)  # both faces bulge
             doc, ch = S.project(tmp_path / f"w{k}_{thick}", _two(front, back))
             w = walls.new_wall(ch, "Muro", kind="wall")
             a = faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [6, 0], side=S.WORLD[:2] + [3, -5],
@@ -411,3 +411,22 @@ def test_courses_of_many_scattered_stones_take_little_time():
     t0 = time.perf_counter()
     stones.find_courses(rows)
     assert time.perf_counter() - t0 < 10.0
+
+
+# ------------------------------------------------------------------ round 4
+@pytest.mark.parametrize("planes", [(0.0, 0.3, 1.2, 1.5), (0.0, 0.3, 0.7, 1.0)])
+def test_a_corridor_or_a_cavity_wall_is_not_one_wall(tmp_path, planes):
+    from ppg_masonry import ifc
+
+    mesh = None
+    for y in planes:
+        m = S.wall(base=S.WORLD + [0.0, y, 0.0], lean=False, bulge=False)
+        mesh = m if mesh is None else _two(mesh, m)
+    doc, ch = S.project(tmp_path, mesh)
+    w = walls.new_wall(ch, "Muri", kind="wall")
+    faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [6, 0], side=S.WORLD[:2] + [3, -5], resolution=0.05)
+    last = planes[-1]
+    faces.plane_face(ch, w["id"], S.WORLD[:2] + [0, last], S.WORLD[:2] + [6, last], side=S.WORLD[:2] + [3, last + 5],
+                     resolution=0.05)  # the default band, 0.5 m in front and 0.3 m behind
+    with pytest.raises(walls.NotReady, match="altro fra loro"):
+        ifc.wall_solids(ch, w["id"])
