@@ -495,3 +495,28 @@ def test_the_default_band_of_a_cylinder_follows_its_radius(tmp_path):
     assert entry["depth"] == [-0.5, 0.5]
     r = shape.face_shape(ch, w["id"], entry["id"])
     assert "band_warning" not in r and walls.face_info(ch, entry["id"])["height"] > 5.9  # the whole tower in it
+
+
+def test_resolution_from_the_model_and_faces_too_large(tmp_path):
+    doc, ch = S.project(tmp_path, S.wall(lean=False, bulge=False))
+    res = faces.model_resolution(ch)
+    assert 0.02 < res < 0.03  # the grid of the sample wall: 2.5 cm
+    w = walls.new_wall(ch, "Muro")
+    e = faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [6.0, 0.0], side=VIEWER)
+    assert e["resolution"] == pytest.approx(res)
+    long_wall = S._grid(lambda s, t: S.WORLD + np.column_stack([s * 25.0, np.zeros_like(s), t * 3.0]), 101, 13)
+    doc, ch = S.project(tmp_path / "long", long_wall)
+    w = walls.new_wall(ch, "Lungo")
+    args = (ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [25.0, 0.0], VIEWER, 0.0005)
+    with pytest.raises(faces.FaceTooLarge) as exc:
+        faces.plane_face(*args, dry_run=True)
+    assert exc.value.size[0] == 25001 and exc.value.resolution == 0.001  # never finer than a millimetre
+    assert exc.value.proposed * 20000 >= 25.0 and "25001 x" in str(exc.value)
+    assert faces.plane_face(*args, dry_run=True, force=True)["resolution"] == 0.001
+    from ppg_masonry import MasonryPlugin
+
+    doc.save()
+    x0, y0 = S.WORLD[:2]
+    code = MasonryPlugin().command("face", str(doc.path), "Lungo", "--line", f"{x0},{y0},{x0 + 25},{y0}",
+                                   "--resolution", "0.001")
+    assert code == 1

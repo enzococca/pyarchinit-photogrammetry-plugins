@@ -303,15 +303,34 @@ class MasonryPlugin(Plugin):
 
         from .faces import CYLINDER_BAND_MIN, CYLINDER_BAND_SHARE, DEFAULT_BACK, DEFAULT_FRONT
 
-        auto = t(f" (0 = {num(100 * CYLINDER_BAND_SHARE, 0)} % del raggio, almeno {num(CYLINDER_BAND_MIN, 1)} m)",
-                 f" (0 = {num(100 * CYLINDER_BAND_SHARE, 0)} % of the radius, at least {num(CYLINDER_BAND_MIN, 1)} m)") \
-            if cylinder else ""
+        share, least = num(100 * CYLINDER_BAND_SHARE, 0), num(CYLINDER_BAND_MIN, 1)
+        auto = t(f" (0 = {share} % del raggio, almeno {least} m)",
+                 f" (0 = {share} % of the radius, at least {least} m)") if cylinder else ""
         return [Field("resolution", t("Risoluzione (m/px; 0 = dal modello)", "Resolution (m/px; 0 = from the model)"),
                       0.0, maximum=10.0, decimals=4),
                 Field("front", t("Fascia davanti al muro (m)", "Band in front of the wall (m)") + auto,
                       0.0 if cylinder else DEFAULT_FRONT, maximum=100.0, decimals=2),
                 Field("back", t("Fascia dietro il muro (m)", "Band behind the wall (m)") + auto,
                       0.0 if cylinder else DEFAULT_BACK, maximum=100.0, decimals=2)]
+
+    def _sized(self, dry, resolution):
+        """``(resolution, force)`` of a face about to be built: the dry run's resolution (the model's when none is
+        given); a face over 20 000 pixels on a side is said with its size, and the user chooses the resolution that
+        fits or to build it anyway. None when the user gives up."""
+        from pyarchinit_photogrammetry.gui import dialogs
+
+        from .faces import FaceTooLarge
+
+        try:
+            return dry(resolution, False)["resolution"], False
+        except FaceTooLarge as exc:
+            answer = dialogs.choice(self.context.window, "question", self.title, str(exc),
+                                    [t(f"Usa {num(exc.proposed * 1000, 1)} mm per pixel",
+                                       f"Use {num(exc.proposed * 1000, 1)} mm per pixel"),
+                                     t("Costruisci comunque", "Build it anyway")])
+            if answer is None:
+                return None
+            return (exc.proposed, False) if answer == 0 else (exc.resolution, True)
 
     def _made(self, wid: str, entries) -> None:
         entries = entries if isinstance(entries, list) else [entries]
@@ -354,9 +373,15 @@ class MasonryPlugin(Plugin):
             along = (p2 - p1) / max(np.linalg.norm(p2 - p1), 1e-12)
             left = np.array([-along[1], along[0]])
             side = (p1 + p2) / 2 + (left if v["side"] == "left" else -left)
+        front, back = v.get("front", 0.5), v.get("back", 0.3)
+        sized = self._sized(lambda r, f: faces.plane_face(chunk, rec["id"], p1, p2, side, r, front, back,
+                                                          force=f, dry_run=True), v.get("resolution") or None)
+        if sized is None:
+            return
+        res, force = sized
         self._run(t("Faccia del muro", "Face of the wall"), lambda p: faces.plane_face(
-            chunk, rec["id"], p1, p2, side, v.get("resolution") or None, v.get("front", 0.5), v.get("back", 0.3),
-            v.get("name") or None, progress=p), lambda e: self._made(rec["id"], e))
+            chunk, rec["id"], p1, p2, side, res, front, back, v.get("name") or None, progress=p, force=force),
+            lambda e: self._made(rec["id"], e))
 
     def _model_mid_height(self, chunk) -> float:
         from .faces import world_vertices
@@ -384,10 +409,16 @@ class MasonryPlugin(Plugin):
             return
 
         def build(points=None):
+            kw = {"points": points, "height": None if points is not None else v["height"],
+                  "inside": bool(v.get("inside")), "front": v.get("front") or None, "back": v.get("back") or None}
+            sized = self._sized(lambda r, f: faces.cylinder_face(chunk, rec["id"], resolution=r, force=f,
+                                                                 dry_run=True, **kw), v.get("resolution") or None)
+            if sized is None:
+                return
+            res, force = sized
             self._run(t("Faccia cilindrica", "Cylindrical face"), lambda p: faces.cylinder_face(
-                chunk, rec["id"], points=points, height=None if points is not None else v["height"],
-                inside=bool(v.get("inside")), resolution=v.get("resolution") or None, front=v.get("front") or None,
-                back=v.get("back") or None, name=v.get("name") or None, progress=p), lambda e: self._made(rec["id"], e))
+                chunk, rec["id"], resolution=res, name=v.get("name") or None, progress=p, force=force, **kw),
+                lambda e: self._made(rec["id"], e))
 
         if v.get("how") == "points":
             self._need_plan()
@@ -923,7 +954,9 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--polygon", type=float, help="faces of a polygonal tower: the slice at this height")
         parser.add_argument("--min-side", type=float, default=0.5, help="polygonal tower: shortest side (m)")
         parser.add_argument("--tolerance", type=float, help="polygonal tower: simplification of the slice (m)")
-        parser.add_argument("--resolution", type=float, help="face: metres per pixel (default from the photos)")
+        parser.add_argument("--resolution", type=float, help="face: metres per pixel (default the model's median "
+                                                             "edge, at least 1 mm)")
+        parser.add_argument("--force", action="store_true", help="face: build a face over 20000 pixels on a side")
         parser.add_argument("--front", type=float, help="face: band in front (m; default 0.5, on a cylinder 15 %% of "
                                                          "the radius, at least 0.5)")
         parser.add_argument("--back", type=float, help="face: band behind (m; default 0.3, on a cylinder 15 %% of the "
@@ -974,14 +1007,17 @@ class MasonryPlugin(Plugin):
                     x1, y1, x2, y2 = parse_numbers(ns.line)
                     side = parse_numbers(ns.side) if ns.side else None
                     made.append(faces.plane_face(chunk, rec["id"], (x1, y1), (x2, y2), side, ns.resolution,
-                                                 front_plane, back_plane, ns.name, progress=print_progress))
+                                                 front_plane, back_plane, ns.name, progress=print_progress,
+                                                 force=ns.force))
                 elif ns.circle or ns.slice is not None:
                     pts = np.asarray(parse_numbers(ns.circle)).reshape(-1, 2) if ns.circle else None
                     made.append(faces.cylinder_face(chunk, rec["id"], pts, ns.slice, ns.inside, ns.resolution,
-                                                    ns.front, ns.back, ns.name, progress=print_progress))
+                                                    ns.front, ns.back, ns.name, progress=print_progress,
+                                                    force=ns.force))
                 elif ns.polygon is not None:
                     made += faces.polygon_faces(chunk, rec["id"], ns.polygon, ns.min_side, ns.tolerance,
-                                                ns.resolution, front_plane, back_plane, progress=print_progress)
+                                                ns.resolution, front_plane, back_plane, progress=print_progress,
+                                                force=ns.force)
                 else:
                     raise walls.NotReady("--line, --circle, --slice or --polygon")
                 changed = True

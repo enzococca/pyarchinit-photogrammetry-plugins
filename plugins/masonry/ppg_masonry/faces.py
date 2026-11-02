@@ -44,6 +44,61 @@ def _stretch_bounds(chunk, frame, length: float, depth: tuple[float, float], ver
     return (0.0, float(uvd[keep, 1].min()), float(length), float(uvd[keep, 1].max()))
 
 
+MAX_SIDE_PX = 20000  # a face larger than this on a side is refused unless forced
+MIN_RESOLUTION = 0.001
+
+
+class FaceTooLarge(NotReady):
+    """A face that would exceed ``MAX_SIDE_PX`` pixels on a side: ``size`` (w, h) and the ``proposed`` resolution."""
+
+    def __init__(self, size, resolution: float, proposed: float):
+        self.size, self.resolution, self.proposed = size, resolution, proposed
+        super().__init__(t(f"La faccia sarebbe di {size[0]} x {size[1]} pixel a {resolution * 1000:.1f} mm per pixel "
+                           f"(più di {MAX_SIDE_PX} su un lato): usa {proposed * 1000:.1f} mm per pixel, o costruiscila "
+                           "comunque (--force).", f"The face would be {size[0]} x {size[1]} pixels at "
+                           f"{resolution * 1000:.1f} mm per pixel (over {MAX_SIDE_PX} on a side): use "
+                           f"{proposed * 1000:.1f} mm per pixel, or build it anyway (--force)."))
+
+
+def model_resolution(chunk, sample: int = 200_000) -> float:
+    """The default resolution of a face: the median edge length of the model's triangles (world metres), at least a
+    millimetre - the detail the model has."""
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
+
+    mesh = read_mesh(chunk.product_path("model"))
+    faces_ = np.asarray(mesh.faces, np.int64)
+    if len(faces_) > sample:
+        faces_ = faces_[np.random.default_rng(0).choice(len(faces_), sample, replace=False)]
+    used, inverse = np.unique(faces_, return_inverse=True)
+    xyz = chunk.to_world(np.asarray(mesh.xyz, np.float64)[used])
+    f = inverse.reshape(faces_.shape)
+    edges = np.linalg.norm(xyz[f[:, [1, 2, 0]]] - xyz[f], axis=2).ravel()
+    return float(max(np.median(edges), MIN_RESOLUTION))
+
+
+def check_size(chunk, bounds, resolution: float | None, force: bool = False) -> float:
+    """The resolution of a face (``None``: :func:`model_resolution`), refused with :class:`FaceTooLarge` when the
+    face would exceed ``MAX_SIDE_PX`` on a side, unless ``force``."""
+    res = float(resolution) if resolution else model_resolution(chunk)
+    res = max(res, MIN_RESOLUTION)
+    u0, v0, u1, v1 = bounds
+    size = (int(np.ceil((u1 - u0) / res)) + 1, int(np.ceil((v1 - v0) / res)) + 1)
+    if max(size) > MAX_SIDE_PX and not force:
+        proposed = float(np.ceil(max(u1 - u0, v1 - v0) / (MAX_SIDE_PX - 2) * 10000.0) / 10000.0)
+        raise FaceTooLarge(size, res, proposed)
+    return res
+
+
+def _band_bounds(chunk, frame, depth):
+    """``(u0, v0, u1, v1)`` of the model within the depth band of ``frame``, or None."""
+    uvd = frame.coords(world_vertices(chunk))
+    keep = (uvd[:, 2] >= depth[0]) & (uvd[:, 2] <= depth[1])
+    if keep.sum() < 3:
+        return None
+    return (float(uvd[keep, 0].min()), float(uvd[keep, 1].min()), float(uvd[keep, 0].max()),
+            float(uvd[keep, 1].max()))
+
+
 def _build(chunk, wid, frame, name, resolution, depth, bounds, progress):
     from pyarchinit_photogrammetry.engine.elevation import build_elevation
 
@@ -53,10 +108,13 @@ def _build(chunk, wid, frame, name, resolution, depth, bounds, progress):
 
 
 def plane_face(chunk, wid: str, p1, p2, side=None, resolution: float | None = None, front: float = DEFAULT_FRONT,
-               back: float = DEFAULT_BACK, name: str | None = None, progress=None) -> dict:
+               back: float = DEFAULT_BACK, name: str | None = None, progress=None, force: bool = False,
+               dry_run: bool = False) -> dict:
     """The face of a wall on the vertical plane through ``p1``-``p2`` (plan points, chunk CRS) seen from ``side`` (a
     plan point on the viewer's side; default the side of the photos), between the two points; ``v`` is the height.
-    Returns the program's elevation entry, listed as a face of the wall ``wid``."""
+    Returns the program's elevation entry, listed as a face of the wall ``wid``. ``resolution`` None: the model's
+    median edge (:func:`check_size`, which refuses a face over 20 000 pixels on a side unless ``force``);
+    ``dry_run``: only ``{"resolution", "bounds"}``, nothing built."""
     from pyarchinit_photogrammetry.engine.elevation import plane_from_line, with_heights
 
     w = need(chunk, wid)
@@ -72,6 +130,9 @@ def plane_face(chunk, wid: str, p1, p2, side=None, resolution: float | None = No
         raise NotReady(t("Nessuna parte del modello lungo la traccia entro la fascia di profondità: allarga la fascia "
                          "o traccia la faccia sul muro.", "No part of the model along the trace within the depth band: "
                          "widen the band or trace the face on the wall."))
+    resolution = check_size(chunk, bounds, resolution, force)
+    if dry_run:
+        return {"resolution": resolution, "bounds": bounds}
     return _build(chunk, w["id"], frame, name or t(f"{w['name']} - faccia {len(w['faces']) + 1}",
                                                    f"{w['name']} - face {len(w['faces']) + 1}"),
                   resolution, depth, bounds, progress)
@@ -124,10 +185,12 @@ def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
 
 def cylinder_face(chunk, wid: str, points=None, height: float | None = None, inside: bool = False,
                   resolution: float | None = None, front: float | None = None, back: float | None = None,
-                  name: str | None = None, near=None, progress=None) -> dict:
+                  name: str | None = None, near=None, progress=None, force: bool = False,
+                  dry_run: bool = False) -> dict:
     """The developed face of a round tower (``inside`` False) or of a well, an apse (``inside``): a vertical cylinder
     through ``points`` (three or more on the plan) or fitted to the horizontal slice of the model at ``height``. The
-    depth band, ``front`` and ``back`` not given: 15 % of the radius each side, at least 0.5 m."""
+    depth band, ``front`` and ``back`` not given: 15 % of the radius each side, at least 0.5 m. ``resolution``,
+    ``force``, ``dry_run``: as :func:`plane_face`."""
     from pyarchinit_photogrammetry.engine.elevation import Cylinder
 
     w = need(chunk, wid)
@@ -150,8 +213,15 @@ def cylinder_face(chunk, wid: str, points=None, height: float | None = None, ins
     depth = (-float(back if back else band), float(front if front else band))
     if inside:
         depth = (depth[0], min(depth[1], frame.radius))
+    bounds = _band_bounds(chunk, frame, depth)
+    if bounds is None:
+        raise NotReady(t("Nessuna parte del modello nella fascia di profondità del cilindro.",
+                         "No part of the model within the cylinder's depth band."))
+    resolution = check_size(chunk, bounds, resolution, force)
+    if dry_run:
+        return {"resolution": resolution, "bounds": bounds, "depth": depth, "radius": frame.radius}
     title = t("sviluppo interno", "inner development") if inside else t("sviluppo esterno", "outer development")
-    return _build(chunk, w["id"], frame, name or f"{w['name']} - {title}", resolution, depth, None, progress)
+    return _build(chunk, w["id"], frame, name or f"{w['name']} - {title}", resolution, depth, bounds, progress)
 
 
 def closed_rings(lines: list[np.ndarray], gap: float = 0.05) -> list[np.ndarray]:
@@ -223,7 +293,7 @@ def _drop_straight(ring: np.ndarray, degrees: float = 3.0) -> np.ndarray:
 
 def polygon_faces(chunk, wid: str, height: float, min_side: float = 0.5, tolerance: float | None = None,
                   resolution: float | None = None, front: float = DEFAULT_FRONT, back: float = DEFAULT_BACK,
-                  progress=None) -> list[dict]:
+                  progress=None, force: bool = False) -> list[dict]:
     """One face per side of a polygonal tower: the slice at ``height`` simplified into a polygon, a vertical plane
     for every side longer than ``min_side`` metres, seen from outside, limited to the side."""
     from pyarchinit_photogrammetry.core.progress import as_progress
@@ -241,6 +311,7 @@ def polygon_faces(chunk, wid: str, height: float, min_side: float = 0.5, toleran
                          f"No side longer than {min_side:g} m in the slice."))
     verts = world_vertices(chunk)
     depth = (-float(back), float(front))
+    resolution = resolution or model_resolution(chunk)
     import uuid
 
     slice_id = uuid.uuid4().hex[:8]  # the faces of one slice are the sides of one tower: never paired across it
@@ -256,7 +327,8 @@ def polygon_faces(chunk, wid: str, height: float, min_side: float = 0.5, toleran
         if bounds is None:
             continue
         name = t(f"{w['name']} - lato {k + 1}", f"{w['name']} - side {k + 1}")
-        entry = _build(chunk, w["id"], frame, name, resolution, depth, bounds,
+        res_k = check_size(chunk, bounds, resolution, force)
+        entry = _build(chunk, w["id"], frame, name, res_k, depth, bounds,
                        progress.sub(k / len(sides), 1.0 / len(sides)))
         from .walls import _live
 
