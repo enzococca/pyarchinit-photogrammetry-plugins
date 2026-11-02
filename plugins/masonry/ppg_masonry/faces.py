@@ -150,9 +150,12 @@ MIN_COVERAGE = 90.0  # degrees of arc a slice must cover to give a circle
 
 def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
     """The circle fitted to the horizontal slice of the model at ``height``: on ALL the slice's points, every piece of a
-    broken ring (:func:`fit.ransac_circle`: RANSAC on three-point circles, then least squares on the points within
-    max(2 % of the radius, 5 cm)). ``near``: ``(centre, radius)`` expected (a face's cylinder, the circle at the
-    previous height): the points farther than 1.5 radii + 1 m from that centre are left out. ``centre``, ``radius``,
+    broken ring (:func:`fit.ransac_circle`: RANSAC on three-point circles with a band of max(2 % of the radius, 5 cm),
+    then least squares on the ring within max(15 % of the radius, 25 cm) of that circle, so that an oval ring gives its
+    mean circle and not the curve of one end; :func:`shape.tower_axis` keeps out the points far from the previous
+    ring, which guards against other structures near the tower). ``near``: ``(centre, radius)`` expected (a face's
+    cylinder, the circle at the previous height): the points farther than 1.5 radii + 1 m from that centre are left
+    out. ``centre``, ``radius``,
     ``rms``, ``out_of_round`` (the spread of the inliers' radius, 0.5th to 99.5th percentile), ``points``, ``pieces``
     (the lines of the slice holding inliers), ``coverage`` (degrees of arc). An arc under 90 degrees is refused."""
     from .fit import ransac_circle

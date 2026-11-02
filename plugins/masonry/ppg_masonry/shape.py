@@ -32,6 +32,7 @@ MAX_FIT_POINTS = 200_000
 BLOCK = 512
 NOT_SURFACE_SHARE = 0.02  # a fit whose rms exceeds this share of the radius (cylinder) or height (plane)...
 NOT_CYLINDER_MIN, NOT_PLANE_MIN = 0.10, 0.05  # ...and these: the surface is not the one fitted
+OUT_OF_ROUND_SHARE, OUT_OF_ROUND_MIN = 0.05, 0.10  # rings out of round by more than both: not a cylinder either
 TRACE_OFF = 0.15  # the face more than this from its trace at the stations: the trace is not on the face
 
 
@@ -151,9 +152,12 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
                       cylinder={"centre": centre.tolist(), "axis": axis.tolist(), "radius": radius},
                       rms_cm=100.0 * f["rms"])
         limit = max(NOT_CYLINDER_MIN, NOT_SURFACE_SHARE * radius)
-        result.update(lean_reliable=f["rms"] <= limit, surface_limit_cm=100.0 * limit)
-        if not result["lean_reliable"]:  # oval or battered: the radius by height, from the rings of the slices
-            result["rings"] = _rings_by_height(chunk, frame, entry, centre, radius)
+        oor_limit = max(OUT_OF_ROUND_MIN, OUT_OF_ROUND_SHARE * radius)
+        rings = _rings_by_height(chunk, frame, entry, centre, radius)  # the radius by height, from the slices
+        oor = float(np.median([c["out_of_round"] for c in rings])) if rings else None
+        why = (["rms"] if f["rms"] > limit else []) + (["out_of_round"] if oor is not None and oor > oor_limit else [])
+        result.update(lean_reliable=not why, surface_limit_cm=100.0 * limit, rings=rings, not_cylinder_by=why,
+                      out_of_round_cm=None if oor is None else 100.0 * oor, out_of_round_limit_cm=100.0 * oor_limit)
         sign = -1.0 if frame.inside else 1.0
 
         def distance(p):
@@ -315,12 +319,24 @@ def surface_text(r: dict) -> str:
     rings = r.get("rings") or []
     by_h = "; ".join(f"{num(c['height'], 2)}: {metres(c['radius'])} ({t('fuori tondo', 'out-of-round')} "
                      f"{cm(c['out_of_round'])})" for c in rings)
-    return t(f"La superficie non è un cilindro (ovale o a scarpa: rms {num(r.get('rms_cm', 0), 1)} cm oltre "
-             f"{num(r.get('surface_limit_cm', 0), 1)} cm): l'inclinazione dell'asse non è affidabile; la carta dello "
-             "spanciamento è la distanza dal cilindro migliore." + (f" Raggio per quota: {by_h}." if by_h else ""),
-             f"The surface is not a cylinder (oval or battered: rms {num(r.get('rms_cm', 0), 1)} cm over "
-             f"{num(r.get('surface_limit_cm', 0), 1)} cm): the axis' inclination is not reliable; the bulge map is the "
-             "distance from the best cylinder." + (f" Radius by height: {by_h}." if by_h else ""))
+    why = r.get("not_cylinder_by") or ["rms"]
+    because_it, because_en = [], []
+    if "rms" in why:
+        because_it.append(f"rms dell'adattamento {num(r.get('rms_cm', 0), 1)} cm oltre "
+                          f"{num(r.get('surface_limit_cm', 0), 1)} cm")
+        because_en.append(f"rms of the fit {num(r.get('rms_cm', 0), 1)} cm over {num(r.get('surface_limit_cm', 0), 1)}"
+                          " cm")
+    if "out_of_round" in why:
+        because_it.append(f"fuori tondo mediano degli anelli {num(r.get('out_of_round_cm', 0), 1)} cm oltre "
+                          f"{num(r.get('out_of_round_limit_cm', 0), 1)} cm")
+        because_en.append(f"median out-of-round of the rings {num(r.get('out_of_round_cm', 0), 1)} cm over "
+                          f"{num(r.get('out_of_round_limit_cm', 0), 1)} cm")
+    return t(f"La superficie non è un cilindro (ovale o a scarpa: {'; '.join(because_it)}): l'inclinazione dell'asse "
+             "non è affidabile; la carta dello spanciamento è la distanza dal cilindro migliore."
+             + (f" Raggio per quota: {by_h}." if by_h else ""),
+             f"The surface is not a cylinder (oval or battered: {'; '.join(because_en)}): the axis' inclination is "
+             "not reliable; the bulge map is the distance from the best cylinder."
+             + (f" Radius by height: {by_h}." if by_h else ""))
 
 
 def signed_cm(value) -> str:

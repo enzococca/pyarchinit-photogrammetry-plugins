@@ -533,3 +533,14 @@ def test_the_reach_of_the_sections_is_the_band(tmp_path):
     assert off is not None and abs(off - 2.4 * k) < 0.01
     short = shape.sections(ch, w["id"], entry["id"], heights=[Z0 + 0.5, Z0 + 2.9], stations=[3.0], reach=1.0)
     assert short["stations"][0]["offsets"][1]["offset"] is None  # what 0.1.0's 1 m missed
+
+
+def test_an_oval_tower_is_said_by_its_out_of_round(tmp_path):
+    doc, ch = S.project(tmp_path, S.ellipse_tower(), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05, front=0.3, back=0.3)
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    assert r["rms_cm"] < 10.0 and r["not_cylinder_by"] == ["out_of_round"] and not r["lean_reliable"]
+    assert r["out_of_round_cm"] > r["out_of_round_limit_cm"] == pytest.approx(max(10.0, 5.0 * r["radius"]))
+    assert "fuori tondo mediano degli anelli" in shape.summary_text(r) and "rms dell'adattamento" not in \
+        shape.summary_text(r)
