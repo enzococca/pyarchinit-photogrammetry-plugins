@@ -392,7 +392,8 @@ def _write(path, entries, origin, crs, mesh, project, site, colours, progress) -
                 prod.ObjectType = otype
             prod.Description = e.get("notes") or None
             if cls in ("IfcDoor", "IfcWindow"):
-                prod.OverallWidth = float(e["params"]["width"])
+                # the clear width: where a leaf passes (the narrowest, between the innermost runs of the reveals)
+                prod.OverallWidth = float(e["params"].get("clear_width") or e["params"]["width"])
                 prod.OverallHeight = float(e["params"]["height"])
             if cls != "IfcOpeningElement":  # an opening is in the wall it voids, not in the site
                 ifcopenshell.api.spatial.assign_container(model, products=[prod], relating_structure=site_e)

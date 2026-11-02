@@ -1033,6 +1033,14 @@ def opening(chunk, at, height: float | None = None, top: str | None = None, thic
 
 
 OPENING_PROBLEMS = (
+    ("curved wall faces", ("Pareti curve non supportate in questa versione: le facce del muro intorno al punto non "
+                           "stanno su una retta (più di 2 cm).", "Curved walls are not supported in this version: the "
+                           "faces of the wall around the point are not on a straight line (more than 2 cm).")),
+    ("the wall ends beside the point", ("Il muro finisce accanto al punto, o un pilastro accanto all'apertura è più "
+                                        "corto di 15 cm: un'apertura si legge con almeno 15 cm di faccia del muro da "
+                                        "entrambe le parti.", "The wall ends beside the point, or a pier beside the "
+                                        "opening is shorter than 15 cm: an opening is read with at least 15 cm of wall "
+                                        "face on both sides.")),
     ("thickness of the wall must be given", ("Sul modello c'è una sola faccia del muro: dai lo spessore del muro "
                                              "(campo Spessore del muro, --thickness).", "Only one face of the wall is "
                                              "on the model: give the thickness of the wall (field Wall thickness, "
@@ -1139,18 +1147,23 @@ def _changed_plan(plan: engine.OpeningPlan, width: float | None = None, thicknes
     a = plan.axis
     w = engine.left_of(a)
     left, right, outer, inner = plan.left, plan.right, plan.outer, plan.inner
+    runs = {k: list(v) for k, v in (plan.runs or {}).items()}
     if width is not None:
         dw = (float(width) - plan.width_outer) / 2.0
         left = (np.asarray(left[0]) + dw * w, left[1])
         right = (np.asarray(right[0]) - dw * w, right[1])
+        for side, sign in (("left", 1.0), ("right", -1.0)):  # every run of a stepped reveal moves with it
+            runs[side] = [(np.asarray(r[0]) + sign * dw * w, r[1], np.asarray(r[2]) + sign * dw * w,
+                           np.asarray(r[3]) + sign * dw * w) for r in runs.get(side) or []]
     out = engine.opening_plan_from_lines(plan.centre, a, left, right, outer, inner, plan.measured, plan.reveal_rms,
-                                         plan.points, near=plan.near)
+                                         plan.points, near=plan.near, runs=runs or None)
     return out if thickness is None else engine.with_thickness(out, thickness)
 
 
 def _plan_from(d: dict) -> engine.OpeningPlan:
     return engine.opening_plan_from_lines(d["centre"], d["axis"], d["left"], d["right"], d["outer"], d["inner"],
-                                          d["measured"], d.get("reveal_rms", 0.0), {}, near=d.get("near", True))
+                                          d["measured"], d.get("reveal_rms", 0.0), {}, near=d.get("near", True),
+                                          runs=d.get("runs") or None)
 
 
 def _opening_params(chunk, e, plan: engine.OpeningPlan, sill: float, lintel: float | None, arch_e) -> None:
@@ -1196,8 +1209,15 @@ def _opening_params(chunk, e, plan: engine.OpeningPlan, sill: float, lintel: flo
     outer_mid = _outer_middle(plan)
     width = plan.width_outer
     meas = e.get("measured") or {}
+    rebates = {}
+    for side in ("left", "right"):
+        steps = (plan.rebates or {}).get(side) or []
+        rebates[side] = None if not steps else \
+            dict(zip(("depth", "width"), map(float, max(steps, key=lambda x: x[1]))))
     p = {"opening_type": e["source"]["kind"], "top": "arch" if arch_e else "flat",
          "arch": arch_e["id"] if arch_e else None, "width": width, "width_outer": width,
+         "clear_width": plan.clear_width, "overall_width": plan.overall_width,
+         "rebate_left": rebates["left"], "rebate_right": rebates["right"],
          "width_inner": plan.width_inner, "width_at_sill": meas.get("width_at_sill"),
          "width_at_lintel": meas.get("width_at_lintel"), "sill": bottom + o[2], "lintel": float(lintel) + o[2],
          "springing": None if springing is None else springing + o[2], "height": float(lintel) - bottom,
@@ -1225,6 +1245,13 @@ def _opening_params(chunk, e, plan: engine.OpeningPlan, sill: float, lintel: flo
         e["warnings"].append(t(f"La luce dell'arco ({fit.span:.3f} m) non è la larghezza dell'apertura "
                                f"({plan.width_outer:.3f} m).", f"The span of the arch ({fit.span:.3f} m) is not the "
                                f"width of the opening ({plan.width_outer:.3f} m)."))
+    stepped = [s_ for s_ in ("left", "right") if len((plan.runs or {}).get(s_) or []) > 1]
+    if stepped:
+        e["warnings"].append(t(f"Stipiti a gradini (battuta): luce netta {plan.clear_width:.3f} m, larghezza massima "
+                               f"{plan.overall_width:.3f} m; la strombatura è quella del tratto più lungo di ogni "
+                               "stipite.", f"Stepped reveals (a rebate): clear width {plan.clear_width:.3f} m, overall "
+                               f"width {plan.overall_width:.3f} m; the splay is that of each reveal's longest run."))
+        p["reveal_stepped"] = ", ".join(stepped)
     if p.get("sill_drop") is not None and abs(p["sill_drop"]) > 0.01 and not e["source"].get("sill_given"):
         e["warnings"].append(t(f"La soglia pende di {abs(p['sill_drop']) * 1000:.0f} mm attraverso il muro "
                                f"({p['sill_slope_percent']:+.1f} % verso l'interno): la quota data è quella a metà "
@@ -1374,6 +1401,15 @@ def opening_text(p: dict) -> str:
     if abs(p.get("splay_left") or 0.0) >= 0.5 or abs(p.get("splay_right") or 0.0) >= 0.5:
         splay = t(f", strombatura {degrees(p['splay_left'])} / {degrees(p['splay_right'])}",
                   f", splay {degrees(p['splay_left'])} / {degrees(p['splay_right'])}")
+    if p.get("rebate_left") or p.get("rebate_right"):
+        parts = []
+        for side, (it, en) in (("rebate_left", ("sinistra", "left")), ("rebate_right", ("destra", "right"))):
+            r = p.get(side)
+            if r:
+                parts.append(t(f"{it} {metres(r['width'])} a {metres(r['depth'])}",
+                               f"{en} {metres(r['width'])} at {metres(r['depth'])}"))
+        splay += t(f", luce netta {metres(p['clear_width'])}, battuta " + "; ".join(parts),
+                   f", clear width {metres(p['clear_width'])}, rebate " + "; ".join(parts))
     rule = OUTER_TEXTS.get(p.get("outer_rule") or "")
     outer = t(f", esterna: {rule[0]}", f", outer: {rule[1]}") if rule else ""
     return t(f"{kind_title(p.get('opening_type', 'opening')).lower()}{top} {metres(p['width'])} × "

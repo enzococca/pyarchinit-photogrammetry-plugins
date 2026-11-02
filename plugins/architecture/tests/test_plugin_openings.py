@@ -531,3 +531,53 @@ def test_messages_ask_for_what_helps(tmp_path, fake):
         elements.opening(ch, _inside(truth["door"]), height=truth["door"]["at"][2] + 2.6)
     assert "Dai lo spessore del muro o usa un modello più fitto" in elements._opening_problem(
         "the faces of a thin wall cannot be told apart at this resolution (edges of 30 mm)")
+
+
+def test_a_door_with_a_rebate_in_the_project_and_its_ifc(tmp_path, fake):
+    """A door 1.0 m clear with a 10 cm rebate on each side: the clear and the overall width, the rebates and the
+    warning in the element, the summary and the Pset; the IFC's OverallWidth is the clear width, the void's plan has
+    the steps."""
+    from pyarchinit_photogrammetry.core.geometry import compose_similarity
+    from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
+
+    mesh, _truth = opening_wall("door", width=1.0, rebate=0.10, edge=0.02)
+    mesh.apply_translation(WORLD)
+    doc = ppg.Document()
+    ch = doc.add_chunk("Porta")
+    doc.save(tmp_path / "battuta.ppg")
+    ch.crs = CRS
+    ch.transform = compose_similarity(1.0, np.eye(3), WORLD)
+    path = write_mesh_ply(ch.data_dir / "model.ply", ch.to_internal(np.asarray(mesh.vertices, np.float64)),
+                          np.asarray(mesh.faces), double=True)
+    ch._set_product("model", path)
+    ch.meta["metric"] = True
+    add_cameras(ch, front(WORLD))
+    e = elements.opening(ch, WORLD[:2] + [0.0, WALL_T / 2], kind="door", name="Porta")
+    p = e["params"]  # a coarser mesh than the engine's test (2 cm triangles, its own resolution): 5 mm
+    assert abs(p["clear_width"] - 1.0) < 0.005 and abs(p["overall_width"] - 1.2) < 0.005
+    for side in ("rebate_left", "rebate_right"):
+        assert abs(p[side]["width"] - 0.10) < 0.005 and abs(p[side]["depth"] - WALL_T / 2) < 0.005
+    assert abs(p["splay_left"]) < 0.5 and abs(p["splay_right"]) < 0.5 and p["reveal_stepped"] == "left, right"
+    assert any("Stipiti a gradini" in w for w in e["warnings"])
+    assert "luce netta " in elements.summary(e) and "battuta sinistra " in elements.summary(e)
+    assert len(e["geometry"]["plan"]) == 8
+    assert abs(e["solid"]["volume"] - (1.2 * 0.25 + 1.0 * 0.25) * 2.1) < 0.01
+    if HAS_IFC:
+        import ifcopenshell
+        import ifcopenshell.util.element
+
+        from ppg_architecture import ifc
+
+        model = ifcopenshell.open(str(ifc.export(ch, tmp_path / "porta.ifc")))
+        door = model.by_type("IfcDoor")[0]
+        assert door.OverallWidth == pytest.approx(p["clear_width"])
+        pset = ifcopenshell.util.element.get_psets(door)["Pset_PyArchInit_Element"]
+        assert "P_rebate_left" in pset and "P_clear_width" in pset
+
+
+def test_curved_walls_and_short_piers_are_said_in_italian():
+    from ppg_architecture import engine
+
+    assert "Pareti curve non supportate in questa versione" in elements._opening_problem(engine.CURVED_WALL)
+    said = elements._opening_problem(engine.END_OR_PIER)
+    assert "Il muro finisce accanto al punto, o un pilastro" in said and "15 cm" in said

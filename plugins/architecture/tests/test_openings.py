@@ -168,3 +168,56 @@ def test_a_thin_wall_with_a_coarse_mesh_is_said():
         engine.measure_opening(mesh.vertices, mesh.faces, (0.0, 0.06), outward=OUT, resolution=0.03)
     p = engine.measure_opening(mesh.vertices, mesh.faces, (0.0, 0.06), outward=OUT, resolution=0.005)["plan"]
     assert abs(p.thickness - 0.12) < 0.002 and abs(p.width_outer - 0.9) < 0.003
+
+
+@pytest.mark.parametrize("rebate", [0.03, 0.06, 0.10])
+def test_a_door_with_a_rebate(rebate):
+    """A door 1.0 m clear whose reveals step out by a rebate on the outer half (the seat of a frame): each reveal is
+    two straight runs; the clear width is between the innermost runs, the overall one between the outermost, the
+    splays of the runs are 0, the rebates are reported (their width and their depth from the outer face)."""
+    from arch_samples import opening_wall as wall
+
+    mesh, truth = wall("door", width=1.0, rebate=rebate, edge=0.02)
+    p = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT, resolution=0.004)["plan"]
+    assert abs(p.clear_width - 1.0) < 0.003 and abs(p.overall_width - (1.0 + 2 * rebate)) < 0.003
+    assert abs(p.width_outer - (1.0 + 2 * rebate)) < 0.003 and abs(p.width_inner - 1.0) < 0.003
+    assert abs(p.splay_left) < 0.5 and abs(p.splay_right) < 0.5
+    for side in ("left", "right"):
+        assert len(p.runs[side]) == 2 and len(p.rebates[side]) == 1
+        depth, width = p.rebates[side][0]
+        assert abs(width - rebate) < 0.003 and abs(depth - WALL_T / 2) < 0.003
+    poly = np.asarray(p.polygon)
+    area = (1.0 + 2 * rebate) * WALL_T / 2 + 1.0 * WALL_T / 2  # the outer half wider, the inner half 1.0 m
+    assert len(poly) == 8 and abs(abs(engine.polygon_area(poly)) - area) < 0.002
+
+
+def test_a_straight_reveal_is_one_run():
+    mesh, _truth = opening_wall("splayed")
+    p = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT)["plan"]
+    assert p.runs == {} and p.rebates == {"left": [], "right": []}
+    assert abs(p.clear_width - 0.8) < 0.002 and abs(p.overall_width - p.width_inner) < 1e-9
+
+
+@pytest.mark.parametrize("pier", [0.0, 0.10, 0.14])
+def test_a_door_at_the_end_of_a_wall_or_beside_a_short_pier_is_said(pier):
+    mesh, _truth = opening_wall("door", pier=pier)
+    for res in (None, 0.025):
+        with pytest.raises(ValueError, match="wall ends beside the point, or a pier"):
+            engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT, resolution=res)
+
+
+def test_a_pier_of_twenty_centimetres_is_read_also_on_a_coarse_mesh():
+    mesh, _truth = opening_wall("door", pier=0.20)
+    for res in (None, 0.025):
+        p = engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT, resolution=res)["plan"]
+        assert abs(p.width_outer - 0.9) < 0.003
+
+
+@pytest.mark.parametrize("radius", [3.0, 6.0, 12.0])
+def test_a_curved_wall_is_refused_before_the_thickness_is_asked(radius):
+    from arch_samples import tower_wall
+
+    mesh = tower_wall(radius)
+    for thickness in (None, WALL_T):
+        with pytest.raises(ValueError, match="curved wall faces are not read"):
+            engine.measure_opening(mesh.vertices, mesh.faces, INSIDE, outward=OUT, thickness=thickness)
