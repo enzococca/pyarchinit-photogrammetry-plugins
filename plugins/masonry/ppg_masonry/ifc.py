@@ -62,16 +62,50 @@ def _solid_of(chunk, wid: str, a: dict) -> dict:
             "into": -frame.normal, "start": at + shift * frame.normal, "frame_normal": frame.normal}
 
 
-def _pair_thickness(chunk, wid: str, solid: dict, b: dict) -> tuple[float | None, str]:
-    """The thickness between the face of ``solid`` and the face ``b`` when they are the two sides of one wall: they
-    look within ``PAIR_ANGLE_DEG`` of opposite ways and are closer than ``PAIR_MAX_DISTANCE``. ``(None, why)``
-    otherwise."""
+def _solid_between(chunk, a: dict, b: dict, start: np.ndarray, end: np.ndarray) -> bool | None:
+    """Whether the space between two faces is the wall itself: the model's horizontal slice at the mid-height of the
+    two faces crosses the segment between them only near its ends (within 10 % of its length at each end). A slice
+    line crossing the inner 80 % is another wall, a room, the inside of a building or a tower. None when the model
+    cannot be sliced."""
+    from shapely.geometry import LineString, MultiLineString
+
+    from .faces import slice_rings
+
+    heights = []
+    for e in (a, b):
+        from .shape import _frame
+
+        frame = _frame(e)
+        u0, v0, u1, v1 = e["bounds"]
+        um = 0.5 * (u0 + u1)
+        heights += list(frame.point(np.array([um, um]), np.array([v0, v1]), np.zeros(2))[:, 2])
+    h = 0.5 * (max(min(heights[:2]), min(heights[2:])) + min(max(heights[:2]), max(heights[2:])))
+    try:
+        rings = slice_rings(chunk, h)
+    except Exception:  # noqa: BLE001 - no model to slice
+        return None
+    seg = LineString([start[:2], end[:2]])
+    inner = LineString([seg.interpolate(0.1, normalized=True), seg.interpolate(0.9, normalized=True)])
+    if not rings:
+        return None
+    return not inner.intersects(MultiLineString([r for r in rings if len(r) >= 2]))
+
+
+def _pair_thickness(chunk, w: dict, solid: dict, b: dict) -> tuple[float | None, str]:
+    """The thickness between the face of ``solid`` and the face ``b`` when they are the two sides of one wall: never in
+    a tower nor between faces of one slice (the sides of a polygonal tower); they look within ``PAIR_ANGLE_DEG`` of
+    opposite ways, are closer than ``PAIR_MAX_DISTANCE`` and the space between them is solid
+    (:func:`_solid_between`). ``(None, why)`` otherwise."""
     from .shape import _frame
 
+    slices = w.get("slices") or {}
+    if w.get("kind") == "tower" or (slices.get(solid["entry"]["id"]) is not None
+                                     and slices.get(solid["entry"]["id"]) == slices.get(b["id"])):
+        return None, "tower"
     cos = float(_frame(b).normal @ solid["frame_normal"])
     if cos > -np.cos(np.radians(PAIR_ANGLE_DEG)):
         return None, "angle"
-    pb, nb = _plane_of(chunk, wid, b)
+    pb, nb = _plane_of(chunk, w["id"], b)
     den = float(solid["into"] @ nb)
     if abs(den) < 1e-6:
         return None, "angle"
@@ -80,15 +114,18 @@ def _pair_thickness(chunk, wid: str, solid: dict, b: dict) -> tuple[float | None
         return None, "side"
     if thick > PAIR_MAX_DISTANCE:
         return None, "far"
+    solid_between = _solid_between(chunk, solid["entry"], b, solid["start"], solid["start"] + thick * solid["into"])
+    if solid_between is False:
+        return None, "hollow"
     return thick, ""
 
 
 def wall_solids(chunk, wid: str, thickness: float | None = None) -> list[dict]:
     """The slabs of the wall: ``[{"entry", "other", "outline" (u, v), "origin", "u", "v", "into", "thickness",
-    "source"}]``. Two plane faces that are the two sides of one wall (they look within 15 degrees of opposite ways
-    and lie less than 3 m apart) make one slab, its thickness measured between their fitted planes; every other
-    plane face (a wall surveyed on one side, each side of a polygonal tower) makes a slab of the ``thickness``
-    given - without it the faces that need it are named."""
+    "source"}]``. Two plane faces of a wall or a building that are the two sides of one wall (they look within 15
+    degrees of opposite ways, lie less than 3 m apart and the model between them is solid) make one slab, its thickness
+    measured between their fitted planes; every other plane face (a wall surveyed on one side, each side of a tower)
+    makes a slab of the ``thickness`` given - without it the faces that need it are named."""
     w = walls.need(chunk, wid)
     planes = [walls.with_bounds(chunk, e) for e in (walls.elevation(chunk, f) for f in w["faces"])
               if e is not None and (e.get("frame") or {}).get("kind") == "plane"]
@@ -103,14 +140,14 @@ def wall_solids(chunk, wid: str, thickness: float | None = None) -> list[dict]:
         for j in range(i + 1, len(planes)):
             if j in used:
                 continue
-            thick, why = _pair_thickness(chunk, w["id"], solid, planes[j])
+            thick, why = _pair_thickness(chunk, w, solid, planes[j])
             if thick is not None:
                 used.add(j)
                 solid.update(other=planes[j], thickness=thick,
                              source=t(f"misurato fra le facce «{a['name']}» e «{planes[j]['name']}»",
                                       f"measured between the faces «{a['name']}» and «{planes[j]['name']}»"))
                 break
-            if why == "far":
+            if why in ("far", "hollow"):
                 refused.append(planes[j]["name"])
         if solid["other"] is None:
             if not thickness or thickness <= 0:
@@ -121,11 +158,11 @@ def wall_solids(chunk, wid: str, thickness: float | None = None) -> list[dict]:
                                   f"given ({a['name']} surveyed on one side only)"))
         out.append(solid)
     if need:
-        extra = t(" Facce opposte troppo lontane per essere le due parti di un muro (oltre "
-                  f"{num(PAIR_MAX_DISTANCE, 0)} "
-                  "m): " + ", ".join(sorted(set(refused))) + ".", f" Opposite faces too far apart to be the two sides "
-                  f"of one wall (over {num(PAIR_MAX_DISTANCE, 0)} m): " + ", ".join(sorted(set(refused))) + ".") \
-            if refused else ""
+        extra = t(" Facce opposte troppo lontane (oltre "
+                  f"{num(PAIR_MAX_DISTANCE, 0)} m) o con altro fra loro per essere le due parti di un muro: "
+                  + ", ".join(sorted(set(refused))) + ".", " Opposite faces too far apart (over "
+                  f"{num(PAIR_MAX_DISTANCE, 0)} m) or with something else between them to be the two sides of one "
+                  "wall: " + ", ".join(sorted(set(refused))) + ".") if refused else ""
         raise NotReady(t(f"Dai lo spessore del muro: le facce {', '.join(need)} non hanno la faccia dell'altra parte "
                          "del muro." + extra, f"Give the wall's thickness: the faces {', '.join(need)} have no face on "
                          "the other side of the wall." + extra))

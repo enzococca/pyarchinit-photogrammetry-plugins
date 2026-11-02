@@ -78,9 +78,9 @@ def test_the_thickness_of_a_tower_is_never_measured_across_it(tmp_path):
     doc, ch = S.project(tmp_path, S.hex_tower(), "Torre")
     w = walls.new_wall(ch, "Torre", kind="tower")
     faces.polygon_faces(ch, w["id"], Z0 + 2.0, resolution=0.05)
-    with pytest.raises(walls.NotReady, match="troppo lontane") as exc:
+    with pytest.raises(walls.NotReady, match="spessore") as exc:
         ifc.wall_solids(ch, w["id"])
-    assert "spessore" in str(exc.value)
+    assert "Torre - lato 1" in str(exc.value)
     r = ifc.export_wall(ch, w["id"], tmp_path / "t.ifc", thickness=0.8)
     assert r["walls"] == 6 and all(s_.startswith("dato") for s_ in r["sources"])
     model = ifcopenshell.open(r["path"])
@@ -282,3 +282,90 @@ def test_a_face_refused_leaves_no_empty_wall(tmp_path):
     import pyarchinit_photogrammetry as ppg
 
     assert walls.walls(ppg.Document.open(doc.path).chunk) == []
+
+
+# ------------------------------------------------------------------ round 2
+def test_an_obstacle_in_front_is_not_the_face(tmp_path):
+    for lean in (0.0, S.LEAN_DEG):
+        k = np.tan(np.radians(lean))
+        wall = S._grid(lambda s, t: S.WORLD + np.column_stack([s * 6.0, -t * 3.0 * k, t * 3.0]), 241, 121)
+        board = S._grid(lambda s, t: S.WORLD + np.column_stack([1.0 + s * 1.8, np.full_like(s, -0.2),
+                                                                0.3 + t * 1.8]), 73, 73)  # 18 % of the face
+        doc, ch, w, entry = _face(tmp_path / f"l{lean}", _two(wall, board), resolution=0.03)
+        r = shape.face_shape(ch, w["id"], entry["id"])
+        assert abs(r["lean_deg"] - lean) < 0.1, (lean, r["lean_deg"])
+        b = r["behind"]
+        assert b["side"] == "front" and 0.12 < b["share"] < 0.25 and not b["comparable"]
+        assert "davanti alla faccia" in shape.summary_text(r) and "più avanti" in shape.summary_text(r)
+        assert abs(r["bulge_max_cm"]) < 0.5 and abs(r["bulge_min_cm"]) < 0.5  # the bulge is the wall's
+
+
+def test_a_missing_stone_does_not_split_a_course():
+    polys, truths = S.stone_pattern(0.0)
+    heights = sorted({round(c, 4) for _w, _h, c in truths})
+
+    def course_of(i):
+        return min(range(len(heights)), key=lambda k: abs(truths[i][2] - heights[k]))
+
+    def middle(k):  # the stones of course k ordered along the face, the one in the middle
+        idx = sorted((i for i in range(len(polys)) if course_of(i) == k), key=lambda i: polys[i].centroid.x)
+        return idx
+
+    gone = {middle(0)[len(middle(0)) // 2], middle(2)[len(middle(2)) // 2]}
+    rows = [stones.measure(p, i + 1) for i, p in enumerate(polys) if i not in gone]
+    courses = [c for c in stones.find_courses(rows) if c["counts"]]
+    assert len(courses) == S.COURSES and np.allclose([c["height"] for c in courses], heights, atol=0.002)
+    two = middle(1)
+    gone = {two[3], two[6]}
+    rows = [stones.measure(p, i + 1) for i, p in enumerate(polys) if i not in gone]
+    assert len([c for c in stones.find_courses(rows) if c["counts"]]) == S.COURSES
+
+
+@pytest.mark.skipif(not HAS_IFC, reason="the program's bim extra (ifcopenshell)")
+def test_a_small_tower_is_never_paired_across_it(tmp_path, monkeypatch):
+    from ppg_masonry import ifc
+
+    monkeypatch.setattr(S, "HEX_RADIUS", 1.2)
+    doc, ch = S.project(tmp_path, S.hex_tower(), "Torre")
+    w = walls.new_wall(ch, "Pilastro", kind="wall")  # even as a wall: the faces of one slice are never paired
+    entries = faces.polygon_faces(ch, w["id"], Z0 + 2.0, min_side=0.3, resolution=0.05)
+    assert len(entries) == 6
+    r = ifc.export_wall(ch, w["id"], tmp_path / "t.ifc", thickness=0.5)
+    assert r["walls"] == 6 and all(x.startswith("dato") for x in r["sources"])
+    assert all(abs(s_["thickness"] - 0.5) < 1e-9 for s_ in ifc.wall_solids(ch, w["id"], 0.5))
+    # two faces of a building with another wall between them are not one wall
+    front = S.wall(lean=False, bulge=False)
+    middle_wall = S.wall(base=S.WORLD + [0.0, 1.2, 0.0], lean=False, bulge=False)
+    back = S.wall(base=S.WORLD + [0.0, 2.5, 0.0], lean=False, bulge=False)
+    mesh = _two(_two(front, middle_wall), back)
+    doc, ch = S.project(tmp_path / "b", mesh)
+    w = walls.new_wall(ch, "Vano", kind="building")
+    faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [6, 0], side=S.WORLD[:2] + [3, -5], resolution=0.05,
+                     back=0.2, front=0.2)
+    faces.plane_face(ch, w["id"], S.WORLD[:2] + [0, 2.5], S.WORLD[:2] + [6, 2.5], side=S.WORLD[:2] + [3, 7],
+                     resolution=0.05, back=0.2, front=0.2)
+    with pytest.raises(walls.NotReady, match="altro fra loro"):
+        ifc.wall_solids(ch, w["id"])
+    # a wall 0.6 m thick, the slice crossing only at its faces: paired
+    back = S.wall(base=S.WORLD + [0.0, 0.6, 0.0], lean=False, bulge=False)
+    doc, ch = S.project(tmp_path / "c", _two(front, back))
+    w = walls.new_wall(ch, "Muro", kind="wall")
+    faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [6, 0], side=S.WORLD[:2] + [3, -5], resolution=0.05,
+                     back=0.2, front=0.2)
+    faces.plane_face(ch, w["id"], S.WORLD[:2] + [0, 0.6], S.WORLD[:2] + [6, 0.6], side=S.WORLD[:2] + [3, 5],
+                     resolution=0.05, back=0.2, front=0.2)
+    solids = ifc.wall_solids(ch, w["id"])
+    assert len(solids) == 1 and abs(solids[0]["thickness"] - 0.6) < 0.005
+    assert solids[0]["source"].startswith("misurato fra le facce")
+
+
+def test_a_stone_drawn_inside_another_is_left_out(tmp_path):
+    from shapely.geometry import box
+
+    doc, ch, w, entry = _face(tmp_path)
+    polys = S.stone_pattern(Z0)[0]
+    inner = polys[5].centroid.buffer(0.05)
+    S.put_drawings(ch, entry["id"], polys + [inner])
+    r = stones.measure_face(ch, w["id"], entry["id"], region=box(0.0, Z0, 6.0, Z0 + 1.75))
+    assert r["stones"] == len(polys) and r["inside"] == [len(polys) + 1]
+    assert "dentro un'altra pietra" in " ".join(r["warnings"])

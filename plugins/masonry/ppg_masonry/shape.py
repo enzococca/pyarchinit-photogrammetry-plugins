@@ -107,8 +107,9 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
     tr = profile["transform"]
     warning = band_contact(d, entry)  # on the whole relief, before what lies behind is set aside
     behind = second_surface(d)
-    if behind is not None:  # a structure behind the wall within the band: the face is the front surface only
-        d = np.where(np.isfinite(d) & (d < behind["threshold"]), np.nan, d)
+    if behind is not None:  # two structures within the band: the face is the larger, the other is set aside
+        aside = (d < behind["threshold"]) if behind["side"] == "back" else (d >= behind["threshold"])
+        d = np.where(np.isfinite(d) & aside, np.nan, d)
     rows, cols = _fit_sample(d, max_points)
     if len(rows) < 100:
         raise NotReady(t("La faccia ha troppo poca superficie del modello per misurarne la forma.",
@@ -202,10 +203,12 @@ SECOND_SURFACE_GAP = 0.10  # two surfaces of the face more than this apart in de
 
 
 def second_surface(d: np.ndarray, bin_m: float = 0.01) -> dict | None:
-    """A second surface behind the face within its depth band (a set-back storey, the wall behind a parapet, a
-    risega): two modes of the depths more than ``SECOND_SURFACE_GAP`` apart, each holding at least 10 % of the cells,
-    with a valley between them below half the smaller one. ``{"threshold": depth of the valley, "cells", "share",
-    "gap": distance of the modes (m)}`` - the cells behind the threshold are not the face - or None."""
+    """A second surface within the face's depth band: behind it (a set-back storey, the wall behind a parapet, a
+    risega) or in front of it (a board, a bush, a scaffold): two modes of the depths more than ``SECOND_SURFACE_GAP``
+    apart, each holding at least 10 % of the cells, with a valley between them below half the smaller one. The face
+    is the mode with more cells (on a tie within 5 %, the one in front); the other is set aside. ``{"threshold": depth
+    of the valley, "side": "back" or "front" (where the surface set aside lies), "cells", "share" (of the surface set
+    aside), "gap": distance of the modes (m), "comparable": the two within 5 %}`` - or None."""
     vals = d[np.isfinite(d)]
     if vals.size < 100 or np.ptp(vals) < SECOND_SURFACE_GAP:
         return None
@@ -236,18 +239,29 @@ def second_surface(d: np.ndarray, bin_m: float = 0.01) -> dict | None:
     if best is None:
         return None
     _score, valley, back, gap = best
-    return {"threshold": float(centres[valley]), "cells": int(back), "share": float(back / vals.size),
-            "gap": float(gap)}
+    front = vals.size - back
+    comparable = abs(back - front) <= 0.05 * vals.size
+    side = "back" if comparable or front > back else "front"
+    cells = back if side == "back" else front
+    return {"threshold": float(centres[valley]), "side": side, "cells": int(cells),
+            "share": float(cells / vals.size), "gap": float(gap), "comparable": bool(comparable)}
 
 
 def behind_text(b: dict) -> str:
-    return t(f"Attenzione: dietro la faccia, nella fascia di profondità, c'è una seconda superficie "
-             f"{num(100 * b['gap'], 0)} cm più indietro ({num(100 * b['share'], 0)} % delle celle): lasciata fuori "
+    front = b.get("side") == "front"
+    where_it = "davanti alla" if front else "dietro la"
+    where_en = "in front of" if front else "behind"
+    side_it = "più avanti" if front else "più indietro"
+    side_en = "further forward" if front else "further back"
+    tie = t(" Le due superfici hanno quasi le stesse celle: è stata tenuta quella davanti.",
+            " The two surfaces have almost as many cells: the one in front was kept.") if b.get("comparable") else ""
+    return t(f"Attenzione: {where_it} faccia, nella fascia di profondità, c'è una seconda superficie "
+             f"{num(100 * b['gap'], 0)} cm {side_it} ({num(100 * b['share'], 0)} % delle celle): lasciata fuori "
              "dall'adattamento e dalla carta dello spanciamento. Se è parte della faccia, rifai la faccia con una "
-             "fascia diversa.",
-             f"Warning: behind the face, within the depth band, there is a second surface {num(100 * b['gap'], 0)} cm "
-             f"further back ({num(100 * b['share'], 0)} % of the cells): left out of the fit and of the bulge map. If "
-             "it is part of the face, make the face again with another band.")
+             "fascia diversa." + tie,
+             f"Warning: {where_en} the face, within the depth band, there is a second surface {num(100 * b['gap'], 0)}"
+             f" cm {side_en} ({num(100 * b['share'], 0)} % of the cells): left out of the fit and of the bulge map. "
+             "If it is part of the face, make the face again with another band." + tie)
 
 
 def band_text(w: dict) -> str:

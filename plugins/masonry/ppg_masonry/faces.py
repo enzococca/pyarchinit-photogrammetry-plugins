@@ -215,6 +215,9 @@ def polygon_faces(chunk, wid: str, height: float, min_side: float = 0.5, toleran
                          f"No side longer than {min_side:g} m in the slice."))
     verts = world_vertices(chunk)
     depth = (-float(back), float(front))
+    import uuid
+
+    slice_id = uuid.uuid4().hex[:8]  # the faces of one slice are the sides of one tower: never paired across it
     out = []
     for k, (a, b) in enumerate(sides):
         along = (b - a) / np.linalg.norm(b - a)
@@ -227,6 +230,10 @@ def polygon_faces(chunk, wid: str, height: float, min_side: float = 0.5, toleran
         if bounds is None:
             continue
         name = t(f"{w['name']} - lato {k + 1}", f"{w['name']} - side {k + 1}")
-        out.append(_build(chunk, w["id"], frame, name, resolution, depth, bounds,
-                          progress.sub(k / len(sides), 1.0 / len(sides))))
+        entry = _build(chunk, w["id"], frame, name, resolution, depth, bounds,
+                       progress.sub(k / len(sides), 1.0 / len(sides)))
+        from .walls import _live
+
+        _live(chunk, w["id"]).setdefault("slices", {})[entry["id"]] = slice_id
+        out.append(entry)
     return out

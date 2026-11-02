@@ -52,8 +52,9 @@ RULES = (("A filari: almeno il 70 % delle pietre sta in filari (3 pietre o più)
 def stone_items(chunk, eid: str) -> tuple[list[tuple[int, object]], dict]:
     """The stones kept with the elevation ``eid``: ``[(n, polygon in (u, v))]`` with ``n`` the stone's number in the
     program's ``pietre`` table (its place in the list, from 1), and what was set aside: ``{"multipart": [n], "merged":
-    [n]}``. A stone drawn as several parts counts as its largest part; two outlines that overlap by more than
-    ``DUPLICATE_IOU`` (intersection over union) are the same stone drawn twice: the later one is kept."""
+    [n], "inside": [n]}``. A stone drawn as several parts counts as its largest part; two outlines that overlap by more
+    than ``DUPLICATE_IOU`` (intersection over union) are the same stone drawn twice: the later one is kept; a stone
+    drawn entirely inside another (99 % of its area) is left out."""
     from shapely import wkt
 
     from pyarchinit_photogrammetry.engine.elevation import frame_drawings
@@ -70,7 +71,7 @@ def stone_items(chunk, eid: str) -> tuple[list[tuple[int, object]], dict]:
         if len(parts) > 1:
             multipart.append(i + 1)
         items.append((i + 1, max(parts, key=lambda p: p.area)))
-    merged = []
+    merged, inside = [], []
     if len(items) > 1:
         from shapely.strtree import STRtree
 
@@ -87,9 +88,15 @@ def stone_items(chunk, eid: str) -> tuple[list[tuple[int, object]], dict]:
                 inter = polys[j].intersection(polys[k]).area
                 if inter > 0 and inter / polys[j].union(polys[k]).area > DUPLICATE_IOU:
                     dropped.add(k)
-        merged = [items[k][0] for k in sorted(dropped)]
+                    merged.append(items[k][0])
+                elif inter >= 0.99 * min(polys[j].area, polys[k].area):  # a stone drawn inside another
+                    small = k if polys[k].area <= polys[j].area else j
+                    dropped.add(small)
+                    inside.append(items[small][0])
+                    if small == j:
+                        break
         items = [it for k, it in enumerate(items) if k not in dropped]
-    return items, {"multipart": multipart, "merged": merged}
+    return items, {"multipart": multipart, "merged": sorted(merged), "inside": sorted(inside)}
 
 
 def face_stones(chunk, eid: str) -> list:
@@ -136,11 +143,64 @@ def measure(poly, n: int) -> dict:
             "rectangularity": float(poly.area / rect) if rect > 0 else None, "course": None}
 
 
+def _chain_line(idx, u, v) -> tuple[float, float] | None:
+    """``(slope dv/du, intercept)`` of the line through the centres of a chain; None for a single stone."""
+    if len(idx) < 2 or np.ptp(u[idx]) < 1e-6:
+        return None
+    b, a = np.polyfit(u[idx], v[idx], 1)
+    return float(b), float(a)
+
+
+def _merge_chains(groups, u, v, left, right, width: float, height: float) -> list[list[int]]:
+    """Chains of one course broken by a missing stone joined again: two chains side by side (not overlapping along
+    the face, a gap of at most three median stone widths) whose lines agree - the same height at both ends of the gap
+    (within a quarter of the median stone height) and the same slope (within the tolerance of "horizontal") - are one
+    course. Repeated until nothing joins."""
+    tol_h, tol_slope = 0.25 * height, np.tan(np.radians(HORIZONTAL_DEG))
+    groups = [list(g) for g in groups]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(groups)):
+            for j in range(len(groups)):
+                if i == j:
+                    continue
+                gi, gj = groups[i], groups[j]
+                end_i, start_j = float(right[gi].max()), float(left[gj].min())
+                if start_j < end_i - 1e-9 or start_j - end_i > 3 * width:  # j must start after i ends
+                    continue
+                li, lj = _chain_line(gi, u, v), _chain_line(gj, u, v)
+                if li is not None and lj is not None and abs(li[0] - lj[0]) > tol_slope:
+                    continue
+
+                def at(line, idx, x):
+                    if line is None:
+                        return float(np.mean(v[idx]))
+                    return line[0] * x + line[1]
+
+                ref_i = li if li is not None else lj
+                ref_j = lj if lj is not None else li
+                ok = all(abs(at(ref_i, gi, x) - at(ref_j, gj, x)) <= tol_h for x in (end_i, start_j))
+                if ok and (li is None or lj is None):  # a single stone: its own height against the other's line
+                    single, line = (gi, lj) if li is None else (gj, li)
+                    ok = line is None or abs(float(np.mean(v[single])) - (line[0] * float(np.mean(u[single]))
+                                                                          + line[1])) <= tol_h
+                if ok:
+                    groups[i] = gi + gj
+                    del groups[j]
+                    changed = True
+                    break
+            if changed:
+                break
+    return groups
+
+
 def find_courses(rows: list[dict]) -> list[dict]:
     """The courses of the stones (``rows`` of :func:`measure`, their ``course`` set): each stone is joined to its
     neighbour on the right along the face - the nearest stone that starts after it (by less than half the median
-    stone width) and shares at least half of the smaller height with it - and the chains so made are the courses. A
-    course sloping a few degrees stays one course, and stays apart from the courses above and below it."""
+    stone width) and shares at least half of the smaller height with it - and the chains so made, joined again across
+    a missing stone (:func:`_merge_chains`), are the courses. A course sloping a few degrees stays one course, and
+    stays apart from the courses above and below it."""
     if not rows:
         return []
     n = len(rows)
@@ -173,7 +233,8 @@ def find_courses(rows: list[dict]) -> list[dict]:
         groups.setdefault(root(i), []).append(i)
     v_all = np.array([r["v"] for r in rows])
     u_all = np.array([r["u"] for r in rows])
-    groups = sorted(groups.values(), key=lambda idx: float(np.mean(v_all[idx])))
+    groups = _merge_chains(list(groups.values()), u_all, v_all, left, right, width, float(np.median(height)))
+    groups = sorted(groups, key=lambda idx: float(np.mean(v_all[idx])))
     courses = []
     for k, idx in enumerate(groups):
         u = u_all[idx]
@@ -314,6 +375,10 @@ def measure_face(chunk, wid: str, eid: str | None = None, region=None, progress=
                           f"{len(set_aside['merged'])} stones drawn twice (overlapping by more than half) counted "
                           "once: "
                           f"no. {', '.join(map(str, set_aside['merged']))}."))
+    if set_aside.get("inside"):
+        warnings.append(t(f"Pietre disegnate dentro un'altra pietra, lasciate fuori: n. "
+                          f"{', '.join(map(str, set_aside['inside']))}.", f"Stones drawn inside another stone, left "
+                          f"out: no. {', '.join(map(str, set_aside['inside']))}."))
     if set_aside["multipart"]:
         warnings.append(t(f"Pietre disegnate in più parti, misurate sulla parte maggiore: n. "
                           f"{', '.join(map(str, set_aside['multipart']))}.", f"Stones drawn in several parts, measured "
@@ -335,7 +400,7 @@ def measure_face(chunk, wid: str, eid: str | None = None, region=None, progress=
                "resolution": res, "smallest": min(min(r["width"], r["height"]) for r in rows),
                "median_width": float(np.median([r["width"] for r in rows])),
                "median_height": float(np.median([r["height"] for r in rows])),
-               "merged": set_aside["merged"], "multipart": set_aside["multipart"],
+               "merged": set_aside["merged"], "multipart": set_aside["multipart"], "inside": set_aside["inside"],
                "too_small": [{"n": r["n"], "u": r["u"], "v": r["v"]} for r in small], "warnings": warnings,
                "typology": typ, "made": time.strftime("%Y-%m-%d %H:%M:%S")}
     if region_kind == "drawn":
