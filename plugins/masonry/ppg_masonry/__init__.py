@@ -534,13 +534,14 @@ class MasonryPlugin(Plugin):
                   heights, kind="text"),
             Field("stations", t("Stazioni lungo la faccia (u, m)", "Stations along the face (u, m)"), stations,
                   kind="text"),
-            Field("reach", t("Distanza massima dalla faccia (m)", "Largest distance from the face (m)"), 1.0,
+            Field("reach", t("Distanza massima dalla faccia (m)", "Largest distance from the face (m)"),
+                  shape.default_reach(entry),
                   maximum=100.0, decimals=2)])
         if not v:
             return
         hs, us = parse_typed(v.get("heights", "")), parse_typed(v.get("stations", ""))
         self._run(t("Sezioni della faccia", "Sections of the face"), lambda p: shape.sections(
-            chunk, rec["id"], entry["id"], hs or None, us or None, v.get("reach", 1.0), progress=p),
+            chunk, rec["id"], entry["id"], hs or None, us or None, v.get("reach") or None, progress=p),
             lambda _r: self._changed(rec["id"], entry["id"]))
 
     def _do_axis(self) -> None:
@@ -963,7 +964,8 @@ class MasonryPlugin(Plugin):
                                                         "radius, at least 0.5)")
         parser.add_argument("--sections", help="shape: heights of horizontal sections, comma separated")
         parser.add_argument("--stations", help="shape: stations along the face (u, m), comma separated")
-        parser.add_argument("--reach", type=float, default=1.0, help="shape: largest distance from the face (m)")
+        parser.add_argument("--reach", type=float, help="shape: largest distance from the face (m; default the "
+                                                         "face's depth band, 1 m at least)")
         parser.add_argument("--axis", action="store_true", help="shape: the axis of a round tower")
         parser.add_argument("--heights", help="shape --axis: heights of the circles, comma separated")
         parser.add_argument("--compare", help="shape: the label of another chunk (survey) to compare with")

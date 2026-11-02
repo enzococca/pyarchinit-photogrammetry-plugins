@@ -487,12 +487,20 @@ def default_stations(entry: dict, n: int = 3) -> list[float]:
 COLOURS = ("#d62728", "#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b", "#e377c2", "#17becf", "#7f7f7f")
 
 
-def sections(chunk, wid: str, eid: str | None = None, heights=None, stations=None, reach: float = 1.0,
+def default_reach(entry: dict) -> float:
+    """How far from the face a section's line is looked for: the face's depth band (in front and behind), 1 m at
+    least - a battered tower's face lies far from its trace at the top."""
+    lo, hi = entry.get("depth") or (-0.5, 0.5)
+    return max(1.0, abs(float(hi)) + abs(float(lo)))
+
+
+def sections(chunk, wid: str, eid: str | None = None, heights=None, stations=None, reach: float | None = None,
              progress=None) -> dict:
     """Horizontal sections of the model at ``heights`` (world) around the face, stacked in ``sezioni.dxf`` (each line
     at its height, layer ``SEZIONE_<i>`` from the lowest; the stations on ``STAZIONI``, the offsets on ``TESTI``) and
     ``sezioni.svg`` (the plan), with the offsets between them at ``stations`` (``u`` along the face): the distance of
-    each section from the lowest one along the horizontal towards the viewer (metres, positive towards the viewer)."""
+    each section from the lowest one along the horizontal towards the viewer (metres, positive towards the viewer).
+    ``reach`` None: :func:`default_reach`."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     from .faces import slice_rings
@@ -500,6 +508,7 @@ def sections(chunk, wid: str, eid: str | None = None, heights=None, stations=Non
     progress = as_progress(progress)
     w, entry = walls.need_face(chunk, wid, eid)
     frame = _frame(entry)
+    reach = float(reach) if reach else default_reach(entry)
     heights = sorted(float(h) for h in (heights if heights else default_heights(frame, entry)))
     stations = [float(s) for s in (stations if stations else default_stations(entry))]
     cuts = []

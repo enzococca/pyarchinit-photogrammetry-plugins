@@ -520,3 +520,16 @@ def test_resolution_from_the_model_and_faces_too_large(tmp_path):
     code = MasonryPlugin().command("face", str(doc.path), "Lungo", "--line", f"{x0},{y0},{x0 + 25},{y0}",
                                    "--resolution", "0.001")
     assert code == 1
+
+
+def test_the_reach_of_the_sections_is_the_band(tmp_path):
+    k = np.tan(np.radians(20.0))  # a strongly battered face: 1.06 m off its trace at 2.9 m
+    wall = S._grid(lambda s, t: S.WORLD + np.column_stack([s * 6.0, -t * 3.0 * k, t * 3.0]), 121, 61)
+    doc, ch, w, entry = _face(tmp_path, wall, resolution=0.04, front=1.5, back=0.3)
+    assert shape.default_reach(entry) == pytest.approx(1.8)
+    r = shape.sections(ch, w["id"], entry["id"], heights=[Z0 + 0.5, Z0 + 2.9], stations=[3.0])
+    assert r["reach"] == pytest.approx(1.8)
+    off = r["stations"][0]["offsets"][1]["offset"]
+    assert off is not None and abs(off - 2.4 * k) < 0.01
+    short = shape.sections(ch, w["id"], entry["id"], heights=[Z0 + 0.5, Z0 + 2.9], stations=[3.0], reach=1.0)
+    assert short["stations"][0]["offsets"][1]["offset"] is None  # what 0.1.0's 1 m missed
