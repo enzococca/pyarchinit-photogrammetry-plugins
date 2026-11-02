@@ -6,9 +6,11 @@ plugin's elements fitted on the model it made:
 
 * ``colonna``: a column 2 m high, radius 0.30 m at the base, with a known profile (entasis), photographed in three
   rings; the plugin's column from a plan polygon: axis, knots and volume against the truth;
-* ``muro``: a wall 4 m wide with a pointed arch (span 1.6 m, an archivolt ring 0.25 m thick standing 15 cm proud of the
-  wall) and a cornice of known section along its top, photographed from the front in an arc; the plugin's arch on a
-  vertical plane through the archivolt and its cornice along the wall: type, span, rise, thickness, section.
+* ``muro``: a wall 7.2 m wide with a pointed arch (span 1.6 m, an archivolt ring 0.25 m thick standing 15 cm proud of
+  the wall), a door (0.9 m, square reveals) on its left, a window splayed 10 degrees (0.8 m at the outer face) on its
+  right and a cornice of known section along its top, photographed from the front only; the plugin's arch on a vertical
+  plane through the archivolt, its cornice along the wall, its door and its window from a point clicked inside each:
+  type, span, rise, thickness, section, widths, heights, splays.
 
     python make_proof.py [--folder /Users/Shared/ppg_demo_architecture] [--cadquery PYTHON]
                          [--stage all|scenes|process|fit|figures]
@@ -44,7 +46,10 @@ def column_radius(z):
 
 
 # the wall
-WALL = {"x0": -2.0, "x1": 2.0, "top": 3.6, "depth": 0.5}
+WALL = {"x0": -3.6, "x1": 3.6, "top": 3.6, "depth": 0.5}
+STRIP = 1.2  # the arch's part of the wall: |x| < STRIP; the door's on the left of it, the window's on the right
+DOOR = {"x": -2.5, "width": 0.9, "sill": 0.05, "lintel": 2.1, "splay": 0.0}  # a threshold 5 cm high
+WINDOW = {"x": 2.5, "width": 0.8, "sill": 1.0, "lintel": 2.0, "splay": 10.0}  # wider at the inner face
 ARCH = {"s": 0.8, "R": 1.6, "vs": 1.4, "t": 0.25, "proud": 0.15}  # equilateral pointed arch, span 1.6
 CORNICE = np.array([[0.0, 0.0], [0.04, 0.0], [0.04, 0.03], [0.06, 0.05], [0.10, 0.08], [0.13, 0.13], [0.16, 0.18],
                     [0.18, 0.21], [0.18, 0.25], [0.0, 0.25]])  # (projection, height) on the wall face
@@ -165,7 +170,9 @@ def column_scene():
 
 
 def wall_mesh():
-    """The wall with the opening, the archivolt standing proud of it, the cornice: ``(trimesh, parts)``."""
+    """The wall with the arch's opening, the door and the window, the archivolt standing proud of it, the cornice:
+    ``(trimesh, parts)``. The middle of the wall is its elevation extruded across it; the parts with the door and the
+    window are horizontal slabs (plan polygons between two heights: the window's reveals are splayed)."""
     import trimesh
     from shapely.geometry import LineString, Polygon
 
@@ -181,16 +188,32 @@ def wall_mesh():
                      np.column_stack([cR + R * np.cos(aR), vs + R * np.sin(aR)])[1:]])
     intrados = np.vstack([[-s, 0.0], arc, [s, 0.0]])  # the opening's outline from the ground
     opening = Polygon(np.vstack([intrados, [[s, -1.0], [-s, -1.0]]]))
-    x0, x1, top_z = WALL["x0"], WALL["x1"], WALL["top"]
-    wall = Polygon([(x0, 0), (x1, 0), (x1, top_z), (x0, top_z)]).difference(opening)
+    x0, x1, top_z, T = WALL["x0"], WALL["x1"], WALL["top"], WALL["depth"]
+    middle = Polygon([(-STRIP, 0), (STRIP, 0), (STRIP, top_z), (-STRIP, top_z)]).difference(opening)
     ring = LineString(intrados).buffer(t, cap_style="flat", join_style="round", quad_segs=32).difference(opening)
     ring = ring.intersection(Polygon([(-9, 0), (9, 0), (9, 9), (-9, 9)]))
     rot = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])  # (x, y=v, z=depth) -> (x, -depth, v)
     parts = []
-    w = engine.prism_mesh(np.asarray(wall.exterior.coords), WALL["depth"])
+    w = engine.prism_mesh(np.asarray(middle.exterior.coords), T)
     w.apply_transform(rot)  # y from 0 to -depth: the wall's back towards +y
-    w.apply_translation([0, WALL["depth"], 0])
+    w.apply_translation([0, T, 0])
     parts.append(w)
+
+    def slab(poly, z0, z1):
+        m = engine.prism_mesh(np.asarray(poly, float), z1 - z0)
+        m.apply_translation([0.0, 0.0, z0])
+        parts.append(m)
+
+    voids = {}
+    for name, o, (a, b) in (("door", DOOR, (x0, -STRIP)), ("window", WINDOW, (STRIP, x1))):
+        half = o["width"] / 2
+        grow = T * np.tan(np.radians(o["splay"]))
+        xl, xr = o["x"] - half, o["x"] + half
+        slab([(a, 0), (b, 0), (b, T), (a, T)], 0.0, o["sill"])
+        slab([(a, 0), (xl, 0), (xl - grow, T), (a, T)], o["sill"], o["lintel"])
+        slab([(xr, 0), (b, 0), (b, T), (xr + grow, T)], o["sill"], o["lintel"])
+        slab([(a, 0), (b, 0), (b, T), (a, T)], o["lintel"], top_z)
+        voids[name] = np.array([[xl, 0.0], [xr, 0.0], [xr + grow, T], [xl - grow, T]])
     r = engine.prism_mesh(np.asarray(ring.exterior.coords), ARCH["proud"])
     r.apply_transform(rot)  # y from 0 to -proud: in front of the wall face
     parts.append(r)
@@ -198,7 +221,7 @@ def wall_mesh():
     path = np.array([[x0, 0.0, CORNICE_Z], [x1, 0.0, CORNICE_Z]])
     parts.append(engine.sweep_mesh(path, sec))
     mesh = trimesh.util.concatenate(parts)
-    truth = {"intrados": intrados, "ring_area": float(ring.area), "mesh": mesh}
+    truth = {"intrados": intrados, "ring_area": float(ring.area), "mesh": mesh, "voids": voids}
     v, f = trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, max_edge=0.05, max_iter=20)
     return trimesh.Trimesh(v, f, process=False), truth
 
@@ -211,17 +234,17 @@ def wall_scene():
     mesh, _truth = wall_mesh()
     targets = {}
     k = 0
-    for x in (-2.6, -1.6, -0.6, 0.6, 1.6, 2.6):
+    for x in (-3.2, -1.9, -0.6, 0.6, 1.9, 3.2):
         for y in (-1.0, -2.2):
             targets[k] = (x, y)
             k += 1
-    targets[k], targets[k + 1] = (-2.6, 0.5), (2.6, 0.5)
-    mv, mf, mtex = _mat(rng, 6.4, 0.003, targets, 0.16)
+    targets[k], targets[k + 1] = (-3.95, 0.3), (3.95, 0.3)
+    mv, mf, mtex = _mat(rng, 8.6, 0.003, targets, 0.16)
     colour = _noise3d(rng)
     v = np.vstack([mv, mesh.vertices])
     f = np.vstack([mf, np.asarray(mesh.faces) + len(mv)])
     v, f, colour = _with_backdrop(v, f, colour, rng, radius=8.0)
-    scene = MeshScene(v.astype(np.float32), f.astype(np.uint32), len(mf), 6.4, 0.003, mtex, colour,
+    scene = MeshScene(v.astype(np.float32), f.astype(np.uint32), len(mf), 8.6, 0.003, mtex, colour,
                       targets={c: (x, y, 0.0) for c, (x, y) in targets.items()})
     poses = []
     for height, target_z, r, count in ((1.0, 1.6, 4.6, 13), (2.4, 2.0, 4.6, 13), (4.2, 2.4, 4.4, 11)):
@@ -231,6 +254,17 @@ def wall_scene():
     for x in (-0.5, 0.0, 0.5):  # under the arch, looking up at the intrados and the cornice
         for zz in (0.8,):
             poses.append(look_at(np.array([x, -2.2, zz]), np.array([x * 0.5, 0.0, 2.6]), up=(0, 0, 1)))
+    for o in (DOOR, WINDOW):  # each opening in an arc of its own, and from below and above into it
+        middle = 0.5 * (o["sill"] + o["lintel"])
+        for height in (middle - 0.5, middle + 0.7):
+            for a in np.radians(np.linspace(-50, 50, 7)):
+                eye = np.array([o["x"] + 3.0 * np.sin(a), -3.0 * np.cos(a), height])
+                poses.append(look_at(eye, np.array([o["x"], 0.25, middle]), up=(0, 0, 1)))
+        for dx in (-0.25, 0.25):
+            poses.append(look_at(np.array([o["x"] + dx, -1.6, o["sill"] + 0.2]),
+                                 np.array([o["x"], 0.3, o["lintel"]]), up=(0, 0, 1)))
+            poses.append(look_at(np.array([o["x"] + dx, -1.6, o["lintel"] + 0.8]),
+                                 np.array([o["x"], 0.3, o["sill"]]), up=(0, 0, 1)))
     return scene, poses
 
 
@@ -281,8 +315,8 @@ def process(name: str, folder: Path) -> Path:
     if name == "colonna":  # the mat and the backdrop are not the building
         ch.crop_point_cloud(zmin=0.01, radius=1.5)
     else:
-        ch.crop_point_cloud(zmin=0.01, bounds=(-3.0, -1.5, 3.0, 1.5))
-    ch.build_model(face_count=300000 if name == "colonna" else 800000, progress=_progress("mesh"))
+        ch.crop_point_cloud(zmin=0.01, bounds=(-4.2, -1.5, 4.2, 1.5))
+    ch.build_model(face_count=300000 if name == "colonna" else 1400000, progress=_progress("mesh"))
     times["dense_mesh_s"] = time.monotonic() - t
     ch.meta["proof_times"] = times
     doc.save()
@@ -388,6 +422,36 @@ def fit(folder: Path, cadquery: Path) -> dict:
                           "scarto_modello_solido": mould["fit"],
                           "modello_contro_verita": _model_error(ch, true_mesh, (-1.8, -0.2, CORNICE_Z - 0.01, 1.8, 0.01,
                                                                                 WALL["top"] + 0.01))}
+    # the door and the window: a point clicked inside each, in plan; only the outer face of the wall was photographed
+    T = WALL["depth"]
+    for key, o, kind, label in (("porta", DOOR, "door", "Porta"), ("finestra", WINDOW, "window", "Finestra")):
+        at = (o["x"], T / 2)
+        try:
+            elements.opening(ch, at, kind=kind, name=label)
+            asked = None
+        except elements.NotReady as exc:  # one face of the wall on the model: the thickness is asked for
+            asked = str(exc)
+        e = elements.opening(ch, at, kind=kind, thickness=T, name=label)
+        p = e["params"]
+        grow = T * np.tan(np.radians(o["splay"]))
+        void = truth_parts["voids"][kind]
+        vol_true = engine.opening_volume(void, o["sill"], o["lintel"])
+        half = o["width"] / 2 + grow + 0.05
+        results[key] = {
+            "punto": list(at), "senza_spessore": asked, "quota_del_taglio_m": p["cut_height"],
+            "larghezza_m": [p["width"], o["width"]], "larghezza_interna_m": [p["width_inner"], o["width"] + 2 * grow],
+            "larghezza_alla_soglia_m": [p["width_at_sill"], o["width"]],
+            "larghezza_all_architrave_m": [p["width_at_lintel"], o["width"]],
+            "strombatura_sinistra_gradi": [p["splay_left"], o["splay"]],
+            "strombatura_destra_gradi": [p["splay_right"], o["splay"]],
+            "soglia_m": [p["sill"], o["sill"]], "architrave_m": [p["lintel"], o["lintel"]],
+            "altezza_m": [p["height"], o["lintel"] - o["sill"]], "profondita_m": [p["reveal_depth"], T],
+            "centro_scarto_m": float(abs(np.asarray(p["world_threshold"])[0] - o["x"])),
+            "volume_m3": [e["solid"]["volume"], vol_true],
+            "volume_scarto_percento": 100 * (e["solid"]["volume"] / vol_true - 1),
+            "scarto_modello_solido": e["fit"],
+            "modello_contro_verita": _model_error(ch, true_mesh, (o["x"] - half, 0.01, o["sill"] - 0.02, o["x"] + half,
+                                                                  T - 0.01, o["lintel"] + 0.02))}
     doc.save()
     (folder / "results.json").write_text(json.dumps(results, indent=1, ensure_ascii=False))
     return results
@@ -504,11 +568,75 @@ def figures(folder: Path) -> None:
     fig.tight_layout()
     fig.savefig(folder / "figure_cornice_sezione.png", dpi=150)
     plt.close(fig)
+    _window_figure(folder, plt)
     # the 3D view: the mesh in grey, the solids in colour (ray cast)
     for name, view, cut in (("colonna", (1.0, -1.7, 0.55), True), ("muro", (0.6, -1.05, 0.5), False)):
         ch = ppg.Document.open(folder / name / f"{name}.ppg").chunk
         _render_view(ch, folder / f"figure_{name}_3d.png", view, cut)
     _pane_figure(folder)
+
+
+def _window_figure(folder: Path, plt) -> None:
+    """The window: its plan on the horizontal cut of the model and its section across the wall, the solid against
+    the truth."""
+    import pyarchinit_photogrammetry as ppg
+
+    from ppg_architecture import elements, engine
+
+    ch = ppg.Document.open(folder / "muro" / "muro.ppg").chunk
+    win = elements.entry(ch, "Finestra")
+    p, g, prof = win["params"], win["geometry"], win["profile"]
+    og = elements.origin(ch)
+    o, T = WINDOW, WALL["depth"]
+    grow = T * np.tan(np.radians(o["splay"]))
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(9.0, 4.6), gridspec_kw={"width_ratios": [1.35, 1]})
+    v, f = elements.local_mesh(ch)
+    for k, ln in enumerate(engine.plan_cut(v, f, p["cut_height"] - og[2])):
+        ln = ln + og[:2]
+        if np.min(np.abs(ln[:, 0] - o["x"])) < 1.3:
+            a1.plot(ln[:, 0], ln[:, 1], color="#bbbbbb", lw=3.0, label="taglio del modello" if k == 0 else None)
+    for key in ("left", "right"):
+        q = np.asarray(prof[key]) + og[:2]
+        a1.plot(q[:, 0], q[:, 1], ".", ms=2, color="#c0392b",
+                label="stipiti visti dal punto" if key == "left" else None)
+    plan = np.asarray(g["plan"]) + og[:2]
+    plan = np.vstack([plan, plan[:1]])
+    a1.plot(plan[:, 0], plan[:, 1], color="#1f4e79", lw=1.5, label="pianta del solido")
+    h = o["width"] / 2
+    true_plan = np.array([[o["x"] - h, 0], [o["x"] + h, 0], [o["x"] + h + grow, T], [o["x"] - h - grow, T],
+                          [o["x"] - h, 0]])
+    a1.plot(true_plan[:, 0], true_plan[:, 1], "--", color="#2e7d32", lw=1.0, label="verità")
+    a1.plot(o["x"], T / 2, "x", color="black", ms=7, label="punto cliccato")
+    a1.set_xlim(o["x"] - 1.15, o["x"] + 1.15)
+    a1.set_ylim(-0.45, 0.95)
+    a1.set_aspect("equal")
+    a1.grid(alpha=0.3)
+    a1.set_xlabel("x (m)")
+    a1.set_ylabel("y (m): fuori ← → dentro")
+    a1.legend(loc="upper left", fontsize=6.5)
+    a1.set_title(f"Pianta al taglio di {p['cut_height']:.2f} m".replace(".", ","))
+    for k, ln in enumerate(prof.get("section") or []):
+        ln = np.asarray(ln)
+        a2.plot(-ln[:, 0], ln[:, 1] + og[2], color="#bbbbbb", lw=3.0, label="sezione del modello" if k == 0 else None)
+    # across the wall from the clicked point, the outer face on the left (-T / 2: y = 0)
+    box = np.array([[-T / 2, p["sill"]], [T / 2, p["sill"]], [T / 2, p["lintel"]], [-T / 2, p["lintel"]],
+                    [-T / 2, p["sill"]]])
+    a2.plot(box[:, 0], box[:, 1], color="#1f4e79", lw=1.5, label="soglia e architrave del solido")
+    tb = np.array([[-T / 2, o["sill"]], [T / 2, o["sill"]], [T / 2, o["lintel"]], [-T / 2, o["lintel"]],
+                   [-T / 2, o["sill"]]])
+    a2.plot(tb[:, 0], tb[:, 1], "--", color="#2e7d32", lw=1.0, label="verità")
+    a2.set_xlim(-0.9, 0.9)
+    a2.set_ylim(o["sill"] - 0.6, o["lintel"] + 0.6)
+    a2.set_aspect("equal")
+    a2.grid(alpha=0.3)
+    a2.set_xlabel("attraverso il muro (m): fuori ← → dentro")
+    a2.set_ylabel("quota (m)")
+    a2.legend(loc="upper left", fontsize=6.5)
+    a2.set_title("Sezione per il punto")
+    fig.suptitle("Finestra strombata: pianta e sezione misurate sul modello", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(folder / "figure_finestra.png", dpi=150)
+    plt.close(fig)
 
 
 def _render_view(ch, path: Path, view=(0.6, -1.05, 0.5), cut: bool = False) -> None:
@@ -663,10 +791,44 @@ def leggimi(folder: Path, r: dict) -> None:
         "e della cornice, ricostruito dal programma fino a 2 cm più alto (lo si vede solo di scorcio dalle foto più "
         "alte; vedi il massimo di «modello contro verità»), non dal plugin, il cui scarto dal modello resta di pochi "
         "millimetri.", "",
+        *_leggimi_openings(r, it, mm, fit, row, head),
         "Figure: `figure_colonna_3d.png`, `figure_muro_3d.png` (il modello in grigio, i solidi a colori), "
-        "`figure_pannello.png`, `figure_colonna_profilo.png`, `figure_arco_sezione.png`, `figure_cornice_sezione.png`.",
-        ""]
+        "`figure_pannello.png`, `figure_colonna_profilo.png`, `figure_arco_sezione.png`, `figure_cornice_sezione.png`, "
+        "`figure_finestra.png`.", ""]
     (folder / "LEGGIMI.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _leggimi_openings(r, it, mm, fit, row, head) -> list[str]:
+    def deg(x):
+        return f"{it(x, 2)}°"
+
+    out = ["## Porta e finestra", "",
+           "Nel muro, a sinistra dell'arco una porta (0,9 m, stipiti diritti, soglia di 5 cm) e a destra una finestra "
+           "strombata di 10° per parte (0,8 m alla faccia esterna, più larga verso l'interno). Solo la faccia esterna "
+           "del muro è fotografata: senza spessore il plugin lo chiede, lo spessore (0,5 m) è dato. Il punto è "
+           "cliccato in pianta in mezzo al vano; il taglio orizzontale a metà apertura è trovato dal plugin.", ""]
+    for key, title in (("porta", "Porta"), ("finestra", "Finestra")):
+        d = r[key]
+        out += [f"**{title}** (taglio a {it(d['quota_del_taglio_m'], 3)} m):", "", *head,
+                row("larghezza alla faccia esterna", mm(d["larghezza_m"][0]), mm(d["larghezza_m"][1])),
+                row("larghezza alla faccia interna", mm(d["larghezza_interna_m"][0]), mm(d["larghezza_interna_m"][1])),
+                row("larghezza vicino alla soglia / all'architrave",
+                    f"{mm(d['larghezza_alla_soglia_m'][0])} / {mm(d['larghezza_all_architrave_m'][0])}",
+                    mm(d["larghezza_m"][1])),
+                row("strombatura sinistra / destra", f"{deg(d['strombatura_sinistra_gradi'][0])} / "
+                    f"{deg(d['strombatura_destra_gradi'][0])}", deg(d["strombatura_sinistra_gradi"][1])),
+                row("soglia", mm(d["soglia_m"][0]), mm(d["soglia_m"][1])),
+                row("architrave", mm(d["architrave_m"][0]), mm(d["architrave_m"][1])),
+                row("altezza", mm(d["altezza_m"][0]), mm(d["altezza_m"][1])),
+                row("volume del vano", f"{it(d['volume_m3'][0], 4)} m³",
+                    f"{it(d['volume_m3'][1], 4)} m³ ({'+' if d['volume_scarto_percento'] >= 0 else ''}"
+                    f"{it(d['volume_scarto_percento'], 2)} %)"),
+                row("scarto modello-solido (mediana / p90)", fit(d["scarto_modello_solido"], ("median", "p90")), ""),
+                row("punti sulle facce del muro (esclusi dallo scarto)",
+                    d["scarto_modello_solido"].get("excluded_faces"), ""),
+                row("modello contro verità (mediana / p90)", fit(d["modello_contro_verita"], ("median", "p90")), ""),
+                ""]
+    return out
 
 
 def main() -> int:

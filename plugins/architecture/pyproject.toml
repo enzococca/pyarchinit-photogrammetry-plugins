@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-architecture"
-version = "0.1.0"
-description = "pyarchinit-photogrammetry plugin: parametric architectural elements from the photogrammetric model - columns by revolution, mouldings swept along a path, arches and barrel vaults from a section - as STEP (CadQuery, in a process of its own) and parametric IFC, each with its distance from the model"
+version = "0.2.0"
+description = "pyarchinit-photogrammetry plugin: parametric architectural elements from the photogrammetric model - columns by revolution, mouldings swept along a path, arches and barrel vaults from a section, doors and windows - as STEP (CadQuery, in a process of its own) and parametric IFC, each with its distance from the model"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
