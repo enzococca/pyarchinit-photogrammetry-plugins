@@ -1,0 +1,12 @@
+{
+  "title": "Masonry",
+  "description": "Walls, buildings and stone towers recorded by their faces: elevations on planes, cylinders and the sides of polygonal towers; the lean and the bulge of a face measured on the model; horizontal sections with their offsets; the axis of a round tower; two surveys of a wall compared",
+  "i18n": {
+    "it": {
+      "title": "Murature",
+      "description": "Muri, edifici e torri in pietra rilevati per facce: prospetti su piani, cilindri e lati di torri poligonali; strapiombo e spanciamento di una faccia misurati sul modello; sezioni orizzontali con i loro scarti; asse di una torre tonda; due rilievi di un muro a confronto"
+    }
+  },
+  "min_app": "1.7.0",
+  "requires": []
+}

@@ -1,0 +1,154 @@
+"""Least squares with a robust weight (Huber's): a plane, a circle, a cylinder, a line through points. Points on a wall
+are not all wall: a lamp, a scaffolding pole, a patch of vegetation stand off its surface; Huber's weight lets them
+count less than the wall without throwing them away. The scale of the residuals is the median absolute deviation
+(x 1.4826), the threshold ``k`` = 1.345 of it (95 % efficiency on Gaussian residuals)."""
+from __future__ import annotations
+
+import numpy as np
+
+HUBER_K = 1.345
+
+
+def robust_scale(r: np.ndarray, floor: float = 1e-6) -> float:
+    r = np.asarray(r, np.float64)
+    med = float(np.median(r))
+    return max(1.4826 * float(np.median(np.abs(r - med))), floor)
+
+
+def huber_weights(r: np.ndarray, k: float = HUBER_K) -> np.ndarray:
+    s = robust_scale(r)
+    a = np.abs(r) / s
+    return np.where(a <= k, 1.0, k / np.maximum(a, 1e-12))
+
+
+def robust_plane(points: np.ndarray, iterations: int = 30) -> dict:
+    """The plane fitted to ``points`` (N, 3): ``centre``, unit ``normal`` (sign arbitrary), ``rms`` of the residuals,
+    ``scale`` (robust), ``weights``. Iteratively reweighted total least squares."""
+    p = np.asarray(points, np.float64)
+    if len(p) < 3:
+        raise ValueError("three points at least")
+    origin = p.mean(axis=0)
+    q = p - origin
+    w = np.ones(len(q))
+    normal = None
+    for _ in range(iterations):
+        c = (w[:, None] * q).sum(axis=0) / w.sum()
+        d = q - c
+        cov = (w[:, None] * d).T @ d
+        n = np.linalg.eigh(cov)[1][:, 0]
+        if normal is not None and n @ normal < 0:
+            n = -n
+        r = d @ n
+        w_new = huber_weights(r)
+        done = normal is not None and abs(1.0 - abs(n @ normal)) < 1e-14
+        normal, w = n, w_new
+        if done:
+            break
+    c = (w[:, None] * q).sum(axis=0) / w.sum()
+    r = (q - c) @ normal
+    return {"centre": origin + c, "normal": normal, "rms": float(np.sqrt(np.mean(r ** 2))),
+            "scale": robust_scale(r), "weights": w, "residuals": r}
+
+
+def circle_kasa(xy: np.ndarray) -> tuple[float, float, float]:
+    q = np.asarray(xy, np.float64)
+    a = np.column_stack([2 * q, np.ones(len(q))])
+    sol = np.linalg.lstsq(a, (q ** 2).sum(axis=1), rcond=None)[0]
+    return float(sol[0]), float(sol[1]), float(np.sqrt(max(sol[2] + sol[0] ** 2 + sol[1] ** 2, 0.0)))
+
+
+def robust_circle(xy: np.ndarray) -> dict:
+    """The circle fitted to plan points: ``centre`` (x, y), ``radius``, ``residuals`` (distance from the centre minus
+    the radius, metres), ``rms``. Geometric least squares from the algebraic circle, Huber loss."""
+    from scipy.optimize import least_squares
+
+    q = np.asarray(xy, np.float64)[:, :2]
+    if len(q) < 3:
+        raise ValueError("three points at least")
+    origin = q.mean(axis=0)
+    q = q - origin
+    cx, cy, r0 = circle_kasa(q)
+
+    def res(x):
+        return np.hypot(q[:, 0] - x[0], q[:, 1] - x[1]) - x[2]
+
+    scale = robust_scale(res([cx, cy, r0]), 1e-5)
+    sol = least_squares(res, [cx, cy, r0], loss="huber", f_scale=HUBER_K * scale, x_scale="jac")
+    r = res(sol.x)
+    return {"centre": origin + sol.x[:2], "radius": float(sol.x[2]), "residuals": r,
+            "rms": float(np.sqrt(np.mean(r ** 2)))}
+
+
+def _basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    a = axis / np.linalg.norm(axis)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = np.cross(a, helper)
+    e1 /= np.linalg.norm(e1)
+    return e1, np.cross(a, e1)
+
+
+def robust_cylinder(points: np.ndarray, axis0, centre0, radius0: float) -> dict:
+    """The cylinder fitted to ``points`` (N, 3) from a first guess: ``axis`` (unit, upwards), ``centre`` (a point of
+    the axis, the closest to ``centre0``), ``radius``, ``residuals`` (distance from the axis minus the radius), ``rms``.
+    Huber loss on the radial residuals."""
+    from scipy.optimize import least_squares
+
+    p = np.asarray(points, np.float64)
+    c0 = np.asarray(centre0, np.float64)
+    a0 = np.asarray(axis0, np.float64)
+    a0 = a0 / np.linalg.norm(a0)
+    q = p - c0
+    e1, e2 = _basis(a0)
+
+    def unpack(x):
+        a = a0 + x[0] * e1 + x[1] * e2
+        a = a / np.linalg.norm(a)
+        c = x[2] * e1 + x[3] * e2
+        return a, c, x[4]
+
+    def res(x):
+        a, c, r = unpack(x)
+        d = q - c
+        radial = d - (d @ a)[:, None] * a
+        return np.linalg.norm(radial, axis=1) - r
+
+    x0 = np.array([0.0, 0.0, 0.0, 0.0, float(radius0)])
+    scale = robust_scale(res(x0), 1e-5)
+    sol = least_squares(res, x0, loss="huber", f_scale=HUBER_K * scale, x_scale="jac")
+    scale = robust_scale(res(sol.x), 1e-5)
+    sol = least_squares(res, sol.x, loss="huber", f_scale=HUBER_K * scale, x_scale="jac")
+    a, c, r = unpack(sol.x)
+    if a[2] < 0:
+        a = -a
+    rr = res(sol.x)
+    return {"axis": a, "centre": c0 + c, "radius": float(r), "residuals": rr, "rms": float(np.sqrt(np.mean(rr ** 2)))}
+
+
+def tilt(axis_up: np.ndarray) -> tuple[float, float | None]:
+    """``(degrees from the vertical, azimuth of the top)`` of an axis pointing upwards; azimuth clockwise from the
+    north of the grid (+y), None for a vertical axis."""
+    a = np.asarray(axis_up, np.float64)
+    a = a / np.linalg.norm(a)
+    if a[2] < 0:
+        a = -a
+    h = float(np.hypot(a[0], a[1]))
+    deg = float(np.degrees(np.arctan2(h, a[2])))
+    return deg, (float(np.degrees(np.arctan2(a[0], a[1])) % 360.0) if h > 1e-12 else None)
+
+
+def line_through(centres: np.ndarray, weights=None) -> dict:
+    """The axis through points at several heights (``x = x0 + a z``, ``y = y0 + b z``, least squares, Huber weights
+    when there are four points or more): ``axis`` (unit, upwards), ``point`` (at the mean height), ``residuals``."""
+    c = np.asarray(centres, np.float64)
+    z = c[:, 2] - c[:, 2].mean()
+    w = np.ones(len(c)) if weights is None else np.asarray(weights, np.float64)
+    a_mat = np.column_stack([np.ones(len(c)), z])
+    for _ in range(20 if len(c) >= 4 else 1):
+        sw = np.sqrt(w)
+        sx = np.linalg.lstsq(a_mat * sw[:, None], c[:, 0] * sw, rcond=None)[0]
+        sy = np.linalg.lstsq(a_mat * sw[:, None], c[:, 1] * sw, rcond=None)[0]
+        r = np.hypot(c[:, 0] - a_mat @ sx, c[:, 1] - a_mat @ sy)
+        if len(c) >= 4:
+            w = huber_weights(r)
+    axis = np.array([sx[1], sy[1], 1.0])
+    return {"axis": axis / np.linalg.norm(axis), "point": np.array([sx[0], sy[0], c[:, 2].mean()]), "residuals": r}

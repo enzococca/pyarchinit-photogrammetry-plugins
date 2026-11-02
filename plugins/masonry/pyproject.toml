@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-masonry"
+version = "0.1.0"
+description = """\
+pyarchinit-photogrammetry plugin: walls, buildings and stone towers recorded by their faces - elevations on planes, \
+cylinders and the sides of polygonal towers, the lean and the bulge of a face, horizontal sections with their offsets, \
+the axis of a round tower, two surveys of a wall compared"""
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/masonry"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+masonry = "ppg_masonry:MasonryPlugin"
+
+[tool.setuptools]
+packages = ["ppg_masonry"]
