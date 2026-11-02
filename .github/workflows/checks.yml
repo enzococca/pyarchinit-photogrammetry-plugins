@@ -117,7 +117,7 @@ jobs:
         if: matrix.plugin == 'plugins/architecture'
         run: |
           sudo apt-get install -y libxrender1 libxt6 libxcursor1 libxinerama1 libxft2
-          python -m pip install uv
+          python -m pip install uv "ifcopenshell>=0.8"
           python - <<'PY'
           import os
           from pathlib import Path

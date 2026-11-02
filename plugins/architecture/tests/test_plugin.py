@@ -12,9 +12,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import importlib.util
 import pytest
 
 pytest.importorskip("pyarchinit_photogrammetry", reason="the plugin side needs the program")
+HAS_IFC = importlib.util.find_spec("ifcopenshell") is not None  # the program's bim extra
 
 import pyarchinit_photogrammetry as ppg  # noqa: E402
 from arch_samples import (HEIGHT, L_PATH, arch_mesh, cadquery_python, column_mesh, column_radius,  # noqa: E402
@@ -298,9 +300,11 @@ def test_a_changed_system_is_refused_until_the_elements_are_rebuilt(tmp_path, fa
     move = compose_similarity(1.0, rz, [10.0, 0.0, 0.0])
     move[:3, 3] += WORLD - rz @ WORLD  # about the middle of the scene
     ch.transform = move @ ch.transform
-    for call in (lambda: ifc.export(ch, tmp_path / "x.ifc"), lambda: elements.export_step(ch, None, tmp_path / "s"),
-                 lambda: elements.edit_column(ch, col["id"], knots=6),
-                 lambda: elements.column(ch, polygon=_square(COLUMN_AT, 0.6))):
+    refused = [lambda: elements.export_step(ch, None, tmp_path / "s"), lambda: elements.edit_column(ch, col["id"], knots=6),
+               lambda: elements.column(ch, polygon=_square(COLUMN_AT, 0.6))]
+    if HAS_IFC:  # without ifcopenshell the IFC export says so before anything else
+        refused.append(lambda: ifc.export(ch, tmp_path / "x.ifc"))
+    for call in refused:
         with pytest.raises(elements.NotReady, match="sistema del chunk è cambiato"):
             call()
     made = elements.rebuild(ch)
@@ -316,7 +320,8 @@ def test_a_changed_system_is_refused_until_the_elements_are_rebuilt(tmp_path, fa
     np.testing.assert_allclose(new_axis, engine.apply(move, old_axis[None])[0], atol=0.002)
     assert elements.entry(ch, "Arco")["params"]["type"] == "pointed"
     assert {q.name for q in elements.folder(ch).iterdir()} == {e["id"] for e in made}  # no backup left
-    ifc.export(ch, tmp_path / "x.ifc")  # allowed again
+    if HAS_IFC:
+        ifc.export(ch, tmp_path / "x.ifc")  # allowed again
 
 
 def test_a_tree_click_after_a_system_change_says_why(tmp_path, fake, monkeypatch):
@@ -389,7 +394,10 @@ def test_command_line(tmp_path, fake, monkeypatch):
     assert json.loads(r.output[r.output.index("{"):])["params"]["type"] == "pointed"
     out = tmp_path / "e.ifc"
     r = cli.invoke(app, ["plugin", "architecture", "export", project, "--out", str(out)])
-    assert r.exit_code == 0 and out.exists(), r.output
+    if HAS_IFC:
+        assert r.exit_code == 0 and out.exists(), r.output
+    else:  # the program without its bim extra: the command says what to install
+        assert r.exit_code != 0 and "ifcopenshell" in r.output, r.output
     r = cli.invoke(app, ["plugin", "architecture", "export", project, "--out", str(tmp_path / "a.dxf"), "--ids", "A1"])
     assert r.exit_code == 0 and (tmp_path / "a.dxf").exists(), r.output
     r = cli.invoke(app, ["plugin", "architecture", "remove", project, "M1"])
