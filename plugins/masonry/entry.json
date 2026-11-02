@@ -1,10 +1,10 @@
 {
   "title": "Masonry",
-  "description": "Walls, buildings and stone towers recorded by their faces: elevations on planes, cylinders and the sides of polygonal towers; the lean and the bulge of a face measured on the model; horizontal sections with their offsets; the axis of a round tower; two surveys of a wall compared",
+  "description": "Walls, buildings and stone towers recorded by their faces: elevations on planes, cylinders and tower sides; lean, bulge, sections and tower axis measured on the model; stones, courses and mortar with the type the measures suggest; USM relationships proposed for you to check; plates at scale, DXF, IFC wall, PyArchInit",
   "i18n": {
     "it": {
       "title": "Murature",
-      "description": "Muri, edifici e torri in pietra rilevati per facce: prospetti su piani, cilindri e lati di torri poligonali; strapiombo e spanciamento di una faccia misurati sul modello; sezioni orizzontali con i loro scarti; asse di una torre tonda; due rilievi di un muro a confronto"
+      "description": "Muri, edifici e torri in pietra rilevati per facce: prospetti su piani, cilindri e lati di torri; strapiombo, spanciamento, sezioni e asse delle torri misurati sul modello; pietre, filari e malta con il tipo che le misure suggeriscono; rapporti fra USM proposti da verificare; tavole in scala, DXF, IFC del muro, PyArchInit"
     }
   },
   "min_app": "1.7.0",

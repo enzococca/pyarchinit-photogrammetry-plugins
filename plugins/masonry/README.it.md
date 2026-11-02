@@ -28,8 +28,17 @@ muri, edifici e torri in pietra rilevati per facce.
   un'altra), *copre* (un'unità che racchiude la sommità di un'altra) - ognuno con la sua evidenza, scritti solo se
   spuntati; *Salva in PyArchInit*: schede US, rapporti nei due sensi, disegni della faccia come media.
 
+* **Uscite**: per faccia una tavola in scala (SVG e PDF: l'ortofoto alla scala normalizzata più grande che sta in
+  un A3, pietre, filari, USM, sezioni e curve dello spanciamento, barra di scala e cartiglio con le misure), un DXF
+  con i layer PIETRE, CORSI, USM, SEZIONI, BORDO, QUOTE, i GeoPackage, le tabelle e i raster; per il muro un IFC4
+  `IfcWall` - la lastra fra due facce rilevate, o dietro una faccia per uno spessore dato - con
+  `Pset_PyArchInit_Masonry` e le USM come `IfcBuildingElementPart`; la faccia aperta in QGIS, spiegata.
+
+La prova sulla catena del programma (un muro sintetico fotografato, allineato, densificato, con il modello; pietre
+trovate da SAM 2.1): `proof/make_proof.py`.
+
 Le misure dicono come sta un muro, non lo giudicano. Il plugin scrive solo in `<dati del chunk>/masonry/`.
 
-Riga di comando: `ppg plugin masonry face|shape|stones|usm|list|remove`.
+Riga di comando: `ppg plugin masonry face|shape|stones|usm|plate|export|ifc|list|remove`.
 
 Licenza: GPL-2.0-or-later.

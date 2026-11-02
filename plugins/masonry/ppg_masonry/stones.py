@@ -125,7 +125,8 @@ def find_courses(rows: list[dict]) -> list[dict]:
         for i in idx:
             rows[i]["course"] = k + 1
         courses.append({"n": k + 1, "height": float(v.mean()), "stones": len(idx), "thickness": thickness,
-                        "u_from": float(u.min()), "u_to": float(u.max()), "slope_deg": slope, "scatter": scatter,
+                        "u_from": float(u.min()), "u_to": float(u.max()), "u_mean": float(u.mean()),
+                        "slope_deg": slope, "scatter": scatter,
                         "horizontal": slope is not None and abs(slope) < HORIZONTAL_DEG,
                         "counts": len(idx) >= COURSE_MIN_STONES and scatter <= COURSE_SCATTER * thickness})
     return courses
@@ -234,6 +235,7 @@ def measure_face(chunk, wid: str, eid: str | None = None, region=None, progress=
                "typology": typ, "made": time.strftime("%Y-%m-%d %H:%M:%S")}
     write_xlsx(folder / "pietre.xlsx", rows, courses, summary, entry)
     write_gpkg(folder / "pietre_misure.gpkg", stones, rows)
+    write_world_gpkg(chunk, entry, folder / "pietre_misure_mondo.gpkg", stones, rows)
     (folder / "pietre.json").write_text(json.dumps({"stones": rows, "courses": courses, "summary": summary},
                                                    indent=1, ensure_ascii=False))
     summary["files"] = {k: str((folder / f).relative_to(chunk.data_dir)) for k, f in (
@@ -319,6 +321,23 @@ def write_gpkg(path, stones, rows) -> None:
     gpkg.write_table(path, "pietre_misure", "POLYGON", columns,
                      [(p, {name: _cell(r.get(key)) for key, name in STONE_COLUMNS}) for p, r in zip(stones, rows)],
                      None)
+
+
+def write_world_gpkg(chunk, entry: dict, path, stones, rows) -> None:
+    """``pietre_misure`` in 3D on the plane of the face, in the chunk's CRS (QGIS's project of the plan, in 3D)."""
+    from pyarchinit_photogrammetry.io import gpkg
+
+    if path.exists():
+        gpkg.refuse_foreign(path)
+        path.unlink()
+    con = gpkg.connect(path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        gpkg.create(con, gpkg.srs_of(entry.get("crs") or chunk.crs))
+        con.execute("COMMIT")
+    finally:
+        con.close()
+    add_to_export(chunk, entry, {"gpkg_world": path}, rows, stones)
 
 
 def add_to_export(chunk, entry: dict, paths: dict, rows: list[dict], stones: list) -> None:

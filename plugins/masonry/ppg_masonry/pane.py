@@ -53,6 +53,17 @@ USM_ACTIONS = (
     ("save_pyarchinit", ("Salva in PyArchInit", "Save in PyArchInit"),
      "Le schede US delle USM, i rapporti scelti e i disegni della faccia come media",
      "The US forms of the USM, the relationships chosen and the face's drawings as media"))
+EXPORT_ACTIONS = (
+    ("plate", ("Tavola...", "Plate..."), "La tavola in scala della faccia (SVG e PDF)",
+     "The plate at scale of the face (SVG and PDF)"),
+    ("export_all", ("Esporta tutto...", "Export all..."),
+     "Tavola, DXF, GeoPackage, tabelle, sezioni e spanciamento della faccia in una cartella",
+     "Plate, DXF, GeoPackages, tables, sections and bulge of the face in a folder"),
+    ("ifc", ("IFC del muro...", "Wall IFC..."), "IfcWall fra due facce o dietro una faccia, con le USM come parti",
+     "IfcWall between two faces or behind one face, with the USM as parts"),
+    ("qgis", ("Apri la faccia in QGIS", "Open the face in QGIS"),
+     "La faccia spiegata in QGIS: ortofoto, spanciamento, pietre con le misure, disegni",
+     "The face unfolded in QGIS: orthophoto, bulge, stones with their measures, drawings"))
 STONE_COLUMNS = (("n", "n"), ("Filare", "Course"), ("Larghezza", "Width"), ("Altezza", "Height"), ("Area", "Area"),
                  ("Allungamento", "Elongation"))
 COLUMNS = (("Faccia", "Face"), ("Superficie", "Surface"), ("Larghezza", "Width"), ("Altezza", "Height"),
@@ -115,6 +126,8 @@ class MasonryPane(QWidget):
         lay.addWidget(self.stones_table)
         lay.addWidget(QLabel(f"<b>{t('USM', 'USM')}</b>"))
         lay.addWidget(self._flow(USM_ACTIONS))
+        lay.addWidget(QLabel(f"<b>{t('Tavole ed esportazioni', 'Plates and exports')}</b>"))
+        lay.addWidget(self._flow(EXPORT_ACTIONS))
         self.summary = QPlainTextEdit()
         self.summary.setReadOnly(True)
         self.summary.setMinimumHeight(90)
@@ -183,7 +196,7 @@ class MasonryPane(QWidget):
         elif rows:
             self.table.selectRow(0)
         self.table.blockSignals(False)
-        for name in [a[0] for a in FACE_ACTIONS + STONE_ACTIONS + USM_ACTIONS]:
+        for name in [a[0] for a in FACE_ACTIONS + STONE_ACTIONS + USM_ACTIONS + EXPORT_ACTIONS]:
             self.buttons[name].setEnabled(bool(rows))
 
     def face_id(self) -> str | None:

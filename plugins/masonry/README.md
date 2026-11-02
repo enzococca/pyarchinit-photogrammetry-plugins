@@ -30,9 +30,18 @@ walls, buildings and stone towers recorded by their faces.
   *copre* (a unit that encloses the top of another) - each with its evidence, written only when the user ticks it;
   *Salva in PyArchInit*: the US forms, the relationships both ways and the face's drawings as media.
 
+* **Outputs**: per face a plate at scale (SVG and PDF: the orthophoto at the largest standard scale that fits A3, the
+  stones, courses, USM, sections and bulge contours, a scale bar and a title block with the measures), a DXF with the
+  layers PIETRE, CORSI, USM, SEZIONI, BORDO, QUOTE, the GeoPackages, the tables and the rasters; for the wall an IFC4
+  `IfcWall` - the slab between two surveyed faces, or behind one face by a thickness given - with
+  `Pset_PyArchInit_Masonry` and the USM as `IfcBuildingElementPart`; the face opened in QGIS, unfolded.
+
+The proof through the program's pipeline (a synthetic wall photographed, aligned, densified, meshed; stones found by
+SAM 2.1): `proof/make_proof.py`.
+
 The measures say how a wall stands; they are not a verdict on it. The plugin writes only under
 `<chunk data>/masonry/`; the program's elevations keep their format.
 
-Command line: `ppg plugin masonry face|shape|stones|usm|list|remove`.
+Command line: `ppg plugin masonry face|shape|stones|usm|plate|export|ifc|list|remove`.
 
 License: GPL-2.0-or-later.

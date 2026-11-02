@@ -162,7 +162,8 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
                                          "sign": "positive towards the viewer"})
     finite = bulge[np.isfinite(bulge)]
     lo, hi = np.percentile(finite, [0.5, 99.5])
-    result.update(bulge=str(path.relative_to(chunk.data_dir)), bulge_min_cm=float(lo), bulge_max_cm=float(hi))
+    result.update(bulge=str(path.relative_to(chunk.data_dir)), bulge_min_cm=float(lo), bulge_max_cm=float(hi),
+                  bulge_p90_cm=float(np.percentile(np.abs(finite), 90)))
     walls.set_result(chunk, w["id"], entry["id"], "shape", result)
     progress(1.0, t("Forma della faccia misurata", "Shape of the face measured"))
     return result

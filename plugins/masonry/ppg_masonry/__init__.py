@@ -13,7 +13,8 @@ faces.
   and the type the measures suggest; the USM drawn on a face, the relationships their geometry proposes (accepted by
   the user) and their saving in PyArchInit with the face's drawings as media;
 * the *Murature* pane (on the right), the walls in the workspace tree,
-  ``ppg plugin masonry face|shape|stones|usm|list|remove``.
+  ``ppg plugin masonry face|shape|stones|usm|plate|export|ifc|list|remove``; a plate at scale, the DXF,
+  the IFC wall, the face in QGIS.
 
 The program's elevations and drawings keep their formats; the plugin writes only under ``<chunk data>/masonry/``.
 """
@@ -51,7 +52,9 @@ class MasonryPlugin(Plugin):
         context.add_action(t("Murature...", "Masonry..."), self.show_pane,
                            tip=t("Il pannello delle murature", "The masonry pane"))
         context.add_command("masonry", self.command,
-                            help="walls by their faces: face, shape, stones, usm, list, remove")
+                            help="walls by their faces: face, shape, stones, usm, plate, export, ifc, list, remove")
+        context.add_exporter(t("Muro (IFC)", "Wall (IFC)"), ".ifc", self._export_ifc)
+        context.add_exporter(t("Tavola della faccia (PDF)", "Plate of the face (PDF)"), ".pdf", self._export_plate)
         if context.window is not None:
             from .pane import MasonryPane
 
@@ -63,9 +66,14 @@ class MasonryPlugin(Plugin):
             context.on_refresh(self.refresh_pane)
             context.on_raster_loaded(self._raster_loaded)
             context.add_tree_items(self._tree_items)
+            window = context.window
+            window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
             self.refresh_pane()
 
     def deactivate(self) -> None:
+        window = self.context.window if self.context else None
+        if window is not None:
+            window.qgis_providers = [p for p in getattr(window, "qgis_providers", []) if p != self._qgis_entries]
         if self.overlay is not None:
             self.overlay.remove()
         self.overlay = None
@@ -701,6 +709,171 @@ class MasonryPlugin(Plugin):
         self._run(t("Salvataggio in PyArchInit", "Saving in PyArchInit"),
                   lambda _p: usm.save(pa, chunk, rec["id"], entry["id"], accepted), done)
 
+    # ------------------------------------------------------------------ plates and exports
+    def _do_plate(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import outputs
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        u0, v0, u1, v1 = entry["bounds"]
+        scales = [(0, t(f"automatica (1:{outputs.choose_scale(u1 - u0, v1 - v0)})",
+                        f"automatic (1:{outputs.choose_scale(u1 - u0, v1 - v0)})"))] + \
+            [(n, f"1:{n}") for n in outputs.SCALES]
+        v = self._ask(t("Tavola della faccia", "Plate of the face"), [
+            Field("scale", t("Scala", "Scale"), 0, choices=scales),
+            Field("contours", t("Curve dello spanciamento", "Contours of the bulge"), True)])
+        if not v:
+            return
+        self._store()
+
+        def done(out):
+            files = ", ".join(str(out[k]) for k in ("svg", "pdf", "png") if k in out)
+            self._message("information", t(f"Tavola in scala 1:{out['scale']}: {files}",
+                                           f"Plate at scale 1:{out['scale']}: {files}"))
+
+        self._run(t("Tavola della faccia", "Plate of the face"), lambda _p: outputs.plate(
+            chunk, rec["id"], entry["id"], scale=int(v.get("scale") or 0) or None,
+            contours=bool(v.get("contours", True))), done)
+
+    def _do_export_all(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from . import outputs
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        folder = QFileDialog.getExistingDirectory(self.context.window, t("Cartella per la faccia",
+                                                                         "Folder for the face"))
+        if not folder:
+            return
+        self._store()
+        self._run(t("Esportazione della faccia", "Exporting the face"),
+                  lambda _p: outputs.export_face(chunk, rec["id"], entry["id"], folder),
+                  lambda out: self._message("information", t(f"{len(out)} file della faccia «{entry['name']}» in "
+                                                             f"{folder}.", f"{len(out)} files of the face "
+                                                             f"«{entry['name']}» in {folder}.")))
+
+    def _do_ifc(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import ifc
+
+        chunk = self._need_chunk()
+        rec = self._wall()
+        thickness = None
+        try:
+            ifc.wall_solid(chunk, rec["id"])
+        except ifc.NotReady as exc:
+            if "spessore" not in str(exc) and "thickness" not in str(exc):
+                raise
+            v = self._ask(t("Spessore del muro", "Thickness of the wall"), [
+                Field("thickness", t("Spessore (m)", "Thickness (m)"), float(self.context.settings.get(
+                    "thickness", 0.6)), minimum=0.01, maximum=50.0, decimals=3)],
+                intro=t("Il muro ha una sola faccia rilevata: il solido va dietro di essa per lo spessore dato.",
+                        "The wall has one face surveyed: the solid goes behind it by the thickness given."))
+            if not v:
+                return
+            thickness = float(v["thickness"])
+            self.context.settings["thickness"] = thickness
+            self.context.save_settings()
+        path, _f = QFileDialog.getSaveFileName(self.context.window, t("IFC del muro", "Wall IFC"),
+                                               f"{rec['name']}.ifc", "IFC (*.ifc)")
+        if not path:
+            return
+        self._store()
+        self._run(t("IFC del muro", "Wall IFC"), lambda _p: ifc.export_wall(chunk, rec["id"], path, thickness),
+                  lambda r: self._message("information", t(
+                      f"IFC del muro in {r['path']}: spessore {metres(r['thickness'])} ({r['source']}), "
+                      f"{r['parts']} USM, {r['relations']} rapporti.", f"Wall IFC in {r['path']}: thickness "
+                      f"{metres(r['thickness'])} ({r['source']}), {r['parts']} USM, {r['relations']} relationships.")))
+
+    def _export_ifc(self, chunk, path, progress=None):
+        """*File > Esporta > Muro (IFC)*: the wall chosen in the pane (else the first with a plane face); a wall with
+        one face surveyed goes behind it by the thickness last given (0,6 m at first)."""
+        from . import ifc, walls
+
+        wid = self.pane.wall_id() if self.pane is not None else None
+        records = [w for w in walls.walls(chunk) if not wid or w["id"] == wid] or walls.walls(chunk)
+        if not records:
+            raise walls.NotReady(t("Nessun muro nel chunk.", "No wall in the chunk."))
+        return ifc.export_wall(chunk, records[0]["id"], path, float(self.context.settings.get("thickness", 0.6)))
+
+    def _export_plate(self, chunk, path, progress=None):
+        """*File > Esporta > Tavola della faccia (PDF)*: the face chosen in the pane (else the first face)."""
+        from pathlib import Path
+
+        from . import outputs, walls
+
+        wid = self.pane.wall_id() if self.pane is not None else None
+        eid = self.pane.face_id() if self.pane is not None else None
+        rec = walls.find(chunk, wid) if wid else next((w for w in walls.walls(chunk) if w["faces"]), None)
+        if rec is None:
+            raise walls.NotReady(t("Nessuna faccia nel chunk.", "No face in the chunk."))
+        path = Path(path)
+        return outputs.plate(chunk, rec["id"], eid or rec["faces"][0], path.parent, stem=path.stem, formats=("pdf",))
+
+    def _qgis_entries(self):
+        """For the QGIS project of the plan: the stones' measures of every face, in 3D on the face's plane."""
+        from . import walls
+
+        chunk = self._chunk()
+        vectors = []
+        for w in walls.walls(chunk) if chunk is not None else []:
+            for eid in w["faces"]:
+                path = walls.face_folder(chunk, w["id"], eid) / "pietre_misure_mondo.gpkg"
+                entry = walls.elevation(chunk, eid)
+                if path.exists() and entry is not None:
+                    vectors.append({"name": t(f"{entry['name']} - pietre (misure, 3D)",
+                                              f"{entry['name']} - stones (measures, 3D)"), "path": str(path),
+                                    "table": "pietre_misure", "geometry": "POLYGON", "color": "#5b3a1e",
+                                    "label": "filare"})
+        return [], vectors
+
+    def _do_qgis(self) -> None:
+        from pyarchinit_photogrammetry.io import qgis_link
+
+        from . import outputs, walls
+
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        q = qgis_link.find_qgis()
+        if q is None:
+            raise walls.NotReady(t("QGIS non trovato: installalo da qgis.org (o indica il percorso con PPG_QGIS).",
+                                   "QGIS not found: install it from qgis.org (or give its path with PPG_QGIS)."))
+        self._store()
+        folder = walls.face_folder(chunk, rec["id"], entry["id"]) / "qgis"
+
+        def job(p):
+            from pyarchinit_photogrammetry.engine.elevation import export_drawings
+
+            p(0.1, t("File della faccia", "Files of the face"))
+            files = outputs.export_face(chunk, rec["id"], entry["id"], folder)
+            ortho = export_drawings(chunk, entry, folder, stem="ortofoto_tmp", raster=True).get("ortho")
+            rasters = [{"name": entry["name"], "path": str(ortho)}] if ortho else []
+            if files.get("bulge"):
+                rasters.append({"name": t("Spanciamento (cm)", "Bulge (cm)"), "path": str(files["bulge"]),
+                                "ramp": "diverging", "opacity": 0.6})
+            gpkg = str(files["drawings_gpkg"])
+            vectors = [{"name": t(title, title), "path": gpkg, "table": table, "geometry": geometry, "color": colour,
+                        "label": "us" if table == "unita" else ""}
+                       for table, (title, geometry, colour) in qgis_link.ELEVATION_TABLES.items() if table != "profilo"]
+            vectors.append({"name": t("Pietre (misure)", "Stones (measures)"), "path": gpkg, "table": "pietre_misure",
+                            "geometry": "POLYGON", "color": "#5b3a1e", "label": "filare"})
+            project = folder / "faccia.qgs"
+            p(0.6, t("Progetto QGIS", "QGIS project"))
+            qgis_link.build_project(project, "", {}, rasters, title=entry["name"], qgis=q, extra_vectors=vectors)
+            qgis_link.open_in_qgis(project, q)
+            return project
+
+        self._run(t("Apertura in QGIS", "Opening in QGIS"), job,
+                  lambda project: self._message("information", t(f"Progetto QGIS della faccia: {project} (coordinate "
+                                                                 "della faccia, in metri).", f"QGIS project of the "
+                                                                 f"face: {project} (the face's coordinates, metres).")))
+
     # ------------------------------------------------------------------ the workspace
     def _tree_items(self, chunk) -> list:
         from . import walls
@@ -726,7 +899,8 @@ class MasonryPlugin(Plugin):
         from . import faces, shape, walls
 
         parser = argparse.ArgumentParser(prog="ppg plugin masonry", description="walls by their faces")
-        parser.add_argument("what", choices=["face", "shape", "stones", "usm", "list", "remove"])
+        parser.add_argument("what", choices=["face", "shape", "stones", "usm", "plate", "export", "ifc", "list",
+                                             "remove"])
         parser.add_argument("project", help="the .ppg file")
         parser.add_argument("wall", nargs="?", help="the id or the name of a wall (face: made when missing)")
         parser.add_argument("face", nargs="?", help="shape, remove: the id or the name of a face (elevation)")
@@ -760,6 +934,10 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--media-root", help="usm --write: where media and previews go")
         parser.add_argument("--sito", help="usm --write: the site (default: the units' own, else the project's)")
         parser.add_argument("--area", help="usm --write: the area of units without one (default 1)")
+        parser.add_argument("--out", help="plate, export: a folder; ifc: the .ifc file")
+        parser.add_argument("--scale", type=int, help="plate, export: 1:SCALE (default the largest that fits A3)")
+        parser.add_argument("--no-contours", action="store_true", help="plate: without the bulge's contours")
+        parser.add_argument("--thickness", type=float, help="ifc: the wall's thickness when one face is surveyed")
         parser.add_argument("--json", action="store_true", help="list: as JSON")
         ns = parser.parse_args(joined_values([str(a) for a in args]))
         import pyarchinit_photogrammetry as ppg
@@ -893,6 +1071,28 @@ class MasonryPlugin(Plugin):
                     print(f"PyArchInit: {len(r['created'])} forms, {r['relations']} relationships, "
                           f"{len(r['media'])} media")
                     changed = True
+            elif ns.what in ("plate", "export"):
+                from . import outputs
+
+                rec = walls.need(chunk, ns.wall or "")
+                _w, e = walls.need_face(chunk, rec["id"], ns.face)
+                if ns.what == "plate":
+                    out = outputs.plate(chunk, rec["id"], e["id"], ns.out, ns.scale, not ns.no_contours)
+                else:
+                    if not ns.out:
+                        raise walls.NotReady("--out FOLDER")
+                    out = outputs.export_face(chunk, rec["id"], e["id"], ns.out, ns.scale)
+                for key, path in out.items():
+                    print(f"{key}: {path}")
+            elif ns.what == "ifc":
+                from . import ifc
+
+                rec = walls.need(chunk, ns.wall or "")
+                if not ns.out:
+                    raise walls.NotReady("--out FILE.ifc")
+                r = ifc.export_wall(chunk, rec["id"], ns.out, ns.thickness)
+                print(f"IFC {r['path']}: {r['thickness']:.3f} m ({r['source']}), {r['parts']} USM, "
+                      f"{r['relations']} relationships")
             elif ns.what == "remove":
                 rec = walls.need(chunk, ns.wall or "")
                 if ns.face:

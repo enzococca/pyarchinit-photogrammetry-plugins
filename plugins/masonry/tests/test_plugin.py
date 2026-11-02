@@ -10,7 +10,11 @@ import pytest
 
 pytest.importorskip("pyarchinit_photogrammetry", reason="the plugin side needs the program")
 
+import importlib.util  # noqa: E402
+
 import pyarchinit_photogrammetry as ppg  # noqa: E402
+
+HAS_IFC = importlib.util.find_spec("ifcopenshell") is not None
 
 import masonry_samples as S  # noqa: E402
 from ppg_masonry import parse_typed, walls  # noqa: E402
@@ -115,6 +119,17 @@ def test_command_line(tmp_path, monkeypatch):
     ch = ppg.Document.open(project).chunk
     accepted = walls.results(ch, walls.need(ch, "Muro est")["id"], eid)["usm"]["accepted_full"]
     assert len(accepted) == 2
+    r = cli.invoke(app, ["plugin", "masonry", "plate", project, "Muro est", "--out", str(tmp_path / "tav")])
+    assert r.exit_code == 0 and (tmp_path / "tav" / "tavola.pdf").exists(), r.output
+    r = cli.invoke(app, ["plugin", "masonry", "export", project, "Muro est", "--out", str(tmp_path / "exp")])
+    assert r.exit_code == 0, r.output
+    assert any(p.name.endswith("_muratura.dxf") for p in (tmp_path / "exp").iterdir())
+    r = cli.invoke(app, ["plugin", "masonry", "ifc", project, "Muro est", "--out", str(tmp_path / "m.ifc")])
+    if HAS_IFC:
+        assert r.exit_code != 0 and "spessore" in r.output
+        r = cli.invoke(app, ["plugin", "masonry", "ifc", project, "Muro est", "--out", str(tmp_path / "m.ifc"),
+                             "--thickness", "0.6"])
+        assert r.exit_code == 0 and "2 relationships" in r.output, r.output
 
 
 def test_the_pane_in_the_window(tmp_path, monkeypatch):
@@ -207,6 +222,34 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         w.runner.wait()
         assert sorted(fake.forms) == ["10", "11", "12", "13"] and len(fake.rels) == 4 and fake.media
         assert "In PyArchInit: 4 schede nuove, 4 rapporti" in pane.summary.toPlainText()
+        # plates and exports
+        plugin._requested("plate")
+        w.runner.wait()
+        face_dir = walls.face_folder(ch, rec["id"], entry["id"])
+        assert (face_dir / "tavola.pdf").exists() and "Tavola in scala 1:" in said[-1]
+        from pyarchinit_photogrammetry.io import qgis_link
+        from PySide6.QtWidgets import QFileDialog
+
+        monkeypatch.setattr(qgis_link, "find_qgis", lambda: None)
+        plugin._requested("qgis")
+        assert "QGIS non trovato" in said[-1]
+        built = []
+        monkeypatch.setattr(qgis_link, "find_qgis", lambda: object())
+        monkeypatch.setattr(qgis_link, "build_project", lambda project, crs, layers, rasters, **k: built.append(
+            (rasters, k["extra_vectors"])))
+        monkeypatch.setattr(qgis_link, "open_in_qgis", lambda project, q: None)
+        plugin._requested("qgis")
+        w.runner.wait()
+        rasters, vectors = built[-1]
+        assert {r["name"] for r in rasters} >= {entry["name"], "Spanciamento (cm)"}
+        assert "pietre_misure" in {v["table"] for v in vectors}
+        assert plugin._qgis_entries()[1][0]["table"] == "pietre_misure" and plugin._qgis_entries in w.qgis_providers
+        monkeypatch.setattr(plugin, "_ask", lambda title, fields, intro="": {"thickness": 0.6})
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "muro.ifc"), ""))
+        plugin._requested("ifc")
+        w.runner.wait()
+        if HAS_IFC:
+            assert (tmp_path / "muro.ifc").exists() and "IFC del muro" in said[-1]
         # the face taken out, the elevation kept
         monkeypatch.setattr(dialogs, "choice", lambda *a, **k: 0)
         plugin._requested("remove_face")
