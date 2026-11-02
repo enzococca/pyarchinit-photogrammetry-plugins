@@ -430,3 +430,23 @@ def test_a_corridor_or_a_cavity_wall_is_not_one_wall(tmp_path, planes):
                      resolution=0.05)  # the default band, 0.5 m in front and 0.3 m behind
     with pytest.raises(walls.NotReady, match="altro fra loro"):
         ifc.wall_solids(ch, w["id"])
+
+
+# ------------------------------------------------------------------ round 5 (the Khutm tower)
+def test_circles_on_a_broken_ring(tmp_path):
+    doc, ch = S.project(tmp_path, S.broken_tower(), "Torre")
+    axis = S.tower_axis()
+    c = faces.slice_circle(ch, Z0 + 3.0)
+    centre = S.WORLD + axis * (3.0 / axis[2])
+    assert abs(c["radius"] - S.TOWER_RADIUS) < 0.02 and np.linalg.norm(np.array(c["centre"]) - centre[:2]) < 0.02
+    assert c["pieces"] == 4 and 280 < c["coverage"] < 310
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    a = shape.tower_axis(ch, w["id"], heights=[Z0 + h for h in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)])
+    assert abs(a["axis_deg"] - S.TOWER_LEAN_DEG) < 0.2 and len(a["levels"]) == 6
+    for level in a["levels"]:
+        assert abs(level["radius"] - S.TOWER_RADIUS) < 0.02 and level["pieces"] == 4
+    assert "arco" in shape.axis_text(a)
+    # a short arc is refused with its number
+    doc, ch = S.project(tmp_path / "arc", S.broken_tower(keep_deg=(0, 60)), "Torre")
+    with pytest.raises(walls.NotReady, match="arco di 6[0-9] gradi"):
+        faces.slice_circle(ch, Z0 + 3.0)

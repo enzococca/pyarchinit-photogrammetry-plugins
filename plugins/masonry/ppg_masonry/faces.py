@@ -78,31 +78,42 @@ def slice_rings(chunk, height: float) -> list[np.ndarray]:
     return [np.asarray(p, np.float64)[:, :2] for p in plan_slice(chunk, float(height)).polylines if len(p) >= 2]
 
 
+MIN_COVERAGE = 90.0  # degrees of arc a slice must cover to give a circle
+
+
 def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
-    """The circle fitted to the horizontal slice of the model at ``height``: among the lines of the slice, the one
-    nearest ``near`` (a plan point, the centre expected) or else the longest; ``centre``, ``radius``, ``rms``,
-    ``out_of_round`` (the spread of the radius, 0.5th to 99.5th percentile), ``points``."""
-    from .fit import robust_circle
+    """The circle fitted to the horizontal slice of the model at ``height``: on ALL the slice's points, every piece of a
+    broken ring (:func:`fit.ransac_circle`: RANSAC on three-point circles, then least squares on the points within
+    max(2 % of the radius, 5 cm)). ``near``: ``(centre, radius)`` expected (a face's cylinder, the circle at the
+    previous height): the points farther than 1.5 radii + 1 m from that centre are left out. ``centre``, ``radius``,
+    ``rms``, ``out_of_round`` (the spread of the inliers' radius, 0.5th to 99.5th percentile), ``points``, ``pieces``
+    (the lines of the slice holding inliers), ``coverage`` (degrees of arc). An arc under 90 degrees is refused."""
+    from .fit import ransac_circle
 
     rings = slice_rings(chunk, height) if rings is None else rings
-    rings = [r for r in rings if len(r) >= 8]
+    rings = [np.asarray(r, np.float64)[:, :2] for r in rings if len(r) >= 2]
     if not rings:
         raise NotReady(t(f"Il modello non ha una sezione a quota {height:.3f}.",
                          f"The model has no slice at height {height:.3f}."))
-    fits = []
-    for r in rings:
-        f = robust_circle(r)
-        arc = float(np.linalg.norm(np.diff(r, axis=0), axis=1).sum())
-        fits.append((f, r, arc))
-    if near is not None:
-        p = np.asarray(near, np.float64)[:2]
-        fits.sort(key=lambda x: np.linalg.norm(x[0]["centre"] - p) + 0.1 * x[0]["rms"])
-    else:
-        fits.sort(key=lambda x: -x[2])
-    f, r, _arc = fits[0]
+    label = np.concatenate([np.full(len(r), k) for k, r in enumerate(rings)])
+    pts = np.vstack(rings)
+    if isinstance(near, tuple) and len(near) == 2 and near[1] is not None:  # (centre, radius) expected
+        c, r = np.asarray(near[0], np.float64), float(near[1])
+        keep = np.hypot(pts[:, 0] - c[0], pts[:, 1] - c[1]) <= 1.5 * r + 1.0
+        pts, label = pts[keep], label[keep]
+    if len(pts) < 8:
+        raise NotReady(t(f"Il modello non ha una sezione a quota {height:.3f}.",
+                         f"The model has no slice at height {height:.3f}."))
+    f = ransac_circle(pts)
+    if f["coverage"] < MIN_COVERAGE:
+        raise NotReady(t(f"Sezione a quota {height:.3f}: arco di {f['coverage']:.0f} gradi, troppo poco per un "
+                         "cerchio.", f"Slice at height {height:.3f}: an arc of {f['coverage']:.0f} degrees, too little "
+                         "for a circle."))
     lo, hi = np.percentile(f["residuals"], [0.5, 99.5])
+    pieces = int(sum(1 for k in np.unique(label[f["inliers"]]) if (label[f["inliers"]] == k).sum() >= 5))
     return {"height": float(height), "centre": [float(x) for x in f["centre"]], "radius": f["radius"],
-            "rms": f["rms"], "out_of_round": float(hi - lo), "points": int(len(r))}
+            "rms": f["rms"], "out_of_round": float(hi - lo), "points": int(f["inliers"].sum()), "pieces": pieces,
+            "coverage": f["coverage"]}
 
 
 def cylinder_face(chunk, wid: str, points=None, height: float | None = None, inside: bool = False,
@@ -110,11 +121,18 @@ def cylinder_face(chunk, wid: str, points=None, height: float | None = None, ins
                   name: str | None = None, near=None, progress=None) -> dict:
     """The developed face of a round tower (``inside`` False) or of a well, an apse (``inside``): a vertical cylinder
     through ``points`` (three or more on the plan) or fitted to the horizontal slice of the model at ``height``."""
-    from pyarchinit_photogrammetry.engine.elevation import Cylinder, cylinder_from_circle
+    from pyarchinit_photogrammetry.engine.elevation import Cylinder
 
     w = need(chunk, wid)
-    if points is not None:
-        frame = cylinder_from_circle(chunk, np.asarray(points, np.float64), inside=inside)
+    if points is not None:  # the circle fitted with the points centred: map coordinates lose digits otherwise
+        from .fit import robust_circle
+
+        q = np.asarray(points, np.float64)[:, :2]
+        if len(q) < 3:
+            raise NotReady(t("Servono tre punti sulla pianta.", "Three points on the plan are needed."))
+        c = robust_circle(q)
+        frame = Cylinder([c["centre"][0], c["centre"][1], 0.0], [0.0, 0.0, 1.0], c["radius"], inside,
+                         [q[0, 0] - c["centre"][0], q[0, 1] - c["centre"][1], 0.0])
     elif height is not None:
         c = slice_circle(chunk, height, near=near)
         frame = Cylinder([c["centre"][0], c["centre"][1], 0.0], [0.0, 0.0, 1.0], c["radius"], inside)

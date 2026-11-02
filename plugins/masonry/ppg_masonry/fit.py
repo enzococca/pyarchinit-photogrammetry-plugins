@@ -79,6 +79,71 @@ def robust_circle(xy: np.ndarray) -> dict:
             "rms": float(np.sqrt(np.mean(r ** 2)))}
 
 
+def circle_through(p1, p2, p3) -> tuple[np.ndarray, float] | None:
+    """The circle through three plan points ``(centre, radius)``; None when they are on a line."""
+    ax, ay = p1
+    bx, by = p2
+    cx, cy = p3
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return None
+    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    centre = np.array([ux, uy])
+    return centre, float(np.linalg.norm(np.asarray(p1) - centre))
+
+
+def arc_coverage(xy: np.ndarray, centre) -> float:
+    """The angular span (degrees) the points cover around ``centre``: 360 minus the largest empty gap."""
+    a = np.sort(np.degrees(np.arctan2(xy[:, 1] - centre[1], xy[:, 0] - centre[0])) % 360.0)
+    if len(a) < 2:
+        return 0.0
+    gaps = np.diff(np.concatenate([a, [a[0] + 360.0]]))
+    return float(360.0 - gaps.max())
+
+
+def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_share: float = 0.02,
+                  band_min: float = 0.05) -> dict:
+    """A circle through the plan points of a slice, all its pieces together: the points centred on their mean (map
+    coordinates lose their digits in the products of a fit), circles through three random points, the one with most
+    points within ``max(band_share x radius, band_min)``, then least squares with Huber's loss on those points, once
+    more on the points within the band of the refined circle. ``centre``, ``radius``, ``inliers`` (mask), ``residuals``
+    (of the inliers), ``rms``, ``coverage`` (degrees of arc the inliers cover)."""
+    q = np.asarray(xy, np.float64)[:, :2]
+    if len(q) < 3:
+        raise ValueError("three points at least")
+    origin = q.mean(axis=0)
+    p = q - origin
+    rng = np.random.default_rng(seed)
+    sample = p if len(p) <= 20000 else p[rng.choice(len(p), 20000, replace=False)]
+    extent = float(np.ptp(p, axis=0).max())
+    best, best_n = None, -1
+    for _ in range(iterations):
+        c = circle_through(*sample[rng.choice(len(sample), 3, replace=False)])
+        if c is None or c[1] < 0.05 or c[1] > 5 * max(extent, 1.0):
+            continue
+        band = max(band_share * c[1], band_min)
+        n = int((np.abs(np.hypot(sample[:, 0] - c[0][0], sample[:, 1] - c[0][1]) - c[1]) <= band).sum())
+        if n > best_n:
+            best, best_n = c, n
+    if best is None:
+        raise ValueError("no circle through the points")
+    centre, radius = best
+    for _ in range(2):
+        band = max(band_share * radius, band_min)
+        inl = np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= band
+        if inl.sum() < 3:
+            break
+        f = robust_circle(p[inl])
+        centre, radius = np.asarray(f["centre"]), f["radius"]
+    band = max(band_share * radius, band_min)
+    inl = np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= band
+    r = np.hypot(p[inl, 0] - centre[0], p[inl, 1] - centre[1]) - radius
+    return {"centre": origin + centre, "radius": float(radius), "inliers": inl, "residuals": r,
+            "rms": float(np.sqrt(np.mean(r ** 2))) if len(r) else 0.0, "coverage": arc_coverage(p[inl], centre)}
+
+
 def _basis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     a = axis / np.linalg.norm(axis)
     helper = np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9 else np.array([0.0, 1.0, 0.0])

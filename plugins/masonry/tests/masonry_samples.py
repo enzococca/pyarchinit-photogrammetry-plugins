@@ -216,3 +216,51 @@ def put_drawings(ch, eid: str, stones=(), units=None, sito: str = "Saggio"):
     if units is not None:
         data["units"] = [{"wkt": g.wkt, "us": us, "tipo": "USM", "area": "1", "sito": sito,
                           "attributes": {"d_stratigrafica": f"Muratura {us}"}} for us, g in units.items()]
+
+
+def broken_tower(keep_deg=None, gaps_deg=((30, 70), (120, 150), (200, 260), (300, 320)), base=None):
+    """The round tower with its ring broken: the triangles whose direction from the axis (degrees from +x,
+    anticlockwise) falls in ``gaps_deg`` taken away - or, with ``keep_deg`` (from, to), only those within it kept."""
+    v, f = round_tower(base)
+    b = WORLD if base is None else np.asarray(base, np.float64)
+    c = v[f].mean(axis=1)
+    axis = tower_axis()
+    t = (c - b) @ axis
+    radial = c - b - t[:, None] * axis
+    ang = np.degrees(np.arctan2(radial[:, 1], radial[:, 0])) % 360.0
+    if keep_deg is not None:
+        ok = (ang >= keep_deg[0]) & (ang <= keep_deg[1])
+    else:
+        ok = np.ones(len(f), bool)
+        for a0, a1 in gaps_deg:
+            ok &= ~((ang >= a0) & (ang <= a1))
+    return v, f[ok]
+
+
+def ellipse_tower(a: float = 3.3, b: float = 2.7, height: float = 6.0, base=None):
+    """An upright tower of elliptic plan (semi-axes ``a`` along x, ``b`` along y): not a cylinder."""
+    base = WORLD if base is None else np.asarray(base, np.float64)
+
+    def f(s, t):
+        phi = s * 2 * np.pi
+        return base + np.column_stack([a * np.cos(phi), b * np.sin(phi), t * height])
+
+    v, faces = _grid(f, 361, 41)
+    n = 41
+    v = v[:-n]
+    return v, np.where(faces >= len(v), faces - len(v), faces)
+
+
+def cone_tower(r0: float = 3.4, r1: float = 2.6, height: float = 6.0, base=None):
+    """An upright battered tower: radius ``r0`` at its foot, ``r1`` at its top."""
+    base = WORLD if base is None else np.asarray(base, np.float64)
+
+    def f(s, t):
+        phi = s * 2 * np.pi
+        r = r0 + (r1 - r0) * t
+        return base + np.column_stack([r * np.cos(phi), r * np.sin(phi), t * height])
+
+    v, faces = _grid(f, 361, 41)
+    n = 41
+    v = v[:-n]
+    return v, np.where(faces >= len(v), faces - len(v), faces)

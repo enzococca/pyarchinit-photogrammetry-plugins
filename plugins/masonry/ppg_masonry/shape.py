@@ -650,7 +650,7 @@ def tower_axis(chunk, wid: str, heights=None, levels: int = 5, progress=None) ->
                 if e is not None and (e.get("frame") or {}).get("kind") == "cylinder"), None)
     if cyl is not None:
         frame = _frame(cyl)
-        near = frame.centre[:2]
+        near = (frame.centre[:2], frame.radius)
         if not heights:
             heights = default_heights(frame, cyl, levels)
     if not heights:
@@ -664,7 +664,7 @@ def tower_axis(chunk, wid: str, heights=None, levels: int = 5, progress=None) ->
         except NotReady:
             skipped.append(h)
             continue
-        near = c["centre"]
+        near = (np.asarray(c["centre"]), c["radius"])
         out.append(c)
     if len(out) < 2:
         raise NotReady(t("Servono almeno due quote con una sezione del modello per l'asse.",
@@ -690,10 +690,13 @@ def axis_text(a: dict) -> str:
                f"({num(a['lean_cm_per_m'], 1)} cm/m) towards {azimuth(a['axis_azimuth'])}, "
                f"{cm(a['offset'])} over {metres(a['span'])} of height.")]
     for c in a["levels"]:
+        arc = c.get("coverage")
+        cov_it = f", arco {num(arc, 0)}° in {c.get('pieces', 1)} pezzi" if arc is not None else ""
+        cov_en = f", arc {num(arc, 0)}° in {c.get('pieces', 1)} pieces" if arc is not None else ""
         lines.append(t(f"quota {num(c['height'], 2)}: raggio {metres(c['radius'])}, fuori tondo "
-                       f"{cm(c['out_of_round'])}",
+                       f"{cm(c['out_of_round'])}{cov_it}",
                        f"height {num(c['height'], 2)}: radius {metres(c['radius'])}, out-of-round "
-                       f"{cm(c['out_of_round'])}"))
+                       f"{cm(c['out_of_round'])}{cov_en}"))
     return "\n".join(lines)
 
 
