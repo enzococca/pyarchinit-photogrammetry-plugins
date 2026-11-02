@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 from pyarchinit_photogrammetry.core.progress import as_progress
 
-from . import environment
+from . import environment, transforms
 from .texts import t
 
 PLANETARY = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -61,11 +61,28 @@ def export_tiles(chunk, path, progress=None) -> Path:
         raise ValueError(f"{path.name}: .pmtiles or .mbtiles")
     progress(0.1, f"Reading {src.name}")
     raster = terrio.open_raster(str(src), lazy=True)
+    if raster.crs is not None and not _same_crs(raster.crs, "EPSG:3857"):  # terrio reprojects by itself
+        transforms.check_best(terrio, raster.bounds, raster.crs, "EPSG:3857", t("Le tessere web", "The web tiles"))
     progress(0.3, f"Writing the tiles of {path.name}")
     path.parent.mkdir(parents=True, exist_ok=True)
     raster.write(str(path))
     progress(1.0, str(path))
     return path
+
+
+def _same_crs(a, b) -> bool:
+    from .clouds import _same_crs as same
+
+    return same(str(a), str(b))
+
+
+def _source_crs(terrio, source) -> str | None:
+    """The system of a raster terrio can open (its header only), None when it cannot say."""
+    try:
+        crs = terrio.open_raster(str(source), lazy=True).crs
+    except Exception:  # a catalogue mosaic or a source terrio opens only to warp it
+        return None
+    return str(crs) if crs else None
 
 
 def survey_bounds(chunk) -> tuple[float, float, float, float]:
@@ -111,7 +128,8 @@ def lonlat_bounds(chunk, margin: float = 0.0) -> tuple[float, float, float, floa
     m = float(margin)
     xs = np.array([x0 - m, x1 + m, x0 - m, x1 + m, (x0 + x1) / 2, (x0 + x1) / 2, x0 - m, x1 + m])
     ys = np.array([y0 - m, y0 - m, y1 + m, y1 + m, y0 - m, y1 + m, (y0 + y1) / 2, (y0 + y1) / 2])
-    lon, lat = terrio.transform_points(xs, ys, chunk.crs, "EPSG:4326")[:2]
+    lon, lat = transforms.transform_points(terrio, xs, ys, chunk.crs, "EPSG:4326",
+                                           what=t("L'area del rilievo", "The area of the survey"))[:2]
     return float(np.min(lon)), float(np.min(lat)), float(np.max(lon)), float(np.max(lat))
 
 
@@ -180,7 +198,8 @@ def reference_raster(chunk, url: str | None = None, product: str | None = None, 
     kw = {"t_srs": chunk.crs, "te": extent, "resampling": "bilinear" if product == "dem" else "cubic"}
     if resolution:
         kw["tr"] = (float(resolution), float(resolution))
-    raster = terrio.warp(str(url), **kw)
+    raster = transforms.warp(terrio, str(url), src_crs=_source_crs(terrio, url),
+                             what=t("Il raster di riferimento", "The reference raster"), **kw)
     bands = preset.get("bands")
     if product == "orthomosaic" and bands and raster.count > len(bands):
         raster = terrio.translate(raster, bands=list(bands))

@@ -49,14 +49,14 @@ ppg plugin terrio export scavo.ppg ortofoto.pmtiles
 ## Installazione
 
 * Nel programma: *Strumenti > Plugin...*, `terrio`, *Installa / aggiorna*, *Riavvia ora*; poi *Plugin >
-  terrio > Installa terrio* una volta (circa 20 MB da PyPI).
+  terrio > Installa terrio* una volta (circa 30 MB da PyPI).
 * Con pip, nell'ambiente Python del programma (terrio arriva con lui):
 
   ```bash
   pip install "ppg-terrio @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/terrio"
   ```
 
-Il plugin è scritto per terrio 0.5.0 e pip installa `terrio>=0.5,<0.6`. Un terrio più vecchio (0.3.2 e le
+Il plugin è scritto per terrio 0.6.1 e pip installa `terrio>=0.5,<0.7`. Un terrio più vecchio (0.3.2 e le
 versioni 0.4, come quello che può trovarsi nella cartella del plugin dell'applicazione) fa ancora
 l'importazione, la classificazione del terreno, i raster di riferimento e le esportazioni; la pulizia, i colori
 e i valori, le quote e il Planetary Computer richiedono la 0.5 e lo dicono - la finestra propone di scaricarla.
@@ -66,6 +66,14 @@ terrio è giovane e le sue funzioni possono ancora cambiare prima della 1.0.
 
 * Coordinate: terrio lavora nelle coordinate del file o del chunk; il plugin porta i punti nel sistema interno
   del chunk (`chunk.transform`) e indietro.
+* Trasformazioni: da terrio 0.6 una trasformazione la cui griglia manca (una griglia di cambio di datum, un
+  geoide) prosegue con una più approssimativa - anche una "ballpark" che ignora il cambio di datum, decine o
+  centinaia di metri - con un semplice avviso. Il plugin chiede sempre a terrio la trasformazione migliore
+  (`only_best`), così una griglia mancante ferma il passo e lo dice: attiva la rete (le griglie arrivano dal
+  CDN di PROJ) o metti la griglia in una cartella delle griglie. Con un terrio più vecchio il risultato è
+  confrontato invece con il PROJ del programma. Le griglie del CDN di PROJ (EGM2008, EGM96, geoidi nazionali e
+  cambi di datum) sono compresse con DEFLATE, che terrio 0.6 legge; una griglia compressa con Zstandard non
+  si legge con le wheel di terrio e conta come mancante.
 * Pulizia: sulle nuvole fotogrammetriche di densità molto diversa il LOF segna anche i bordi fra parti dense e
   rade (la soglia di base, 3, ne lascia fuori quasi tutti), e le chiome degli alberi senza tronco sono anch'esse
   "gruppi staccati": guarda i punti nella vista 3D prima di applicare, e preferisci una classe alla rimozione.

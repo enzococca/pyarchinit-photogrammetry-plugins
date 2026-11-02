@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-terrio"
-version = "0.2.1"
+version = "0.2.2"
 description = "pyarchinit-photogrammetry plugin: point clouds (LAS, LAZ, COPC, EPT, PLY, E57), ground classification, cleaning, colours and values from rasters, geoid heights and web rasters (Planetary Computer) through terrio, without GDAL or PDAL"
 readme = "README.md"
 license = "GPL-2.0-or-later"
@@ -14,7 +14,7 @@ requires-python = ">=3.10"
 # application, which has no pip, downloads it from PyPI into the plugin folder (Installa terrio)
 # the steps of 0.2.0 (cleaning, colours, heights, Planetary Computer) need terrio 0.5; an older terrio in the
 # plugin folder still runs the others and the window offers to update it
-dependencies = ["terrio>=0.5,<0.6"]
+dependencies = ["terrio>=0.5,<0.7"]
 
 [project.urls]
 Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/terrio"

@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 from pyarchinit_photogrammetry.core.progress import as_progress
 
-from . import cloudfile, environment
+from . import cloudfile, environment, transforms
 from .texts import num, t
 
 TILE = 4096  # pixels a side of the windows of the raster read at a time
@@ -135,7 +135,8 @@ def sample(chunk, path, bands, world: np.ndarray, resampling: str = "bilinear", 
         res = float(min(src.res))
     else:  # the size of a pixel of the source in the chunk system: its extent over its width
         b = src.bounds
-        xs, ys = terrio.transform_points([b[0], b[2], b[0], b[2]], [b[1], b[1], b[3], b[3]], src.crs, chunk.crs)[:2]
+        xs, ys = transforms.transform_points(terrio, [b[0], b[2], b[0], b[2]], [b[1], b[1], b[3], b[3]], src.crs,
+                                             chunk.crs, what=_feature())[:2]
         res = float(min((max(xs) - min(xs)) / src.width, (max(ys) - min(ys)) / src.height))
     out = np.full((len(world), len(bands)), np.nan)
     size = TILE * res
@@ -155,8 +156,9 @@ def sample(chunk, path, bands, world: np.ndarray, resampling: str = "bilinear", 
                                                               max(y0, sb[1])), bands=wanted)
             else:
                 # floats with a nodata of their own: the cells the source does not reach are told apart
-                window = terrio.warp(str(path), t_srs=chunk.crs, te=(x0, y0, x1, y1), tr=(res, res),
-                                     resampling=resampling, ot="Float32", dstnodata=OUTSIDE)
+                window = transforms.warp(terrio, str(path), t_srs=chunk.crs, te=(x0, y0, x1, y1), src_crs=src.crs,
+                                         what=_feature(), tr=(res, res), resampling=resampling, ot="Float32",
+                                         dstnodata=OUTSIDE)
                 if window.count != len(wanted):
                     window = terrio.translate(window, bands=wanted)
         except Exception as exc:  # a window outside the raster: no value there
