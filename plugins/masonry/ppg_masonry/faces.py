@@ -178,7 +178,8 @@ def slice_circle(chunk, height: float, near=None, rings=None) -> dict:
     if len(pts) < 8:
         raise NotReady(t(f"Il modello non ha una sezione a quota {height:.3f}.",
                          f"The model has no slice at height {height:.3f}."))
-    f = ransac_circle(pts)
+    expect = float(near[1]) if isinstance(near, tuple) and len(near) == 2 and near[1] is not None else None
+    f = ransac_circle(pts, expect_radius=expect)
     if f["coverage"] < MIN_COVERAGE:
         raise NotReady(t(f"Sezione a quota {height:.3f}: arco di {f['coverage']:.0f} gradi, troppo poco per un "
                          "cerchio.", f"Slice at height {height:.3f}: an arc of {f['coverage']:.0f} degrees, too little "

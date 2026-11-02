@@ -110,11 +110,32 @@ def arc_coverage(xy: np.ndarray, centre) -> float:
 REFINE_SHARES = (0.02, 0.04, 0.07, 0.10, 0.13, 0.16, 0.20, 0.25)  # the ring's band, grown pass after pass
 
 
+def _binned_coverage(p: np.ndarray, centre, bins: int = 72) -> float:
+    """:func:`arc_coverage` on ``bins`` sectors (fast, for scoring many candidates): 360 minus the longest run of empty
+    sectors."""
+    if len(p) == 0:
+        return 0.0
+    k = (np.floor((np.degrees(np.arctan2(p[:, 1] - centre[1], p[:, 0] - centre[0])) % 360.0) / (360.0 / bins))
+         .astype(int) % bins)
+    occupied = np.zeros(bins, bool)
+    occupied[k] = True
+    if occupied.all():
+        return 360.0
+    empty = np.concatenate([~occupied, ~occupied])  # the longest run, across 0 degrees too
+    run = longest = 0
+    for e in empty:
+        run = run + 1 if e else 0
+        longest = max(longest, run)
+    return 360.0 - min(longest, bins) * 360.0 / bins
+
+
 def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_share: float = 0.02,
-                  band_min: float = 0.05, refine_shares=REFINE_SHARES) -> dict:
+                  band_min: float = 0.05, refine_shares=REFINE_SHARES, expect_radius: float | None = None) -> dict:
     """A circle through the plan points of a slice, all its pieces together: the points centred on their mean (map
     coordinates lose their digits in the products of a fit), circles through three random points, the one with most
-    points within ``max(band_share x radius, band_min)``. Then the ring is grown around it: passes with the band
+    points within ``max(band_share x radius, band_min)`` weighted by the arc they cover (points x coverage / 360: a
+    ring broken in pieces round the whole tower beats a longer arc of a wall beside it); a candidate whose radius
+    differs from ``expect_radius`` by more than 25 % scores half. Then the ring is grown around it: passes with the band
     widening from that tight one (``refine_shares`` of the radius, up to 25 %), each refitting the circle with Huber's
     loss, until a wider band brings no more points; the last fit is plain least squares on that ring - an oval ring
     gives its mean circle, not the curve of one end, and another structure beyond the band stays out.
@@ -127,17 +148,23 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     origin = q.mean(axis=0)
     p = q - origin
     rng = np.random.default_rng(seed)
-    sample = p if len(p) <= 20000 else p[rng.choice(len(p), 20000, replace=False)]
+    sample = p if len(p) <= 4000 else p[rng.choice(len(p), 4000, replace=False)]
     extent = float(np.ptp(p, axis=0).max())
-    best, best_n = None, -1
+    best, best_score = None, -1.0
     for _ in range(iterations):
         c = circle_through(*sample[rng.choice(len(sample), 3, replace=False)])
         if c is None or c[1] < 0.05 or c[1] > 5 * max(extent, 1.0):
             continue
         band = max(band_share * c[1], band_min)
-        n = int((np.abs(np.hypot(sample[:, 0] - c[0][0], sample[:, 1] - c[0][1]) - c[1]) <= band).sum())
-        if n > best_n:
-            best, best_n = c, n
+        on = np.abs(np.hypot(sample[:, 0] - c[0][0], sample[:, 1] - c[0][1]) - c[1]) <= band
+        n = int(on.sum())
+        if n < 3 or n * 1.0 <= best_score:  # it cannot beat the best: coverage is at most 1
+            continue
+        score = n * _binned_coverage(sample[on], c[0]) / 360.0
+        if expect_radius and abs(c[1] - expect_radius) > 0.25 * expect_radius:
+            score *= 0.5
+        if score > best_score:
+            best, best_score = c, score
     if best is None:
         raise ValueError("no circle through the points")
     centre, radius = best

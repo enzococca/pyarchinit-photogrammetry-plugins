@@ -580,3 +580,24 @@ def test_a_structure_around_the_tower_is_not_taken_for_it(tmp_path):
     assert "rings" in r["not_cylinder_by"] and not r["lean_reliable"]
     text = shape.summary_text(r)
     assert "non concorda con gli anelli" in text and "(non affidabile)" in text
+
+
+@pytest.mark.parametrize("share", [1.3, 1.15])
+def test_a_broken_ring_beats_a_longer_wall_around_it(tmp_path, share):
+    gaps = ((20, 40), (80, 95), (140, 160), (200, 215), (260, 280), (320, 335))  # 105 degrees missing
+    axis = S.tower_axis()
+    outer_r = share * S.TOWER_RADIUS
+    outer = S._grid(lambda s, t: S.WORLD + (t * S.TOWER_HEIGHT / axis[2])[:, None] * axis
+                    + np.column_stack([outer_r * np.cos(np.radians(100 + 200 * s)),
+                                       outer_r * np.sin(np.radians(100 + 200 * s)), 0 * s]), 601, 61)
+    doc, ch = S.project(tmp_path, _two(S.broken_tower(gaps_deg=gaps), outer), "Torre")
+    w = walls.new_wall(ch, "Torre", kind="tower")
+    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05)
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    assert len(r["rings"]) == 5
+    for c in r["rings"]:
+        assert abs(c["radius"] - S.TOWER_RADIUS) < 0.01, (share, c)
+    if share == 1.3:  # beyond the band: the face is the tower
+        assert r["lean_reliable"] and abs(r["radius"] - S.TOWER_RADIUS) < 0.01
+    else:  # inside the band: the fit takes the wall, the rings say so
+        assert "rings" in r["not_cylinder_by"] and not r["lean_reliable"]
