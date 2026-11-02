@@ -142,6 +142,72 @@ def arch_mesh(kind: str, thickness: float = 0.4, depth: float = 0.8, ground: flo
     return mesh, truth
 
 
+# openings: a wall along x, 5 m long and 3 m high, its outer face (towards the photos, -y) at y = 0, its inner face at
+# y = WALL_T; the opening centred at x = 0
+WALL_T = 0.5
+OPENINGS = {
+    # a door: 0.9 m wide, from the ground (z = 0) to 2.1 m, square reveals
+    "door": {"width": 0.9, "sill": 0.0, "lintel": 2.1, "splay": 0.0, "top": "flat"},
+    # a window splayed 10 degrees on both sides (wider at the inner face: an embrasure), 0.8 m wide at the outer face
+    "splayed": {"width": 0.8, "sill": 1.0, "lintel": 2.0, "splay": 10.0, "top": "flat"},
+    # a window with a semicircular top: 0.8 m wide, the springing line at 1.8 m, the crown at 2.2 m
+    "arched": {"width": 0.8, "sill": 1.0, "lintel": 2.2, "springing": 1.8, "splay": 0.0, "top": "arch"},
+}
+
+
+def opening_wall(kind: str, both_faces: bool = True, ground: bool = True, edge: float = 0.04):
+    """A wall with one opening of :data:`OPENINGS` as a photogrammetric mesh would be (triangles of ``edge`` metres),
+    standing on a ground plane: built from horizontal slabs (plan polygons extruded between two heights) and, for an
+    arched top, the part above the springing line as an elevation extruded across the wall. ``both_faces`` False: the
+    inner face (y = WALL_T) is not there, as when only the outer face was photographed. Returns ``(mesh, truth)``;
+    the truth also holds ``inner_width`` and ``plan`` (the void's corners in plan, outer face first)."""
+    import trimesh
+    from shapely.geometry import Point, box
+
+    eng = _engine()
+    o = OPENINGS[kind]
+    x0, x1, top, T = -2.5, 2.5, 3.0, WALL_T
+    half = o["width"] / 2
+    grow = T * np.tan(np.radians(o["splay"]))
+    plan = np.array([[-half, 0.0], [half, 0.0], [half + grow, T], [-half - grow, T]])
+    parts = []
+
+    def slab(poly, z0, z1):
+        m = eng.prism_mesh(np.asarray(poly, float), z1 - z0)
+        m.apply_translation([0.0, 0.0, z0])
+        parts.append(m)
+
+    full = [(x0, 0.0), (x1, 0.0), (x1, T), (x0, T)]
+    left = [(x0, 0.0), (-half, 0.0), (-half - grow, T), (x0, T)]
+    right = [(half, 0.0), (x1, 0.0), (x1, T), (half + grow, T)]
+    if o["sill"] > 0:
+        slab(full, 0.0, o["sill"])
+    upto = o["springing"] if o["top"] == "arch" else o["lintel"]
+    slab(left, o["sill"], upto)
+    slab(right, o["sill"], upto)
+    if o["top"] == "arch":
+        wall = box(x0, upto, x1, top).difference(Point(0.0, upto).buffer(half, quad_segs=64))
+        m = eng.prism_mesh(np.asarray(wall.exterior.coords), T)  # (x, z, y)
+        v = np.asarray(m.vertices)[:, [0, 2, 1]]
+        parts.append(trimesh.Trimesh(v, np.asarray(m.faces)[:, ::-1], process=False))  # y and z swapped: turned back
+    else:
+        slab(full, o["lintel"], top)
+    if ground:
+        g = np.array([[x0 - 0.5, -2.0, 0.0], [x1 + 0.5, -2.0, 0.0], [x1 + 0.5, T + 2.0, 0.0], [x0 - 0.5, T + 2.0, 0.0]])
+        parts.append(trimesh.Trimesh(g, [[0, 1, 2], [0, 2, 3]], process=False))
+    out = []
+    for m in parts:
+        v, f = trimesh.remesh.subdivide_to_size(m.vertices, m.faces, max_edge=edge, max_iter=20)
+        out.append(trimesh.Trimesh(v, f, process=False))
+    mesh = trimesh.util.concatenate(out)
+    if not both_faces:
+        tri = np.asarray(mesh.vertices)[np.asarray(mesh.faces)]
+        back = np.abs(tri[:, :, 1] - T).max(axis=1) < 1e-6  # the faces lying in the plane of the inner face
+        mesh = trimesh.Trimesh(mesh.vertices, np.asarray(mesh.faces)[~back], process=False)
+    truth = dict(o, thickness=T, inner_width=o["width"] + 2 * grow, plan=plan)
+    return mesh, truth
+
+
 def cadquery_python() -> Path | None:
     """The Python of an environment with CadQuery for the worker's tests (``PPG_TEST_CADQUERY``)."""
     p = os.environ.get("PPG_TEST_CADQUERY")

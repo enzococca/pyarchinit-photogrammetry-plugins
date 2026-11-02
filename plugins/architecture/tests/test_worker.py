@@ -111,3 +111,30 @@ def test_a_raking_moulding_in_the_ifc_is_cadquerys_solid(tmp_path, path):
     volume, bbox = ifc.read_volumes(ifc.write(tmp_path / "m.ifc", [e], [0, 0, 0], "LOCAL"))["M"]
     assert abs(volume / res["volume"] - 1) < 0.01
     np.testing.assert_allclose(bbox, res["bbox"], atol=0.005)
+
+
+def test_an_opening_and_one_closed_by_an_arch(tmp_path):
+    """A splayed plan extruded from the sill to the lintel; and a plan up to the springing line united with the void
+    under a semicircular arch whose plane crosses the wall: one solid, the volumes of the two parts added."""
+    from arch_samples import arch_points
+
+    t = np.tan(np.radians(10))
+    plan = np.array([[-0.4, 0.0], [-0.4 - 0.5 * t, 0.5], [0.4 + 0.5 * t, 0.5], [0.4, 0.0]])[::-1]
+    flat = _run(tmp_path, "opening", {"plan": plan.tolist(), "bottom": 1.0, "top": 2.0})
+    assert flat["valid"] and abs(flat["volume"] - engine.opening_volume(plan, 1.0, 2.0)) < 1e-6
+    assert flat["bbox"][2] == pytest.approx(1.0, abs=1e-6) and flat["bbox"][5] == pytest.approx(2.0, abs=1e-6)
+    rect = np.array([[-0.5, 0.0], [0.5, 0.0], [0.5, 0.5], [-0.5, 0.5]])
+    pts, _truth = arch_points("semicircular")  # span 2, springing 1.5: half as wide, the plan's width (an ellipse)
+    fit = engine.fit_arch(np.column_stack([pts[:, 0] * 0.5, pts[:, 1]]), "elliptical")
+    void = engine.arch_void_outline(fit, below=0.001)
+    # the arch's plane: u = x, v = up, its normal -y; the void extruded from y = 0.5 to y = 0 (along the normal)
+    placement = engine.arch_frame([0.0, 0.5, 0.0], [1, 0, 0], [0, 0, 1])
+    arched = _run(tmp_path / "a", "opening", {"plan": rect.tolist(), "bottom": 1.0, "top": 1.5,
+                                              "void": {"outline": void, "placement": placement.tolist(), "depth": 0.5}})
+    area = abs(engine.polygon_area(engine.outline_polygon(void, arc_points=4000)))
+    # the void reaches 1 mm into the part below: inside it, the union's volume is that of the two parts
+    expected = engine.opening_volume(rect, 1.0, 1.5, area - 0.001, 0.5)
+    assert arched["valid"] and abs(arched["volume"] - expected) < 1e-4
+    assert arched["bbox"][5] == pytest.approx(2.5, abs=0.002)  # the crown: semi-axes 0.5 across and 1 up
+    stl = _stl(arched)
+    assert stl.is_watertight and len(stl.split(only_watertight=False)) == 1

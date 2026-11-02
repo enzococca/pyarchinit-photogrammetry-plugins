@@ -9,7 +9,11 @@ contained in the site.
   ``IfcExtrudedAreaSolid`` when the path is straight, else an ``IfcFixedReferenceSweptAreaSolid`` on an
   ``IfcIndexedPolyCurve`` directrix with the fixed reference up (mitred corners, as the STEP);
 * an arch or a vault: ``IfcBuildingElementProxy`` (object type "Arch" / "Vault") with the ring's section (lines
-  and arcs: ``IfcIndexedPolyCurve`` with ``IfcLineIndex`` and ``IfcArcIndex``) extruded along the plane's normal.
+  and arcs: ``IfcIndexedPolyCurve`` with ``IfcLineIndex`` and ``IfcArcIndex``) extruded along the plane's normal;
+* an opening: ``IfcOpeningElement`` (OPENING) with the plan of the void (``IfcArbitraryClosedProfileDef``) as an
+  ``IfcExtrudedAreaSolid`` from the sill up, and the void under its arch (lines and arcs) extruded across the wall
+  when an arch closes it; a door or a window also as ``IfcDoor`` / ``IfcWindow`` (DOOR / WINDOW) with the same solid
+  and ``OverallWidth`` / ``OverallHeight``. Not related to a wall (the program has no wall element).
 
 ``Pset_PyArchInit_Element``: kind, method, name, the parameters (metres and degrees), the fit (median, p90, max in
 metres, points), the source and a note that the solid is an interpretation of the measured model. The chunk's mesh
@@ -31,9 +35,12 @@ PSET = "Pset_PyArchInit_Element"
 FRAMES = ("Lengths in metres. P_world_*, P_axis_point and P_axis_direction: the CRS of the map conversion (world). "
           "P_springing, P_centre_u, P_centre_v, P_span, P_rise and the other arch values: the section plane, u "
           "along it and v up, from the plane's origin (Source.plane, world); P_wall_u, P_v_range, P_window_used of a "
-          "moulding: the plane normal to its path at the station, u = up x tangent, v up, from the path's point. The "
+          "moulding: the plane normal to its path at the station, u = up x tangent, v up, from the path's point. "
+          "P_sill, P_lintel, P_springing, P_ground of an opening: world heights; P_splay_left/right: degrees, positive "
+          "when the reveal opens out towards the inner face; P_world_axis: across the wall towards the outer face. The "
           "geometry: the IFC's local coordinates, the map conversion's origin added.")
 QTO = "Qto_PyArchInit_Element"
+METHOD = "pyarchinit-photogrammetry: solido CadQuery (OpenCascade)"
 
 
 def _require():
@@ -73,7 +80,8 @@ def _plain(value):
 def properties(e: dict) -> dict:
     """The property set of an element: every scalar parameter, the fit, the source."""
     params = e.get("params") or {}
-    props = {"Kind": e["kind"], "Method": str(params.get("method") or params.get("type") or ""),
+    method = params.get("method") or params.get("type") or params.get("opening_type") or ""
+    props = {"Kind": e["kind"], "Method": str(method),
              "Name": e.get("name") or "",
              "Interpretation": t("Solido idealizzato dal modello fotogrammetrico misurato: lo scarto dice quanto il "
                                  "modello se ne discosta.", "An idealised solid from the measured photogrammetric "
@@ -184,6 +192,16 @@ def solid_for(w: _Writer, e: dict):
         solid = w.m.createIfcFixedReferenceSweptAreaSolid(area, w.axes((0, 0, 0)), directrix, None, None,
                                                           w.d3(*(v0 if abs(t0[2]) > 0.999 else up)))
         return w.representation([solid], "AdvancedSweptSolid"), w.axes(path[0])
+    if e["kind"] == "opening":
+        bottom, top = float(g["bottom"]), float(g["top"])
+        items = [w.m.createIfcExtrudedAreaSolid(w.closed_polygon(g["plan"]), w.axes((0, 0, bottom)), w.d3(0, 0, 1),
+                                                top - bottom)]
+        if g.get("void"):
+            vd = g["void"]
+            items.append(w.m.createIfcExtrudedAreaSolid(w.closed_curve(vd["outline"]),
+                                                        _placement_axes(w, vd["placement"]), w.d3(0, 0, 1),
+                                                        float(vd["depth"])))
+        return w.representation(items), w.axes((0, 0, 0))
     area = w.closed_curve(g["outline"])
     solid = w.m.createIfcExtrudedAreaSolid(area, w.axes((0, 0, 0)), w.d3(0, 0, 1), float(g["depth"]))
     return w.representation([solid]), _placement_axes(w, g["placement"])
@@ -191,7 +209,9 @@ def solid_for(w: _Writer, e: dict):
 
 IFC_CLASS = {"column": ("IfcColumn", "COLUMN", None), "moulding": ("IfcMember", "USERDEFINED", "Moulding"),
              "arch": ("IfcBuildingElementProxy", "USERDEFINED", "Arch"),
-             "vault": ("IfcBuildingElementProxy", "USERDEFINED", "Vault")}
+             "vault": ("IfcBuildingElementProxy", "USERDEFINED", "Vault"),
+             "opening": ("IfcOpeningElement", "OPENING", None)}
+FILLING = {"door": ("IfcDoor", "DOOR"), "window": ("IfcWindow", "WINDOW")}
 
 
 def write(path, entries: list[dict], origin, crs: str | None, mesh=None, project: str = "Rilievo", site: str = "Sito",
@@ -259,29 +279,36 @@ def _write(path, entries, origin, crs, mesh, project, site, colours, progress) -
         progress(0.1 + 0.8 * k / max(len(entries), 1), t(f"IFC: elemento {k + 1}/{len(entries)} - {e['name']}",
                                                          f"IFC: element {k + 1}/{len(entries)} - {e['name']}"))
         cls, ptype, otype = IFC_CLASS[e["kind"]]
-        prod = ifcopenshell.api.root.create_entity(model, ifc_class=cls, name=e["name"], predefined_type=ptype)
-        if otype:
-            prod.ObjectType = otype
-        prod.Description = e.get("notes") or None
-        ifcopenshell.api.spatial.assign_container(model, products=[prod], relating_structure=site_e)
-        rep, axes = solid_for(w, e)
-        ifcopenshell.api.geometry.assign_representation(model, product=prod, representation=rep)
-        prod.ObjectPlacement = model.createIfcLocalPlacement(None, axes)
-        if colours:
-            style(rep, e["name"], colours[k % len(colours)])
-        pset = ifcopenshell.api.pset.add_pset(model, product=prod, name=PSET)
-        ifcopenshell.api.pset.edit_pset(model, pset=pset, properties=properties(e))
-        volume = (e.get("solid") or {}).get("volume")
-        if volume:
-            qs = [model.create_entity("IfcQuantityVolume", Name="NetVolume", VolumeValue=float(volume))]
-            area = (e.get("solid") or {}).get("area")
-            if area:
-                qs.append(model.create_entity("IfcQuantityArea", Name="NetSurfaceArea", AreaValue=float(area)))
-            qto = model.create_entity("IfcElementQuantity", GlobalId=ifcopenshell.guid.new(), Name=QTO,
-                                      MethodOfMeasurement="pyarchinit-photogrammetry: solido CadQuery (OpenCascade)",
-                                      Quantities=qs)
-            model.create_entity("IfcRelDefinesByProperties", GlobalId=ifcopenshell.guid.new(), RelatedObjects=[prod],
-                                RelatingPropertyDefinition=qto)
+        classes = [(cls, ptype, otype)]
+        kind = (e.get("params") or {}).get("opening_type") if e["kind"] == "opening" else None
+        if kind in FILLING:  # the door or the window itself, with the same solid, beside the opening
+            classes.append((*FILLING[kind], None))
+        for cls, ptype, otype in classes:
+            prod = ifcopenshell.api.root.create_entity(model, ifc_class=cls, name=e["name"], predefined_type=ptype)
+            if otype:
+                prod.ObjectType = otype
+            prod.Description = e.get("notes") or None
+            if cls in ("IfcDoor", "IfcWindow"):
+                prod.OverallWidth = float(e["params"]["width"])
+                prod.OverallHeight = float(e["params"]["height"])
+            ifcopenshell.api.spatial.assign_container(model, products=[prod], relating_structure=site_e)
+            rep, axes = solid_for(w, e)
+            ifcopenshell.api.geometry.assign_representation(model, product=prod, representation=rep)
+            prod.ObjectPlacement = model.createIfcLocalPlacement(None, axes)
+            if colours:
+                style(rep, e["name"], colours[k % len(colours)])
+            pset = ifcopenshell.api.pset.add_pset(model, product=prod, name=PSET)
+            ifcopenshell.api.pset.edit_pset(model, pset=pset, properties=properties(e))
+            volume = (e.get("solid") or {}).get("volume")
+            if volume:
+                qs = [model.create_entity("IfcQuantityVolume", Name="NetVolume", VolumeValue=float(volume))]
+                area = (e.get("solid") or {}).get("area")
+                if area:
+                    qs.append(model.create_entity("IfcQuantityArea", Name="NetSurfaceArea", AreaValue=float(area)))
+                qto = model.create_entity("IfcElementQuantity", GlobalId=ifcopenshell.guid.new(), Name=QTO,
+                                          MethodOfMeasurement=METHOD, Quantities=qs)
+                model.create_entity("IfcRelDefinesByProperties", GlobalId=ifcopenshell.guid.new(),
+                                    RelatedObjects=[prod], RelatingPropertyDefinition=qto)
     if mesh is not None:
         progress(0.92, t("IFC: il modello del rilievo", "IFC: the survey model"))
         prod = ifcopenshell.api.root.create_entity(model, ifc_class="IfcGeographicElement",
@@ -325,7 +352,8 @@ def export(chunk, path, ids=None, with_mesh: bool = False, progress=None) -> Pat
 
 def read_volumes(path) -> dict:
     """Volume and bounding box (world-of-file coordinates) of every element of an IFC as ``ifcopenshell.geom``
-    tessellates it: ``{name: (volume, bbox)}`` (the round trip of the tests)."""
+    tessellates it: ``{name: (volume, bbox)}`` (the round trip of the tests); also under ``"IfcClass:name"`` (an
+    opening and its door share the name)."""
     with c_numbers():
         return _read_volumes(path)
 
@@ -346,5 +374,7 @@ def _read_volumes(path) -> dict:
         v = np.asarray(sh.geometry.verts, float).reshape(-1, 3)
         fa = np.asarray(sh.geometry.faces, int).reshape(-1, 3)
         m = trimesh.Trimesh(v, fa, process=False)
-        out[prod.Name] = (abs(float(m.volume)), np.r_[v.min(axis=0), v.max(axis=0)])
+        value = (abs(float(m.volume)), np.r_[v.min(axis=0), v.max(axis=0)])
+        out.setdefault(prod.Name, value)
+        out[f"{prod.is_a()}:{prod.Name}"] = value
     return out

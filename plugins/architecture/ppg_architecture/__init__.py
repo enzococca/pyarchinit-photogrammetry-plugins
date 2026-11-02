@@ -3,13 +3,15 @@ photogrammetric model, with CadQuery in a process of its own.
 
 * columns by revolution (the axis and the profile measured on the model, a spline through K knots), mouldings and
   cornices swept along a path (the section cut from the model), arches and barrel vaults from a section (circle,
-  pointed, ellipse or as measured, chosen by the fit);
+  pointed, ellipse or as measured, chosen by the fit), openings - the void of a door or a window, its reveals (splayed
+  or not), wall faces, sill and lintel measured on the model, its top flat or an arch;
 * every element as STEP (CadQuery, OpenCascade) and as a parametric IFC solid (``IfcRevolvedAreaSolid``,
-  ``IfcExtrudedAreaSolid``, ``IfcFixedReferenceSweptAreaSolid``) beside the mesh, the measured profile kept and the
+  ``IfcExtrudedAreaSolid``, ``IfcFixedReferenceSweptAreaSolid``; an opening as ``IfcOpeningElement`` with its
+  ``IfcDoor`` or ``IfcWindow``) beside the mesh, the measured profile kept and the
   fit always given: how far the model is from the solid (median, 90th percentile, maximum);
 * the *Elementi architettonici* pane (on the right), the elements in the workspace tree, *File > Esporta >
-  Elementi architettonici (IFC)*, ``ppg plugin architecture column|moulding|arch|list|show|export|remove|install|
-  status``.
+  Elementi architettonici (IFC)*, ``ppg plugin architecture column|moulding|arch|opening|list|show|export|remove|
+  rebuild|install|status``.
 
 The program's process never imports CadQuery: it runs in a Python of its own (see :mod:`.environment`). The chunk's
 model, transform and products are never changed; nothing is written outside ``<chunk data>/architecture/`` but what
@@ -27,8 +29,8 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, arch_title, kind_title, metres, num, t
 
-__version__ = "0.1.0"
-NEGATIVE_VALUES = ("--window", "--pick", "--out-side", "--points", "--radii")
+__version__ = "0.2.0"
+NEGATIVE_VALUES = ("--window", "--pick", "--out-side", "--points", "--radii", "--at")
 
 
 class ArchitecturePlugin(Plugin):
@@ -36,9 +38,10 @@ class ArchitecturePlugin(Plugin):
 
     def __init__(self):
         self.title = t(*NAME)
-        self.description = t("Colonne, modanature, archi e volte come solidi parametrici (STEP, IFC) dal modello "
-                             "fotogrammetrico, con lo scarto dal modello", "Columns, mouldings, arches and vaults as "
-                             "parametric solids (STEP, IFC) from the photogrammetric model, with their fit")
+        self.description = t("Colonne, modanature, archi, volte, porte e finestre come solidi parametrici (STEP, IFC) "
+                             "dal modello fotogrammetrico, con lo scarto dal modello", "Columns, mouldings, arches, "
+                             "vaults, doors and windows as parametric solids (STEP, IFC) from the photogrammetric "
+                             "model, with their fit")
         self.context = None
         self.pane = None
 
@@ -50,9 +53,12 @@ class ArchitecturePlugin(Plugin):
         environment.configure(context)
         context.add_action(t("Elementi architettonici...", "Architectural elements..."), self.show_pane,
                            tip=t("Il pannello degli elementi architettonici", "The pane of the architectural elements"))
+        context.add_action(t("Porta / finestra...", "Door / window..."), lambda: self._guarded(self._do_opening),
+                           tip=t("Il vano di una porta o di una finestra misurato sul modello",
+                                 "The void of a door or a window measured on the model"))
         context.add_command("architecture", self.command,
-                            help="parametric architectural elements: column, moulding, arch, list, show, export, "
-                                 "remove, install, status")
+                            help="parametric architectural elements: column, moulding, arch, opening, list, show, "
+                                 "export, remove, rebuild, install, status")
         context.add_exporter(t("Elementi architettonici (IFC)", "Architectural elements (IFC)"), ".ifc", self._export)
         if context.window is not None:
             from .pane import ArchitecturePane
@@ -426,6 +432,56 @@ class ArchitecturePlugin(Plugin):
 
         self._run(t("Arco", "Arch"), lambda p: elements.arch(chunk, progress=p, **kwargs), done)
 
+    # ------------------------------------------------------------------ opening
+    def _do_opening(self) -> None:
+        self._need_chunk()
+        self._need_view()
+        self.context.request_point(lambda xy: self._guarded(self._opening_dialog, np.asarray(xy, float)[0, :2]),
+                                   hint=t("Clic dentro l'apertura (porta o finestra) sulla pianta, tra i due stipiti",
+                                          "Click inside the opening (door or window) on the plan, between the two "
+                                          "reveals"))
+
+    def _opening_dialog(self, xy) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import elements
+        from .texts import OPENING_TYPES
+
+        chunk = self._need_chunk()
+        arches = [(e["id"], e["name"]) for e in elements.elements(chunk) if e["kind"] in ("arch", "vault")]
+        val = self._ask(t("Porta / finestra", "Door / window"), [
+            Field("kind", t("Tipo", "Kind"), "opening", choices=[(k, t(*v)) for k, v in OPENING_TYPES.items()]),
+            Field("name", t("Nome (vuoto = automatico)", "Name (empty = automatic)"), "", kind="text"),
+            Field("height", t("Quota del taglio orizzontale (m, 0 = a metà dell'apertura)",
+                              "Height of the horizontal cut (m, 0 = the middle of the opening)"), 0.0, minimum=-1e5,
+                  maximum=1e5, decimals=3,
+                  tip=t("La pianta del vano si legge su questo taglio del modello", "The plan of the void is read on "
+                        "this cut of the model")),
+            Field("top", t("Parte alta", "Top"), "flat",
+                  choices=[("flat", t("architrave piano", "flat lintel"))] +
+                  [(i, t(f"l'arco «{n}»", f"the arch '{n}'")) for i, n in arches]),
+            Field("thickness", t("Spessore del muro (m, 0 = misurato)", "Wall thickness (m, 0 = measured)"), 0.0,
+                  minimum=0.0, maximum=100.0, decimals=3,
+                  tip=t("Da dare quando sul modello c'è una sola faccia del muro",
+                        "To be given when only one face of the wall is on the model"))],
+            intro=t("Stipiti, facce del muro, soglia e architrave si misurano sul modello; il solido è il vano, da "
+                    "sottrarre al muro.", "The reveals, the wall faces, the sill and the lintel are measured on the "
+                    "model; the solid is the void, to be subtracted from the wall."))
+        if not val:
+            return
+        self.opening(chunk, at=xy, height=val["height"] or None, top=None if val["top"] == "flat" else val["top"],
+                     thickness=val["thickness"] or None, kind=val["kind"], name=val["name"].strip() or None)
+
+    def opening(self, chunk, **kwargs) -> None:
+        from . import elements
+
+        def done(e):
+            self._status(elements.summary(e))
+            self._changed(e["id"])
+            self._show(e)
+
+        self._run(t("Apertura", "Opening"), lambda p: elements.opening(chunk, progress=p, **kwargs), done)
+
     # ------------------------------------------------------------------ the chosen elements
     def _show(self, e: dict) -> None:
         from . import elements
@@ -481,6 +537,29 @@ class ArchitecturePlugin(Plugin):
                 return
             job = lambda prog: elements.edit_moulding(chunk, e["id"], simplify=val["simplify"],  # noqa: E731
                                                       depth=val["depth"], progress=prog)
+        elif e["kind"] == "opening":
+            fields = [Field("sill", t("Soglia (m, quota)", "Sill (m, height)"), p["sill"], minimum=-1e5, maximum=1e5,
+                            decimals=3)]
+            if p.get("top") != "arch":
+                fields.append(Field("lintel", t("Architrave (m, quota)", "Lintel (m, height)"), p["lintel"],
+                                    minimum=-1e5, maximum=1e5, decimals=3))
+            fields += [Field("width", t("Larghezza alla faccia esterna (m, simmetrica)",
+                                        "Width at the outer face (m, symmetric)"), p["width"], minimum=0.01,
+                             maximum=100.0, decimals=3),
+                       Field("thickness", t("Spessore del muro (m)", "Wall thickness (m)"), p["reveal_depth"],
+                             minimum=0.01, maximum=100.0, decimals=3)]
+            val = self._ask(t("Parametri dell'apertura", "Parameters of the opening"), fields,
+                            intro=t("Quanto misurato sul modello resta com'è: cambia solo il solido.",
+                                    "What was measured on the model stays as it is: only the solid changes."))
+            if not val:
+                return
+
+            def changed(key, old):
+                return val[key] if key in val and abs(val[key] - old) > 5e-4 else None
+
+            edits = {"sill": changed("sill", p["sill"]), "lintel": changed("lintel", p["lintel"]),
+                     "width": changed("width", p["width"]), "thickness": changed("thickness", p["reveal_depth"])}
+            job = lambda prog: elements.edit_opening(chunk, e["id"], progress=prog, **edits)  # noqa: E731
         else:
             val = self._ask(t("Parametri dell'arco", "Parameters of the arch"), [
                 Field("kind", t("Tipo", "Type"), p["type"],
@@ -637,8 +716,8 @@ class ArchitecturePlugin(Plugin):
 
         parser = argparse.ArgumentParser(prog="ppg plugin architecture",
                                          description="parametric architectural elements from the photogrammetric model")
-        parser.add_argument("what", choices=["column", "moulding", "arch", "list", "show", "export", "remove",
-                                             "rebuild", "install", "status"])
+        parser.add_argument("what", choices=["column", "moulding", "arch", "opening", "list", "show", "export",
+                                             "remove", "rebuild", "install", "status"])
         parser.add_argument("project", nargs="?", help="the .ppg file")
         parser.add_argument("element", nargs="?", help="show, remove: the id or the name of an element")
         parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
@@ -655,7 +734,8 @@ class ArchitecturePlugin(Plugin):
         parser.add_argument("--markers", help="moulding: two markers A,B: a straight path between them")
         parser.add_argument("--elevation",
                             help="moulding: --path is in (u v) of this elevation or section (id or name)")
-        parser.add_argument("--height", type=float, help="moulding: the height of a 2D path (world)")
+        parser.add_argument("--height", type=float,
+                            help="moulding: the height of a 2D path (world); opening: of the horizontal cut")
         parser.add_argument("--station", type=float, help="moulding: the section at this distance from the start (m)")
         parser.add_argument("--window", help="moulding: u0,v0,u1,v1 around the path point (default: found from the "
                                              "cut, the moulding's extent and 10 cm)")
@@ -669,8 +749,16 @@ class ArchitecturePlugin(Plugin):
         parser.add_argument("--pick", help="arch: u,v of a point inside the opening (default: a guess)")
         parser.add_argument("--type", default="auto", help="arch: auto, semicircular, segmental, pointed, elliptical, "
                                                            "measured")
-        parser.add_argument("--thickness", type=float, help="arch: thickness of the ring (default: measured)")
+        parser.add_argument("--thickness", type=float, help="arch: thickness of the ring; opening: of the wall "
+                                                             "(default: measured)")
         parser.add_argument("--vault", action="store_true", help="arch: a barrel vault")
+        parser.add_argument("--at", help="opening: x,y world, a point inside the opening in plan")
+        parser.add_argument("--top", help="opening: the id or name of the arch that closes it (default: a flat lintel)")
+        parser.add_argument("--kind", default="opening", choices=["opening", "door", "window"],
+                            help="opening: an opening only, a door or a window (IfcDoor / IfcWindow beside it)")
+        parser.add_argument("--sill", type=float, help="opening: the height of the sill (world; default: measured)")
+        parser.add_argument("--lintel", type=float,
+                            help="opening: the height of the lintel (world; default: measured)")
         parser.add_argument("--out", help="export: the file (.ifc, .step, .dxf) or a folder for several STEP")
         parser.add_argument("--ids", help="export: ids or names separated by commas (default: all)")
         parser.add_argument("--mesh", action="store_true", help="export IFC: the survey model beside the elements")
@@ -745,6 +833,14 @@ class ArchitecturePlugin(Plugin):
                 e = elements.arch(chunk, pick, section=ns.section, p1=p1, p2=p2,
                                   kind="measured" if ns.measured else ns.type, thickness=ns.thickness, depth=ns.depth,
                                   vault=ns.vault, name=ns.name, progress=print_progress)
+                print(elements.summary(e))
+                changed = True
+            elif ns.what == "opening":
+                if not ns.at:
+                    raise elements.NotReady("--at x,y (a point inside the opening, world)")
+                at = [float(x) for x in ns.at.split(",")]
+                e = elements.opening(chunk, at, height=ns.height, top=ns.top, thickness=ns.thickness, kind=ns.kind,
+                                     sill=ns.sill, lintel=ns.lintel, name=ns.name, progress=print_progress)
                 print(elements.summary(e))
                 changed = True
             elif ns.what == "list":
