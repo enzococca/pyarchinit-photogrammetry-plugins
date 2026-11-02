@@ -536,11 +536,18 @@ def test_the_reach_of_the_sections_is_the_band(tmp_path):
 
 
 def test_an_oval_tower_is_said_by_its_out_of_round(tmp_path):
-    doc, ch = S.project(tmp_path, S.ellipse_tower(), "Torre")
+    doc, ch = S.project(tmp_path, S.ellipse_tower(3.12, 2.88), "Torre")  # 8 % out of round: rms under 10 cm
     w = walls.new_wall(ch, "Torre", kind="tower")
-    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05, front=0.3, back=0.3)
+    entry = faces.cylinder_face(ch, w["id"], height=Z0 + 3.0, resolution=0.05)
     r = shape.face_shape(ch, w["id"], entry["id"])
     assert r["rms_cm"] < 10.0 and r["not_cylinder_by"] == ["out_of_round"] and not r["lean_reliable"]
     assert r["out_of_round_cm"] > r["out_of_round_limit_cm"] == pytest.approx(max(10.0, 5.0 * r["radius"]))
     assert "fuori tondo mediano degli anelli" in shape.summary_text(r) and "rms dell'adattamento" not in \
         shape.summary_text(r)
+
+
+def test_an_oval_ring_gives_its_mean_circle(tmp_path):
+    doc, ch = S.project(tmp_path, S.ellipse_tower(3.3, 2.7), "Torre")
+    c = faces.slice_circle(ch, Z0 + 3.0)
+    assert abs(c["radius"] - 3.0) < 0.02 and abs(c["coverage"] - 360.0) < 10.0
+    assert np.linalg.norm(np.array(c["centre"]) - S.WORLD[:2]) < 0.02

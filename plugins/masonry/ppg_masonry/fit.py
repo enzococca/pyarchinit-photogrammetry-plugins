@@ -57,9 +57,10 @@ def circle_kasa(xy: np.ndarray) -> tuple[float, float, float]:
     return float(sol[0]), float(sol[1]), float(np.sqrt(max(sol[2] + sol[0] ** 2 + sol[1] ** 2, 0.0)))
 
 
-def robust_circle(xy: np.ndarray) -> dict:
+def robust_circle(xy: np.ndarray, robust: bool = True) -> dict:
     """The circle fitted to plan points: ``centre`` (x, y), ``radius``, ``residuals`` (distance from the centre minus
-    the radius, metres), ``rms``. Geometric least squares from the algebraic circle, Huber loss."""
+    the radius, metres), ``rms``. Geometric least squares from the algebraic circle, Huber loss (plain least squares
+    without ``robust``)."""
     from scipy.optimize import least_squares
 
     q = np.asarray(xy, np.float64)[:, :2]
@@ -73,7 +74,10 @@ def robust_circle(xy: np.ndarray) -> dict:
         return np.hypot(q[:, 0] - x[0], q[:, 1] - x[1]) - x[2]
 
     scale = robust_scale(res([cx, cy, r0]), 1e-5)
-    sol = least_squares(res, [cx, cy, r0], loss="huber", f_scale=HUBER_K * scale, x_scale="jac")
+    if robust:
+        sol = least_squares(res, [cx, cy, r0], loss="huber", f_scale=HUBER_K * scale, x_scale="jac")
+    else:
+        sol = least_squares(res, [cx, cy, r0], x_scale="jac")
     r = res(sol.x)
     return {"centre": origin + sol.x[:2], "radius": float(sol.x[2]), "residuals": r,
             "rms": float(np.sqrt(np.mean(r ** 2)))}
@@ -103,14 +107,20 @@ def arc_coverage(xy: np.ndarray, centre) -> float:
     return float(360.0 - gaps.max())
 
 
+REFINE_SHARES = (0.02, 0.04, 0.07, 0.10, 0.13, 0.16, 0.20, 0.25)  # the ring's band, grown pass after pass
+
+
 def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_share: float = 0.02,
-                  band_min: float = 0.05, refine_share: float = 0.15, refine_min: float = 0.25) -> dict:
+                  band_min: float = 0.05, refine_shares=REFINE_SHARES) -> dict:
     """A circle through the plan points of a slice, all its pieces together: the points centred on their mean (map
     coordinates lose their digits in the products of a fit), circles through three random points, the one with most
-    points within ``max(band_share x radius, band_min)``; then least squares with Huber's loss on the points within
-    ``max(refine_share x radius, refine_min)`` of it, a few times over: on an oval ring the three-point circle may be
-    the curve of one end, the ring around it gives the mean circle. ``centre``, ``radius``, ``inliers`` (mask: the
-    ring), ``residuals`` (of the ring's points), ``rms``, ``coverage`` (degrees of arc the ring covers)."""
+    points within ``max(band_share x radius, band_min)``. Then the ring is grown around it: passes with the band
+    widening from that tight one (``refine_shares`` of the radius, up to 25 %), each refitting the circle with Huber's
+    loss, until a wider band brings no more points; the last fit is plain least squares on that ring - an oval ring
+    gives its mean circle, not the curve of one end, and another structure beyond the band stays out.
+
+    ``centre``, ``radius``, ``inliers`` (mask: the ring), ``residuals`` (of the ring's points), ``rms``, ``coverage``
+    (degrees of arc the ring covers)."""
     q = np.asarray(xy, np.float64)[:, :2]
     if len(q) < 3:
         raise ValueError("three points at least")
@@ -131,15 +141,20 @@ def ransac_circle(xy: np.ndarray, iterations: int = 600, seed: int = 0, band_sha
     if best is None:
         raise ValueError("no circle through the points")
     centre, radius = best
-    for _ in range(4):  # least squares on the ring around the circle found: an oval ring gives its mean circle
-        band = max(refine_share * radius, refine_min)
-        inl = np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= band
-        if inl.sum() < 3:
+
+    def within(share, floor):
+        return np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= max(share * radius, floor)
+
+    inl, previous = within(band_share, band_min), -1
+    for share in refine_shares:  # the ring grown while a wider band brings more points
+        grown = within(share, band_min)
+        if grown.sum() < 3 or grown.sum() <= previous:
             break
+        inl, previous = grown, int(grown.sum())
         f = robust_circle(p[inl])
         centre, radius = np.asarray(f["centre"]), f["radius"]
-    band = max(refine_share * radius, refine_min)
-    inl = np.abs(np.hypot(p[:, 0] - centre[0], p[:, 1] - centre[1]) - radius) <= band
+    f = robust_circle(p[inl], robust=False)  # plain least squares on the ring: its mean circle
+    centre, radius = np.asarray(f["centre"]), f["radius"]
     r = np.hypot(p[inl, 0] - centre[0], p[inl, 1] - centre[1]) - radius
     return {"centre": origin + centre, "radius": float(radius), "inliers": inl, "residuals": r,
             "rms": float(np.sqrt(np.mean(r ** 2))) if len(r) else 0.0, "coverage": arc_coverage(p[inl], centre)}
