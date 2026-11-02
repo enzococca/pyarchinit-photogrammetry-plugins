@@ -41,7 +41,7 @@ def _raster(path):
 def test_lean_and_bulge_of_a_wall(tmp_path):
     doc, ch, w, entry = _wall_face(tmp_path)
     r = shape.face_shape(ch, w["id"], entry["id"])
-    assert r["surface"] == "plane" and r["points"] > 10000
+    assert r["surface"] == "plane" and r["points"] > 10000 and "band_warning" not in r
     assert abs(r["lean_deg"] - S.LEAN_DEG) < 0.1, r["lean_deg"]
     assert abs(r["lean_cm_per_m"] - 100 * np.tan(np.radians(S.LEAN_DEG))) < 0.2
     assert r["lean_toward"] == "out" and abs(r["lean_azimuth"] - 180.0) < 1.0
@@ -134,3 +134,33 @@ def test_two_surveys_of_a_wall(tmp_path):
     assert "2,0 cm" in shape.compare_text(r)
     with pytest.raises(walls.NotReady):
         shape.compare_surveys(ch, w["id"], entry["id"], ch)
+
+
+def test_a_surface_touching_the_band_is_said(tmp_path):
+    doc, ch = S.project(tmp_path, S.wall())
+    w = walls.new_wall(ch, "Muro")
+    entry = faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [S.WALL_LENGTH, 0.0], side=VIEWER,
+                             resolution=0.01, front=0.06)  # the top of the wall leans out of the band
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    warn = r["band_warning"]
+    assert warn["front"] > 0 and warn["back"] == 0 and 0 < warn["share"] < 1
+    text = shape.summary_text(r)
+    assert "Attenzione: la superficie tocca il limite della fascia di profondità (davanti)" in text
+    data = json.loads((walls.wall_folder(ch, w["id"]) / "wall.json").read_text())
+    assert data["faces"][0]["shape"]["band_warning"]["front"] == warn["front"]
+
+
+def test_an_elevation_without_bounds(tmp_path):
+    doc, ch, w, entry = _wall_face(tmp_path, resolution=0.04)
+    live = walls.elevation(ch, entry["id"])
+    del live["bounds"]  # an elevation made by an older program
+    info = walls.face_info(ch, entry["id"])
+    assert abs(info["width"] - S.WALL_LENGTH) < 0.1 and abs(info["height"] - S.WALL_HEIGHT) < 0.1
+    r = shape.face_shape(ch, w["id"], entry["id"])
+    assert abs(r["lean_deg"] - S.LEAN_DEG) < 0.1
+    sec = shape.sections(ch, w["id"], entry["id"], heights=[Z0 + 0.5, Z0 + 2.5], stations=[1.0])
+    assert abs(sec["stations"][0]["offsets"][1]["offset"] - 2.0 * np.tan(np.radians(S.LEAN_DEG))) < 0.003
+    other = S.add_chunk(doc, "Muro 2027", S.wall(offset=S.STEP))
+    c = shape.compare_surveys(ch, w["id"], entry["id"], other)
+    assert abs(c["median_cm"] - 100 * S.STEP) < 0.3
+    assert "bounds" not in walls.elevation(ch, entry["id"])  # the program's entry is not changed

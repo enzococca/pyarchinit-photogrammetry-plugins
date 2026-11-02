@@ -94,18 +94,43 @@ def elevation(chunk, eid: str) -> dict | None:
     return None
 
 
+def raster_extent(chunk, entry: dict) -> tuple[float, float, float, float] | None:
+    """``(u0, v0, u1, v1)`` of the elevation's relief (or orthophoto) raster, None when it has neither."""
+    import rasterio
+
+    for key in ("relief", "orthophoto"):
+        if entry.get(key) and (Path(chunk.data_dir) / entry[key]).exists():
+            with rasterio.open(Path(chunk.data_dir) / entry[key]) as src:
+                b = src.bounds
+            return float(b.left), float(b.bottom), float(b.right), float(b.top)
+    return None
+
+
+def with_bounds(chunk, entry: dict) -> dict:
+    """``entry`` itself when it has its ``bounds``; else a copy whose ``bounds`` are its raster's extent (an elevation
+    made by an older program, or by hand), marked ``_bounds_from_raster``. For reading only: the program's entry is
+    never changed."""
+    if entry.get("bounds"):
+        return entry
+    extent = raster_extent(chunk, entry)
+    if extent is None:
+        return entry
+    return {**entry, "bounds": list(extent), "_bounds_from_raster": True}
+
+
 def need_face(chunk, wall_key: str, face_key: str | None = None) -> tuple[dict, dict]:
-    """``(wall, elevation entry)``: the face ``face_key`` (an elevation id or name) of the wall; None: its only face."""
+    """``(wall, elevation entry)``: the face ``face_key`` (an elevation id or name) of the wall; None: its only face.
+    The entry has its ``bounds`` (:func:`with_bounds`): read it, do not change it."""
     w = need(chunk, wall_key)
     entries = [e for e in (elevation(chunk, f) for f in w["faces"]) if e is not None]
     if face_key is None:
         if len(entries) == 1:
-            return w, entries[0]
+            return w, with_bounds(chunk, entries[0])
         raise NotReady(t(f"Il muro «{w['name']}» ha {len(entries)} facce: scegline una.",
                          f"The wall «{w['name']}» has {len(entries)} faces: choose one."))
     for e in entries:
         if face_key in (e["id"], e.get("name")):
-            return w, e
+            return w, with_bounds(chunk, e)
     raise NotReady(t(f"Nessuna faccia «{face_key}» nel muro «{w['name']}».",
                      f"No face «{face_key}» in the wall «{w['name']}»."))
 
@@ -188,7 +213,7 @@ def face_info(chunk, eid: str) -> dict:
     e = elevation(chunk, eid)
     if e is None:
         raise NotReady(t("La faccia non ha più il suo prospetto.", "The face has no elevation any more."))
-    u0, v0, u1, v1 = e.get("bounds") or (0, 0, 0, 0)
+    u0, v0, u1, v1 = with_bounds(chunk, e).get("bounds") or (0, 0, 0, 0)
     return {"id": eid, "name": e.get("name", eid), "surface": (e.get("frame") or {}).get("kind", "plane"),
             "width": float(u1 - u0), "height": float(v1 - v0), "bounds": [float(x) for x in (u0, v0, u1, v1)],
             "resolution": float(e.get("resolution") or 0.0), "size": list(e.get("size") or []),

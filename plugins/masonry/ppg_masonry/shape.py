@@ -44,7 +44,7 @@ def _frame(entry: dict):
 
 def read_relief(chunk, entry: dict):
     """``(depth (h, w) float64 with NaN, rasterio profile)`` of the elevation's relief, NaN outside the face's
-    bounds."""
+    bounds (without them, its raster's extent)."""
     import rasterio
 
     from pyarchinit_photogrammetry.engine.elevation import elevation_paths
@@ -58,7 +58,7 @@ def read_relief(chunk, entry: dict):
         if src.nodata is not None and np.isfinite(src.nodata):
             d[d == src.nodata] = np.nan
         profile = src.profile.copy()
-    bounds = entry.get("bounds")
+    bounds = entry.get("bounds") or walls.raster_extent(chunk, entry)
     if bounds:  # the window of the face: a cell of the border lies half outside, where the model goes on otherwise
         rows, cols = np.indices(d.shape)
         u, v = cell_uv(profile["transform"], rows, cols)
@@ -145,6 +145,9 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
             q = p - centre
             radial = q - (q @ axis)[:, None] * axis
             return sign * (np.linalg.norm(radial, axis=1) - radius)
+    warning = band_contact(d, entry)
+    if warning is not None:
+        result["band_warning"] = warning
     progress(0.5, t("Carta dello spanciamento", "Bulge map"))
     bulge = np.full(d.shape, np.nan, np.float32)
     for r0 in range(0, d.shape[0], BLOCK):
@@ -163,6 +166,43 @@ def face_shape(chunk, wid: str, eid: str | None = None, max_points: int = MAX_FI
     walls.set_result(chunk, w["id"], entry["id"], "shape", result)
     progress(1.0, t("Forma della faccia misurata", "Shape of the face measured"))
     return result
+
+
+BAND_CELLS = 2  # a surface within this many cells of the band's edge touches it
+
+
+def band_contact(d: np.ndarray, entry: dict) -> dict | None:
+    """Where the surface of the face touches the edge of its depth band (within ``BAND_CELLS`` cells of it): the part
+    of the wall beyond the band is missing from the face, and the fit and the bulge do not see it. ``{"front": n,
+    "back": n, "share": fraction of the surface}``, or None when it does not touch (or touches in fewer than 10 cells
+    and 0.1 % of them)."""
+    lo, hi = entry.get("depth") or (-np.inf, np.inf)
+    res = float(entry.get("resolution") or 0.0)
+    ok = np.isfinite(d)
+    n = int(ok.sum())
+    if not n or res <= 0:
+        return None
+    vals = d[ok]
+    front = int((vals >= hi - BAND_CELLS * res).sum()) if np.isfinite(hi) else 0
+    back = int((vals <= lo + BAND_CELLS * res).sum()) if np.isfinite(lo) else 0
+    if front + back < max(10, 0.001 * n):
+        return None
+    return {"front": front, "back": back, "share": float((front + back) / n),
+            "depth": [float(lo), float(hi)]}
+
+
+def band_text(w: dict) -> str:
+    sides = []
+    if w.get("front"):
+        sides.append(t("davanti", "in front"))
+    if w.get("back"):
+        sides.append(t("dietro", "behind"))
+    where = t(" e ", " and ").join(sides)
+    return t(f"Attenzione: la superficie tocca il limite della fascia di profondità ({where}) nel "
+             f"{num(100 * w['share'], 1)} % delle celle: una parte del muro può restare fuori. Rifai la faccia con "
+             "una fascia più larga.",
+             f"Warning: the surface touches the edge of the depth band ({where}) in {num(100 * w['share'], 1)} % of "
+             "the cells: part of the wall may be left out. Make the face again with a wider band.")
 
 
 def signed_cm(value) -> str:
@@ -197,6 +237,8 @@ def summary_text(r: dict) -> str:
                        f"verso {azimuth(r.get('axis_azimuth'))}; raggio {metres(r.get('radius'))}.",
                        f"Axis of the cylinder inclined {degrees(r.get('axis_deg'))} ({num(r['lean_cm_per_m'], 1)} "
                        f"cm/m) towards {azimuth(r.get('axis_azimuth'))}; radius {metres(r.get('radius'))}."))
+    if r.get("band_warning"):
+        lines.append(band_text(r["band_warning"]))
     lo, hi = r.get("bulge_min_cm"), r.get("bulge_max_cm")
     if lo is not None:
         lines.append(t(f"Spanciamento (scarto dalla superficie adattata, verso chi guarda): da {signed_cm(lo / 100)} "
@@ -482,7 +524,7 @@ def tower_axis(chunk, wid: str, heights=None, levels: int = 5, progress=None) ->
     progress = as_progress(progress)
     w = walls.need(chunk, wid)
     near = None
-    cyl = next((e for e in (walls.elevation(chunk, f) for f in w["faces"])
+    cyl = next((walls.with_bounds(chunk, e) for e in (walls.elevation(chunk, f) for f in w["faces"])
                 if e is not None and (e.get("frame") or {}).get("kind") == "cylinder"), None)
     if cyl is not None:
         frame = _frame(cyl)
@@ -561,9 +603,13 @@ def compare_surveys(chunk, wid: str, eid: str | None, other, progress=None) -> d
     d, profile = read_relief(chunk, entry)
     res = float(entry["resolution"])
     progress(0.05, t(f"Superficie di «{other.label}» sulla faccia", f"Surface of «{other.label}» on the face"))
-    surf = FrameSurface(other, raycaster_for_chunk(other), frame, res, threading.Lock(),
-                        tuple(entry.get("depth") or (-np.inf, np.inf)), entry["bounds"])
     tr = profile["transform"]
+    bounds = entry["bounds"]
+    if entry.get("_bounds_from_raster"):  # bounds that give FrameSurface the raster's own grid
+        h0, w0 = d.shape
+        bounds = (tr.c + 0.5 * res, tr.f - (h0 - 1.5) * res, tr.c + (w0 - 1.5) * res, tr.f - 0.5 * res)
+    surf = FrameSurface(other, raycaster_for_chunk(other), frame, res, threading.Lock(),
+                        tuple(entry.get("depth") or (-np.inf, np.inf)), bounds)
     if surf.shape != d.shape or abs(surf.origin[0] - tr.c) > res / 100 or abs(surf.origin[1] - tr.f) > res / 100:
         raise NotReady(t("La griglia del prospetto non corrisponde più alla faccia: rifai il prospetto.",
                          "The grid of the elevation no longer matches the face: make the elevation again."))
