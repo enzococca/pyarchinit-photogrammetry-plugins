@@ -268,11 +268,11 @@ def test_command(tmp_path, capsys):
 
 
 def test_version_gate():
-    """terrio from 0.3.2 up to the 0.5 releases is accepted, older and newer ones refused; the
+    """terrio from 0.3.2 up to the 0.6 releases is accepted, older and newer ones refused; the
     steps of 0.2.0 need 0.5."""
     inside = lambda v: environment.OLDEST <= environment._key(v) < environment.NEWEST  # noqa: E731
-    assert inside("0.3.2") and inside("0.4.0") and inside("0.5.0") and inside("0.5.9")
-    assert not inside("0.3.1") and not inside("0.6.0") and not inside("1.0.0")
+    assert inside("0.3.2") and inside("0.4.0") and inside("0.5.0") and inside("0.6.1") and inside("0.6.9")
+    assert not inside("0.3.1") and not inside("0.7.0") and not inside("1.0.0")
     assert environment._key("0.4.2") < environment.FEATURES_SINCE <= environment._key("0.5.0")
     assert environment._key(environment.TERRIO_VERSION) >= environment.OLDEST
 

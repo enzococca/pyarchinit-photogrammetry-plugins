@@ -48,14 +48,14 @@ ppg plugin terrio export scavo.ppg ortofoto.pmtiles
 ## Installing
 
 * In the program: *Strumenti > Plugin...*, `terrio`, *Installa / aggiorna*, *Riavvia ora*; then
-  *Plugin > terrio > Installa terrio* once (about 20 MB from PyPI); the same action updates an older terrio.
+  *Plugin > terrio > Installa terrio* once (about 30 MB from PyPI); the same action updates an older terrio.
 * With pip, in the Python environment of the program (terrio comes with it):
 
   ```bash
   pip install "ppg-terrio @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/terrio"
   ```
 
-The plugin is written for terrio 0.5.0 and pip installs `terrio>=0.5,<0.6`. An older terrio (0.3.2 and
+The plugin is written for terrio 0.6.1 and pip installs `terrio>=0.5,<0.7`. An older terrio (0.3.2 and
 the 0.4 releases, as the plugin folder of the application may hold) still runs the import, the ground
 classification, the reference rasters and the exports; the cleaning, the colours and values, the heights and
 the Planetary Computer need 0.5 and say so - the window offers to download it. terrio is young and its API
@@ -66,6 +66,13 @@ may still change before 1.0.
 * Coordinates: terrio works in the coordinates of the file or of the chunk; the plugin moves the
   points into the internal frame of the chunk (`chunk.transform`) and back. A new chunk made from
   a file takes a round origin as its frame, as the laser scans imported by the program do.
+* Transformations: from terrio 0.6, a transformation whose grid is missing (a datum shift grid, a geoid)
+  goes on with a rougher one - even a "ballpark" that ignores the datum shift, tens to hundreds of metres -
+  with only a warning. The plugin always asks terrio for the best transformation (`only_best`), so a missing
+  grid stops the step and says so: allow the network (the grids come from the PROJ CDN) or put the grid in a
+  folder of grids. With an older terrio the result is checked against the program's PROJ instead. The grids
+  of the PROJ CDN (EGM2008, EGM96, national geoids and datum shifts) are DEFLATE-compressed, which terrio
+  0.6 reads; a grid compressed with Zstandard is not read by terrio's wheels and counts as missing.
 * E57 files are read with the pose of every scan applied and written as one scan with 16-bit
   colours; the program's own E57 import (`io.scans`, pye57) keeps the scans apart, where pye57
   is available.

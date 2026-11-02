@@ -9,9 +9,11 @@ into ``<plugin data>/lib`` and puts that folder on ``sys.path``; :func:`load` im
 of the two: the terrio of the environment or the one of the plugin folder (a terrio downloaded to
 update the one the application carries wins over it).
 
-The plugin works with terrio from 0.3.2 up to the 0.5 releases; the steps added in 0.2.0 of the
+The plugin works with terrio from 0.3.2 up to the 0.6 releases; the steps added in 0.2.0 of the
 plugin (cleaning, colours from rasters, heights, Planetary Computer) need terrio 0.5
-(:data:`FEATURES_SINCE`) and say so when an older one is installed (:class:`TerrioTooOld`).
+(:data:`FEATURES_SINCE`) and say so when an older one is installed (:class:`TerrioTooOld`). From
+0.6 terrio may fall back to a rougher coordinate transformation when a grid is missing: the plugin
+asks for the best one (:mod:`.transforms`).
 """
 from __future__ import annotations
 
@@ -27,8 +29,8 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
-TERRIO_VERSION = "0.5.0"  # the version the plugin is written and tested with
-OLDEST, NEWEST = (0, 3, 2), (0, 6)  # accepted: from 0.3.2 up to (not including) 0.6
+TERRIO_VERSION = "0.6.1"  # the version the plugin is written and tested with
+OLDEST, NEWEST = (0, 3, 2), (0, 7)  # accepted: from 0.3.2 up to (not including) 0.7
 FEATURES_SINCE = (0, 5)  # LOF, DBSCAN, colorization, heights through geoid grids, Planetary Computer signing
 PYPI = "https://pypi.org/pypi/terrio/{version}/json"
 USER_AGENT = "pyarchinit-photogrammetry plugin terrio"
@@ -89,7 +91,7 @@ def _import(minimum: tuple | None = None, feature: str = ""):
     version = getattr(terrio, "__version__", "0")
     if not (OLDEST <= _key(version) < NEWEST):
         raise TerrioMissing(f"terrio {version} is installed, this plugin needs terrio {TERRIO_VERSION} "
-                            f"(0.3.2 up to the 0.5 releases): pip install 'terrio>=0.5,<0.6'")
+                            f"(0.3.2 up to the 0.6 releases): pip install 'terrio>=0.5,<0.7'")
     if minimum is not None and _key(version) < tuple(minimum):
         from .texts import needs_newer
 

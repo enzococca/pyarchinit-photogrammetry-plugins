@@ -31,13 +31,13 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import class_label, dec, num, signed, t  # noqa: F401 (the plugin's texts, for its modules too)
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 METHOD_LABELS = [("smrf", "SMRF (Simple Morphological Filter)"), ("csf", "CSF (Cloth Simulation Filter)"),
                  ("pmf", "PMF (Progressive Morphological Filter)")]
 CLOUD_FILTER = "Nuvole di punti (*.las *.laz *.ply *.e57 *.json *.zip);;Tutti i file (*)"
 RASTER_FILTER = "Raster (*.tif *.tiff *.vrt *.jp2 *.png *.jpg);;Tutti i file (*)"
-MIB = 20  # about the size of a terrio wheel, in MB
+MIB = 30  # about the size of a terrio wheel, in MB
 
 
 class TerrioPlugin(Plugin):

@@ -61,6 +61,6 @@ def class_label(code: int, labels: dict | None = None) -> str:
 def needs_newer(feature: str, found: str, wanted: str) -> str:
     """The message of a step that needs a newer terrio than the one installed."""
     return t("{0} richiede terrio {1} o successivo, ma e' installato terrio {2}: Plugin > terrio > Installa "
-             "terrio... lo aggiorna (oppure pip install -U \"terrio>={1},<0.6\").",
+             "terrio... lo aggiorna (oppure pip install -U \"terrio>={1},<0.7\").",
              "{0} needs terrio {1} or later, but terrio {2} is installed: Plugin > terrio > Install terrio... "
-             "updates it (or pip install -U \"terrio>={1},<0.6\").").format(feature, wanted, found)
+             "updates it (or pip install -U \"terrio>={1},<0.7\").").format(feature, wanted, found)
