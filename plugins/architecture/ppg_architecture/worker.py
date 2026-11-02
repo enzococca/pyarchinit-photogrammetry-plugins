@@ -9,20 +9,23 @@ the environment the plugin installs - and only the files and the lines below go 
 This file imports nothing of the program or of the plugin. The job (every length in metres, every array small enough
 to travel in the JSON)::
 
-    {"protocol": 1, "kind": "column" | "moulding" | "arch", "output": "/abs/folder", "name": "...",
+    {"protocol": 1, "kind": "column" | "moulding" | "arch" | "opening", "output": "/abs/folder", "name": "...",
      "placement": [[4 x 4]],          # the element's frame -> the chunk's export frame (rigid)
      "tolerance": 0.0005,             # of the STL, metres
      "column":   {"profile": [[r, z], ...], "smooth": true},
      "moulding": {"path": [[x, y, z], ...], "section": [[u, v], ...]},
      "arch":     {"outline": {"points": [[u, v], ...], "segments": [["L", i, j], ["A", i, j, k], ...]},
-                  "depth": 0.8}}
+                  "depth": 0.8},
+     "opening":  {"plan": [[x, y], ...], "bottom": 1.0, "top": 2.0,
+                  "void": null | {"outline": {...as an arch's...}, "placement": [[4 x 4]], "depth": 0.5}}}
 
 The frames: a column is the profile ``(r, z)`` revolved 360 degrees about the local z axis; a moulding is the section
 swept along the path (given in the export frame: the placement is then the identity), the section in the plane normal
 to the path at its first point with ``u`` = up x tangent and ``v`` = tangent x u, mitred corners; an arch is the
-outline in the local xy plane extruded along z by
-``depth``. ``output`` must not exist: the files (``solid.step``, AP214 in metres, and ``solid.stl``, whose numbers are
-metres) are written in
+outline in the local xy plane extruded along z by ``depth``; an opening is its plan polygon extruded from ``bottom`` to
+``top`` (the plan in the export frame: the placement is the identity), united with the void under an arch (its outline
+extruded as an arch's and moved by its own ``placement``) when one closes it above. ``output`` must not exist: the
+files (``solid.step``, AP214 in metres, and ``solid.stl``, whose numbers are metres) are written in
 ``<output>.partial`` and the folder is renamed at the end, so a run stopped half-way never leaves a result that looks
 complete.
 
@@ -156,7 +159,27 @@ def arch(cq, spec: dict):
     return wp.close().extrude(depth).val()
 
 
-BUILDERS = {"column": column, "moulding": moulding, "arch": arch}
+def opening(cq, spec: dict):
+    """The plan of the void extruded from the bottom (the sill) to the top (the lintel or the springing line), one
+    solid with the void under the arch above it when there is one."""
+    plan = [(float(x), float(y)) for x, y in spec["plan"]]
+    bottom, top = float(spec["bottom"]), float(spec["top"])
+    if len(plan) < 3 or top <= bottom:
+        raise ValueError("a plan of three points at least and a top above the bottom")
+    shape = cq.Workplane("XY", origin=(0.0, 0.0, bottom)).polyline(plan).close().extrude(top - bottom).val()
+    void = spec.get("void")
+    if void:
+        above = place(cq, arch(cq, {"outline": void["outline"], "depth": void["depth"]}), void["placement"])
+        shape = shape.fuse(above).clean()
+        solids = shape.Solids()
+        if len(solids) != 1:
+            raise ValueError(f"the opening and the void under its arch make {len(solids)} solids, not one: the arch "
+                             "does not close the opening")
+        shape = solids[0]
+    return shape
+
+
+BUILDERS = {"column": column, "moulding": moulding, "arch": arch, "opening": opening}
 
 
 def place(cq, shape, matrix):
@@ -228,7 +251,7 @@ def run_job(job: dict) -> dict:
             shutil.rmtree(partial)
         kind = job["kind"]
         if kind not in BUILDERS:
-            raise ValueError(f"kind {kind!r}: column, moulding or arch")
+            raise ValueError(f"kind {kind!r}: column, moulding, arch or opening")
         emit("progress", fraction=0.1, phase="solid")
         shape = BUILDERS[kind](cq, job[kind])
         shape = place(cq, shape, job.get("placement") or [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])

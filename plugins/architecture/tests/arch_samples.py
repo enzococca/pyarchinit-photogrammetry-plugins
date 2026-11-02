@@ -142,6 +142,116 @@ def arch_mesh(kind: str, thickness: float = 0.4, depth: float = 0.8, ground: flo
     return mesh, truth
 
 
+# openings: a wall along x, 5 m long and 3 m high, its outer face (towards the photos, -y) at y = 0, its inner face at
+# y = WALL_T; the opening centred at x = 0
+WALL_T = 0.5
+OPENINGS = {
+    # a door: 0.9 m wide, from the ground (z = 0) to 2.1 m, square reveals
+    "door": {"width": 0.9, "sill": 0.0, "lintel": 2.1, "splay": 0.0, "top": "flat"},
+    # a window splayed 10 degrees on both sides (wider at the inner face: an embrasure), 0.8 m wide at the outer face
+    "splayed": {"width": 0.8, "sill": 1.0, "lintel": 2.0, "splay": 10.0, "top": "flat"},
+    # a window with a semicircular top: 0.8 m wide, the springing line at 1.8 m, the crown at 2.2 m
+    "arched": {"width": 0.8, "sill": 1.0, "lintel": 2.2, "springing": 1.8, "splay": 0.0, "top": "arch"},
+}
+
+
+def opening_wall(kind: str, both_faces: bool = True, ground: bool = True, edge: float = 0.04, splays=None,
+                 room=None, street: float | None = None, thickness: float | None = None, width: float | None = None,
+                 rebate: float = 0.0, pier: float | None = None):
+    """A wall with one opening of :data:`OPENINGS` as a photogrammetric mesh would be (triangles of ``edge`` metres),
+    standing on a ground plane: built from horizontal slabs (plan polygons extruded between two heights) and, for an
+    arched top, the part above the springing line as an elevation extruded across the wall. ``both_faces`` False: the
+    inner face (y = WALL_T) is not there, as when only the outer face was photographed. ``splays``: ``(left, right)``
+    degrees instead of the kind's (positive: wider at the inner face; left seen from outside... at -x). ``room``:
+    ``(width, depth)`` of a room behind the wall (walls 0.2 m thick, centred on the opening); ``street``: a facing
+    wall 0.3 m thick that far in front. ``thickness``: of the wall instead of :data:`WALL_T`; ``width``: of the
+    opening (its narrowest, the clear width); ``rebate``: the outer half of each reveal that much farther out (the
+    seat of a frame); ``pier``: the wall left of the opening only that wide (0: the opening at the wall's end). Returns
+    ``(mesh, truth)``; the truth also holds ``inner_width``, ``splay_left``, ``splay_right`` and ``plan`` (the
+    void's corners in plan, outer face first)."""
+    import trimesh
+    from shapely.geometry import Point, box
+
+    eng = _engine()
+    o = OPENINGS[kind]
+    x0, x1, top, T = -2.5, 2.5, 3.0, (WALL_T if thickness is None else float(thickness))
+    o = dict(o, width=o["width"] if width is None else float(width))
+    half = o["width"] / 2
+    sl, sr = (o["splay"], o["splay"]) if splays is None else splays
+    gl, gr = T * np.tan(np.radians(sl)), T * np.tan(np.radians(sr))
+    plan = np.array([[-half, 0.0], [half, 0.0], [half + gr, T], [-half - gl, T]])
+    parts = []
+
+    def slab(poly, z0, z1):
+        if abs(eng.polygon_area(np.asarray(poly, float))) < 1e-9:
+            return  # the wall left of an opening at its end
+        m = eng.prism_mesh(np.asarray(poly, float), z1 - z0)
+        m.apply_translation([0.0, 0.0, z0])
+        parts.append(m)
+
+    xl0 = x0 if pier is None else -half - rebate - float(pier)
+    left = [(xl0, 0.0), (-half, 0.0), (-half - gl, T), (xl0, T)]
+    right = [(half, 0.0), (x1, 0.0), (x1, T), (half + gr, T)]
+    if rebate:
+        r, m = float(rebate), T / 2
+        left = [(xl0, 0.0), (-half - r, 0.0), (-half - r, m), (-half, m), (-half, T), (xl0, T)]
+        right = [(half + r, 0.0), (x1, 0.0), (x1, T), (half, T), (half, m), (half + r, m)]
+        plan = np.array([[-half - r, 0.0], [half + r, 0.0], [half + r, m], [half, m], [half, T], [-half, T],
+                         [-half, m], [-half - r, m]])
+    full = [(xl0, 0.0), (x1, 0.0), (x1, T), (xl0, T)]
+    if o["sill"] > 0:
+        slab(full, 0.0, o["sill"])
+    upto = o["springing"] if o["top"] == "arch" else o["lintel"]
+    slab(left, o["sill"], upto)
+    slab(right, o["sill"], upto)
+    if o["top"] == "arch":
+        wall = box(x0, upto, x1, top).difference(Point(0.0, upto).buffer(half, quad_segs=64))
+        m = eng.prism_mesh(np.asarray(wall.exterior.coords), T)  # (x, z, y)
+        v = np.asarray(m.vertices)[:, [0, 2, 1]]
+        parts.append(trimesh.Trimesh(v, np.asarray(m.faces)[:, ::-1], process=False))  # y and z swapped: turned back
+    else:
+        slab(full, o["lintel"], top)
+    if room is not None:
+        rw, rd = room
+        for poly in ([(-rw / 2 - 0.2, T), (-rw / 2, T), (-rw / 2, T + rd), (-rw / 2 - 0.2, T + rd)],
+                     [(rw / 2, T), (rw / 2 + 0.2, T), (rw / 2 + 0.2, T + rd), (rw / 2, T + rd)],
+                     [(-rw / 2 - 0.2, T + rd), (rw / 2 + 0.2, T + rd), (rw / 2 + 0.2, T + rd + 0.2),
+                      (-rw / 2 - 0.2, T + rd + 0.2)]):
+            slab(poly, 0.0, top)
+    if street is not None:
+        slab([(x0, -street - 0.3), (x1, -street - 0.3), (x1, -street), (x0, -street)], 0.0, top)
+    if ground:
+        g = np.array([[x0 - 0.5, -2.0, 0.0], [x1 + 0.5, -2.0, 0.0], [x1 + 0.5, T + 2.0, 0.0], [x0 - 0.5, T + 2.0, 0.0]])
+        parts.append(trimesh.Trimesh(g, [[0, 1, 2], [0, 2, 3]], process=False))
+    out = []
+    for m in parts:
+        v, f = trimesh.remesh.subdivide_to_size(m.vertices, m.faces, max_edge=edge, max_iter=20)
+        out.append(trimesh.Trimesh(v, f, process=False))
+    mesh = trimesh.util.concatenate(out)
+    if not both_faces:
+        tri = np.asarray(mesh.vertices)[np.asarray(mesh.faces)]
+        back = np.abs(tri[:, :, 1] - T).max(axis=1) < 1e-6  # the faces lying in the plane of the inner face
+        mesh = trimesh.Trimesh(mesh.vertices, np.asarray(mesh.faces)[~back], process=False)
+    truth = dict(o, thickness=T, inner_width=o["width"] + gl + gr, plan=plan, splay_left=sl, splay_right=sr,
+                 rebate=rebate, outer_width=o["width"] + 2 * rebate)
+    return mesh, truth
+
+
+def tower_wall(radius: float, thickness: float = 0.5, width: float = 0.9, edge: float = 0.04):
+    """A round tower's wall (outer radius ``radius``) with a door 0.9 m wide facing -y, from the ground to 2.1 m, its
+    outer face through (0, 0): the point (0, thickness / 2) is in the door."""
+    import trimesh
+    from shapely.geometry import Point, box
+
+    eng = _engine()
+    ring = Point(0.0, radius).buffer(radius, quad_segs=128).difference(
+        Point(0.0, radius).buffer(radius - thickness, quad_segs=128))
+    c_shape = ring.difference(box(-width / 2, -1.0, width / 2, thickness + 1.0))
+    m = eng.prism_mesh(np.asarray(c_shape.exterior.coords), 2.1)
+    v, f = trimesh.remesh.subdivide_to_size(m.vertices, m.faces, max_edge=edge, max_iter=20)
+    return trimesh.Trimesh(v, f, process=False)
+
+
 def cadquery_python() -> Path | None:
     """The Python of an environment with CadQuery for the worker's tests (``PPG_TEST_CADQUERY``)."""
     p = os.environ.get("PPG_TEST_CADQUERY")

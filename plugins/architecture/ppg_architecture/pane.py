@@ -20,7 +20,11 @@ MAKE = (("column", ("Colonna...", "Column..."), "Una colonna o una sua parte (ba
          "from the model"),
         ("arch", ("Arco / volta...", "Arch / vault..."), "Un arco o una volta a botte da una sezione del progetto o da "
          "un piano per due punti", "An arch or a barrel vault from a section of the project or a plane through two "
-         "points"))
+         "points"),
+        ("opening", ("Porta / finestra...", "Door / window..."), "Il vano di una porta o di una finestra: clic dentro "
+         "l'apertura sulla pianta, stipiti, facce del muro, soglia e architrave si misurano sul modello",
+         "The void of a door or a window: click inside the opening on the plan, the reveals, the wall faces, the sill "
+         "and the lintel are measured on the model"))
 ACTIONS = (("show", ("Mostra nella vista 3D", "Show in the 3D view")),
            ("edit", ("Modifica parametri...", "Edit parameters...")),
            ("step", ("Esporta STEP...", "Export STEP...")),
@@ -34,7 +38,7 @@ COLUMNS = (("Nome", "Name"), ("Tipo", "Kind"), ("Misure", "Measures"), ("Scarto 
 
 
 class ArchitecturePane(QWidget):
-    requested = Signal(str)  # "install", "column", "moulding", "arch", or an action of ACTIONS
+    requested = Signal(str)  # "install", "column", "moulding", "arch", "opening", or an action of ACTIONS
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -102,6 +106,11 @@ class ArchitecturePane(QWidget):
             elif e["kind"] == "moulding" and p.get("closed_member"):
                 size = f"{metres(p.get('width'))} × {metres(p.get('section_height'))}"
                 measures = f"L {metres(p.get('length'))}, {size}"
+            elif e["kind"] == "opening":
+                from .texts import kind_title as title
+
+                size = f"{metres(p.get('width'))} × {metres(p.get('height'))}"
+                measures = f"{title(p.get('opening_type', 'opening'))} {size}"
             elif e["kind"] == "moulding":
                 measures = t(f"L {metres(p.get('length'))}, sporgenza {metres(p.get('projection'))}",
                              f"L {metres(p.get('length'))}, projection {metres(p.get('projection'))}")
@@ -110,6 +119,8 @@ class ArchitecturePane(QWidget):
 
                 measures = t(f"{arch_title(p.get('type', ''))}, luce {metres(p.get('span'))} ({candidates_text(p)})",
                              f"{arch_title(p.get('type', ''))}, span {metres(p.get('span'))} ({candidates_text(p)})")
+            if e.get("stale"):
+                measures += t(" - da ricostruire", " - to be rebuilt")
             if e.get("warnings"):
                 measures += " ⚠"
             cells = (e.get("name", ""), kind_title(e["kind"]), measures, metres(fit.get("median")),

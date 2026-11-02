@@ -101,7 +101,20 @@ def arch(cq, spec):
     return Shape(engine.prism_mesh(poly, float(spec["depth"])))
 
 
-worker.BUILDERS = {"column": column, "moulding": moulding, "arch": arch}
+def opening(cq, spec):
+    import trimesh
+
+    mesh = engine.prism_mesh(np.asarray(spec["plan"], float), float(spec["top"]) - float(spec["bottom"]))
+    mesh.apply_translation([0.0, 0.0, float(spec["bottom"])])
+    void = spec.get("void")
+    if void:  # the void reaches a millimetre into the part below: near enough the union's volume, and watertight
+        above = arch(cq, {"outline": void["outline"], "depth": void["depth"]}).mesh
+        above.apply_transform(np.asarray(void["placement"], float))
+        mesh = trimesh.util.concatenate([mesh, above])
+    return Shape(mesh)
+
+
+worker.BUILDERS = {"column": column, "moulding": moulding, "arch": arch, "opening": opening}
 worker.place = place
 worker.write_step = lambda shape, path: Exporters.export(shape, str(path), exportType="STEP")
 worker.versions = lambda: {"cadquery": "0.0-fake", "python": "3"}
