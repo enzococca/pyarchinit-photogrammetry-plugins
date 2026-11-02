@@ -99,6 +99,9 @@ class ArchitecturePane(QWidget):
             p, fit = e.get("params") or {}, e.get("fit") or {}
             if e["kind"] == "column":
                 measures = f"h {metres(p.get('height'))}, Ø {metres(2 * p.get('radius_base', 0))}"
+            elif e["kind"] == "moulding" and p.get("closed_member"):
+                size = f"{metres(p.get('width'))} × {metres(p.get('section_height'))}"
+                measures = f"L {metres(p.get('length'))}, {size}"
             elif e["kind"] == "moulding":
                 measures = t(f"L {metres(p.get('length'))}, sporgenza {metres(p.get('projection'))}",
                              f"L {metres(p.get('length'))}, projection {metres(p.get('projection'))}")

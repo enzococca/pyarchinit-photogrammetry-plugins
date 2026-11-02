@@ -626,7 +626,7 @@ class ArchitecturePlugin(Plugin):
         for e in items:
             fit = e.get("fit") or {}
             label = f"{e['name']} ({kind_title(e['kind']).lower()}, {t('scarto', 'fit')} {metres(fit.get('median'))})"
-            kids.append({"label": label, "icon": "plugin", "activate": lambda x=e: self._show(x)})
+            kids.append({"label": label, "icon": "plugin", "activate": lambda x=e: self._guarded(self._show, x)})
         return [{"label": t(*NAME), "icon": "plugin", "children": kids}]
 
     # ------------------------------------------------------------------ the command line

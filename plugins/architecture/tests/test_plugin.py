@@ -285,9 +285,14 @@ def test_a_changed_system_is_refused_until_the_elements_are_rebuilt(tmp_path, fa
 
     doc, ch, _truth = _project(tmp_path)
     col = elements.column(ch, polygon=_square(COLUMN_AT, 0.6), knots=8, name="Colonna")
+    # a part on the same axis, referred to by id as the dialog does, and radii edited by hand
+    top = elements.column(ch, polygon=_square(COLUMN_AT, 0.6), zmin=COLUMN_AT[2] + 2.0, same_axis=col["id"],
+                          knots=6, name="Capitello")
+    col = elements.edit_column(ch, col["id"], knot_radii=[r * 1.02 for r in col["params"]["knot_radii"]])
     p1, p2 = ARCH_AT[:2] + [-2.0, -0.4], ARCH_AT[:2] + [2.0, -0.4]
     elements.arch(ch, (2.0, ARCH_AT[2] + 0.9), p1=p1, p2=p2, name="Arco")
     old_axis = np.asarray(col["params"]["axis_point"])
+    before = {e["id"]: e["solid"]["volume"] for e in elements.elements(ch)}
     # the chunk georeferenced again: everything moves 10 m east and turns 90 degrees about the vertical
     rz = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
     move = compose_similarity(1.0, rz, [10.0, 0.0, 0.0])
@@ -299,12 +304,37 @@ def test_a_changed_system_is_refused_until_the_elements_are_rebuilt(tmp_path, fa
         with pytest.raises(elements.NotReady, match="sistema del chunk è cambiato"):
             call()
     made = elements.rebuild(ch)
-    assert [e["name"] for e in made] == ["Colonna", "Arco"] and elements.frame_matches(ch)
+    assert [e["name"] for e in made] == ["Colonna", "Capitello", "Arco"] and elements.frame_matches(ch)
+    assert [e["id"] for e in made] == list(before)  # in place: the ids, and the same-axis reference, hold
+    assert elements.entry(ch, "Capitello")["source"]["same_axis"] == col["id"]
+    for e in made:  # the edited radii carried: the volumes are those before the change of system
+        assert abs(e["solid"]["volume"] / before[e["id"]] - 1) < 0.001, e["name"]
+    rebuilt = elements.entry(ch, col["id"])
+    assert rebuilt["edited"] == ["knot_radii"] and "modificati a mano mantenuti" in elements.summary(rebuilt)
+    del top
     new_axis = np.asarray(elements.entry(ch, "Colonna")["params"]["axis_point"])
     np.testing.assert_allclose(new_axis, engine.apply(move, old_axis[None])[0], atol=0.002)
     assert elements.entry(ch, "Arco")["params"]["type"] == "pointed"
-    assert {q.name for q in elements.folder(ch).iterdir()} == {e["id"] for e in made}
+    assert {q.name for q in elements.folder(ch).iterdir()} == {e["id"] for e in made}  # no backup left
     ifc.export(ch, tmp_path / "x.ifc")  # allowed again
+
+
+def test_a_tree_click_after_a_system_change_says_why(tmp_path, fake, monkeypatch):
+    from ppg_architecture import ArchitecturePlugin
+    from pyarchinit_photogrammetry.plugins import Context
+
+    doc, ch, _truth = _project(tmp_path)
+    elements.column(ch, polygon=_square(COLUMN_AT, 0.6), knots=6, name="Colonna")
+    plugin = ArchitecturePlugin()
+    plugin.activate(Context("architecture", tmp_path / "plugin"))
+    monkeypatch.setattr(plugin, "_chunk", lambda: ch)
+    said = []
+    monkeypatch.setattr(plugin, "_message", lambda kind, text, details="": said.append(text))
+    moved = ch.transform.copy()
+    moved[0, 3] += 5.0
+    ch.transform = moved
+    plugin._tree_items(ch)[0]["children"][0]["activate"]()
+    assert said and "sistema del chunk è cambiato" in said[0]
 
 
 def _plugin_folder(root: Path) -> Path:

@@ -229,3 +229,37 @@ def test_a_type_asked_for_is_enforced():
     auto = engine.fit_arch(pts)
     assert auto.type == "segmental" and abs(auto.span - truth["span"]) < 0.002
     assert set(auto.candidates) == {"circle", "pointed", "ellipse"}
+
+
+def _sheet(*parts):
+    return np.vstack([np.asarray(p, float) for p in parts])
+
+
+def test_the_wall_face_is_the_deepest_face_not_the_cornices_fascia():
+    """An open facade sheet, as photogrammetry gives it: 0.15 m of wall below, a soffit, a fascia 0.35 m tall (longer
+    than the wall in view), a crown lip to 0.30 m, a roof behind. The wall face is the wall, not the fascia."""
+    wall = np.column_stack([np.zeros(6), np.linspace(-0.15, 0.0, 6)])
+    fascia = np.column_stack([np.full(15, -0.22), np.linspace(0.0, 0.35, 15)])
+    sheet = _sheet(wall, [[-0.11, 0.0]], fascia, [[-0.30, 0.40], [-0.30, 0.50], [0.0, 0.50]],
+                   np.column_stack([np.linspace(0.1, 0.6, 6), np.linspace(0.55, 0.8, 6)]))
+    cut = engine.wall_section([sheet], out=-1, resolution=0.002)
+    assert abs(cut["wall_u"]) < 1e-9 and cut["warning"] == ""
+    assert abs(cut["projection"] - 0.30) < 0.005 and abs(cut["height"] - 0.50) < 0.005
+
+
+def test_three_centimetres_of_wall_are_a_face():
+    profile = np.column_stack([-CORNICE[:, 0], CORNICE[:, 1]])
+    sheet = _sheet([[0.0, -0.03]], profile, [[0.3, 0.25]])  # 3 cm of wall below, the wall's top behind
+    cut = engine.wall_section([sheet], out=-1, resolution=0.002)
+    assert abs(cut["wall_u"]) < 1e-9 and cut["warning"] == ""
+    assert cut["projection"] == pytest.approx(0.18) and cut["height"] == pytest.approx(0.25)
+
+
+def test_no_wall_face_measures_from_the_deepest_point_and_says_so():
+    profile = np.column_stack([-CORNICE[:, 0], CORNICE[:, 1]])  # the cornice alone: its fillets are not a wall
+    cut = engine.wall_section([profile], out=-1, depth=0.05, resolution=0.002)
+    assert cut["warning"] == "no-wall-face" and cut["wall_u"] == pytest.approx(0.0)
+    assert cut["projection"] == pytest.approx(0.18) and cut["height"] == pytest.approx(0.25)
+    area = abs(engine.polygon_area(np.column_stack([CORNICE[:, 0], CORNICE[:, 1]])))
+    assert cut["front_area"] == pytest.approx(area, rel=1e-6)
+    assert abs(engine.polygon_area(cut["section"])) == pytest.approx(area + 0.05 * 0.25, rel=1e-6)

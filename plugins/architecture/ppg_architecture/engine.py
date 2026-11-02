@@ -560,42 +560,63 @@ def wall_section(polylines, out: float, depth: float = 0.1, simplify: float = 0.
         if polygon_area(ring) < 0:
             ring = ring[::-1]
         lo, hi = ring.min(axis=0), ring.max(axis=0)
-        return {"section": ring, "wall_u": None, "v_range": [float(lo[1]), float(hi[1])],
-                "projection": float(hi[0] - lo[0]), "height": float(hi[1] - lo[1]),
+        return {"section": ring, "wall_u": None, "v_range": [float(lo[1]), float(hi[1])], "projection": None,
+                "width": float(hi[0] - lo[0]), "height": float(hi[1] - lo[1]), "front_area": abs(polygon_area(ring)),
+                "warning": "", "closed": True,
                 "window": [float(lo[0] - MARGIN), float(lo[1] - MARGIN), float(hi[0] + MARGIN), float(hi[1] + MARGIN)],
                 "line": c.tolist()}
     sign = -1.0 if out < 0 else 1.0  # the moulding stands towards sign * u
-    seg = np.diff(c, axis=0)
-    length = np.linalg.norm(seg, axis=1)
-    vertical = np.abs(seg[:, 1]) > 3 * np.abs(seg[:, 0])
     tol = max(2.0 * resolution, 0.003)
-    if vertical.any() and length[vertical].sum() > 0:
-        mid = 0.5 * (c[:-1, 0] + c[1:, 0])[vertical]
-        w = length[vertical]
-        bins = np.arange(mid.min() - tol, mid.max() + 2 * tol, tol)
-        if len(bins) < 2:
-            wall_u = float(np.median(mid))
-        else:
-            hist, edges = np.histogram(mid, bins=bins, weights=w)
-            k = int(np.argmax(hist))
-            near = (mid >= edges[k] - tol) & (mid <= edges[k + 1] + tol)
-            wall_u = float(np.average(mid[near], weights=w[near]))
-    else:  # no wall in the window: the extreme of the line on the wall's side
+    warning = ""
+
+    def stretch_at(face_u):
+        """The run of points standing out of a face at ``face_u`` nearest the path's point (indices), or None."""
+        dep = sign * (c[:, 0] - face_u)
+        stands = dep > tol
+        found, start = [], None
+        for i, flag in enumerate(stands):
+            if flag and start is None:
+                start = i
+            if not flag and start is not None:
+                found.append((start, i - 1))
+                start = None
+        if start is not None:
+            found.append((start, len(c) - 1))
+        if not found:
+            return None
+        return min(found, key=lambda r: np.hypot(*c[r[0]:r[1] + 1].T).min())
+
+    # a vertical run with both ends of the line deeper than it is part of the moulding (a fillet, a fascia), not the
+    # wall: the wall is where the line comes from or goes to
+    ends = -sign * c[[0, -1], 0]
+    faces = [f for f in _vertical_faces(c, tol) if not np.all(ends > -sign * f[0] + tol)]
+    if faces:
+        # the deepest face (farthest behind the moulding's front), preferring one seen both below and above the
+        # moulding: a cornice's own fascia is a vertical face too, in front of the wall, and a parapet behind is seen
+        # above only
+        best = None
+        for face_u, spans in sorted(faces, key=lambda f: -sign * f[0]):  # deepest first
+            run = stretch_at(face_u)
+            if run is None:
+                continue
+            v_lo, v_hi = c[run[0]:run[1] + 1, 1].min(), c[run[0]:run[1] + 1, 1].max()
+            both = any(b <= v_lo + tol for a, b in spans) and any(a >= v_hi - tol for a, b in spans)
+            if best is None:
+                best = (face_u, run)
+            if both:
+                best = (face_u, run)
+                break
+        if best is None:
+            raise ValueError("no part of the cut stands out of the wall face near the path")
+        wall_u, (i0, i1) = best
+    else:  # no wall face in the window: the deepest point of the line, as a face
         wall_u = float(c[:, 0].min() if sign > 0 else c[:, 0].max())
+        warning = "no-wall-face"
+        run = stretch_at(wall_u)
+        if run is None:
+            raise ValueError("no part of the cut stands out of its deepest point near the path")
+        i0, i1 = run
     dep = sign * (c[:, 0] - wall_u)  # how far each point stands out of the face
-    stands = dep > tol
-    if not stands.any():
-        raise ValueError("no part of the cut stands out of the wall face near the path")
-    runs, start = [], None
-    for i, flag in enumerate(stands):
-        if flag and start is None:
-            start = i
-        if not flag and start is not None:
-            runs.append((start, i - 1))
-            start = None
-    if start is not None:
-        runs.append((start, len(c) - 1))
-    i0, i1 = min(runs, key=lambda r: np.hypot(*c[r[0]:r[1] + 1].T).min())
 
     def on_face(i, j):  # the point of the segment i-j where it meets the face (dep = 0), j outside the run
         if j < 0 or j >= len(c):
@@ -620,9 +641,36 @@ def wall_section(polylines, out: float, depth: float = 0.1, simplify: float = 0.
     projection = float((sign * (stretch[:, 0] - wall_u)).max())
     u_out = wall_u + sign * projection
     u0, u1 = sorted((wall_u, u_out))
+    front = polygon_area(np.vstack([stretch, stretch[:1]])[:-1]) if len(stretch) > 2 else 0.0
     return {"section": ring, "wall_u": wall_u, "v_range": [v_lo, v_hi], "projection": projection,
             "height": v_hi - v_lo, "window": [u0 - MARGIN, v_lo - MARGIN, u1 + MARGIN, v_hi + MARGIN],
-            "line": c.tolist()}
+            "line": c.tolist(), "front_area": abs(float(front)), "warning": warning, "closed": False}
+
+
+def _vertical_faces(c, tol: float, shortest: float = 0.03) -> list[tuple[float, list[tuple[float, float]]]]:
+    """The vertical faces of an open line of a cut: runs of consecutive near-vertical segments at least ``shortest``
+    long (3 cm), grouped by their u (within ``tol``). Each face: ``(u, [(v from, v to), ...])``."""
+    seg = np.diff(c, axis=0)
+    vertical = np.abs(seg[:, 1]) > 3 * np.abs(seg[:, 0])
+    runs, k = [], 0
+    while k < len(seg):
+        if not vertical[k]:
+            k += 1
+            continue
+        j = k
+        while j + 1 < len(seg) and vertical[j + 1] and abs(c[j + 2, 0] - c[k, 0]) <= tol:
+            j += 1
+        pts = c[k:j + 2]
+        if np.ptp(pts[:, 1]) >= shortest - 1e-9:
+            runs.append((float(np.median(pts[:, 0])), (float(pts[:, 1].min()), float(pts[:, 1].max()))))
+        k = j + 1
+    faces: list[tuple[float, list]] = []
+    for u, span in sorted(runs):
+        if faces and abs(u - faces[-1][0]) <= tol:
+            faces[-1][1].append(span)
+        else:
+            faces.append((u, [span]))
+    return faces
 
 
 def drop_repeated(ring, tolerance: float = 1e-7) -> np.ndarray:
