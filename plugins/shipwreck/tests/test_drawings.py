@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from hulls import D, L, half_breadth, project
+from hulls import D, half_breadth, project
 
 import pyarchinit_photogrammetry as ppg  # noqa: F401
 from ppg_shipwreck import drawings, lines, ship, timbers
