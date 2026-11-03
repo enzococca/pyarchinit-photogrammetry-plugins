@@ -18,6 +18,8 @@ The GlobalIds are stable, by the rule of the plugin suite (:func:`stable_global_
 wall, and a new export replaces the old one in a BIM model instead of adding a second wall."""
 from __future__ import annotations
 
+import contextlib
+import locale
 import uuid
 from pathlib import Path
 
@@ -29,6 +31,26 @@ from .walls import NotReady
 
 
 SUITE_NAMESPACE = uuid.UUID("6f1c2b0e-5a1d-4c8e-9b7a-3d2e1f0c9b8a")  # the plugin suite's: the same in every plugin
+
+
+@contextlib.contextmanager
+def c_numbers():
+    """Numbers read and written with a decimal point while IfcOpenShell works: Qt sets the system's ``LC_NUMERIC``
+    (a decimal comma in Italian) and IfcOpenShell then reads "1.5" as 1 (the program's launcher puts "C" back at
+    start; a window opened later, or a script, may not have)."""
+    try:
+        old = locale.setlocale(locale.LC_NUMERIC)
+    except locale.Error:  # pragma: no cover
+        old = None
+    try:
+        locale.setlocale(locale.LC_NUMERIC, "C")
+        yield
+    finally:
+        if old is not None:
+            try:
+                locale.setlocale(locale.LC_NUMERIC, old)
+            except locale.Error:  # pragma: no cover
+                pass
 
 
 def stable_global_id(*parts) -> str:
@@ -275,8 +297,15 @@ def _pset(chunk, w: dict, solid: dict) -> dict:
 
 def export_wall(chunk, wid: str, path, thickness: float | None = None, project: str | None = None,
                 site: str | None = None) -> dict:
-    """The wall's IFC in ``path``: an ``IfcWall`` per slab of :func:`wall_solids`. Returns ``{"path", "thickness",
-    "source" (of the first slab), "parts", "relations", "walls", "sources"}``."""
+    """The wall's IFC in ``path``: an ``IfcWall`` per slab of :func:`wall_solids`, written with a decimal point
+    whatever the numeric locale (:func:`c_numbers`). Returns ``{"path", "thickness", "source" (of the first slab),
+    "parts", "relations", "walls", "sources"}``."""
+    with c_numbers():
+        return _export_wall(chunk, wid, path, thickness, project, site)
+
+
+def _export_wall(chunk, wid: str, path, thickness: float | None = None, project: str | None = None,
+                 site: str | None = None) -> dict:
     import ifcopenshell
     import ifcopenshell.api.aggregate
     import ifcopenshell.api.context

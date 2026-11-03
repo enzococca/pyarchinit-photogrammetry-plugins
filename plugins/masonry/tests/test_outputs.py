@@ -129,6 +129,32 @@ def test_ifc_of_a_wall_between_two_faces(tmp_path):
 
 
 @pytest.mark.skipif(not HAS_IFC, reason="the program's bim extra (ifcopenshell)")
+def test_ifc_under_an_italian_numeric_locale(tmp_path):
+    """With LC_NUMERIC Italian (a decimal comma, as Qt sets it) the wall still gets a thickness of 0.65 m, read back
+    from the file; the locale is the caller's again afterwards."""
+    import locale
+
+    import ifcopenshell
+
+    from ppg_masonry import ifc
+
+    doc, ch, w, entry, _polys = _face(tmp_path)
+    old = locale.setlocale(locale.LC_NUMERIC)
+    try:
+        locale.setlocale(locale.LC_NUMERIC, "it_IT.UTF-8")
+    except locale.Error:
+        pytest.skip("no it_IT.UTF-8 locale here")
+    try:
+        r = ifc.export_wall(ch, w["id"], tmp_path / "w.ifc", thickness=0.65)
+        assert locale.setlocale(locale.LC_NUMERIC) == "it_IT.UTF-8"
+    finally:
+        locale.setlocale(locale.LC_NUMERIC, old)
+    model = ifcopenshell.open(r["path"])
+    depths = [s.Depth for s in model.by_type("IfcExtrudedAreaSolid")]
+    assert depths and depths[0] == pytest.approx(0.65)
+
+
+@pytest.mark.skipif(not HAS_IFC, reason="the program's bim extra (ifcopenshell)")
 def test_ifc_global_ids_are_stable(tmp_path):
     """The GlobalIds of the wall and of its USM follow the plugin suite's rule (the conservation plugin attaches its
     surface features to the same wall): export after export the same."""
