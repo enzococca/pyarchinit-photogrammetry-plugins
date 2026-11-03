@@ -549,15 +549,16 @@ def cracks(chunk, entry, bounds=None, min_length: float = 0.10, scales_mm=(2, 5,
 
 def plane_fit(u, v, d) -> tuple[np.ndarray, float]:
     """The robust plane ``d = a u + b v + c`` of the samples: least squares, then again without those farther than
-    3 MAD (at least 0.5 mm); ``(coefficients, MAD)``."""
+    3 MAD from the median residual (at least 0.5 mm); ``(coefficients, MAD)``."""
     A = np.column_stack([u, v, np.ones_like(u)])
     keep = np.ones(len(u), bool)
     coef, mad = np.zeros(3), 0.0
     for _ in range(2):
         coef, *_ = np.linalg.lstsq(A[keep], d[keep], rcond=None)
         r = d - A @ coef
-        mad = float(np.median(np.abs(r[keep] - np.median(r[keep])))) * 1.4826
-        keep = np.abs(r) <= max(3.0 * mad, 0.0005)
+        centre = float(np.median(r[keep]))  # a big hole pulls the first plane: the bulk of the wall is the median
+        mad = float(np.median(np.abs(r[keep] - centre))) * 1.4826
+        keep = np.abs(r - centre) <= max(3.0 * mad, 0.0005)
         if keep.sum() < 3:
             break
     return coef, mad

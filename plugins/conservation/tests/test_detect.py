@@ -71,6 +71,10 @@ def test_material_loss_finds_the_hole(face):
     assert abs(loss["geometry"].area - hole.area) <= 0.10 * hole.area
     assert loss["geometry"].intersection(hole).area >= 0.9 * hole.area
     assert "piano del muro" in loss["notes"]
+    # a window tight around the hole (the hole is 44 % of it): the wall's plane is still the plane of the rest
+    tight = detect.material_loss(ch, entry, bounds=hole.buffer(0.1).bounds)
+    assert len(tight) == 1 and abs(tight[0]["depth_mm"] - 30.0) <= 3.0
+    assert abs(tight[0]["geometry"].area - hole.area) <= 0.10 * hole.area
 
 
 def test_alveolization_from_many_small_holes(face):
