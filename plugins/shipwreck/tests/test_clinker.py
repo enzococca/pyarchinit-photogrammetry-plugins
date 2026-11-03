@@ -398,3 +398,20 @@ def test_a_hollow_garboard_is_read_whole(tmp_path):
         found = _lands_on(ch, side)
         assert len(found) == 4 and np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
         assert next(st for st in result["stations"] if st["side"] == side)["end"] == "line"
+
+
+# ------------------------------------------------------------------------- fix round 4
+@pytest.mark.parametrize("keel", [None, (0.05, 0.15)])
+def test_a_steep_v_section_is_not_a_keel(tmp_path, keel):
+    """A V section at 70 degrees (an end station near the stem or the stern), alone or above a 15 cm keel: the V is
+    planking, not keel; four lands from the keel's bottom, or from the keel's top."""
+    lands = [0.15, 0.32, 0.5, 0.68]
+    section, truth = _built([(0.8, 0.0)], lands, keel=keel, deadrise=70.0)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    for side in ("port", "starboard"):
+        found = _lands_on(ch, side)
+        assert len(found) == 4, [d["s"] for d in found]
+        assert np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert record["rabbet"][1] == pytest.approx(0.0, abs=0.003)  # the apex of the V, or the keel's top

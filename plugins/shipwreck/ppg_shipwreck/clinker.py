@@ -43,6 +43,12 @@ from . import lines, ship
 from .texts import num, plural, t
 
 DEFAULTS = {"min_step": 0.008, "step_len": 0.03, "min_strake": 0.08, "window": 0.12, "keel_half_width": 0.10}
+"""The parameters of the lands, in metres: ``min_step`` the least step of a land; ``step_len`` the arc it may take;
+``min_strake`` the least distance between two lands; ``window`` the arc of the moving average (the hull "without
+planks"); ``keel_half_width`` how far from the keel's y a keel standing below the planking may reach: a run of
+segments steeper than ``STEEP_DEG`` (80 degrees), rising at least ``RABBET_RISE`` (2 cm) and lying ALL within it is
+the keel's side, and the profile starts at its top, the rabbet. A steep V of planking (the end stations) goes on
+beyond it and is not taken for a keel."""
 SIDES = ("port", "starboard")
 SIDE_SIGN = {"port": 1.0, "starboard": -1.0}
 MIN_VERTICES = 10
@@ -51,7 +57,7 @@ KEEL_BAND = 0.05  # the keel: the hull's lowest point within 5 cm of y = 0
 KEEL_FLAT = 0.002  # ... the middle of the bottom within 2 mm of that height (a flat keel, a keel off the centreline)
 KEEL_REACH = 1.5  # the hull among the pieces near y = 0: the one that rises most within 1.5 m of it
 TURN_DEG = 150.0  # the profile has turned round the sheer onto the inner face
-STEEP_DEG = 60.0  # a keel's side: steeper than this, starting within ``keel_half_width`` of the keel's y...
+STEEP_DEG = 80.0  # a keel's side: steeper than this, all of it within ``keel_half_width`` of the keel's y...
 RABBET_RISE = 0.02  # ... and rising at least 2 cm: the planking starts at its top, the rabbet
 BEND_DEG = 45.0  # ... or bends back this much below the steepest it reached, for ``min_strake``: sediment, a trench
 SAMPLE = 0.002  # the profile resampled every 2 mm of arc
@@ -188,9 +194,10 @@ def _end(points: np.ndarray, s: np.ndarray, sign: float, params: dict) -> tuple[
 
 def _rabbet(points: np.ndarray, keel: np.ndarray, sign: float, half_width: float) -> int:
     """The index where the planking leaves the keel: the top of the last run of segments steeper than ``STEEP_DEG``
-    that starts within ``half_width`` of the keel's y and rises at least ``RABBET_RISE`` (the keel's side); 0 when
-    there is none (a hull without a keel standing below it: the profile starts at the keel). A garboard leaving the
-    keel steeper than ``STEEP_DEG`` is read as part of the keel up to where it flattens."""
+    that lies all within ``half_width`` of the keel's y and rises at least ``RABBET_RISE`` (the keel's side); 0 when
+    there is none (a hull without a keel standing below it: the profile starts at the keel). Near-vertical, because a
+    V of planking at 65-75 degrees above a keel would otherwise continue the keel's run; all within, because a steep
+    V (an end station) passes ``half_width`` after a few decimetres of rise and must not be read as keel."""
     d = np.diff(points, axis=0)
     u = sign * (points[:, 0] - keel[0])
     steep = np.degrees(np.arctan2(d[:, 1], sign * d[:, 0])) >= STEEP_DEG
@@ -200,7 +207,7 @@ def _rabbet(points: np.ndarray, keel: np.ndarray, sign: float, half_width: float
             j = i
             while j < len(steep) and steep[j]:
                 j += 1
-            if points[j, 1] - points[i, 1] >= RABBET_RISE:
+            if points[j, 1] - points[i, 1] >= RABBET_RISE and u[i:j + 1].max() <= half_width:
                 found = j
             i = j
         else:
