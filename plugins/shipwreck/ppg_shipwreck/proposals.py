@@ -59,7 +59,8 @@ DEFAULTS = {"sigma_cells": 1.5, "trend": 0.05, "min_step": 0.008, "low_step": 0.
   the sign a land's step has going outward (a drop from inside, a rise from outside: ``outside`` inverts the signs);
   a seam piece with the other sign is not a land but the edge of a loose timber lying on the planking (a rise at its
   inner edge, a drop at its outer edge from either face), and so is the piece with a land's sign lying within
-  :data:`PLANK_WIDTH` of it on the right side along :data:`PLANK_SHARE` of its length: both are strays.
+  :data:`PLANK_WIDTH` of it on the right side when the two run together (:data:`PLANK_SHARE`): both are strays. A
+  land a timber lies flush against runs on past the timber: it stays a land.
 
 - ``sigma_cells``: the smoothing of ``|dz/dy|`` across the hull, in cells; ``along_cells``: the smoothing of ``dz/dy``
   along x before the crests, in cells (the lands are long along x: it keeps a seam whole under the noise of a scan).
@@ -585,7 +586,8 @@ def _longest_path(nodes: list[int], edges: dict) -> dict:
 STRAY_SCORE = 0.1  # the score of a stray seam piece proposed as ``comento ?``
 WIDE_BAND = 1.5  # a band this many times as wide as the side's others there has lost a land: a piece in it is one
 PLANK_WIDTH = 0.3  # metres: the two edges of a loose timber lying on the planking are within this across
-PLANK_SHARE = 0.6  # the share of a piece's length along which the timber's other edge must lie beside it
+PLANK_SHARE = 0.9  # the two edges of a timber run together: each covers this share of the shorter one's length
+#                    and the land-signed one runs on past the other by less than 1 - this of its own length
 
 
 def _land_at(r: int, where: np.ndarray, placed: list[int], rank: dict, ys: dict) -> np.ndarray:
@@ -601,8 +603,10 @@ def _timber_edges(kept: list[int], ys: dict, seam_list: list[dict], land_sign: i
     """The pieces of a side that are the edges of a loose timber lying on the planking, by the sign of their step
     going outward: a timber is a rise at its inner edge and a drop at its outer edge, the two within
     :data:`PLANK_WIDTH` across with no other piece between them. A piece with the wrong sign for a land
-    (``-land_sign``) is one; so is a piece with a land's sign that has such an other edge beside it along
-    :data:`PLANK_SHARE` of its length. Pieces without a sign (``sign`` missing or 0) are not judged."""
+    (``-land_sign``) is one; so is a piece with a land's sign that runs TOGETHER with such an other edge: beside it
+    along :data:`PLANK_SHARE` of the shorter of the two, and not running on past it beyond ``1 - PLANK_SHARE`` of its
+    own length. A land a long timber lies flush against (the timber's edge merged with it) runs on past the timber at
+    one end or both: it stays a land. Pieces without a sign (``sign`` missing or 0) are not judged."""
     sign = {i: int(seam_list[i].get("sign") or 0) for i in kept}
     wrong = {i for i in kept if sign[i] == -land_sign}
     out = set(wrong)
@@ -610,6 +614,7 @@ def _timber_edges(kept: list[int], ys: dict, seam_list: list[dict], land_sign: i
         if sign[i] != land_sign:
             continue
         beside = np.zeros(len(ys[i]), bool)
+        partners = np.zeros(len(ys[i]), bool)  # the samples where an other edge beside it is
         for w in wrong:
             rise, drop = (w, i) if land_sign < 0 else (i, w)
             d = ys[drop] - ys[rise]
@@ -619,9 +624,15 @@ def _timber_edges(kept: list[int], ys: dict, seam_list: list[dict], land_sign: i
             for k in kept:
                 if k not in (rise, drop):
                     near &= ~((ys[k] > ys[rise]) & (ys[k] < ys[drop]))
-            beside |= near
-        where = np.isfinite(ys[i])
-        if where.any() and beside.sum() >= PLANK_SHARE * where.sum():
+            if near.any():
+                beside |= near
+                partners |= np.isfinite(ys[w])
+        own = int(np.isfinite(ys[i]).sum())
+        covered = int(beside.sum())
+        if not own or not covered:
+            continue
+        shorter = min(own, int(partners.sum()))
+        if covered >= PLANK_SHARE * shorter and own - covered <= (1.0 - PLANK_SHARE) * own:
             out.add(i)
     return out
 
@@ -652,7 +663,7 @@ def lands(seam_list: list[dict], params=None) -> list[int | None]:
     planking from the lands (:func:`_timber_edges`; ``view`` in the parameters says which sign a land has: a drop
     going outward seen from inside, a rise from outside): a piece with the other sign is a stray, and so is the piece
     with a land's sign that lies within :data:`PLANK_WIDTH` of it on the timber's other side, nothing between them,
-    along :data:`PLANK_SHARE` of its length (the timber's other edge). The remaining pieces are placed one by one, the
+    running together with it (:data:`PLANK_SHARE`; a land a timber lies flush against runs on past it). The remaining pieces are placed one by one, the
     longest first, among those already placed, ranked by the longest chain of placed pieces inside them (a land lost
     over part of the hull - under sediment, a broken plank - keeps the rank of its pieces, and so do the lands beyond
     it). A piece is placed when it lies inside the innermost land, beyond the outermost, between two lands that are
