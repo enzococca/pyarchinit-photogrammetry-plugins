@@ -252,11 +252,14 @@ def test_a_stray_piece_and_a_keel_off_the_centreline(tmp_path):
 
 
 # ------------------------------------------------------------------------- fix round 2
-def _built(segments, lands, land=0.015, lap=0.02, step=0.002):
+def _built(segments, lands, land=0.015, lap=0.02, step=0.002, keel=None, deadrise=0.0):
     """A section built by hand, both sides alike: a base curve from the keel (``segments``: (length, curvature)
-    from a level start), each land a step of ``land`` outward over ``lap`` at the arcs ``lands``. Returns the
-    polyline (starboard sheer to port sheer) and the truth: the arcs of the lands along the stepped profile."""
-    angle, u, z, base = 0.0, 0.0, 0.0, [(0.0, 0.0, 0.0)]
+    from a start at ``deadrise`` degrees), each land a step of ``land`` outward over ``lap`` at the arcs ``lands``;
+    ``keel``: (half width, depth) of a keel below the rabbet, where the planking starts. Returns the polyline
+    (starboard sheer to port sheer) and the truth: the arcs of the lands along the stepped profile from the rabbet."""
+    angle = np.radians(deadrise)
+    u = keel[0] if keel else 0.0
+    z, base = 0.0, [(u, 0.0, angle)]
     for length, curvature in segments:
         for _ in range(int(round(length / step))):
             angle += curvature * step
@@ -267,7 +270,13 @@ def _built(segments, lands, land=0.015, lap=0.02, step=0.002):
     offset = land * np.clip((s[:, None] - np.asarray(lands)[None]) / lap + 0.5, 0.0, 1.0).sum(axis=1)
     side = base[:, :2] + offset[:, None] * np.column_stack([np.sin(base[:, 2]), -np.cos(base[:, 2])])
     arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(side, axis=0).T))]
-    polyline = np.vstack([side[:0:-1] * [-1.0, 1.0], side])
+    if keel:
+        w, depth = keel
+        bottom = np.column_stack([np.arange(0.0, w, step), np.full(len(np.arange(0.0, w, step)), -depth)])
+        wall = np.column_stack([np.full(int(depth / step), w), np.linspace(-depth, 0.0, int(depth / step), endpoint=False)])
+        side = np.vstack([bottom, wall, side])
+    first = 1 if side[0, 0] == 0.0 else 0  # the centre point once
+    polyline = np.vstack([(side[first:] * [-1.0, 1.0])[::-1], side])
     return polyline, np.interp(lands, s, arc)
 
 
@@ -355,3 +364,37 @@ def test_a_trench_wall_beyond_an_eroded_sheer_is_a_stray(tmp_path):
     found = _lands_on(ch, "port")
     assert len(found) == 4
     assert np.abs(np.array([d["s"] for d in found]) - clinker_truth(6.01)).max() < 0.005
+
+
+
+# ------------------------------------------------------------------------- fix round 3
+@pytest.mark.parametrize("depth, deadrise", [(0.15, 10.0), (0.25, 20.0), (0.06, 15.0)])
+def test_a_keel_below_the_garboards(tmp_path, depth, deadrise):
+    """A keel 6-25 cm deep, the garboards leaving its top at 10-20 degrees: the profile starts at the rabbet,
+    the arcs from there, four lands, no land at the keel's corner, read to its end."""
+    lands = [0.15, 0.32, 0.5, 0.7]
+    section, truth = _built([(0.6, 0.0), (0.3 * np.pi / 2, 1 / 0.3), (0.4, 0.0)], lands, keel=(0.05, depth),
+                            deadrise=deadrise)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    assert not result["skipped"]
+    for side in ("port", "starboard"):
+        found = _lands_on(ch, side)
+        assert len(found) == 4, [d["s"] for d in found]
+        assert np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert record["end"] == "line" and record["rabbet"][1] == pytest.approx(0.0, abs=0.003)
+
+
+def test_a_hollow_garboard_is_read_whole(tmp_path):
+    """A wineglass section: the garboard leaves the keel at 50 degrees and flattens to level (a fall of 50
+    degrees near the keel) before the bilge: not taken for sediment."""
+    lands = [0.3, 0.45, 0.62, 0.8]
+    section, truth = _built([(0.25, -np.radians(50.0) / 0.25), (0.3, 0.0), (0.3 * np.pi / 2, 1 / 0.3), (0.4, 0.0)],
+                            lands, keel=(0.05, 0.2), deadrise=50.0)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    for side in ("port", "starboard"):
+        found = _lands_on(ch, side)
+        assert len(found) == 4 and np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
+        assert next(st for st in result["stations"] if st["side"] == side)["end"] == "line"

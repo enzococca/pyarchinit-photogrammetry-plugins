@@ -4,7 +4,8 @@ every station's section, side by side, and joined along the hull into land lines
 Method (the design's B1, after Fröhlich & Nielsen's description of a clinker hull, whose automatic fitting they
 leave to future work): per station, per side (``port``: y > 0 in ship coordinates, ``starboard``: y < 0, split at the
 keel = the section's lowest point within 5 cm of y = 0), the raw section (never the water-corrected one) as a
-polyline from the keel outward with its arc length ``s``, ended where it turns back (round the sheer onto the inner
+polyline from the rabbet outward (the top of a keel's side standing below the garboards; the keel itself on a hull
+without one) with its arc length ``s``, ended where it turns back (round the sheer onto the inner
 face, or where it bends back into sediment, a trench or the seabed: a rule on the direction of the smoothed
 profile, never on heights); pieces that do not continue it (a loose timber)
 are left apart and counted, a piece that goes on beyond a gap makes the side unreadable. A moving average over
@@ -16,11 +17,12 @@ below). A land is where ``d`` changes by more than ``min_step`` within ``step_le
 on ``d`` - the same as on the raw profile once the slope of the flats is taken out: the two flats' lines (three
 samples each side, their median, the common slope removed) differenced at the land. Lands too near an end of the
 profile to read both flats are left out and counted. Nothing is faired or filled: a side with too few vertices, a
-gap or no keel gives no lands and is listed.
+gap or no keel gives no lands and is listed. Where the preserved edge meets flat sediment at less than about 45
+degrees the profile may run on into the sediment: narrow --half-width or check the stations listed as uncertain.
 
 Across the stations the most common count of lands is the hull's on that side; a station with another count
 (stealer, drop strake, eroded sheer, damage) is ``uncertain`` and its lands are matched to the lines by arc from the
-keel (each line's arc interpolated along x from the stations that agree), the extra land listed, a missing one left
+rabbet (each line's arc interpolated along x from the stations that agree), the extra land listed, a missing one left
 out. The land lines run through the matched lands in ship coordinates, ordered by x.
 
 Kept in ``chunk.meta["shipwreck"]["clinker"]``; files in ``<chunk data>/shipwreck/clinker/``. The chunk's transform,
@@ -40,7 +42,7 @@ from pyarchinit_photogrammetry.core.progress import as_progress
 from . import lines, ship
 from .texts import num, plural, t
 
-DEFAULTS = {"min_step": 0.008, "step_len": 0.03, "min_strake": 0.08, "window": 0.12}
+DEFAULTS = {"min_step": 0.008, "step_len": 0.03, "min_strake": 0.08, "window": 0.12, "keel_half_width": 0.10}
 SIDES = ("port", "starboard")
 SIDE_SIGN = {"port": 1.0, "starboard": -1.0}
 MIN_VERTICES = 10
@@ -49,6 +51,8 @@ KEEL_BAND = 0.05  # the keel: the hull's lowest point within 5 cm of y = 0
 KEEL_FLAT = 0.002  # ... the middle of the bottom within 2 mm of that height (a flat keel, a keel off the centreline)
 KEEL_REACH = 1.5  # the hull among the pieces near y = 0: the one that rises most within 1.5 m of it
 TURN_DEG = 150.0  # the profile has turned round the sheer onto the inner face
+STEEP_DEG = 60.0  # a keel's side: steeper than this, starting within ``keel_half_width`` of the keel's y...
+RABBET_RISE = 0.02  # ... and rising at least 2 cm: the planking starts at its top, the rabbet
 BEND_DEG = 45.0  # ... or bends back this much below the steepest it reached, for ``min_strake``: sediment, a trench
 SAMPLE = 0.002  # the profile resampled every 2 mm of arc
 FLAT = 0.005  # the flats' samples beside a land, 5 mm apart
@@ -90,6 +94,15 @@ def _runs(p: np.ndarray, sign: float) -> list[np.ndarray]:
     return [r for r in out if len(r) > 1]
 
 
+def _crossings(p: np.ndarray) -> list[np.ndarray]:
+    """The points where a polyline crosses y = 0, the lowest first."""
+    out = []
+    for i in np.flatnonzero(np.sign(p[:-1, 0]) * np.sign(p[1:, 0]) < 0):
+        f = p[i, 0] / (p[i, 0] - p[i + 1, 0])
+        out.append(p[i] + f * (p[i + 1] - p[i]))
+    return sorted(out, key=lambda q: q[1])
+
+
 def _keel(polylines: list[np.ndarray]) -> np.ndarray | None:
     """The keel of a section: on the hull's piece (of the pieces that cross or come within ``KEEL_BAND`` of y = 0,
     the one that rises most within ``KEEL_REACH`` of it: a trench floor under a raised hull or a loose timber does
@@ -101,7 +114,7 @@ def _keel(polylines: list[np.ndarray]) -> np.ndarray | None:
         near = np.abs(p[:, 0]) <= KEEL_BAND
         if not near.any() and not (np.sign(p[:-1, 0]) * np.sign(p[1:, 0]) < 0).any():
             continue
-        low = float(p[near, 1].min()) if near.any() else float(np.interp(0.0, *p[np.argsort(p[:, 0])].T))
+        low = float(p[near, 1].min()) if near.any() else float(_crossings(p)[0][1])
         rise = float(p[np.abs(p[:, 0]) <= KEEL_REACH, 1].max()) - low
         if rise > score:
             best, score = p, rise
@@ -109,10 +122,8 @@ def _keel(polylines: list[np.ndarray]) -> np.ndarray | None:
         return None
     p = best
     near = np.flatnonzero(np.abs(p[:, 0]) <= KEEL_BAND)
-    if not len(near):  # the piece crosses y = 0 between two vertices
-        i = int(np.flatnonzero(np.sign(p[:-1, 0]) * np.sign(p[1:, 0]) < 0)[0])
-        f = p[i, 0] / (p[i, 0] - p[i + 1, 0])
-        return p[i] + f * (p[i + 1] - p[i])
+    if not len(near):  # the piece crosses y = 0 between two vertices: its lowest crossing
+        return _crossings(p)[0]
     i0 = int(near[np.argmin(p[near, 1])])
     flat = p[:, 1] <= p[i0, 1] + KEEL_FLAT
     lo, hi = i0, i0
@@ -134,7 +145,8 @@ def _end(points: np.ndarray, s: np.ndarray, sign: float, params: dict) -> tuple[
     """Where the hull's profile ends before the line does, and why: the direction of the profile smoothed over
     ``window`` (0 degrees along a level bottom, 90 up a vertical side, a little more with tumblehome) ``turn``s past
     ``TURN_DEG`` round the sheer onto the inner face, or ``bend``s back more than ``BEND_DEG`` below the steepest it
-    reached, for ``min_strake`` of arc (sediment at any height, a trench wall, the seabed). The end is the sharpest
+    reached, for ``min_strake`` of arc, once the profile has climbed (its direction risen ``BEND_DEG`` above the
+    lowest before): sediment at any height, a trench wall, the seabed. The end is the sharpest
     point of that turn or bend; nothing is in metres of height, so a level bottom stepping down by its lands, or a
     side with tumblehome, is read whole. None when the line ends first."""
     if s[-1] < 4 * SAMPLE:
@@ -154,7 +166,11 @@ def _end(points: np.ndarray, s: np.ndarray, sign: float, params: dict) -> tuple[
         i = int(turned[0])
         lo, hi = max(0, i - n), min(len(angle), i + n + 1)
         events.append((i, lo + int(np.argmax(rate[lo:hi])), "turn"))
+    # a bend counts once the profile has climbed: its direction risen BEND_DEG above the lowest before (a hollow
+    # garboard flattening out near the keel, before the bilge rises, is not sediment)
+    climbed = np.flatnonzero(angle - np.minimum.accumulate(angle) >= BEND_DEG)
     back = np.maximum.accumulate(angle) - angle > BEND_DEG
+    back[:climbed[0] if len(climbed) else len(back)] = False
     held = max(1, int(round(params["min_strake"] / h)))
     run = 0
     for i, b in enumerate(back):
@@ -170,10 +186,33 @@ def _end(points: np.ndarray, s: np.ndarray, sign: float, params: dict) -> tuple[
     return float(su[j]), reason
 
 
+def _rabbet(points: np.ndarray, keel: np.ndarray, sign: float, half_width: float) -> int:
+    """The index where the planking leaves the keel: the top of the last run of segments steeper than ``STEEP_DEG``
+    that starts within ``half_width`` of the keel's y and rises at least ``RABBET_RISE`` (the keel's side); 0 when
+    there is none (a hull without a keel standing below it: the profile starts at the keel). A garboard leaving the
+    keel steeper than ``STEEP_DEG`` is read as part of the keel up to where it flattens."""
+    d = np.diff(points, axis=0)
+    u = sign * (points[:, 0] - keel[0])
+    steep = np.degrees(np.arctan2(d[:, 1], sign * d[:, 0])) >= STEEP_DEG
+    found, i = 0, 0
+    while i < len(steep):
+        if steep[i] and u[i] <= half_width:
+            j = i
+            while j < len(steep) and steep[j]:
+                j += 1
+            if points[j, 1] - points[i, 1] >= RABBET_RISE:
+                found = j
+            i = j
+        else:
+            i += 1
+    return found
+
+
 def _profile(section: dict, side: str, params: dict | None = None):
     """``(points, s, info)`` of the side from the keel outward, or the reason why not: ``empty``, ``keel``, ``gap``,
     ``few``. ``info``: ``end`` "turn" or "bend" when the profile was ended there (:func:`_end`; a piece beyond that
-    end is a stray, never a gap), else "line"; ``stray``: pieces left apart; ``keel``: the keel's y."""
+    end is a stray, never a gap), else "line"; ``stray``: pieces left apart; ``keel``: the keel's y (the sides split
+    there); ``rabbet``: (y, z) where the profile and its arcs start (:func:`_rabbet`)."""
     sign = SIDE_SIGN[side]
     polylines = [np.asarray(line, float).reshape(-1, 2) for line in section.get("lines") or []]
     polylines = [p for p in polylines if len(p) > 1]
@@ -204,9 +243,16 @@ def _profile(section: dict, side: str, params: dict | None = None):
     points = points[np.r_[True, np.hypot(*np.diff(points, axis=0).T) > 1e-9]]
     if len(points) < MIN_VERTICES:
         return "few"
-    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(points, axis=0).T))]
+    params = DEFAULTS if params is None else {**DEFAULTS, **params}
     info = {"end": "line", "stray": len(rest), "keel": round(float(keel[0]), 5)}
-    ended = _end(points, s, sign, DEFAULTS if params is None else {**DEFAULTS, **params})
+    j = _rabbet(points, keel, sign, params["keel_half_width"])
+    if j:
+        points = points[j:]
+        if len(points) < MIN_VERTICES:
+            return "few"
+    info["rabbet"] = [round(float(v), 5) for v in points[0]]
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(points, axis=0).T))]
+    ended = _end(points, s, sign, params)
     if ended is not None:
         cut, info["end"] = ended
         keep = s < cut
@@ -223,7 +269,8 @@ def _profile(section: dict, side: str, params: dict | None = None):
 
 
 def profile(section: dict, side: str) -> tuple[np.ndarray, np.ndarray] | None:
-    """The side's polyline of a station's section from the keel (its lowest point near y = 0) outward, ``(N, 2)``
+    """The side's polyline of a station's section from the rabbet (where the planking leaves the keel; the keel
+    itself, its lowest point near y = 0, when no keel stands below the planking) outward, ``(N, 2)``
     (y, z), and its arc length ``s`` ``(N,)``, ended where it turns round the sheer or bends back (sediment, a trench);
     None when the side has fewer than 10 vertices, does not reach the keel, or goes on beyond a gap of more than
     2 cm (the model is missing there). Pieces that do not continue it (a loose timber) are left apart."""
@@ -352,7 +399,7 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
             here, dropped = _lands(points, arc, p, side)
             stations.append({"name": section["name"], "x": float(section["value"]), "side": side, "count": len(here),
                              "length": round(float(arc[-1]), 5), "end": info["end"], "stray": info["stray"],
-                             "keel": info["keel"], "dropped_at_ends": dropped})
+                             "keel": info["keel"], "rabbet": info["rabbet"], "dropped_at_ends": dropped})
             found += [{"station": section["name"], "x": float(section["value"]), "side": side, **d, "k": None}
                       for d in here]
     mode, uncertain = {}, {}
