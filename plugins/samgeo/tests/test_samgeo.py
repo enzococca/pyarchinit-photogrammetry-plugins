@@ -169,7 +169,8 @@ def test_objects_cut_by_tiles_joined_and_duplicates_dropped():
     assert len(merged) == 4
     wall = next(o for o in merged if o["label"] == "wall")
     assert wall["geometry"].equals(box(7, 4, 12, 6)) and wall["score"] == 0.7 and wall["quality"] == 0.9
-    assert sorted(o["geometry"].area for o in merged if o["label"] == "stone") == pytest.approx([0.7, 0.8, 4.0])
+    # the two stones side by side overlap by 0.2 along their edge: the first (equal scores) keeps the edge
+    assert sorted(o["geometry"].area for o in merged if o["label"] == "stone") == pytest.approx([0.6, 0.7, 4.0])
     assert next(o for o in merged if o["geometry"].area == pytest.approx(4.0))["score"] == 0.9
     assert segment.merge([], tiles) == []
 
@@ -645,3 +646,283 @@ def test_the_command_line(tmp_path, fake, capsys):
     assert [r["id"] for r in runs.records(ppg.Document.open(project).chunk)] == ["pietre"]
     assert plugin.command("remove", project, "stone") == 1
     plugin.deactivate()
+
+
+# ------------------------------------------------------------------ 0.4.0: nesting, the size of the objects, the relief
+def test_objects_inside_a_bigger_one_are_its_parts_or_its_group():
+    from shapely.geometry import box
+
+    def o(geom, score, label="stone"):
+        return {"geometry": geom, "score": score, "quality": None, "label": label}
+
+    # a box drawn around three stones: the group goes, the stones stay
+    cluster = [o(box(0, 0, 3, 3), 0.9), o(box(0.2, 0.2, 1, 1), 0.5), o(box(1.5, 0.2, 2.5, 1), 0.6), o(box(0.5, 1.8, 1.5, 2.8), 0.7)]
+    kept = segment.nested(cluster)
+    assert [k["geometry"].area for k in kept] == pytest.approx([0.64, 0.8, 1.0])
+    # a box around two stones with ground between them (their union is under 70 % of it): a group too
+    two = [o(box(0, 0, 4, 2), 0.9), o(box(0.1, 0.1, 1.2, 1.9), 0.5), o(box(2.8, 0.1, 3.9, 1.9), 0.6)]
+    assert sorted(round(k["geometry"].area, 2) for k in segment.nested(two)) == [1.98, 1.98]
+    # the two halves of a wall inside the wall: parts, the wall stays with the best score of them
+    wall = [o(box(0, 0, 10, 1), 0.3, "wall"), o(box(0, 0, 5.2, 1), 0.6, "wall"), o(box(4.8, 0, 10, 1), 0.4, "wall")]
+    (whole,) = segment.nested(wall)
+    assert whole["geometry"].area == 10 and whole["score"] == 0.6
+    # a stone's face inside its stone: a part (the stone keeps its own score: the face does not cover it);
+    # objects side by side are untouched; the order is kept
+    stones = [o(box(0, 0, 1, 1), 0.8), o(box(2, 0, 3, 1), 0.7), o(box(0.2, 0.2, 0.7, 0.7), 0.9)]
+    kept = segment.nested(stones)
+    assert [k["geometry"].area for k in kept] == [1.0, 1.0] and [k["score"] for k in kept] == [0.8, 0.7]
+    # the "whole image" box of a tile at a low threshold with many objects inside: a group
+    tile = [o(box(0, 0, 10, 10), 0.08)] + [o(box(i, i, i + 1, i + 1), 0.1) for i in range(0, 9, 2)]
+    assert len(segment.nested(tile)) == 5 and all(k["geometry"].area == 1 for k in segment.nested(tile))
+    # a wall holding stones that cover most of it: the wall; but when stones of 15 cm are what is looked for,
+    # anything over six times their area holding two or more of them is a group of stones
+    packed = [o(box(0, 0, 1, 0.5), 0.3, "wall")] + [o(box(i * 0.25 + 0.02, 0.02, i * 0.25 + 0.23, 0.48), 0.5) for i in range(4)]
+    assert len(segment.nested(packed)) == 1 and segment.nested(packed)[0]["label"] == "wall"
+    assert len(segment.nested(packed, object_size=0.15)) == 4
+    assert len(segment.nested(packed, object_size=0.5)) == 1  # 0.5 m2 is under six times 0.25 m2
+    assert segment.nested([]) == [] and len(segment.nested(stones[:1])) == 1
+
+
+def test_no_two_proposals_overlap():
+    from shapely.geometry import box
+
+    def o(geom, score):
+        return {"geometry": geom, "score": score, "quality": None, "label": "stone"}
+
+    a, b, c = o(box(0, 0, 2, 2), 0.9), o(box(1.5, 0, 3.5, 2), 0.6), o(box(1.8, 0.5, 2.2, 1.5), 0.4)  # c under both
+    kept = segment.exclusive([b, a, c])
+    assert [k["score"] for k in kept] == [0.6, 0.9]  # the order kept, c gone (nothing of its own left)
+    assert kept[1]["geometry"].equals(box(0, 0, 2, 2)) and kept[0]["geometry"].equals(box(2, 0, 3.5, 2))
+    apart = [o(box(0, 0, 1, 1), 0.5), o(box(2, 0, 3, 1), 0.7)]
+    assert segment.exclusive(apart) == apart
+    third = o(box(1.7, 0, 2.3, 2), 0.5)  # a third of it is left between a and b (both better): under the share kept
+    assert [k["score"] for k in segment.exclusive([a, b, third])] == [0.9, 0.6]
+    half = o(box(1.0, 0, 3.0, 2), 0.5)  # half of it is left of b, with a better: kept as what is left
+    kept = segment.exclusive([a, half])
+    assert kept[1]["geometry"].equals(box(2, 0, 3, 2))
+    assert segment.exclusive([]) == [] and segment.exclusive([a]) == [a]
+    # through merge: the two stones of one tile overlapping along their edge end with the edge on the better one
+    tiles = [(0.0, 0.0, 10.0, 10.0)]
+    found = [(0, o(box(1, 1, 2, 2), 0.8)), (0, o(box(1.8, 1, 2.8, 2), 0.6))]
+    merged = segment.merge(found, tiles)
+    assert sorted(round(m["geometry"].area, 2) for m in merged) == [0.8, 1.0]
+
+
+def test_the_resolution_follows_the_size_of_the_objects(tmp_path):
+    doc, ch = samples.project(tmp_path / "p")  # the raster is at 5 mm/px
+    assert segment.plan(ch.orthomosaic_path).resolution == 0.01  # automatic: 1 cm/px
+    assert segment.plan(ch.orthomosaic_path, object_size=0.16).resolution == pytest.approx(0.005)  # 16 cm / 32 px
+    assert segment.plan(ch.orthomosaic_path, object_size=0.08).resolution == pytest.approx(0.005)  # never finer than the raster
+    assert segment.plan(ch.orthomosaic_path, object_size=1.0).resolution == 0.01  # never coarser than the rule
+    assert segment.plan(ch.orthomosaic_path, object_size=0.16, resolution=0.02).resolution == 0.02  # by hand
+    with client.Segmenter() as seg:
+        fine = segment.find(seg, segment.plan(ch.orthomosaic_path, object_size=0.2, tile=512, overlap=64), "stone.")
+    assert len(fine) == len(samples.STONES)
+
+
+def _ridge_dem(path, crs=samples.CRS):
+    """A flat ground with a wall 0.4 m wide and 0.5 m high along y = 3 m, from x = 1 to x = 6."""
+    from pyarchinit_photogrammetry.engine.dem import write_geotiff
+
+    res = 0.02
+    h, w = int(round(samples.HEIGHT / res)), int(round(samples.WIDTH / res))
+    yy, xx = (np.mgrid[0:h, 0:w] + 0.5) * res
+    z = np.full((h, w), 100.0, np.float32) + (0.01 * xx).astype(np.float32)
+    z[(np.abs(yy - 3.0) <= 0.2) & (xx >= 1.0) & (xx <= 6.0)] += 0.5
+    z[:10, :10] = -9999.0  # a corner without data
+    return write_geotiff(path, z, (samples.X0, samples.Y1), res, crs, nodata=-9999.0)
+
+
+def test_objects_held_to_the_relief(tmp_path):
+    from shapely.geometry import box
+
+    from ppg_samgeo import support
+
+    dem = _ridge_dem(tmp_path / "dem.tif")
+    x0, y1 = samples.world(0, 0)
+    above, tr = support.heights(dem, (x0 + 0.5, y1 - 4.0, x0 + 6.5, y1 - 2.0), 0.02)
+    assert above.shape == (100, 300)
+    assert np.nanmedian(above[45:55, 50:250]) == pytest.approx(0.5, abs=0.02)  # on the wall
+    assert np.nanmax(above[:20]) < 0.02 and np.nanmax(above[80:]) < 0.02  # the ground, tilted but flat
+    on_wall = {"geometry": box(x0 + 2, y1 - 3.5, x0 + 4, y1 - 2.5), "score": 0.4, "quality": None, "label": "wall"}
+    ground = {"geometry": box(x0 + 2, y1 - 5.5, x0 + 4, y1 - 4.5), "score": 0.9, "quality": None, "label": "wall"}
+    edge = {"geometry": box(x0 + 5.5, y1 - 3.2, x0 + 7.5, y1 - 2.8), "score": 0.5, "quality": None, "label": "wall"}  # a quarter on the wall
+    short = {"geometry": box(x0 + 5.7, y1 - 3.2, x0 + 7.5, y1 - 2.8), "score": 0.5, "quality": None, "label": "wall"}  # a sixth: too little
+    nodata = {"geometry": box(x0, y1 - 0.2, x0 + 0.2, y1), "score": 0.5, "quality": None, "label": "wall"}
+    kept = support.hold([on_wall, ground, edge, short, nodata], dem, 0.3, resolution=0.01)
+    assert [k["label"] for k in kept] == ["wall", "wall"] and [k["score"] for k in kept] == [0.4, 0.5]
+    cut = kept[0]["geometry"]
+    assert cut.bounds[1] == pytest.approx(y1 - 3.2, abs=0.03) and cut.bounds[3] == pytest.approx(y1 - 2.8, abs=0.03)
+    assert cut.area == pytest.approx(2 * 0.4, rel=0.1) and kept[0]["relief_m"] == pytest.approx(0.5, abs=0.02)
+    assert kept[0]["relief_share"] == pytest.approx(0.4, abs=0.05) and kept[1]["relief_share"] == pytest.approx(0.25, abs=0.05)
+    # the edge object: only its quarter on the wall stays
+    assert kept[1]["geometry"].bounds[2] == pytest.approx(x0 + 6.0, abs=0.03)
+    assert support.hold([ground], dem, 0.3) == [] and support.hold([], dem, 0.3) == []
+
+
+def test_the_size_and_the_relief_of_a_run(tmp_path, fake, capsys):
+    import pyarchinit_photogrammetry as ppg
+    from ppg_samgeo import SamgeoPlugin, hints, run_info
+    from pyarchinit_photogrammetry.plugins import Context
+
+    doc, ch = samples.project(tmp_path / "p", with_dem=True)
+    _ridge_dem(ch.dem_path)
+    doc.save()
+    plugin = SamgeoPlugin()
+    plugin.activate(Context("samgeo", tmp_path / "plugin"))
+    project = str(doc.path)
+    info = run_info({"text": "muri", "prompt": "wall.", "size": 0.3, "relief": 0.2}, {"name": "orthomosaic"})
+    assert info["size"] == 0.3 and info["relief"] == 0.2
+    assert run_info({"text": "pietre", "prompt": "stone."}, {"name": "orthomosaic"})["size"] is None
+    # the stones at 1 m and 2.5 m, y = 1-1.2 m, lie on the ground: with the relief none of them stays
+    assert plugin.command("segment", project, "pietre", "--size", "0.3", "--relief", "0.2", "--json") == 0
+    out = capsys.readouterr().out
+    assert "at 0.009375 m/px" in out  # 30 cm / 32 px
+    run = json.loads(out[out.index("\n{") + 1:])
+    assert run["count"] == 0 and run["size"] == 0.3 and run["relief"] == 0.2
+    # a run without the relief keeps them, says their median score and size, and suggests nothing for big ones
+    assert plugin.command("segment", project, "stone", "--json") == 0
+    out = capsys.readouterr().out
+    run = json.loads(out[out.index("\n{") + 1:])
+    assert run["count"] == len(samples.STONES) and run["median_px"] > 25 and run["median_score"] > 0.8
+    assert hints(run) == []
+    unsure = {**run, "threshold": 0.1, "median_score": 0.1}
+    assert len(hints(unsure)) == 1 and "Sopra il suolo" in hints(unsure)[0]
+    assert hints({**unsure, "relief": 0.2}) == [] and hints({**run, "median_score": 0.1}) == []  # the threshold was 0.3
+    assert hints({**run, "median_px": 12})[0].startswith("Samgeo: le proposte sono piccole (12 px")
+    assert hints({**run, "median_px": 12, "size": 0.2}) == []
+    assert hints({**run, "count": 0, "median_px": 12}) == [hints({**run, "count": 0})[0]] and "niente trovato" in hints({**run, "count": 0})[0]
+    again = ppg.Document.open(project).chunk
+    assert [r["count"] for r in runs.records(again)] == [0, len(samples.STONES)]
+    assert all("relief_m" in a for _g, a in runs.features(again, runs.records(again)[1]))
+    # no DEM: the relief is refused with a word
+    doc2, ch2 = samples.project(tmp_path / "q")
+    assert plugin.command("segment", str(doc2.path), "pietre", "--relief", "0.2") == 1
+    assert "DEM" in capsys.readouterr().out
+    plugin.deactivate()
+
+
+def test_one_object_inside_a_big_box_and_the_score_of_the_whole():
+    from shapely.geometry import MultiPolygon, box
+
+    def o(geom, score, label="stone"):
+        return {"geometry": geom, "score": score, "quality": None, "label": label}
+
+    # the "whole image" box of a single tile with one stone inside: the box is a group of one, the stone stays
+    kept = segment.nested([o(box(0, 0, 10, 10), 0.08), o(box(1, 1, 2, 2), 0.5)])
+    assert len(kept) == 1 and kept[0]["geometry"].area == 1 and kept[0]["score"] == 0.5
+    # a stone's face covering a third of the stone: a part; the stone keeps its own score (the face does not cover it)
+    kept = segment.nested([o(box(0, 0, 1, 1), 0.4), o(box(0.2, 0.2, 0.8, 0.75), 0.9)])
+    assert len(kept) == 1 and kept[0]["geometry"].area == 1 and kept[0]["score"] == 0.4
+    # the halves cover the wall: the wall takes the best score of them
+    kept = segment.nested([o(box(0, 0, 10, 1), 0.1, "wall"), o(box(0, 0, 5, 1), 0.6, "wall"), o(box(5, 0, 10, 1), 0.3, "wall")])
+    assert len(kept) == 1 and kept[0]["score"] == 0.6
+    # a MultiPolygon and an invalid (self-crossing) polygon do not break the pass
+    bow = box(0, 0, 1, 1).exterior.coords[:]
+    from shapely.geometry import Polygon
+
+    invalid = Polygon([(0, 0), (1, 1), (1, 0), (0, 1)])
+    assert not invalid.is_valid
+    multi = MultiPolygon([box(3, 3, 4, 4), box(5, 5, 6, 6)])
+    kept = segment.nested([o(invalid, 0.5), o(multi, 0.6), o(box(3.1, 3.1, 3.9, 3.9), 0.7)])  # a part: a third of it
+    assert len(kept) == 2 and kept[1]["geometry"].geom_type == "MultiPolygon"
+    kept = segment.nested([o(multi, 0.6), o(box(3.2, 3.2, 3.6, 3.6), 0.7)])  # a twelfth: a group of one
+    assert len(kept) == 1 and kept[0]["geometry"].area == pytest.approx(0.16)
+    assert len(segment.exclusive([o(invalid, 0.5), o(box(0, 0, 0.5, 0.5), 0.9)])) == 2
+    del bow
+
+
+def test_a_hole_in_the_dem_and_the_edge_of_the_dem(tmp_path):
+    from shapely.geometry import box
+
+    from ppg_samgeo import support
+    from pyarchinit_photogrammetry.engine.dem import write_geotiff
+
+    # the wall of _ridge_dem with a hole of 4 x 4 m (wider than the window) right beside it
+    res = 0.02
+    h, w = int(round(samples.HEIGHT / res)), int(round(samples.WIDTH / res))
+    yy, xx = (np.mgrid[0:h, 0:w] + 0.5) * res
+    z = np.full((h, w), 100.0, np.float32)
+    z[(np.abs(yy - 3.0) <= 0.2) & (xx >= 1.0) & (xx <= 6.0)] += 0.5
+    z[(xx >= 1.5) & (xx <= 5.5) & (yy >= 3.4) & (yy <= 5.8)] = -9999.0  # the hole, from the wall's foot down
+    dem = write_geotiff(tmp_path / "hole.tif", z, (samples.X0, samples.Y1), res, samples.CRS, nodata=-9999.0)
+    x0, y1 = samples.world(0, 0)
+    on_wall = {"geometry": box(x0 + 2, y1 - 3.2, x0 + 4, y1 - 2.8), "score": 0.4, "quality": None, "label": "wall"}
+    (kept,) = support.hold([on_wall], dem, 0.3, resolution=0.01)
+    assert kept["relief_share"] > 0.9 and kept["relief_m"] == pytest.approx(0.5, abs=0.02)
+    above, _tr = support.heights(dem, (x0 + 1.5, y1 - 5.8, x0 + 5.5, y1 - 3.4), 0.02)
+    assert np.isnan(above).all()  # the hole itself has no height
+    # an object across the edge of the DEM: its part inside is judged, the rest has no height
+    beyond = {"geometry": box(x0 + 5.0, y1 - 3.2, x0 + 9.0, y1 - 2.8), "score": 0.4, "quality": None, "label": "wall"}
+    (kept,) = support.hold([beyond], dem, 0.3, resolution=0.01)
+    assert kept["geometry"].bounds[2] == pytest.approx(x0 + 6.0, abs=0.03) and kept["relief_share"] == pytest.approx(0.25, abs=0.03)
+    outside = {"geometry": box(x0 + 9.0, y1 - 3.2, x0 + 10.0, y1 - 2.8), "score": 0.4, "quality": None, "label": "wall"}
+    assert support.hold([outside], dem, 0.3) == []
+    # an object smaller than a cell of the grid is judged by the cells it touches
+    tiny = {"geometry": box(x0 + 3.0, y1 - 3.0, x0 + 3.005, y1 - 2.995), "score": 0.4, "quality": None, "label": "x"}
+    (kept,) = support.hold([tiny], dem, 0.3, resolution=0.01)
+    assert kept["relief_m"] == pytest.approx(0.5, abs=0.02)
+
+
+def test_the_relief_before_the_models_and_the_area_after_the_cut(tmp_path, fake, capsys):
+    import pyarchinit_photogrammetry as ppg
+    from ppg_samgeo import SamgeoPlugin, hints
+    from pyarchinit_photogrammetry.engine.dem import write_geotiff
+    from pyarchinit_photogrammetry.plugins import Context
+
+    doc, ch = samples.project(tmp_path / "p", with_dem=True)
+    # a wall ridge through the stone at (5.0, 2.0) of radius 0.25: a band 0.4 m high, 0.4 m wide
+    res = 0.02
+    h, w = int(round(samples.HEIGHT / res)), int(round(samples.WIDTH / res))
+    yy, xx = (np.mgrid[0:h, 0:w] + 0.5) * res
+    z = np.full((h, w), 100.0, np.float32)
+    z[(np.abs(yy - 2.0) <= 0.2) & (xx >= 4.0) & (xx <= 6.0)] += 0.4
+    write_geotiff(ch.dem_path, z, (samples.X0, samples.Y1), res, samples.CRS, nodata=-9999.0)
+    doc.save()
+    plugin = SamgeoPlugin()
+    plugin.activate(Context("samgeo", tmp_path / "plugin"))
+    project = str(doc.path)
+    # the stone on the ridge is cut to the band (0.183 m2 of its 0.196): the smallest area applies to what is left
+    assert plugin.command("segment", project, "stone", "--relief", "0.2", "--json") == 0
+    out = capsys.readouterr().out
+    run = json.loads(out[out.index("\n{") + 1:])
+    assert run["count"] == 1
+    (geom, attrs), = runs.features(ppg.Document.open(project).chunk, run)
+    assert attrs["area_m2"] == pytest.approx(0.183, abs=0.01) and attrs["relief_m"] == pytest.approx(0.4, abs=0.02)
+    assert plugin.command("segment", project, "pietre", "--relief", "0.2", "--min-area", "0.19", "--json") == 0
+    out = capsys.readouterr().out
+    assert json.loads(out[out.index("\n{") + 1:])["count"] == 0
+    # nothing passes a confidence of 0.99 (the models give nothing under it): the hint says what to change
+    assert plugin.command("segment", project, "stone", "--threshold", "0.99", "--json") == 0
+    out = capsys.readouterr().out
+    assert "niente trovato con la confidenza minima 0,99" in out
+    run = json.loads(out[out.index("\n{") + 1:])
+    assert run["count"] == 0 and run["threshold"] == 0.99 and "median_score" not in run
+    # the units of the flags are metres: a relief of 15 is refused as such
+    assert plugin.command("segment", project, "stone", "--relief", "15") == 1 and "metres" in capsys.readouterr().out
+    assert plugin.command("segment", project, "stone", "--size", "0") == 1
+    # without a DEM the relief is refused before the models are loaded (a failing engine would be the next error)
+    doc2, _ch2 = samples.project(tmp_path / "q")
+    fake.setenv("PPG_SAMGEO_FAKE", "fail")
+    assert plugin.command("segment", str(doc2.path), "stone", "--relief", "0.2") == 1
+    assert "DEM" in capsys.readouterr().out
+    fake.setenv("PPG_SAMGEO_FAKE", "1")
+    plugin.deactivate()
+
+
+def test_too_many_tiles_are_refused(tmp_path):
+    doc, ch = samples.project(tmp_path / "p")
+    with pytest.raises(ValueError, match="too many"):
+        segment.plan(ch.orthomosaic_path, tile=16, overlap=4)  # 8 x 6 m at 1 cm/px in tiles of 16 px: 67 x 50
+    assert len(segment.plan(ch.orthomosaic_path, tile=32, overlap=8).tiles) <= segment.MAX_TILES
+
+
+def test_the_pane_values_are_metres(window):
+    w, plugin, ch, qapp, errors = window
+    pane = plugin.pane
+    assert pane.values()["size"] is None and pane.values()["relief"] is None
+    pane.s_size.setValue(15)
+    pane.s_relief.setValue(20)
+    v = pane.values()
+    assert v["size"] == pytest.approx(0.15) and v["relief"] == pytest.approx(0.2)
+    assert pane.s_size.specialValueText() == "automatica" and pane.s_relief.specialValueText() == "no"

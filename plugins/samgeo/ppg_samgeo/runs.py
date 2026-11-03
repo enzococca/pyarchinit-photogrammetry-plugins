@@ -22,7 +22,8 @@ from .texts import slug, t
 
 FOLDER = "samgeo"
 TABLE = "samgeo"
-COLUMNS = {"n": "INTEGER", "prompt": "TEXT", "label": "TEXT", "score": "REAL", "quality": "REAL", "area_m2": "REAL"}
+COLUMNS = {"n": "INTEGER", "prompt": "TEXT", "label": "TEXT", "score": "REAL", "quality": "REAL", "area_m2": "REAL",
+           "relief_m": "REAL"}
 COLOURS = ("#ff8c00", "#00c8ff", "#ff3cdc", "#7cfc00", "#ffd700", "#ff4040", "#40e0d0", "#b070ff")
 FIRST_CLASS = 150  # the classes of the runs, above those the program gives to the units (100 up)
 BLOCK = 2048  # the mask is written in windows of this size: a whole site at 1 cm/px does not fit in memory
@@ -89,8 +90,13 @@ def write(chunk, the_plan, objects: list[dict], info: dict) -> dict:
     rows = [(_multi(o["geometry"]), {"n": k, "prompt": info.get("text", ""), "label": o.get("label", ""),
                                       "score": round(float(o["score"]), 4),
                                       "quality": round(float(o["quality"]), 4) if o.get("quality") is not None else None,
-                                      "area_m2": round(float(o["geometry"].area), 4)})
+                                      "area_m2": round(float(o["geometry"].area), 4),
+                                      "relief_m": o.get("relief_m")})
             for k, o in enumerate(objects, 1)]
+    scores = [float(o["score"]) for o in objects]
+    sides = [math.sqrt(float(o["geometry"].area)) / the_plan.resolution for o in objects]
+    medians = ({"median_score": round(float(np.median(scores)), 3), "median_px": round(float(np.median(sides)), 1)}
+               if objects else {})
     g = gpkg.write_table(out / f"{rid}.gpkg", TABLE, "MULTIPOLYGON", COLUMNS, rows, getattr(chunk, "crs", None),
                          f"samgeo: {name}")
     m = write_mask(out / f"{rid}_mask.tif", [o["geometry"] for o in objects], the_plan, f"samgeo: {name}")
@@ -99,7 +105,7 @@ def write(chunk, the_plan, objects: list[dict], info: dict) -> dict:
     polygon = the_plan.polygon
     return {"id": rid, "name": name, **info, "bounds": [round(v, 4) for v in the_plan.bounds],
             "polygon": polygon.wkt if polygon is not None else None,
-            "resolution": the_plan.resolution, "tiles": len(the_plan.tiles), "count": len(rows),
+            "resolution": the_plan.resolution, "tiles": len(the_plan.tiles), "count": len(rows), **medians,
             "files": {"gpkg": g.relative_to(base).as_posix(), "mask": m.relative_to(base).as_posix()},
             "colour": colour, "visible": True, "time": dt.datetime.now().isoformat(timespec="seconds")}
 

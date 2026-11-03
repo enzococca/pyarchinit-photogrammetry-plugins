@@ -71,15 +71,32 @@ remain proposals to review before converting them to stratigraphic units.
 
 1. The area is read at the resolution of the run, in tiles of 1024 px overlapping by 128 px. Three
    bands of 8 bits are read as they are; any other raster (16 bits, reflectances, one band) is
-   stretched between the 2nd and the 98th percentile of the area, one band as grey.
+   stretched between the 2nd and the 98th percentile of the area, one band as grey. The models look
+   at a tile resized to 800 px (Grounding DINO) or 1008 px (SAM 3): an object must be a few dozen
+   pixels in the tile to be seen. The automatic resolution is 1 cm/px, good for objects from 30 cm up;
+   with the **size of the objects** given (*Dimensione degli oggetti*, `--size`) the resolution follows
+   it - 32 px per object, never finer than the raster - so stones of 15 cm are searched at 0.5 cm/px.
 2. Each tile goes to the models; each mask becomes a polygon in the coordinates of the chunk.
 3. An object cut by the border of a tile is joined with its other part from the neighbouring tile
    (they agree in the strip the two tiles share); two boxes on the same object leave one proposal;
    when the area has more than one tile, a box as large as a whole tile is left out (Grounding DINO
-   often answers "the whole image" beside the objects). Then the score and area filters and, with a
-   polygon, only what lies inside it.
-4. The run is kept in the project, its files in the chunk folder: `samgeo/<run>.gpkg` and
-   `samgeo/<run>_mask.tif`.
+   often answers "the whole image" beside the objects). Objects lying inside a bigger one are either
+   its parts - a stone's face in its stone, the two halves of a wall - and go, the object staying, or
+   the objects a box was drawn around - two or more with ground between them, or one that covers
+   under a fifth of it - and the group goes. No two proposals overlap: the better one keeps the edge
+   two masks share, and a proposal left with under 30 % of its area goes. Then the score and area
+   filters and, with a polygon, only what lies inside it.
+4. **Above the ground** (*Sopra il suolo (DEM)*, `--relief`): with the chunk's DEM, every proposal is cut
+   to the part standing at least that height above the local ground (the DEM opened over 3 m is the
+   ground), and a proposal that stands on less than a fifth of its area goes. Walls seen from above
+   get a confidence of 0.05-0.2 from the models, the stones around them as much: the relief is what
+   delineates them. The column `relief_m` of the GeoPackage is the median height of what stayed.
+5. The run is kept in the project, its files in the chunk folder: `samgeo/<run>.gpkg` and
+   `samgeo/<run>_mask.tif`. After a run the log says what to change: nothing found (the size for
+   small objects, a lower confidence with the relief for walls); the confidence lowered under 0.2
+   with the proposals' median under it (the relief rather than the confidence); proposals under 25 px
+   at the run's resolution (the size of the objects). For stones one by one the program's own stone
+   tool (SAM on every object of the view, no text) is the thorough way; Samgeo finds things by name.
 
 ## Where
 
@@ -95,6 +112,8 @@ ppg plugin samgeo install                                  # PyTorch and the mod
 ppg plugin samgeo segment scavo.ppg pietre
 ppg plugin samgeo segment scavo.ppg "roof tile" --area 2480000,4500000,2480004,4500003 --units
 ppg plugin samgeo segment scavo.ppg muri --resolution 0.02 --min-area 0.5 --models precise --json
+ppg plugin samgeo segment scavo.ppg pietre --size 0.15                  # 15 cm stones: searched at 0.5 cm/px
+ppg plugin samgeo segment scavo.ppg muri --relief 0.15                  # what stands 15 cm above the ground (DEM)
 ppg plugin samgeo segment scavo.ppg mound --raster dem --threshold 0.25
 ppg plugin samgeo list scavo.ppg
 ppg plugin samgeo export scavo.ppg samgeo.gpkg --run pietre

@@ -123,6 +123,30 @@ class SamgeoPane(QWidget):
                                        "Automatic: the raster's, not finer than 1 cm/px (plenty for stones). Coarser, "
                                        "fewer tiles and faster."))
         form.addRow(t("Risoluzione", "Resolution"), self.s_resolution)
+        self.s_size = QDoubleSpinBox()
+        self.s_size.setRange(0.0, 10000.0)
+        self.s_size.setDecimals(0)
+        self.s_size.setSuffix(" cm")
+        self.s_size.setSpecialValueText(t("automatica", "automatic"))
+        self.s_size.setToolTip(t("Quanto sono grandi gli oggetti cercati: la risoluzione automatica si adatta perché i "
+                                 "modelli li vedano di qualche decina di pixel (pietre di 15 cm: 0,5 cm/px). Automatica: "
+                                 "1 cm/px, buona da 30 cm in su.",
+                                 "How big the objects looked for are: the automatic resolution follows it so that the "
+                                 "models see them a few dozen pixels wide (stones of 15 cm: 0.5 cm/px). Automatic: "
+                                 "1 cm/px, good from 30 cm up."))
+        form.addRow(t("Dimensione degli oggetti", "Size of the objects"), self.s_size)
+        self.s_relief = QDoubleSpinBox()
+        self.s_relief.setRange(0.0, 1000.0)
+        self.s_relief.setDecimals(0)
+        self.s_relief.setSuffix(" cm")
+        self.s_relief.setSpecialValueText(t("no", "no"))
+        self.s_relief.setToolTip(t("Tiene di ogni proposta la parte che sta almeno così sopra il suolo del DEM (il suolo "
+                                   "è il DEM aperto su 3 m) e scarta le proposte che non ci stanno: per muri e strutture "
+                                   "in rilievo. Serve il DEM del chunk.",
+                                   "Keeps of every proposal the part standing at least this much above the ground of the "
+                                   "DEM (the ground is the DEM opened over 3 m) and drops the proposals that do not stand: "
+                                   "for walls and raised structures. Needs the chunk's DEM."))
+        form.addRow(t("Sopra il suolo (DEM)", "Above the ground (DEM)"), self.s_relief)
         self.c_models = QComboBox()
         for key, text in MODELS:
             self.c_models.addItem(t(*text), key)
@@ -205,14 +229,17 @@ class SamgeoPane(QWidget):
     def values(self) -> dict:
         """What the user asked: ``text`` (as written or the ready entry shown), ``prompt`` (what the
         models read: the English of a ready entry, else the text), ``raster``, ``area``, ``threshold``,
-        ``min_area``, ``max_area``, ``resolution`` (m/px, None: automatic), ``models``."""
+        ``min_area``, ``max_area``, ``resolution`` (m/px, None: automatic), ``size`` (m, the objects
+        looked for, None: not said), ``relief`` (m above the ground to keep, None: off), ``models``."""
         from .texts import model_text
 
         text = " ".join(self.c_text.currentText().split())
         cm = self.s_resolution.value()
+        size, relief = self.s_size.value(), self.s_relief.value()
         return {"text": text, "prompt": model_text(text), "raster": self.c_raster.currentData(), "area": self.c_area.currentData(),
                 "threshold": round(self.s_threshold.value(), 3), "min_area": self.s_min.value(),
                 "max_area": self.s_max.value(), "resolution": cm / 100.0 if cm > 0 else None,
+                "size": size / 100.0 if size > 0 else None, "relief": relief / 100.0 if relief > 0 else None,
                 "models": self.c_models.currentData(), "engine": self.engine()}
 
     def set_status(self, text: str, can_install: bool) -> None:

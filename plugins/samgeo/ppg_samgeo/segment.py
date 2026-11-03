@@ -9,9 +9,15 @@
 3. :func:`find`: each tile to the worker; the masks into polygons in the coordinates of the chunk;
    the same object seen by two neighbouring tiles (overlapping by more than half of the smaller in
    their common strip) joined into one, the best score kept; the duplicates of a tile (two boxes on
-   one object) dropped; then the score, the area and, with a polygon, the place filters. When the area
-   has more than one tile, a box as large as its tile is left out: Grounding DINO often answers "the
-   whole image" beside the objects, and those boxes, joined from tile to tile, would cover the area.
+   one object) dropped; the objects lying inside a bigger one either its parts (dropped) or a group
+   it was drawn around (the group dropped: :func:`nested`); then the score, the area and, with a
+   polygon, the place filters. When the area has more than one tile, a box as large as its tile is
+   left out: Grounding DINO often answers "the whole image" beside the objects, and those boxes,
+   joined from tile to tile, would cover the area.
+
+The resolution matters: Grounding DINO looks at a tile of 1024 px resized to 800 px, so an object
+should be a few dozen pixels in the tile. ``object_size`` of :func:`plan` (the size of the objects
+looked for, in metres) chooses the resolution so that they are :data:`OBJECT_PX` pixels.
 """
 from __future__ import annotations
 
@@ -26,6 +32,13 @@ DEFAULT_RESOLUTION = 0.01  # m/px: the default never reads a finer raster finer 
 SAME_OBJECT = 0.5  # share of the smaller part, in the strip two tiles have in common
 DUPLICATE = 0.7  # intersection over union of two objects of one tile that are the same
 WHOLE_TILE = 0.95  # a box this wide and this high in a tile is the tile, not an object (with more than one tile)
+OBJECT_PX = 32  # the pixels an object of the size looked for gets in a tile, when the size is given
+CONTAINED = 0.8  # share of a smaller object's area inside a bigger one: it lies inside it
+GROUP_UNION = 0.7  # objects inside a bigger one covering less of it than this: the bigger one is a group
+GROUP_SIZE = 6.0  # an object over this many times the area of the size looked for, holding others: a group
+PART_SINGLE = 0.2  # one object inside a bigger one covering less of it than this: the bigger one is a group
+EXCLUSIVE_KEEP = 0.3  # an object left with less of its area than this after the better ones took theirs goes
+MAX_TILES = 2500  # a run of more tiles than this is refused: a coarser resolution or a smaller area
 
 
 @dataclass
@@ -40,6 +53,7 @@ class Plan:
     tiles: list = field(default_factory=list)
     crs: str | None = None
     polygon: object = None  # the shapely polygon drawn, when one was
+    object_size: float | None = None  # metres, the size of the objects looked for, when said
 
     @property
     def size(self) -> tuple[int, int]:
@@ -65,12 +79,13 @@ def tiles_of(bounds, resolution: float, tile: int = TILE, overlap: int = OVERLAP
 
 
 def plan(path, bounds=None, resolution: float | None = None, polygon=None, tile: int = TILE,
-         overlap: int = OVERLAP) -> Plan:
+         overlap: int = OVERLAP, object_size: float | None = None) -> Plan:
     """The tiles of a run on the raster ``path``: ``bounds`` (the whole raster when None) or the
     bounds of ``polygon`` (``(N, 2)`` vertices or a shapely polygon), clipped to the raster;
-    ``resolution`` m/px (None: the raster's, at least :data:`DEFAULT_RESOLUTION`; never finer than
-    the raster). Tiles that do not touch the polygon are left out. ``ValueError`` when the area is
-    outside the raster."""
+    ``resolution`` m/px (None: automatic - the raster's, at least :data:`DEFAULT_RESOLUTION`; with
+    ``object_size``, the metres of the objects looked for, at least ``object_size / OBJECT_PX`` so
+    that they are :data:`OBJECT_PX` pixels in a tile; never finer than the raster). Tiles that do not
+    touch the polygon are left out. ``ValueError`` when the area is outside the raster."""
     import rasterio
     from shapely.geometry import Polygon, box
     from shapely.geometry.base import BaseGeometry
@@ -95,11 +110,21 @@ def plan(path, bounds=None, resolution: float | None = None, polygon=None, tile:
                                         min(bounds[2], full[2]), min(bounds[3], full[3]))
     if area[2] <= area[0] or area[3] <= area[1]:
         raise ValueError("the area is outside the raster")
-    res = max(float(resolution) if resolution else max(native, DEFAULT_RESOLUTION), native)
+    if resolution:
+        res = float(resolution)
+    elif object_size and object_size > 0:
+        res = min(DEFAULT_RESOLUTION, float(object_size) / OBJECT_PX)
+    else:
+        res = DEFAULT_RESOLUTION
+    res = max(res, native)
     tiles = tiles_of(area, res, tile, overlap)
     if shape is not None:
         tiles = [tb for tb in tiles if shape.intersects(box(*tb))]
-    return Plan(str(path), tuple(float(v) for v in area), res, native, tiles, crs, shape)
+    if len(tiles) > MAX_TILES:
+        raise ValueError(f"{len(tiles)} tiles of {tile} px at {res * 100:g} cm/px are too many (at most {MAX_TILES}): "
+                         "a coarser resolution, bigger objects or a smaller area")
+    return Plan(str(path), tuple(float(v) for v in area), res, native, tiles, crs, shape,
+                float(object_size) if object_size and object_size > 0 else None)
 
 
 def _bands(src) -> list[int]:
@@ -203,7 +228,8 @@ def find(segmenter, the_plan: Plan, prompt: str, threshold: float = 0.3, text_th
          min_area: float = 0.0, max_area: float = 0.0, progress=None) -> list[dict]:
     """The objects of ``prompt`` in the area of ``the_plan``: dicts ``geometry`` (shapely, in the
     coordinates of the raster), ``score``, ``quality``, ``label``, the best score first.
-    ``min_area``, ``max_area``: m2 (0: no limit)."""
+    ``min_area``, ``max_area``: m2 (0: no limit). ``threshold`` goes to the models too (the boxes
+    under it are never made): the objects are those the models gave at that confidence."""
     from affine import Affine
 
     from pyarchinit_photogrammetry.core.progress import as_progress
@@ -231,10 +257,12 @@ def find(segmenter, the_plan: Plan, prompt: str, threshold: float = 0.3, text_th
                 continue
             geom = _polygons(mask, tr @ Affine.translation(c0, r0), res)
             if geom is not None:
-                found.append((k, {"geometry": geom, "score": float(obj.get("score", 0.0)),
-                                  "quality": float(obj["quality"]) if obj.get("quality") is not None else None, "label": str(obj.get("label", ""))}))
+                quality = obj.get("quality")
+                quality = float(quality) if quality is not None and math.isfinite(float(quality)) else None
+                found.append((k, {"geometry": geom, "score": float(obj.get("score", 0.0)), "quality": quality,
+                                  "label": str(obj.get("label", ""))}))
     progress(0.93, f"samgeo: {len(found)}")
-    objects = merge(found, the_plan.tiles)
+    objects = merge(found, the_plan.tiles, the_plan.object_size)
     kept = []
     for o in objects:
         g = o["geometry"]
@@ -247,11 +275,12 @@ def find(segmenter, the_plan: Plan, prompt: str, threshold: float = 0.3, text_th
     return sorted(kept, key=lambda o: (-o["score"], -o["geometry"].area))
 
 
-def merge(found, tiles) -> list[dict]:
+def merge(found, tiles, object_size: float | None = None) -> list[dict]:
     """The objects of the tiles (``(tile index, object)``) as objects of the area: an object cut by
     the border of a tile is joined with its other part from the neighbouring tile (they agree in the
     strip the two tiles share); two objects of one tile that are the same (intersection over union
-    above :data:`DUPLICATE`), the one with the lower score dropped."""
+    above :data:`DUPLICATE`), the one with the lower score dropped; then :func:`nested` and
+    :func:`exclusive`."""
     from shapely.geometry import box
     from shapely.ops import unary_union
     from shapely.strtree import STRtree
@@ -315,4 +344,101 @@ def merge(found, tiles) -> list[dict]:
             union = g.area + h.area - inter
             if union > 0 and inter / union > DUPLICATE:
                 dropped.add(j)
-    return kept
+    return exclusive(nested(kept, object_size))
+
+
+def nested(objects: list[dict], object_size: float | None = None) -> list[dict]:
+    """The objects without those lying inside another: the bigger ones first, the smaller objects
+    inside one (:data:`CONTAINED` of their area) are either its parts - a stone's face in its stone,
+    the two halves of a wall in the wall: dropped, the object kept, with the best score of the parts
+    when they cover most of it - or the objects a box was drawn around - one covering less than
+    :data:`PART_SINGLE` of it, two or more with ground between them covering less than
+    :data:`GROUP_UNION` of it, or, when the size of the objects looked for is known, any two or more
+    in an object over :data:`GROUP_SIZE` times the area of that size: the group dropped, its objects
+    kept. The "whole image" boxes a tile gives at a low threshold go this way too. The order of
+    ``objects`` is kept."""
+    from shapely.ops import unary_union
+    from shapely.strtree import STRtree
+
+    if len(objects) < 2:
+        return list(objects)
+    big = GROUP_SIZE * object_size * object_size if object_size else None
+    order = sorted(range(len(objects)), key=lambda i: -objects[i]["geometry"].area)
+    geoms = [_valid(objects[i]["geometry"]) for i in order]
+    tree = STRtree(geoms)
+    dropped: set[int] = set()
+    best = {}  # object -> the best score of its parts
+    for a, g in enumerate(geoms):
+        if a in dropped or g.area <= 0:
+            continue
+        inside = []
+        for b in tree.query(g, predicate="intersects"):
+            b = int(b)
+            if b <= a or b in dropped:  # later in the order = smaller (or as big)
+                continue
+            h = geoms[b]
+            if h.area > 0 and g.intersection(h).area >= CONTAINED * h.area:
+                inside.append(b)
+        if not inside:
+            continue
+        covered = unary_union([geoms[b] for b in inside]).intersection(g).area / g.area
+        if len(inside) == 1:
+            group = covered < PART_SINGLE
+        else:
+            group = (big is not None and g.area > big) or covered < GROUP_UNION
+        if group:
+            dropped.add(a)
+        else:
+            dropped.update(inside)
+            if covered >= GROUP_UNION:  # the halves of a wall: the wall is as sure as its surest half
+                best[a] = max(objects[order[b]]["score"] for b in inside)
+    out = []
+    for a in range(len(order)):
+        if a in dropped:
+            continue
+        o = objects[order[a]]
+        if a in best and best[a] > o["score"]:
+            o = {**o, "score": best[a]}
+        out.append((order[a], o))
+    out.sort(key=lambda p: p[0])
+    return [o for _, o in out]
+
+
+def exclusive(objects: list[dict]) -> list[dict]:
+    """The objects without overlaps: the best score first, each object loses what the better ones
+    already cover, and one left with less than :data:`EXCLUSIVE_KEEP` of its area goes. Two masks
+    of neighbouring stones overlap along their edge; the better one keeps the edge. The order of
+    ``objects`` is kept."""
+    from shapely.geometry import MultiPolygon
+    from shapely.ops import unary_union
+    from shapely.strtree import STRtree
+
+    if len(objects) < 2:
+        return list(objects)
+    order = sorted(range(len(objects)), key=lambda i: -objects[i]["score"])
+    geoms = [_valid(objects[i]["geometry"]) for i in order]
+    tree = STRtree(geoms)
+    taken: dict[int, object] = {}  # index in order -> the geometry kept
+    for a, g in enumerate(geoms):
+        better = [taken[b] for b in (int(j) for j in tree.query(g, predicate="intersects")) if b < a and b in taken]
+        if better:
+            cover = unary_union(better)
+            left = g.difference(cover)
+            if not left.is_valid:
+                left = left.buffer(0)
+            parts = [p for p in getattr(left, "geoms", [left]) if p.geom_type == "Polygon" and p.area > 0]
+            if not parts or sum(p.area for p in parts) < EXCLUSIVE_KEEP * g.area:
+                continue
+            g = parts[0] if len(parts) == 1 else MultiPolygon(parts)
+        taken[a] = g
+    out = []
+    for a, g in taken.items():
+        o = objects[order[a]]
+        out.append((order[a], o if g is o["geometry"] else {**o, "geometry": g}))
+    out.sort(key=lambda p: p[0])
+    return [o for _, o in out]
+
+
+def _valid(geom):
+    """The geometry, made valid when it is not (a union of parts can cross itself)."""
+    return geom if geom.is_valid else geom.buffer(0)

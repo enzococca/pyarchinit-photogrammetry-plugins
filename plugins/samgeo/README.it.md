@@ -73,15 +73,34 @@ Tutte le uscite restano proposte da verificare prima della conversione in US.
 
 1. L'area viene letta alla risoluzione della ricerca, in tasselli di 1024 px sovrapposti di 128 px.
    Tre bande a 8 bit si leggono come sono; ogni altro raster (16 bit, riflettanze, una banda) viene
-   stirato tra il 2° e il 98° percentile dell'area, una banda in grigio.
+   stirato tra il 2° e il 98° percentile dell'area, una banda in grigio. I modelli guardano il tassello
+   ridotto a 800 px (Grounding DINO) o 1008 px (SAM 3): un oggetto dev'essere di qualche decina di pixel
+   nel tassello per essere visto. La risoluzione automatica è 1 cm/px, buona per oggetti da 30 cm in su;
+   con la **dimensione degli oggetti** indicata (*Dimensione degli oggetti*, `--size`) la risoluzione la
+   segue - 32 px per oggetto, mai più fine del raster - così le pietre di 15 cm si cercano a 0,5 cm/px.
 2. Ogni tassello va ai modelli; ogni maschera diventa un poligono nelle coordinate del chunk.
 3. Un oggetto tagliato dal bordo di un tassello viene unito alla sua altra parte del tassello vicino
    (le due coincidono nella striscia che i tasselli hanno in comune); due riquadri sullo stesso
    oggetto lasciano una sola proposta; quando l'area ha più di un tassello, un riquadro grande quanto
    un tassello intero viene scartato (Grounding DINO spesso risponde "tutta l'immagine" accanto agli
-   oggetti). Poi i filtri di punteggio e di area e, con un poligono, solo quello che vi cade dentro.
-4. La ricerca resta nel progetto, i suoi file nella cartella del chunk: `samgeo/<ricerca>.gpkg` e
-   `samgeo/<ricerca>_mask.tif`.
+   oggetti). Gli oggetti che stanno dentro uno più grande sono o le sue parti - la faccia di una pietra
+   nella pietra, le due metà di un muro - e vanno via restando l'oggetto, o gli oggetti attorno ai
+   quali è stato disegnato un riquadro - due o più con del terreno in mezzo, o uno che ne copre meno
+   di un quinto - e va via il gruppo. Due proposte non si sovrappongono mai: la migliore tiene il
+   bordo che due maschere hanno in comune, e una proposta a cui resta meno del 30 % della sua area va
+   via. Poi i filtri di punteggio e di area e, con un poligono, solo quello che vi cade dentro.
+4. **Sopra il suolo** (*Sopra il suolo (DEM)*, `--relief`): con il DEM del chunk, ogni proposta viene
+   tagliata alla parte che sta almeno a quell'altezza sopra il suolo locale (il suolo è il DEM aperto su
+   3 m), e una proposta che sta in piedi su meno di un quinto della sua area va via. I muri visti
+   dall'alto hanno dai modelli una confidenza di 0,05-0,2, le pietre intorno altrettanto: è il rilievo
+   che li delinea. La colonna `relief_m` del GeoPackage è l'altezza mediana di quello che è rimasto.
+5. La ricerca resta nel progetto, i suoi file nella cartella del chunk: `samgeo/<ricerca>.gpkg` e
+   `samgeo/<ricerca>_mask.tif`. Dopo una ricerca il log dice cosa cambiare: niente trovato (la
+   dimensione per gli oggetti piccoli, una confidenza più bassa con il rilievo per i muri); la
+   confidenza abbassata sotto 0,2 con la mediana delle proposte sotto (il rilievo invece della
+   confidenza); proposte sotto i 25 px alla risoluzione della ricerca (la dimensione degli oggetti).
+   Per le pietre una per una lo strumento Pietre del programma (SAM su ogni oggetto della vista, senza
+   testo) è la via completa; Samgeo trova le cose per nome.
 
 ## Dove
 
@@ -98,6 +117,8 @@ ppg plugin samgeo install                                  # PyTorch e i modelli
 ppg plugin samgeo segment scavo.ppg pietre
 ppg plugin samgeo segment scavo.ppg "roof tile" --area 2480000,4500000,2480004,4500003 --units
 ppg plugin samgeo segment scavo.ppg muri --resolution 0.02 --min-area 0.5 --models precise --json
+ppg plugin samgeo segment scavo.ppg pietre --size 0.15                  # pietre di 15 cm: cercate a 0,5 cm/px
+ppg plugin samgeo segment scavo.ppg muri --relief 0.15                  # quello che sta 15 cm sopra il suolo (DEM)
 ppg plugin samgeo segment scavo.ppg mound --raster dem --threshold 0.25
 ppg plugin samgeo list scavo.ppg
 ppg plugin samgeo export scavo.ppg samgeo.gpkg --run pietre

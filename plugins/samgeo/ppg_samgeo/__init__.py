@@ -26,7 +26,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import model_text, number, plural, t
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 TEXT_THRESHOLD = 0.25  # how sure Grounding DINO must be that a phrase names a box
 
 
@@ -327,11 +327,15 @@ class SamgeoPlugin(Plugin):
     def _start(self, chunk, raster: dict, params: dict, bounds=None, polygon=None) -> None:
         from . import segment
 
+        if params.get("relief") and not getattr(chunk, "dem_path", None):
+            self._message("warning", t("Sopra il suolo: il chunk non ha un DEM. Costruisci il DEM, o metti «no».",
+                                       "Above the ground: the chunk has no DEM. Build the DEM, or set it to 'no'."))
+            return
         try:
-            the_plan = segment.plan(raster["path"], bounds=bounds, resolution=params.get("resolution"), polygon=polygon)
-        except ValueError as exc:
-            self._message("warning", t("L'area scelta non è nel raster ({0}).", "The area chosen is not in the raster "
-                                                                               "({0}).").format(exc))
+            the_plan = segment.plan(raster["path"], bounds=bounds, resolution=params.get("resolution"), polygon=polygon,
+                                    object_size=params.get("size"))
+        except ValueError as exc:  # the area outside the raster, or too many tiles
+            self._message("warning", t("Samgeo: {0}.", "Samgeo: {0}.").format(exc))
             return
         info = run_info(params, raster)
         self._status(t("Samgeo: «{0}» in {1} {2} a {3} cm/px", "Samgeo: '{0}' in {1} {2} at {3} cm/px").format(
@@ -360,6 +364,8 @@ class SamgeoPlugin(Plugin):
                        "wrong ones (Select and Del), then units, classes or GeoPackage.").format(
             run["text"], run["count"], plural(run["count"], t("proposta", "proposal"), t("proposte", "proposals")),
             layer(run), run.get("seconds", 0.0), environment.device_name(run.get("device"))))
+        for hint in hints(run):
+            self.context.log.warning(hint)
 
     # ------------------------------------------------------------------ what the runs become
     def _run_of(self, run_id: str):
@@ -606,6 +612,12 @@ class SamgeoPlugin(Plugin):
         p.add_argument("--raster", default="orthomosaic", help="the name of the raster in the raster calculator")
         p.add_argument("--area", help="X0,Y0,X1,Y1 in the coordinates of the chunk (the whole raster by default)")
         p.add_argument("--resolution", type=float, help="metres per pixel (the raster's, at least 0.01, by default)")
+        p.add_argument("--size", type=float, help="the size of the objects looked for, in METRES (0.15 for stones of "
+                                                   "15 cm): the automatic resolution follows it (a few dozen pixels per "
+                                                   "object)")
+        p.add_argument("--relief", type=float, help="keep of every object what stands at least this many METRES above "
+                                                     "the ground of the chunk's DEM (0.15 for 15 cm), and drop the "
+                                                     "objects that do not")
         p.add_argument("--threshold", type=float, default=0.3, help="the least confidence of a box (0-1)")
         p.add_argument("--min-area", type=float, default=0.0, help="m2")
         p.add_argument("--max-area", type=float, default=0.0, help="m2 (0: no limit)")
@@ -705,16 +717,26 @@ class SamgeoPlugin(Plugin):
             except (ValueError, AssertionError):
                 print("--area: X0,Y0,X1,Y1")
                 return 1
+        for flag, value, top in (("--size", ns.size, 50.0), ("--relief", ns.relief, 5.0)):
+            if value is not None and not 0 < value <= top:
+                print(f"{flag}: metres, between 0 and {top:g} (0.15 for 15 cm)")
+                return 1
+        if ns.relief and not (getattr(chunk, "dem_path", None) and Path(chunk.dem_path).exists()):
+            print(t("Sopra il suolo: il chunk non ha un DEM", "Above the ground: the chunk has no DEM"))
+            return 1
         params = {"text": ns.text, "prompt": model_text(ns.text), "threshold": ns.threshold, "min_area": ns.min_area,
-                  "max_area": ns.max_area, "models": ns.models, "engine": ns.engine, "area": "bounds" if bounds else "all"}
+                  "max_area": ns.max_area, "models": ns.models, "engine": ns.engine, "area": "bounds" if bounds else "all",
+                  "size": ns.size, "relief": ns.relief}
         if ns.engine == "sam3":
             from .access import notice
 
             print(notice())
         try:
-            the_plan = segment.plan(raster["path"], bounds=bounds, resolution=ns.resolution)
+            the_plan = segment.plan(raster["path"], bounds=bounds, resolution=ns.resolution, object_size=ns.size)
             print(f"{len(the_plan.tiles)} tiles at {the_plan.resolution:g} m/px", flush=True)
             run = run_job(chunk, the_plan, run_info(params, raster), _print_progress, device=ns.device)
+            for hint in hints(run):
+                print(hint)
         except (environment.EnvironmentMissing, WorkerError, ValueError, RuntimeError) as exc:
             if isinstance(exc, Cancelled):
                 raise
@@ -756,7 +778,46 @@ def run_info(params: dict, raster: dict) -> dict:
             "raster": raster["name"], "raster_label": raster.get("label", raster["name"]),
             "threshold": float(params.get("threshold", 0.3)), "text_threshold": TEXT_THRESHOLD,
             "min_area": float(params.get("min_area") or 0.0), "max_area": float(params.get("max_area") or 0.0),
+            "size": float(params["size"]) if params.get("size") else None,
+            "relief": float(params["relief"]) if params.get("relief") else None,
             "area": params.get("area", "all"), "plugin": __version__}
+
+
+UNSURE = 0.2  # a confidence lowered under this, with the proposals' median under it: the models are unsure
+SMALL_PX = 25  # a median object narrower than this, in pixels of the run: the size of the objects was not given
+
+
+def hints(run: dict) -> list[str]:
+    """What the record of a run suggests for the next one: the relief when the confidence had to be
+    lowered to get the proposals (walls seen from above score 0.05-0.2, the ground around them as
+    much); the size of the objects for proposals that are small in the pixels of the run; what to
+    change when nothing was found."""
+    out = []
+    threshold = float(run.get("threshold", 0.3))
+    if not run.get("count"):
+        out.append(t("Samgeo: niente trovato con la confidenza minima {0}. Oggetti piccoli: indica la loro dimensione, così "
+                     "la ricerca va più fine; muri e strutture in rilievo: abbassa la confidenza e accendi «Sopra il "
+                     "suolo (DEM)», che tiene solo quello che sta sopra il suolo.",
+                     "Samgeo: nothing found at the least confidence {0}. Small objects: give their size, so the run goes "
+                     "finer; walls and raised structures: lower the confidence and turn on 'Above the ground (DEM)', "
+                     "which keeps only what stands above the ground.").format(number(threshold, 2)))
+        return out
+    score = run.get("median_score")
+    if threshold < UNSURE and score is not None and score < UNSURE and not run.get("relief"):
+        out.append(t("Samgeo: i modelli sono poco sicuri di queste proposte (confidenza mediana {0} con la minima a {1}): "
+                     "per muri e strutture in rilievo accendi «Sopra il suolo (DEM)», che tiene solo quello che sta sopra "
+                     "il suolo, invece di abbassare la confidenza.",
+                     "Samgeo: the models are unsure of these proposals (median confidence {0} with the least at {1}): "
+                     "for walls and raised structures turn on 'Above the ground (DEM)', which keeps only what stands "
+                     "above the ground, rather than lowering the confidence.").format(number(score, 2), number(threshold, 2)))
+    px = run.get("median_px")
+    if px is not None and px < SMALL_PX and not run.get("size"):
+        out.append(t("Samgeo: le proposte sono piccole ({0} px alla risoluzione della ricerca, {1} cm/px): indica la "
+                     "dimensione degli oggetti, così la ricerca va più fine e ne trova di più.",
+                     "Samgeo: the proposals are small ({0} px at the resolution of the run, {1} cm/px): give the size "
+                     "of the objects, so the run goes finer and finds more of them.").format(
+            number(px, 0), number(float(run.get("resolution", 0.0)) * 100, 2)))
+    return out
 
 
 def run_job(chunk, the_plan, info: dict, progress=None, *, token: str | None = None,
@@ -770,14 +831,25 @@ def run_job(chunk, the_plan, info: dict, progress=None, *, token: str | None = N
 
     progress = as_progress(progress)
     t0 = time.monotonic()
+    dem = getattr(chunk, "dem_path", None) if info.get("relief") else None
+    if info.get("relief") and (dem is None or not Path(dem).exists()):  # before the models are loaded
+        raise ValueError(t("Sopra il suolo: il chunk non ha un DEM", "Above the ground: the chunk has no DEM"))
     progress(0.0, t("Caricamento dei modelli (download al primo uso)",
                     "Loading the models (downloaded on first use)"))
     with Segmenter(info.get("engine", "open"), info.get("detector", "base"), info.get("segmenter", "small"),
                    progress=progress, token=token, device=device) as seg:
         objects = segment.find(seg, the_plan, info["prompt"], threshold=info["threshold"],
                                text_threshold=info.get("text_threshold", TEXT_THRESHOLD), min_area=info["min_area"],
-                               max_area=info["max_area"], progress=progress)
+                               max_area=info["max_area"], progress=progress.sub(0.0, 0.9) if dem else progress)
         used_device, versions = seg.device, seg.versions
+    if dem:
+        from . import support
+
+        progress(0.9, t("Samgeo: le proposte tenute al rilievo del DEM", "Samgeo: the proposals held to the relief of the DEM"))
+        objects = support.hold(objects, dem, float(info["relief"]), resolution=the_plan.resolution,
+                               progress=progress.sub(0.9, 0.08))
+        # cut, an object can be under the smallest area, and two can be left with the same standing part
+        objects = segment.exclusive([o for o in objects if o["geometry"].area >= info["min_area"]])
     run = runs.write(chunk, the_plan, objects, {**info, "device": used_device, "versions": versions})
     run["seconds"] = round(time.monotonic() - t0, 1)
     return run
