@@ -1,0 +1,737 @@
+{
+ "standard": "UNI 11182:2006, Materiali lapidei naturali ed artificiali - Descrizione della forma di alterazione",
+ "url": "https://store.uni.com/uni-11182-2006",
+ "note": "Definitions are the plugin's own one-line paraphrases, not the text of the standard; names as the glossary gives them. Colours and hatches are the plugin's defaults: no standard prescribes them. The mapping to ICOMOS-ISCS is the plugin's (no official table exists): the closest term or terms, editable.",
+ "terms": [
+  {
+   "code": "UNI.ALTERAZIONE_CROMATICA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.ALTERAZIONE_CROMATICA",
+   "iscs": [
+    "ISCS.DISCOLOURATION",
+    "ISCS.DISCOLOURATION.COLOURATION",
+    "ISCS.DISCOLOURATION.BLEACHING"
+   ],
+   "names": {
+    "en": "colour alteration",
+    "fr": "Altération chromatique",
+    "it": "alterazione cromatica"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a natural change of the colour of the surface, usually extended (a local one is a stain)",
+    "it": "variazione naturale del colore della superficie, in genere estesa (se locale è una macchia)"
+   },
+   "source": "UNI 11182:2006, 3.1",
+   "colour": "#1f77b4",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "UNI.ALVEOLIZZAZIONE",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.ALVEOLIZZAZIONE",
+   "iscs": [
+    "ISCS.ALVEOLIZATION"
+   ],
+   "names": {
+    "en": "alveolization",
+    "fr": "Alvéolisation",
+    "it": "alveolizzazione"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "cavities of varied shape and size, often connected and unevenly spread",
+    "it": "cavità di forma e dimensioni varie, spesso comunicanti e distribuite in modo non uniforme"
+   },
+   "source": "UNI 11182:2006, 3.2",
+   "colour": "#9467bd",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "UNI.COLATURA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.COLATURA",
+   "iscs": [
+    "ISCS.DISCOLOURATION.STAINING"
+   ],
+   "names": {
+    "en": "run-off trace",
+    "fr": "Tache",
+    "it": "colatura"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a vertical trace on the surface, often several side by side",
+    "it": "traccia verticale sulla superficie, spesso più d'una affiancate"
+   },
+   "source": "UNI 11182:2006, 3.3",
+   "colour": "#08519c",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "UNI.COLONIZZAZIONE_BIOLOGICA",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.COLONIZZAZIONE_BIOLOGICA",
+   "iscs": [
+    "ISCS.BIOLOGICAL_COLONIZATION"
+   ],
+   "names": {
+    "en": "biological colonization",
+    "fr": "Colonisation biologique",
+    "it": "colonizzazione biologica"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "organisms visible to the eye on the surface (algae, fungi, lichens, mosses, higher plants)",
+    "it": "organismi visibili a occhio sulla superficie (alghe, funghi, licheni, muschi, piante superiori)"
+   },
+   "source": "UNI 11182:2006, 3.4",
+   "colour": "#2ca02c",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "UNI.CROSTA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.CROSTA",
+   "iscs": [
+    "ISCS.CRUST",
+    "ISCS.CRUST.BLACK_CRUST",
+    "ISCS.CRUST.SALT_CRUST"
+   ],
+   "names": {
+    "en": "crust",
+    "fr": "Croûte",
+    "it": "crosta"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a hard surface layer, different in shape and colour from the substrate, that may come off",
+    "it": "strato superficiale duro, diverso per forma e colore dal substrato, che può staccarsi"
+   },
+   "source": "UNI 11182:2006, 3.5",
+   "colour": "#6baed6",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "UNI.DEFORMAZIONE",
+   "family": "crack_deformation",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.DEFORMAZIONE",
+   "iscs": [
+    "ISCS.DEFORMATION"
+   ],
+   "names": {
+    "en": "deformation",
+    "fr": "Déformation",
+    "it": "deformazione"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a change of shape through the whole thickness of the element",
+    "it": "cambiamento di forma che interessa tutto lo spessore dell'elemento"
+   },
+   "source": "UNI 11182:2006, 3.6",
+   "colour": "#d62728",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "UNI.DEGRADAZIONE_DIFFERENZIALE",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.DEGRADAZIONE_DIFFERENZIALE",
+   "iscs": [
+    "ISCS.EROSION.DIFFERENTIAL_EROSION"
+   ],
+   "names": {
+    "en": "differential degradation",
+    "fr": "Erosion différentielle",
+    "it": "degradazione differenziale"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a loss of material that brings out the uneven texture or structure",
+    "it": "perdita di materiale che mette in evidenza la tessitura o la struttura disomogenea"
+   },
+   "source": "UNI 11182:2006, 3.7",
+   "colour": "#6a3d9a",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "UNI.DEPOSITO_SUPERFICIALE",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.DEPOSITO_SUPERFICIALE",
+   "iscs": [
+    "ISCS.DEPOSIT",
+    "ISCS.SOILING"
+   ],
+   "names": {
+    "en": "surface deposit",
+    "fr": "Dépôt",
+    "it": "deposito superficiale"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "foreign matter (dust, soil, guano) piled on the surface, loose and poorly adhering",
+    "it": "materiale estraneo (polvere, terriccio, guano) accumulato sulla superficie, poco coeso e poco aderente"
+   },
+   "source": "UNI 11182:2006, 3.8",
+   "colour": "#3182bd",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "UNI.DISGREGAZIONE",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.DISGREGAZIONE",
+   "iscs": [
+    "ISCS.DISINTEGRATION",
+    "ISCS.DISINTEGRATION.POWDERING",
+    "ISCS.DISINTEGRATION.GRANULAR_DISINTEGRATION"
+   ],
+   "names": {
+    "en": "disintegration",
+    "fr": "Désagrégation",
+    "it": "disgregazione"
+   },
+   "aliases": [
+    "polverizzazione"
+   ],
+   "definition": {
+    "en": "a loss of cohesion with the material falling as powder or tiny fragments",
+    "it": "perdita di coesione con caduta del materiale in polvere o in minuti frammenti"
+   },
+   "source": "UNI 11182:2006, 3.9",
+   "colour": "#ff7f0e",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "UNI.DISTACCO",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.DISTACCO",
+   "iscs": [
+    "ISCS.DELAMINATION",
+    "ISCS.BLISTERING",
+    "ISCS.SCALING"
+   ],
+   "names": {
+    "en": "detachment",
+    "fr": "Délitage",
+    "it": "distacco"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a separation between layers of a plaster or coating, or between them and their support",
+    "it": "separazione fra gli strati di un intonaco o di un rivestimento, o fra questi e il supporto"
+   },
+   "source": "UNI 11182:2006, 3.10",
+   "colour": "#fdae61",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "UNI.EFFLORESCENZA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.EFFLORESCENZA",
+   "iscs": [
+    "ISCS.EFFLORESCENCE",
+    "ISCS.SUBFLORESCENCE"
+   ],
+   "names": {
+    "en": "efflorescence",
+    "fr": "Efflorescence",
+    "it": "efflorescenza"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "crystals on the surface, powdery or in threads, usually whitish",
+    "it": "cristalli sulla superficie, polverulenti o filamentosi, di solito biancastri"
+   },
+   "source": "UNI 11182:2006, 3.11",
+   "colour": "#2c7fb8",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "UNI.EROSIONE",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.EROSIONE",
+   "iscs": [
+    "ISCS.EROSION"
+   ],
+   "names": {
+    "en": "erosion",
+    "fr": "Erosion",
+    "it": "erosione"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "material removed from a surface that is generally compact",
+    "it": "asportazione di materiale da una superficie in genere compatta"
+   },
+   "source": "UNI 11182:2006, 3.12",
+   "colour": "#b39ddb",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "UNI.ESFOLIAZIONE",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.ESFOLIAZIONE",
+   "iscs": [
+    "ISCS.DELAMINATION.EXFOLIATION"
+   ],
+   "names": {
+    "en": "exfoliation",
+    "fr": "Exfoliation",
+    "it": "esfoliazione"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "one or more very thin layers, nearly parallel, coming off the surface",
+    "it": "una o più parti laminari sottilissime, quasi parallele, che si staccano dalla superficie"
+   },
+   "source": "UNI 11182:2006, 3.13",
+   "colour": "#e6550d",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "UNI.FESSURAZIONE",
+   "family": "crack_deformation",
+   "kind": "crack",
+   "geometry": "line",
+   "uni": "UNI.FESSURAZIONE",
+   "iscs": [
+    "ISCS.CRACK",
+    "ISCS.CRACK.FRACTURE"
+   ],
+   "names": {
+    "en": "cracking",
+    "fr": "Fissure",
+    "it": "fessurazione"
+   },
+   "aliases": [
+    "fratturazione o fessurazione",
+    "fratturazione",
+    "cricca",
+    "cavillo"
+   ],
+   "definition": {
+    "en": "a break in the material with the parts moved apart",
+    "it": "discontinuità del materiale con spostamento reciproco delle parti"
+   },
+   "source": "UNI 11182:2006, 3.14",
+   "colour": "#e8505b",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "UNI.FRONTE_DI_RISALITA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.FRONTE_DI_RISALITA",
+   "iscs": [
+    "ISCS.DISCOLOURATION.MOIST_AREA"
+   ],
+   "names": {
+    "en": "rising damp front",
+    "fr": "Assombrissement dû à l'humidité",
+    "it": "fronte di risalita"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "the upper limit of water rising in the wall, with salts or losses and a darker zone below",
+    "it": "limite superiore dell'acqua che risale nel muro, con sali o perdite e una zona più scura sotto"
+   },
+   "source": "UNI 11182:2006, 3.15",
+   "colour": "#253494",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "UNI.GRAFFITO_VANDALICO",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.GRAFFITO_VANDALICO",
+   "iscs": [
+    "ISCS.GRAFFITI"
+   ],
+   "names": {
+    "en": "vandal graffiti",
+    "fr": "Graffiti",
+    "it": "graffito vandalico"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "coloured paints applied on the surface without being wanted",
+    "it": "vernici colorate applicate sulla superficie senza che fossero volute"
+   },
+   "source": "UNI 11182:2006, 3.16",
+   "colour": "#41b6c4",
+   "hatch": {
+    "mpl": "||",
+    "dxf": "ANSI33"
+   }
+  },
+  {
+   "code": "UNI.INCROSTAZIONE",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.INCROSTAZIONE",
+   "iscs": [
+    "ISCS.ENCRUSTATION",
+    "ISCS.ENCRUSTATION.CONCRETION"
+   ],
+   "names": {
+    "en": "encrustation",
+    "fr": "Encroûtement",
+    "it": "incrostazione"
+   },
+   "aliases": [
+    "concrezione"
+   ],
+   "definition": {
+    "en": "a compact layered deposit adhering to the surface (a concretion when shaped like stalactites)",
+    "it": "deposito stratiforme compatto aderente alla superficie (concrezione se a forma di stalattite)"
+   },
+   "source": "UNI 11182:2006, 3.17",
+   "colour": "#225ea8",
+   "hatch": {
+    "mpl": "oo",
+    "dxf": "HONEY"
+   }
+  },
+  {
+   "code": "UNI.LACUNA",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.LACUNA",
+   "iscs": [
+    "ISCS.MISSING_PART.GAP",
+    "ISCS.MISSING_PART"
+   ],
+   "names": {
+    "en": "lacuna",
+    "fr": "Trou",
+    "it": "lacuna"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a break in the continuity of a surface (plaster, painting, mosaic, coating)",
+    "it": "interruzione della continuità di una superficie (intonaco, pittura, mosaico, rivestimento)"
+   },
+   "source": "UNI 11182:2006, 3.18",
+   "colour": "#7b4fa0",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "UNI.MACCHIA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.MACCHIA",
+   "iscs": [
+    "ISCS.DISCOLOURATION.STAINING"
+   ],
+   "names": {
+    "en": "stain",
+    "fr": "Tache",
+    "it": "macchia"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a local change of colour, from the material itself or from something foreign (rust, paint)",
+    "it": "variazione locale del colore, dovuta al materiale stesso o a sostanze estranee (ruggine, vernici)"
+   },
+   "source": "UNI 11182:2006, 3.19",
+   "colour": "#9ecae1",
+   "hatch": {
+    "mpl": "**",
+    "dxf": "STARS"
+   }
+  },
+  {
+   "code": "UNI.MANCANZA",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.MANCANZA",
+   "iscs": [
+    "ISCS.MISSING_PART"
+   ],
+   "names": {
+    "en": "missing part",
+    "fr": "Partie manquante",
+    "it": "mancanza"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "the loss of a three-dimensional part (an arm of a statue, a piece of a relief)",
+    "it": "perdita di una parte tridimensionale (il braccio di una statua, un pezzo di rilievo)"
+   },
+   "source": "UNI 11182:2006, 3.20",
+   "colour": "#cab2d6",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "UNI.PATINA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.PATINA",
+   "iscs": [
+    "ISCS.PATINA"
+   ],
+   "names": {
+    "en": "patina",
+    "fr": "Patine",
+    "it": "patina"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a natural change of the surface, not tied to decay, seen as a change of colour",
+    "it": "modifica naturale della superficie, non legata al degrado, percepita come variazione di colore"
+   },
+   "source": "UNI 11182:2006, 3.21",
+   "colour": "#0868ac",
+   "hatch": {
+    "mpl": "///",
+    "dxf": "ANSI34"
+   }
+  },
+  {
+   "code": "UNI.PATINA_BIOLOGICA",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.PATINA_BIOLOGICA",
+   "iscs": [
+    "ISCS.BIOLOGICAL_COLONIZATION",
+    "ISCS.ALGA",
+    "ISCS.MOULD"
+   ],
+   "names": {
+    "en": "biological patina",
+    "fr": "Colonisation biologique",
+    "it": "patina biologica"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a thin, even layer made mainly of microorganisms",
+    "it": "strato sottile e uniforme formato soprattutto da microrganismi"
+   },
+   "source": "UNI 11182:2006, 3.22",
+   "colour": "#1b7837",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "UNI.PELLICOLA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.PELLICOLA",
+   "iscs": [
+    "ISCS.FILM"
+   ],
+   "names": {
+    "en": "film",
+    "fr": "Film",
+    "it": "pellicola"
+   },
+   "aliases": [
+    "film"
+   ],
+   "definition": {
+    "en": "a transparent or semi-transparent layer of a foreign substance (protective, oxalate film)",
+    "it": "strato trasparente o semitrasparente di una sostanza estranea (protettivo, film a ossalati)"
+   },
+   "source": "UNI 11182:2006, 3.23",
+   "colour": "#4eb3d3",
+   "hatch": {
+    "mpl": "\\\\\\",
+    "dxf": "ANSI35"
+   }
+  },
+  {
+   "code": "UNI.PITTING",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.PITTING",
+   "iscs": [
+    "ISCS.PITTING"
+   ],
+   "names": {
+    "en": "pitting",
+    "fr": "Pitting",
+    "it": "pitting"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "many close blind holes, roughly hemispherical, a few millimetres at most",
+    "it": "numerosi fori ciechi ravvicinati, quasi emisferici, di pochi millimetri al più"
+   },
+   "source": "UNI 11182:2006, 3.24",
+   "colour": "#542788",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "UNI.PRESENZA_DI_VEGETAZIONE",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.PRESENZA_DI_VEGETAZIONE",
+   "iscs": [
+    "ISCS.PLANT"
+   ],
+   "names": {
+    "en": "vegetation",
+    "fr": "Plante",
+    "it": "presenza di vegetazione"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "herbs, shrubs or trees growing on the element",
+    "it": "erbe, arbusti o alberi che crescono sull'elemento"
+   },
+   "source": "UNI 11182:2006, 3.25",
+   "colour": "#7fbc41",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "UNI.RIGONFIAMENTO",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.RIGONFIAMENTO",
+   "iscs": [
+    "ISCS.BLISTERING"
+   ],
+   "names": {
+    "en": "swelling",
+    "fr": "Boursouflure",
+    "it": "rigonfiamento"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "a local lifting of the surface, of varied shape and consistency",
+    "it": "sollevamento locale della superficie, di forma e consistenza varie"
+   },
+   "source": "UNI 11182:2006, 3.26",
+   "colour": "#fd8d3c",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "UNI.SCAGLIATURA",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "uni": "UNI.SCAGLIATURA",
+   "iscs": [
+    "ISCS.SCALING",
+    "ISCS.SCALING.FLAKING",
+    "ISCS.SCALING.CONTOUR_SCALING"
+   ],
+   "names": {
+    "en": "scaling",
+    "fr": "Desquamation",
+    "it": "scagliatura"
+   },
+   "aliases": [],
+   "definition": {
+    "en": "irregular pieces of uneven, often considerable thickness coming off, mostly along discontinuities",
+    "it": "parti irregolari di spessore consistente e non uniforme che si staccano, per lo più lungo discontinuità"
+   },
+   "source": "UNI 11182:2006, 3.27",
+   "colour": "#d95f0e",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  }
+ ]
+}

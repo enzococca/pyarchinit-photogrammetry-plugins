@@ -1,0 +1,12 @@
+{
+  "title": "Conservation",
+  "description": "Decay mapping on the program's elevations: ICOMOS-ISCS terms with UNI 11182 as their Italian face, local masonry terms and EN 15898 interventions; campaigns of a face with EN 16096 classes chosen by the surveyor; areas, cracks and treatments with their extent, photos and units; plates, tables, GeoPackages, QGIS styles, PyArchInit, IFC 4.3",
+  "i18n": {
+    "it": {
+      "title": "Conservazione",
+      "description": "Mappatura del degrado sui prospetti del programma: termini ICOMOS-ISCS con la UNI 11182 come volto italiano, termini locali delle murature e interventi secondo la EN 15898; campagne di una faccia con le classi EN 16096 scelte dal rilevatore; aree, lesioni e interventi con estensione, foto e unità; tavole, tabelle, GeoPackage, stili QGIS, PyArchInit, IFC 4.3"
+    }
+  },
+  "min_app": "1.7.0",
+  "requires": []
+}

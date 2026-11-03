@@ -1,0 +1,117 @@
+{
+ "standard": "local",
+ "url": "",
+ "note": "Masonry and structural symptoms, in neither glossary: the plugin's local terms, flagged as non-standard in every export. Definitions are the plugin's own one-line paraphrases, not the text of the standard.",
+ "terms": [
+  {
+   "code": "LOCAL.OUT_OF_PLUMB",
+   "family": "masonry",
+   "kind": "decay",
+   "geometry": "area",
+   "local": true,
+   "names": {
+    "en": "Out of plumb",
+    "fr": "Faux aplomb",
+    "it": "fuori piombo"
+   },
+   "definition": {
+    "en": "a part of the wall leaning out of the vertical",
+    "it": "parte del muro inclinata rispetto alla verticale"
+   },
+   "source": "pyarchinit-photogrammetry conservation plugin (not in ICOMOS-ISCS nor UNI 11182)",
+   "colour": "#8c564b",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "LOCAL.BULGING",
+   "family": "masonry",
+   "kind": "decay",
+   "geometry": "area",
+   "local": true,
+   "names": {
+    "en": "Bulging",
+    "fr": "Bombement",
+    "it": "spanciamento"
+   },
+   "definition": {
+    "en": "a part of the wall bulging out of its plane",
+    "it": "parte del muro che sporge rispetto al suo piano"
+   },
+   "source": "pyarchinit-photogrammetry conservation plugin (not in ICOMOS-ISCS nor UNI 11182)",
+   "colour": "#a0522d",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "LOCAL.LOSS_OF_MORTAR",
+   "family": "masonry",
+   "kind": "decay",
+   "geometry": "area",
+   "local": true,
+   "names": {
+    "en": "Loss of mortar",
+    "fr": "Perte de mortier",
+    "it": "perdita di malta"
+   },
+   "definition": {
+    "en": "mortar missing or washed out of the joints",
+    "it": "malta mancante o dilavata dai giunti"
+   },
+   "source": "pyarchinit-photogrammetry conservation plugin (not in ICOMOS-ISCS nor UNI 11182)",
+   "colour": "#6b3e26",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "LOCAL.DISPLACED_STONES",
+   "family": "masonry",
+   "kind": "decay",
+   "geometry": "area",
+   "local": true,
+   "names": {
+    "en": "Displaced stones",
+    "fr": "Pierres déplacées",
+    "it": "pietre smosse"
+   },
+   "definition": {
+    "en": "stones moved out of their bed or position",
+    "it": "pietre spostate dal loro letto o dalla loro posizione"
+   },
+   "source": "pyarchinit-photogrammetry conservation plugin (not in ICOMOS-ISCS nor UNI 11182)",
+   "colour": "#c49c94",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "LOCAL.OPEN_JOINT",
+   "family": "masonry",
+   "kind": "crack",
+   "geometry": "line",
+   "local": true,
+   "names": {
+    "en": "Open joint",
+    "fr": "Joint ouvert",
+    "it": "giunto aperto"
+   },
+   "definition": {
+    "en": "a joint between stones opened and empty",
+    "it": "giunto fra le pietre aperto e vuoto"
+   },
+   "source": "pyarchinit-photogrammetry conservation plugin (not in ICOMOS-ISCS nor UNI 11182)",
+   "colour": "#7f4f24",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  }
+ ]
+}
