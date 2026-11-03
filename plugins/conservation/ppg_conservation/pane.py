@@ -33,6 +33,8 @@ MAP_ACTIONS = (
      "A note at a point of the elevation, with the chosen term"),
     ("propose", ("Proposte...", "Proposals..."), "Aree, lesioni e lacune proposte dall'immagine e dal rilievo",
      "Areas, cracks and losses proposed from the image and the relief"),
+    ("like", ("Come questo", "Like this"), "Le aree proposte da SAM che somigliano all'area scelta ne prendono il "
+     "termine", "The areas proposed by SAM that look like the chosen area take its term"),
     ("accept", ("Accetta", "Accept"), "Le proposte scelte nella tabella entrano nella campagna",
      "The proposals chosen in the table join the campaign"),
     ("accept_all", ("Accetta tutte", "Accept all"), "Tutte le proposte della campagna",

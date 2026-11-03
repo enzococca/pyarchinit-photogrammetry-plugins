@@ -220,3 +220,107 @@ def assessment_form(plugin, chunk, c: dict) -> dict | None:
               "parts weigh more.")
     v = plugin._ask(t("Raccomandazione EN 16096", "EN 16096 recommendation"), fields, intro=intro)
     return None if v is None else {"rc": v["rc"], "reason": v["reason"], "surveyor": v["surveyor"]}
+
+
+DETECTOR_TITLES = {"cracks": ("Lesioni (valli del rilievo e linee scure)", "Cracks (valleys of the relief and dark "
+                              "lines)"),
+                   "loss": ("Mancanze (depressioni sotto il piano del muro)", "Losses (depressions behind the wall's "
+                            "plane)"),
+                   "colours": ("Classi di colore (le nomini tu)", "Colour classes (you name them)"),
+                   "sam": ("Aree di SAM 2.1 (con il termine scelto)", "SAM 2.1 areas (with the chosen term)"),
+                   "like": ("Aree di SAM 2.1 come l'area scelta (Come questo)", "SAM 2.1 areas like the chosen area "
+                            "(Like this)")}
+
+
+def proposals_form(plugin, selected: dict | None, term_name: str | None) -> dict | None:
+    """The detector, the window (the area chosen in the table or the whole face) and the parameters of the
+    proposals. Returns ``{detector, window, thoroughness, resolution_mm, min_length_cm, min_depth_cm, min_area_m2,
+    k, radius}`` or None."""
+    from pyarchinit_photogrammetry.gui.dialogs import Field
+
+    s = plugin.context.settings.get("proposals") or {}
+    windows = [("face", t("tutto il prospetto", "the whole face"))]
+    if selected is not None:
+        windows.insert(0, ("selected", t("l'area scelta nella tabella", "the area chosen in the table")))
+    detectors = [(k, t(*v)) for k, v in DETECTOR_TITLES.items()]
+    th = [(x, x) for x in ("normale", "alta", "massima")]
+    fields = [Field("detector", t("Cosa proporre", "What to propose"), s.get("detector", "cracks"),
+                    choices=detectors),
+              Field("window", t("Finestra", "Window"), windows[0][0], choices=windows),
+              Field("h_relief", t("Lesioni e mancanze", "Cracks and losses"), kind="heading"),
+              Field("min_length_cm", t("Lunghezza minima di una lesione (cm)", "Least length of a crack (cm)"),
+                    float(s.get("min_length_cm", 10.0)), minimum=0.5, maximum=1000.0, decimals=1),
+              Field("min_depth_cm", t("Profondità minima di una mancanza (cm)", "Least depth of a loss (cm)"),
+                    float(s.get("min_depth_cm", 2.0)), minimum=0.1, maximum=100.0, decimals=1),
+              Field("min_area_m2", t("Area minima di una mancanza (m²)", "Least area of a loss (m²)"),
+                    float(s.get("min_area_m2", 0.01)), minimum=0.0001, maximum=100.0, decimals=4),
+              Field("h_image", t("Colori e SAM", "Colours and SAM"), kind="heading"),
+              Field("k", t("Classi di colore", "Colour classes"), int(s.get("k", 5)), minimum=2, maximum=12),
+              Field("thoroughness", t("Accuratezza di SAM", "Thoroughness of SAM"), s.get("thoroughness", "normale"),
+                    choices=th, tip=t("Sulle facce oltre 4 m² SAM lavora a 5 mm per pixel, salvo una risoluzione "
+                                      "data", "On faces over 4 m² SAM works at 5 mm per pixel unless a "
+                                      "resolution is given")),
+              Field("resolution_mm", t("Pixel di SAM (mm, vuoto: automatico)", "SAM's pixel (mm, empty: "
+                                       "automatic)"), s.get("resolution_mm"), kind="optional_float"),
+              Field("radius", t("Come questo: distanza massima (in dispersioni)", "Like this: largest distance "
+                                "(in spreads)"), float(s.get("radius", 1.0)), minimum=0.1, maximum=10.0,
+                    decimals=2)]
+    intro = t("Le proposte non entrano nella campagna finché non le accetti. Le aree di SAM e le mancanze senza "
+              "termine prendono il termine scelto nell'elenco" + (f" ({term_name})." if term_name else
+                                                                   ": ora non ne è scelto nessuno."),
+              "The proposals do not join the campaign until you accept them. SAM's areas and the losses with no "
+              "term take the term chosen in the list" + (f" ({term_name})." if term_name else
+                                                         ": none is chosen now."))
+    v = plugin._ask(t("Proposte", "Proposals"), fields, intro=intro)
+    if v is None:
+        return None
+    keep = {k: v.get(k) for k in ("detector", "min_length_cm", "min_depth_cm", "min_area_m2", "k", "thoroughness",
+                                  "resolution_mm", "radius")}
+    plugin.context.settings["proposals"] = keep
+    plugin.context.save_settings()
+    return {**keep, "window": v.get("window")}
+
+
+def colour_classes_form(plugin, chunk, classes: list[dict]) -> dict | None:
+    """The user names each colour class with a term (or none: the class is left out); the plugin puts first the
+    terms it suggests for green, bright and dark classes, never chosen by default. Returns ``{class: code}`` of the
+    classes named, or None."""
+    from pyarchinit_photogrammetry.gui.dialogs import Field
+
+    from . import texts
+    from .vocabulary import load
+
+    vocab = load(chunk)
+    lang = texts.lang()
+    decay = [term for term in vocab.terms("decay") if term.geometry in ("area", None)] or vocab.terms("decay")
+    looks = {"green": ("verde", "green"), "bright": ("chiara", "bright"), "dark": ("scura", "dark")}
+    fields = []
+    for c in classes:
+        suggested = [code for code in c.get("suggest") or [] if _known(vocab, code)]
+        rest = sorted((term.code for term in decay if term.code not in suggested), key=lambda x: vocab.name(x, lang))
+        choices = [("", t("(nessuno: lasciala fuori)", "(none: leave it out)"))] + \
+            [(code, ("* " if code in suggested else "") + vocab.name(code, lang)) for code in suggested + rest]
+        L, a, b = c["lab_mean"]
+        what = t(*looks[c["looks"]]) if c.get("looks") in looks else t("altro", "other")
+        label = t(f"Classe {c['class'] + 1}: {what}, {num(c['share'] * 100, 1)} % (L {num(L, 0)}, a {num(a, 0)}, "
+                  f"b {num(b, 0)})", f"Class {c['class'] + 1}: {what}, {num(c['share'] * 100, 1)} % (L {num(L, 0)}, "
+                  f"a {num(a, 0)}, b {num(b, 0)})")
+        fields.append(Field(f"class_{c['class']}", label, "", choices=choices))
+    intro = t("Dai un termine alle classi che vuoi proporre; con * i termini che il plugin suggerisce per il colore "
+              "(verde: colonizzazione biologica; chiaro: efflorescenza o deposito; scuro: crosta nera o macchia). "
+              "Le classi senza termine restano fuori.",
+              "Give a term to the classes you want to propose; marked * the terms the plugin suggests for the colour "
+              "(green: biological colonization; bright: efflorescence or deposit; dark: black crust or staining). "
+              "The classes with no term are left out.")
+    v = plugin._ask(t("Classi di colore", "Colour classes"), fields, intro=intro)
+    if v is None:
+        return None
+    return {c["class"]: v.get(f"class_{c['class']}") for c in classes if v.get(f"class_{c['class']}")}
+
+
+def _known(vocab, code: str) -> bool:
+    try:
+        vocab.term(code)
+        return True
+    except KeyError:
+        return False

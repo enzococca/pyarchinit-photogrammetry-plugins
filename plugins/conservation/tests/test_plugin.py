@@ -504,6 +504,122 @@ def test_forms_photos_and_safe_removals(tmp_path, monkeypatch):
         w.close()
 
 
+def test_the_proposals_dialog(tmp_path, monkeypatch):
+    """*Proposte...*: the groove proposed as a crack and the hole as a missing part in the background, in the layer
+    "Proposte", with their source and the detector's notes; the colour classes named by the user (only the green
+    one, as biological colonization); SAM's areas (the program's fake SAM) with the chosen term and refused without
+    one; *Come questo* on SAM's proposals; a window with no surface said; an area chosen as the window clips the
+    proposals; every run one entry of the undo."""
+    pytest.importorskip("PySide6")
+    import sys
+
+    from shapely import wkt
+
+    from ppg_conservation import ConservationPlugin
+    from pyarchinit_photogrammetry.ai.sam_env import ExternalSam2Segmenter
+    from pyarchinit_photogrammetry.plugins import Context
+
+    monkeypatch.setenv("PPG_SAM_FAKE", "1")
+    w, doc, ch, entry, errors, infos = _window(tmp_path, monkeypatch)
+    view = w.ortho_view
+    plugin = ConservationPlugin()
+    segmenter = ExternalSam2Segmenter(python=sys.executable)
+    try:
+        plugin.activate(Context("conservation", tmp_path / "plugin", window=w))
+        said = []
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+        monkeypatch.setattr(plugin, "_segmenter", lambda: segmenter)
+        pane = plugin.pane
+        answers = {}
+
+        def answer(title, fields, intro="", photos=None, **_k):
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            if title == "Classi di colore":  # the user names the green class only
+                for f in fields:
+                    if "verde" in f.label:
+                        values[f.name] = "ISCS.BIOLOGICAL_COLONIZATION"
+                        assert f.choices[1][0] == "ISCS.BIOLOGICAL_COLONIZATION"  # suggested first
+            else:
+                values.update(answers)
+            return values
+
+        monkeypatch.setattr(plugin, "_ask", answer)
+        plugin._requested("new_campaign")
+        cid = records.campaigns(ch, entry["id"])[0]["id"]
+
+        def propose(**values):
+            answers.clear()
+            answers.update(values)
+            n = len(said)
+            plugin._requested("propose")
+            w.runner.wait()
+            return said[n:]
+
+        n_undo = len(w.history.entries)
+        out = propose(detector="cracks", window="face")
+        assert errors == [], errors
+        cracks = records.features(ch, cid, status="proposed")
+        assert len(cracks) == 1 and cracks[0]["code"] == "ISCS.CRACK" and cracks[0]["source"] == "proposed:cracks"
+        assert abs(cracks[0]["extent"] - S.groove().length) <= 0.05 * S.groove().length
+        assert abs(cracks[0]["width_mm"] - S.GROOVE_WIDTH * 1000) <= 1.0
+        assert "lesione proposta" in cracks[0]["notes"] and "rilievo sul" in cracks[0]["notes"]
+        assert "1 proposte aggiunte" in out[-1]
+        assert _fids(view, "Proposte") == [cracks[0]["id"]]
+        assert len(w.history.entries) == n_undo + 1
+        # the hole as a missing part
+        propose(detector="loss", window="face")
+        loss = [f for f in records.features(ch, cid) if f["source"] == "proposed:material_loss"]
+        assert len(loss) == 1 and loss[0]["code"] == "ISCS.MISSING_PART" and loss[0]["depth_mm"] == 30.0
+        # the colour classes: only the class named by the user, as proposals
+        propose(detector="colours", window="face")
+        named = [f for f in records.features(ch, cid) if f["source"] == "proposed:colours"]
+        assert named and {f["code"] for f in named} == {"ISCS.BIOLOGICAL_COLONIZATION"}
+        green = sum(wkt.loads(f["geometry"]).area for f in named)
+        assert abs(green - S.box(S.GREEN_PATCH).area) <= 0.05 * S.box(S.GREEN_PATCH).area
+        # SAM: refused without a term, then with the term chosen
+        out = propose(detector="sam", window="face")
+        assert "termine scelto" in out[-1]
+        assert pane.choose_term("ISCS.ALGA")
+        propose(detector="sam", window="face")
+        sam = [f for f in records.features(ch, cid) if f["source"] == "proposed:sam"]
+        assert sam and {f["code"] for f in sam} == {"ISCS.ALGA"} and "SAM 2.1" in sam[0]["notes"]
+        assert sorted(_fids(view, "Proposte")) == sorted(f["id"] for f in records.features(ch, cid,
+                                                                                           status="proposed"))
+        # Come questo: SAM's proposals like the chosen area take its term
+        records.discard(ch, [f["id"] for f in sam])
+        g, b = S.GREEN_PATCH, S.BLACK_CRUST
+        boxes = [(g[0] + 0.05, g[1] + 0.05, 4.65, g[3] - 0.05), (4.75, g[1] + 0.05, g[2] - 0.05, g[3] - 0.05),
+                 (b[0] + 0.05, b[1] + 0.05, 0.95, b[3] - 0.05), (3.2, Z0 + 0.2, 3.8, Z0 + 0.8)]
+        segs = [records.add_feature(ch, cid, "decay", "ISCS.ALTERATION", S.box(x), status="proposed",
+                                    source="proposed:sam") for x in boxes]
+        ref = records.add_feature(ch, cid, "decay", "ISCS.ALGA", S.box((4.4, g[1] + 0.1, 4.7, g[1] + 0.4)))
+        plugin.refresh_pane()
+        pane.select(ref["id"])
+        plugin._requested("like")
+        assert [records.feature(ch, s["id"])["code"] for s in segs] == ["ISCS.ALGA", "ISCS.ALGA", "ISCS.ALTERATION",
+                                                                         "ISCS.ALTERATION"]
+        assert "2 aree proposte" in said[-1]
+        # a window with no surface: an area outside the face chosen as the window
+        away = records.add_feature(ch, cid, "decay", "ISCS.ALGA", S.box((7.0, Z0, 8.0, Z0 + 1.0)))
+        plugin.refresh_pane()
+        pane.select(away["id"])
+        n = len(records.features(ch, cid))
+        out = propose(detector="cracks", window="selected")
+        assert "non ha superficie" in out[-1] and len(records.features(ch, cid)) == n
+        # the area chosen as the window clips the proposals: losses around the hole only
+        around = records.add_feature(ch, cid, "decay", "ISCS.ALGA", S.box(S.HOLE).buffer(0.1))
+        plugin.refresh_pane()
+        pane.select(around["id"])
+        propose(detector="loss", window="selected")
+        inside = [f for f in records.features(ch, cid) if f["source"] == "proposed:material_loss"]
+        assert len(inside) == 2 and wkt.loads(inside[-1]["geometry"]).within(S.box(S.HOLE).buffer(0.1001))
+        assert errors == [], errors
+    finally:
+        segmenter._proc.kill()
+        w.setWindowModified(False)
+        w.close()
+
+
 def test_english_texts(monkeypatch):
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication

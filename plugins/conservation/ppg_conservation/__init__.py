@@ -55,6 +55,22 @@ class _Step:
         self._put(self.after)
 
 
+def _parts(geom, kind: str):
+    """The parts of ``geom`` (a proposal clipped to its window) a feature of ``kind`` can have: polygons for an area,
+    lines for a crack; None when nothing of them is left."""
+    import shapely
+    from shapely.geometry import MultiLineString, MultiPolygon
+
+    want = "Polygon" if kind == "decay" else "LineString"
+    flat = [p for g in shapely.get_parts(geom) for p in shapely.get_parts(g)]  # a collection may hold multi-parts
+    parts = [p for p in flat if p.geom_type == want and not p.is_empty]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return MultiPolygon(parts) if kind == "decay" else MultiLineString(parts)
+
+
 class ConservationPlugin(Plugin):
     name = "conservation"
     version = __version__
@@ -615,11 +631,178 @@ class ConservationPlugin(Plugin):
                                      "No aligned photo sees this feature."))
         self._open_photo(photos[0], rec)
 
-    def _do_propose(self) -> None:
+    def _segmenter(self):
+        """The program's SAM 2.1 worker; NotReady with the way to install it when it is missing."""
         from .records import NotReady
 
-        raise NotReady(t("Le proposte dall'immagine e dal rilievo sono in arrivo in questa versione del plugin.",
-                         "The proposals from the image and the relief are coming in this version of the plugin."))
+        window = self.context.window
+        if window is not None and hasattr(window, "_segmenter"):
+            try:
+                return window._segmenter()
+            except ImportError:
+                pass
+        try:
+            from pyarchinit_photogrammetry.ai.sam_env import make_segmenter
+
+            return make_segmenter()
+        except ImportError:
+            raise NotReady(t("SAM 2.1 non è installato: installalo dagli strumenti SAM del programma (per esempio "
+                             "Pietre (SAM)), poi riprova.", "SAM 2.1 is not installed: install it from the program's "
+                             "SAM tools (for instance Stones (SAM)), then try again.")) from None
+
+    def _chosen_area(self, chunk):
+        """The one polygon feature chosen in the table, or None."""
+        from . import records
+
+        ids = [i for i in (self.pane.selected_ids() if self.pane is not None else []) if i]
+        if len(ids) != 1:
+            return None
+        rec = records.feature(chunk, ids[0])
+        return rec if rec["geometry"].upper().startswith(("POLYGON", "MULTIPOLYGON")) else None
+
+    def _do_propose(self) -> None:
+        """The *Proposte* dialog: a detector of :mod:`.detect` on the area chosen in the table or on the whole face,
+        in the background; its results join the campaign as proposals (``source`` ``proposed:<detector>``)."""
+        from shapely import wkt
+
+        from . import detect, forms, texts
+        from .records import NotReady
+        from .vocabulary import load
+
+        chunk, entry, c = self._need_campaign()
+        selected = self._chosen_area(chunk)
+        code = self.pane.term_code() if self.pane is not None else None
+        vocab = load(chunk)
+        term = vocab.term(code) if code else None
+        v = forms.proposals_form(self, selected, None if term is None else vocab.name(term.code, texts.lang()))
+        if v is None:
+            return
+        name = v["detector"]
+        default = term.code if term is not None and term.kind == "decay" else None
+        reference = None
+        if name == "like":
+            if selected is None:
+                raise NotReady(t("Come questo: scegli nella tabella l'area che fa da esempio.",
+                                 "Like this: choose in the table the area that is the example."))
+            reference, default = wkt.loads(selected["geometry"]), selected["code"]
+        elif name == "sam" and default is None:
+            raise NotReady(t("Le aree di SAM prendono il termine scelto nell'elenco: scegli un termine di degrado "
+                             "(un'area), oppure usa Come questo con un'area già nominata.",
+                             "SAM's areas take the term chosen in the list: choose a decay term (an area), or use "
+                             "Like this with an area already named."))
+        area = None
+        if v["window"] == "selected" and selected is not None and name != "like":  # like: the example is inside
+            area = wkt.loads(selected["geometry"])
+        bounds = None if area is None else area.bounds
+        segmenter = self._segmenter() if name in ("sam", "like") else None
+        res = forms.number(v.get("resolution_mm"))
+        res = None if res is None else res / 1000.0
+
+        def work(progress):
+            win = detect.read_window(chunk, entry, bounds)
+            if win is None or win.empty:
+                return None
+            if name == "cracks":
+                return detect.cracks(chunk, entry, bounds, min_length=float(v["min_length_cm"]) / 100.0,
+                                     progress=progress)
+            if name == "loss":
+                return detect.material_loss(chunk, entry, bounds, min_depth=float(v["min_depth_cm"]) / 100.0,
+                                            min_area=float(v["min_area_m2"]), progress=progress)
+            if name == "colours":
+                return detect.colour_classes(chunk, entry, bounds, k=int(v["k"]), progress=progress)
+            found = detect.sam_areas(chunk, entry, bounds, thoroughness=v.get("thoroughness") or "normale",
+                                     resolution=res, progress=progress, segmenter=segmenter)
+            if name == "like":
+                radius = float(v["radius"])
+                keep = detect.like_this(chunk, entry, [f["geometry"] for f in found], reference, radius)
+                found = [found[i] for i in keep]
+                for f in found:
+                    f["notes"] += t(f"; come l'area {selected['id']} (distanza massima {num(radius, 2)})",
+                                    f"; like the area {selected['id']} (largest distance {num(radius, 2)})")
+            return found
+
+        self.context.run(t("Conservazione: proposte", "Conservation: proposals"), work,
+                         lambda result: self._guarded(self._proposed, chunk, c, name, area, default, result))
+
+    def _proposed(self, chunk, c: dict, name: str, area, default: str | None, result) -> None:
+        """The detector's results as proposals of the campaign ``c``: clipped to the window ``area``, those with no
+        term given ``default`` (left out without it), the colour classes named by the user first."""
+        from . import forms, records
+
+        if result is None:
+            self._message("information", t("La finestra non ha superficie: niente da proporre.",
+                                           "The window has no surface: nothing to propose."))
+            return
+        source = "proposed:" + {"like": "sam", "loss": "material_loss"}.get(name, name)
+        found = result
+        if name == "colours":
+            named = forms.colour_classes_form(self, chunk, result) if result else {}
+            if named is None:
+                return
+            found = [{"kind": "decay", "code": named[cl["class"]], "geometry": g, "width_mm": None, "depth_mm": None,
+                      "notes": cl["notes"], "coverage": cl["coverage"]}
+                     for cl in result if cl["class"] in named for g in cl["polygons"]]
+        before = self._snapshot(chunk)
+        added, untermed = 0, 0
+        for p in found:
+            geom = p["geometry"] if area is None else _parts(p["geometry"].intersection(area), p["kind"])
+            if geom is None:
+                continue
+            code = p["code"] or default
+            if code is None:
+                untermed += 1
+                continue
+            cover = float(p.get("coverage") or 0.0)
+            notes = p["notes"] + t(f"; rilievo sul {num(cover * 100, 0)} % della finestra",
+                                   f"; relief on {num(cover * 100, 0)} % of the window")
+            records.add_feature(chunk, c["id"], p["kind"], code, geom, status="proposed", source=source,
+                                width_mm=None if p.get("width_mm") is None else round(float(p["width_mm"]), 1),
+                                depth_mm=p.get("depth_mm"), notes=notes)
+            added += 1
+        if added:
+            self._changed(chunk, before, t("proposte aggiunte", "proposals added"))
+        text = t(f"{added} proposte aggiunte alla campagna (layer Proposte): Accetta o Scarta.",
+                 f"{added} proposals added to the campaign (layer Proposte): Accept or Discard.") if added else \
+            t("Nessuna proposta nella finestra.", "No proposal in the window.")
+        if untermed:
+            text += " " + t(f"{untermed} senza termine lasciate fuori: scegli un termine di degrado nell'elenco e "
+                            "riprova.", f"{untermed} with no term left out: choose a decay term in the list and try "
+                            "again.")
+        self._message("information", text)
+
+    def _do_like(self) -> None:
+        """*Come questo*: the campaign's areas proposed by SAM that look like the area chosen in the table take its
+        term (:func:`.detect.like_this`)."""
+        from shapely import wkt
+
+        from . import detect, records
+
+        chunk, entry, c = self._need_campaign()
+        ref = self._chosen_area(chunk)
+        if ref is None:
+            raise records.NotReady(t("Come questo: scegli nella tabella un'area con il termine giusto.",
+                                     "Like this: choose in the table an area with the right term."))
+        others = [f for f in records.features(chunk, c["id"], status="proposed")
+                  if f["id"] != ref["id"] and str(f.get("source", "")).startswith("proposed:sam")]
+        if not others:
+            raise records.NotReady(t("La campagna non ha aree proposte da SAM: usa prima Proposte... con SAM.",
+                                     "The campaign has no area proposed by SAM: use Proposals... with SAM first."))
+        radius = float((self.context.settings.get("proposals") or {}).get("radius", 1.0))
+        keep = detect.like_this(chunk, entry, [wkt.loads(f["geometry"]) for f in others], wkt.loads(ref["geometry"]),
+                                radius)
+        changed = [others[i] for i in keep if others[i]["code"] != ref["code"]]
+        if not changed:
+            self._message("information", t("Nessun'altra area proposta somiglia a quella scelta.",
+                                           "No other proposed area looks like the chosen one."))
+            return
+        before = self._snapshot(chunk)
+        for f in changed:
+            records.update_feature(chunk, f["id"], code=ref["code"], notes=(f.get("notes") or "") + t(
+                f"; termine come l'area {ref['id']} (distanza massima {num(radius, 2)})",
+                f"; term as the area {ref['id']} (largest distance {num(radius, 2)})"))
+        self._changed(chunk, before, t("termine come questo", "term like this"))
+        self._message("information", t(f"{len(changed)} aree proposte prendono il termine dell'area scelta.",
+                                       f"{len(changed)} proposed areas take the term of the chosen area."))
 
     def _do_accept(self) -> None:
         from . import records
