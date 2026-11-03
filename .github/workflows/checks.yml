@@ -18,7 +18,7 @@ env:
   PPG_APP_MASONRY: "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.0"
   # conservation needs 1.7.1 (engine.elevation.bounds_of), with bim and mesh as masonry: from GitHub main until 1.7.1
   # is on PyPI, then switch to "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
-  PPG_APP_CONSERVATION: "pyarchinit-photogrammetry[gui,postgis,bim,mesh] @ git+https://github.com/enzococca/pyarchinit-photogrammetry.git@main"
+  PPG_APP_CONSERVATION: "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
