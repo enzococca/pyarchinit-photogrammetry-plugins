@@ -234,14 +234,37 @@ def _columns(cell: float, frames, keelson: bool):
     return xs, in_frame, in_keel
 
 
+LOOSE = (0.3, 0.08, 0.05)  # a loose timber lying on the hull: length, width, height above the hull at its centre
+
+
+def _boxes(vertices: np.ndarray, loose) -> tuple[np.ndarray, np.ndarray]:
+    """Closed boxes of :data:`LOOSE` lying on the hull: ``loose`` = [(x, y, degrees from x)] in the hull's coordinates,
+    the top :data:`LOOSE` [2] above the hull's highest vertex within 2 cm of the centre, the bottom sunk 0.1 m."""
+    length, width, height = LOOSE
+    out_v, out_f = [], []
+    corners = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) * [length / 2.0, width / 2.0]
+    quad = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                     [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
+    for x, y, deg in loose:
+        near = np.hypot(vertices[:, 0] - x, vertices[:, 1] - y) < 0.02
+        top = float(vertices[near, 2].max()) + height
+        a = np.radians(deg)
+        plan = corners @ np.array([[np.cos(a), np.sin(a)], [-np.sin(a), np.cos(a)]]) + [x, y]
+        box = np.vstack([np.column_stack([plan, np.full(4, top - height - 0.1)]), np.column_stack([plan, np.full(4, top)])])
+        out_f.append(quad + len(vertices) + sum(len(v) for v in out_v))
+        out_v.append(box)
+    return np.vstack(out_v), np.vstack(out_f)
+
+
 def framed_hull(cell: float = 0.02, strakes: int = 5, frames=FRAMES, keelson: bool = True, missing=None,
-                x_range=None, land: float = 0.015, lap: float = 0.02) -> tuple[np.ndarray, np.ndarray]:
+                x_range=None, land: float = 0.015, lap: float = 0.02, loose=None) -> tuple[np.ndarray, np.ndarray]:
     """The clinker hull of :func:`clinker_hull` with timbers on it, as vertical raises with sides 0.1 mm wide: a frame
     at each x of ``frames`` (room :data:`FRAME_ROOM` along x, moulded :data:`FRAME_MOULDED` above the planking, across
     the whole girth) and, with ``keelson``, the keelson (|y| < :data:`KEELSON_HALF`, x in :data:`KEELSON_X`,
     :data:`KEELSON_HEIGHT` above the planking, over the frames it crosses). ``missing=(x0, x1, side)``: the faces of
     ``side`` ("port" or "starboard" of the frame the tests set, bow at the start: port = the hull's y < 0) between
-    those x taken away; ``x_range=(x0, x1)``: only the part of the hull between those x is kept."""
+    those x taken away; ``x_range=(x0, x1)``: only the part of the hull between those x is kept; ``loose``: boxes
+    lying on the hull (:func:`_boxes`)."""
     xs, in_frame, in_keel = _columns(cell, frames, keelson)
     rows = []
     for x, framed, keeled in zip(xs, in_frame, in_keel):
@@ -272,7 +295,11 @@ def framed_hull(cell: float = 0.02, strakes: int = 5, frames=FRAMES, keelson: bo
         keep &= ~((centre[:, 0] > x0) & (centre[:, 0] < x1) & on_side)
     if x_range is not None:
         keep &= (centre[:, 0] > x_range[0]) & (centre[:, 0] < x_range[1])
-    return vertices, faces[keep]
+    faces = faces[keep]
+    if loose:
+        bv, bf = _boxes(vertices, loose)
+        vertices, faces = np.vstack([vertices, bv]), np.vstack([faces, bf])
+    return vertices, faces
 
 
 def framed_project(tmp_path: Path, heading_deg: float = 0.0, offset=UTM, crs: str = "EPSG:32633", scale: float = 2.0,

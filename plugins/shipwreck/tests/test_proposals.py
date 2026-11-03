@@ -3,6 +3,7 @@ framed clinker hull; nothing on a smooth one; the catalogue's records and the re
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -143,7 +144,7 @@ def test_mirror_frame_sides(tmp_path):
     assert sum(1 for k, _n in names[1] if k == "seam") == 8
 
 
-def test_records_and_rejected_never_touched(framed, tmp_path):
+def test_records_and_rejected_never_touched(tmp_path):
     """The catalogue's records written by hand and the rejected geometries survive a new reading, and nothing is
     proposed again over them."""
     ch, frame = _setup(tmp_path, x_range=(3.0, 9.0))
@@ -184,3 +185,84 @@ def test_rebuild_keeps_accepted_and_rejected(tmp_path):
     assert timbers.timbers_of(ch) == records and again["rejected"] == rejected
     for gone in (frame_item, seam_item, plank_item):
         assert not any(i["kind"] == gone["kind"] and i["name"] == gone["name"] for i in again["items"])
+
+
+def _planks(prop, side):
+    return [i for i in _of(prop, "plank") if i["side"] == side]
+
+
+def test_strakes_at_one_centimetre(tmp_path):
+    """At 1 cm the bow leaves a short stray piece of a seam: it joins the first land, the strakes stay five."""
+    _doc, ch, ends = framed_project(tmp_path, heading_deg=35)
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    relief.build(ch, cell=0.01)
+    prop = proposals.build(ch)
+    widths = strake_widths(6.0)
+    cut = shapely.LineString([(6.0, -5.0), (6.0, 5.0)])
+    for side, code in (("port", "B"), ("starboard", "T")):
+        assert sorted({p["name"] for p in _planks(prop, side)}) == [f"fascia {code}{k}" for k in range(1, 6)]
+        for k in (2, 3, 4):
+            width = sum(shapely.Polygon(p["ship_xy"]).intersection(cut).length
+                        for p in _planks(prop, side) if p["name"] == f"fascia {code}{k}")
+            assert width == pytest.approx(widths[k - 1], rel=0.05)
+
+
+def test_hole_keeps_the_names_fore_and_aft(tmp_path):
+    """A hole on starboard longer than ``gap``: each land and each strake in two pieces of one name, fore and aft; the
+    keelson's wall standing over the hole is no seam; the keelson in two numbered pieces."""
+    ch, _frame = _setup(tmp_path, missing=(6.0, 6.6, "starboard"))
+    prop = proposals.build(ch)
+    seams = _of(prop, "seam")
+    assert all(s["step_mm"] <= 40.0 for s in seams)
+    port = [s for s in seams if s["side"] == "port"]
+    assert sorted(s["name"] for s in port) == [f"comento B{k}" for k in range(1, 5)]
+    starboard = [s for s in seams if s["side"] == "starboard"]
+    assert sorted(s["name"] for s in starboard) == sorted([f"comento T{k}" for k in range(1, 5)] * 2)
+    for k in range(1, 6):
+        pieces = [shapely.Polygon(p["ship_xy"]).bounds for p in _planks(prop, "starboard") if p["name"] == f"fascia T{k}"]
+        assert len(pieces) == 2
+        assert min(b[2] for b in pieces) < 6.05 and max(b[0] for b in pieces) > 6.55  # one fore, one aft
+        assert len([p for p in _planks(prop, "port") if p["name"] == f"fascia B{k}"]) == 1
+    assert sorted(k["name"] for k in _of(prop, "keelson")) == ["paramezzale 1", "paramezzale 2"]
+
+
+def test_a_stray_seam_piece_changes_nothing(framed):
+    ch, frame, _prop = framed
+    z, tr = relief.load(ch, "height")
+    seam_list = proposals.seams(z, tr, frame.sign)
+    edges = proposals._Grid(z, tr, frame.sign).edges()
+    before = proposals.strakes(seam_list, frame.sign, edges=edges)
+    y = 0.5 * (np.asarray(seam_y(5.3)[1]) + np.asarray(seam_y(5.3)[2]))  # between the second and third land
+    stray = {"side": "port", "ship_xy": [[5.0, y], [5.6, y + 0.005]], "step_mm": 12.0, "length": 0.6, "score": 1.0}
+    after = proposals.strakes(seam_list + [stray], frame.sign, edges=edges)
+    assert proposals.lands(seam_list + [stray])[-1] is None
+    assert [(b["name"], b["ship_xy"]) for b in after] == [(b["name"], b["ship_xy"]) for b in before]
+
+
+def test_frames_on_two_sides_apart_share_a_number():
+    """Port and starboard pieces of each frame 2 cm apart: one number each, the space 0.45 m."""
+    frames = [{"x": x, "side": "port"} for x in FRAMES] + [{"x": x + 0.02, "side": "starboard"} for x in FRAMES]
+    assert proposals.frame_space(frames) == pytest.approx(0.45)
+    proposals._name_frames(frames, 0.0)
+    assert len({f["name"] for f in frames}) == 23
+    for a, b in zip(frames[:23], frames[23:]):
+        assert a["name"] == b["name"]
+    square = lambda x: [[x - 0.04, 0.2], [x + 0.04, 0.2], [x + 0.04, 2.0], [x - 0.04, 2.0]]  # noqa: E731
+    items = [{"kind": "frame", "name": f["name"], "side": f["side"], "ship_xy": square(f["x"])} for f in frames]
+    chunk = SimpleNamespace(meta={"shipwreck": {"proposals": {"items": items}}})
+    text = proposals.summary(chunk)
+    assert "23 ordinate" in text and "0,45 m" in text
+
+
+def test_loose_timbers_are_other(tmp_path):
+    """Four loose timbers lying on the hull at 10, 30, 60 and 85 degrees from x, between the frames: neither frames
+    nor stringers, and the frames keep their numbers."""
+    boxes = [(3.375, -0.35, 10), (4.275, -0.35, 30), (5.175, -0.35, 60), (6.975, -0.35, 85)]
+    ch, _frame = _setup(tmp_path, loose=boxes)
+    prop = proposals.build(ch)
+    frames = sorted(_of(prop, "frame"), key=lambda f: _centroid(f).x)
+    assert len(frames) == 23 and not _of(prop, "stringer")
+    assert [f["name"] for f in frames] == [f"ordinata {k}" for k in range(1, 24)]
+    others = _of(prop, "other")
+    assert len(others) == 4
+    assert sorted(round(_centroid(o).x, 1) for o in others) == [3.4, 4.3, 5.2, 7.0]

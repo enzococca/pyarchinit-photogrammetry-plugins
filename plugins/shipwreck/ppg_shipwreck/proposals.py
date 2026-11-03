@@ -23,10 +23,15 @@ height raster turned so (its v is ``sign`` * y).
   are off again. The residue is thresholded at ``top_hat``; components from ``min_area``; a frame has its long axis
   within ``frame_deg`` of y and an elongation (long / short side of the minimum rotated rectangle) from
   ``elongation``; the two pieces of a frame cut by the keelson are joined when their x differ by less than the room;
-  a longitudinal within ``keel_band`` of y 0 is the keelson, else a stringer; anything else is ``other``.
-- Strakes: per side, the seams in order of their mean distance from the keel line; a band between consecutive seams
-  on their common x range; the first from the keel line offset by ``clinker.DEFAULTS["keel_half_width"]``, the last
-  to the model's edge. Names ``fascia B1..`` (port) and ``fascia T1..`` (starboard) from the keel.
+  a longitudinal within ``keel_band`` of y 0 is the keelson, else a stringer; a frame shorter than ``min_frame`` or a
+  longitudinal shorter than ``min_longitudinal`` (a loose timber) is ``other``, as anything else is (the residues of
+  one loose timber in both openings are one item).
+- Strakes: per side, each seam's land is its rank from the keel among the seams present at the same x (:func:`lands`:
+  the pieces of one land, fore and aft of a hole, share it; a stray piece overlapping a land of its rank is left
+  out); per x, a band between consecutive lands where both are there; the first from the keel line offset by
+  ``clinker.DEFAULTS["keel_half_width"]``, the last to the model's edge. Names ``fascia B1..`` (port) and ``fascia
+  T1..`` (starboard) from the keel, ``comento B1..`` for the lands; a strake broken by a hole keeps its name. The
+  bands run under the frames (the outline is not cut by them).
 
 The plugin writes ``chunk.meta["shipwreck"]["proposals"]`` only.
 """
@@ -40,16 +45,30 @@ from . import clinker, relief, ship, timbers
 from .texts import num, plural, t
 
 DEFAULTS = {"sigma_cells": 1.5, "trend": 0.05, "min_step": 0.008, "low_step": 0.004, "min_seam": 0.5, "gap": 0.3,
-            "opening": 0.3, "top_hat": 0.02, "elongation": 3.0, "frame_deg": 30.0, "keel_band": 0.15, "min_area": 0.002}
-"""The parameters of the reading, metres unless said: ``sigma_cells`` the smoothing of ``|dz/dy|`` across the hull, in
-cells; ``trend`` the width across, on either side of a cell, of the running median of ``dz/dy`` taken out of it (the hull's own
-slope); ``min_step`` the step a
-seam must reach somewhere, ``low_step`` the step it keeps along x; ``min_seam`` the least length of a seam; ``gap`` the
-longest gap along x across which two pieces of a seam are joined; ``opening`` the length of the lines of the directional
-openings (longer than a frame's room, shorter than the planking between two frames); ``top_hat`` the least height of a
-timber above the opened surface; ``elongation`` the least ratio of the long to the short side of a timber; ``frame_deg``
-the largest angle of a frame's long axis from y (and of a longitudinal's from x); ``keel_band`` how far from y 0 a
-longitudinal is the keelson; ``min_area`` the least area of a timber, square metres."""
+            "opening": 0.3, "top_hat": 0.02, "elongation": 3.0, "frame_deg": 30.0, "keel_band": 0.15, "min_area": 0.002,
+            "max_step": 0.04, "along_cells": 3.0, "min_frame": 0.5, "min_longitudinal": 1.0}
+"""The parameters of the reading, metres unless said.
+
+- ``sigma_cells``: the smoothing of ``|dz/dy|`` across the hull, in cells; ``along_cells``: the smoothing of ``dz/dy``
+  along x before the crests, in cells (the lands are long along x: it keeps a seam whole under the noise of a scan).
+- ``trend``: the width across, on either side of a cell, of the running median of ``dz/dy`` taken out of it (the
+  hull's own slope).
+- ``min_step``: the step a seam must reach somewhere; ``low_step``: the step it keeps along x; ``max_step``: the
+  largest step of a land (the side of a timber, a hole's edge is higher).
+- ``min_seam``: the least length of a seam; ``gap``: the longest gap along x across which two pieces of a seam are
+  joined.
+- ``opening``: the length of the lines of the directional openings (longer than a frame's room, shorter than the
+  planking between two frames); ``top_hat``: the least height of a timber above the opened surface.
+- ``elongation``: the least ratio of the long to the short side of a timber; ``frame_deg``: the largest angle of a
+  frame's long axis from y (and of a longitudinal's from x); ``min_frame``, ``min_longitudinal``: the least length of
+  a frame (or of a piece of one) and of a longitudinal timber (a loose timber lying on the hull is shorter: ``other``).
+- ``keel_band``: how far from y 0 a longitudinal is the keelson; ``min_area``: the least area of a timber, square
+  metres.
+
+Limits measured on the synthetic hull at 5 mm cells (lands of 1.5 cm): frames and keelson unaffected by any noise
+tried; the seams stay whole under 2 mm of white noise on the heights; with 2 mm of noise correlated over a few cells
+they break into pieces, which the strakes still take as pieces of their lands (:func:`lands`: same names, widths
+within 2 %); with 4 mm of white noise stray pieces beyond the last land can add a strake (B6) and should be rejected."""
 
 KINDS = ("seam", "frame", "keelson", "stringer", "plank", "other")
 COLLINEAR = 0.02  # metres: two pieces of a seam continue each other within this across
@@ -234,9 +253,33 @@ def _join_frames(pieces: list[dict], room_gap: float, cell: float) -> list[dict]
         poly = shapely.union_all([a["poly"], b["poly"], inner.convex_hull])
         if poly.geom_type != "Polygon":
             poly = shapely.union_all([a["poly"], b["poly"]]).convex_hull
-        long_side, short_side, _angle = _rectangle(poly)
+        _long, short_side, _angle = _rectangle(poly)
         out.append({**a, "poly": poly, "room": short_side, "x": float(poly.centroid.x), "joined": True,
                     "score": max(a["score"], b["score"])})
+    return out
+
+
+def _union_others(others: list[dict]) -> list[dict]:
+    """The ``other`` components that touch each other as one (a loose timber leaves a residue in both openings)."""
+    import shapely
+
+    groups: list[list[dict]] = []
+    for o in others:
+        hit = [g for g in groups if any(o["poly"].intersects(q["poly"]) for q in g)]
+        for g in hit:
+            groups.remove(g)
+        groups.append(sum(hit, []) + [o])
+    out = []
+    for g in groups:
+        if len(g) == 1:
+            out.append(g[0])
+            continue
+        poly = shapely.union_all([q["poly"] for q in g])
+        if poly.geom_type != "Polygon":
+            poly = poly.convex_hull
+        _long, short, _angle = _rectangle(poly)
+        out.append({"poly": poly, "room": short, "x": float(poly.centroid.x), "height": max(q["height"] for q in g),
+                    "score": max(q["score"] for q in g), "length": _long, "kind": "other"})
     return out
 
 
@@ -251,8 +294,7 @@ def ridges(z, transform, sign: int, params=None) -> list[dict]:
         return []
     across = _top_hat(grid, p["opening"], axis=1)  # narrow along x: frames
     along = _top_hat(grid, p["opening"], axis=0)  # narrow along y: longitudinals
-    out = []
-    pieces = []
+    out, pieces, others = [], [], []
     for residue, direction in ((across, "x"), (along, "y")):
         mask = np.nan_to_num(residue, nan=0.0) > p["top_hat"]
         comps, labels = _components(grid, mask, p["min_area"])
@@ -263,14 +305,14 @@ def ridges(z, transform, sign: int, params=None) -> list[dict]:
             score = float(min(1.0, height / (3.0 * p["top_hat"])))
             item = {"poly": poly, "room": short_side, "x": float(poly.centroid.x), "height": height, "score": score,
                     "length": long_side}
-            if direction == "x" and elongated and angle >= 90.0 - p["frame_deg"]:
+            if direction == "x" and elongated and angle >= 90.0 - p["frame_deg"] and long_side >= p["min_frame"]:
                 pieces.append({**item, "kind": "frame"})
-            elif direction == "y" and elongated and angle <= p["frame_deg"]:
+            elif direction == "y" and elongated and angle <= p["frame_deg"] and long_side >= p["min_longitudinal"]:
                 kind = "keelson" if abs(poly.centroid.y) <= p["keel_band"] else "stringer"
                 out.append({**item, "kind": kind})
             else:
-                out.append({**item, "kind": "other"})
-    out = _join_frames(pieces, 2.0 * p["keel_band"], grid.cell) + out
+                others.append({**item, "kind": "other"})
+    out = _join_frames(pieces, 2.0 * p["keel_band"], grid.cell) + out + _union_others(others)
     result = []
     for r in out:
         side = "centre" if r.get("joined") or r["kind"] == "keelson" else _side_of(float(r["poly"].centroid.y))
@@ -307,6 +349,8 @@ def _crests(grid: _Grid, p: dict, exclude: np.ndarray):
     """The crests of the transverse step in each column: arrays of column, sub-cell y, step (metres)."""
     g = np.gradient(grid.z, grid.cell, axis=0)
     g[~np.isfinite(g) | exclude] = np.nan  # a timber's side would fill the trend's window and the smoothing
+    if p["along_cells"] > 0:  # the lands run along x: the noise of a scan does not
+        g = _nan_smooth(g, p["along_cells"], axis=1)
     r = g - _trend(g, 2 * grid.cells(p["trend"], odd=False) + 1)
     s = _nan_smooth(np.abs(r), p["sigma_cells"], axis=0)
     s0 = np.nan_to_num(s, nan=-1.0)
@@ -326,7 +370,7 @@ def _crests(grid: _Grid, p: dict, exclude: np.ndarray):
     shift = np.where(np.abs(denom) > 1e-12, 0.5 * (a - c) / np.where(np.abs(denom) > 1e-12, denom, 1.0), 0.0)
     y = grid.y[rows] + np.clip(shift, -0.5, 0.5) * grid.cell
     st = step[rows, cols]
-    keep = st >= p["low_step"]
+    keep = (st >= p["low_step"]) & (st <= p["max_step"])
     cols, y, st = cols[keep], y[keep], st[keep]
     if len(cols) < 2:
         return cols, y, st
@@ -458,69 +502,132 @@ def _y_on(line: np.ndarray, xs: np.ndarray) -> np.ndarray:
     return np.interp(xs, line[order, 0], line[order, 1])
 
 
-def _band(xs: np.ndarray, inner: np.ndarray, outer: np.ndarray) -> list:
-    ring = np.vstack([np.column_stack([xs, inner]), np.column_stack([xs[::-1], outer[::-1]])])
-    return [[float(a), float(b)] for a, b in ring]
+LAND_SAMPLE = 0.02  # metres along x between the points where the ranks of the seams are read
+CONFLICT = 0.1  # metres: two pieces of one land overlapping along x more than this are one too many
+BAND_STEP = 0.01  # metres along x between the points of a strake's outline (simplified after)
+
+
+def lands(seam_list: list[dict], params=None) -> list[int | None]:
+    """The land of each seam: its rank from the keel on its side, 1 the innermost, or None for a piece left out. The
+    rank of a piece is read where it is, against the pieces of its side present at the same x: the median over its x
+    range of how many lie nearer the keel, plus one. Pieces of one land are those of the same rank (fore and aft of a
+    hole, broken by noise); of two that overlap along x more than :data:`CONFLICT` the shorter is left out (a stray
+    piece between two lands), and the ranks are read again without it."""
+    out: list[int | None] = [None] * len(seam_list)
+    for side in ("port", "starboard"):
+        live = [i for i, sm in enumerate(seam_list) if sm["side"] == side]
+        lines = {i: np.asarray(seam_list[i]["ship_xy"], float) for i in live}
+        span = {i: (float(lines[i][:, 0].min()), float(lines[i][:, 0].max())) for i in live}
+        while True:
+            rank = {}
+            for i in live:
+                x0, x1 = span[i]
+                xs = np.linspace(x0, x1, max(2, int((x1 - x0) / LAND_SAMPLE) + 1))
+                yi = np.abs(_y_on(lines[i], xs))
+                below = np.zeros(len(xs))
+                for j in live:
+                    if j != i:
+                        inside = (xs >= span[j][0]) & (xs <= span[j][1])
+                        below += inside & (np.abs(_y_on(lines[j], xs)) < yi)
+                rank[i] = int(round(float(np.median(below)))) + 1
+            kept: list[int] = []
+            dropped = None
+            for i in sorted(live, key=lambda i: -(span[i][1] - span[i][0])):
+                clash = any(rank[j] == rank[i] and min(span[i][1], span[j][1]) - max(span[i][0], span[j][0]) > CONFLICT
+                            for j in kept)
+                if clash:
+                    dropped = i
+                    break
+                kept.append(i)
+            if dropped is None:
+                break
+            live.remove(dropped)
+        for i in live:
+            out[i] = rank[i]
+    return out
+
+
+def _land_lines(seam_list, ranks, side, xs, gap):
+    """``{rank: y at xs}`` of one side's lands (NaN where no piece of the land is), gaps shorter than ``gap`` bridged."""
+    out = {}
+    for i, (sm, r) in enumerate(zip(seam_list, ranks)):
+        if r is None or sm["side"] != side:
+            continue
+        line = np.asarray(sm["ship_xy"], float)
+        y = out.setdefault(r, np.full(len(xs), np.nan))
+        inside = (xs >= line[:, 0].min()) & (xs <= line[:, 0].max())
+        y[inside] = _y_on(line, xs[inside])
+    for y in out.values():
+        ok = np.flatnonzero(np.isfinite(y))
+        for a, b in zip(ok[:-1], ok[1:]):
+            if b - a > 1 and xs[b] - xs[a] < gap:
+                y[a + 1:b] = np.interp(xs[a + 1:b], [xs[a], xs[b]], [y[a], y[b]])
+    return out
+
+
+def _runs(valid: np.ndarray) -> list[tuple[int, int]]:
+    edges = np.diff(np.r_[0, valid.astype(np.int8), 0])
+    return list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)))
+
+
+def _clean_ring(ring: np.ndarray):
+    """A band's outline simplified, the largest part when it folds on itself; None when nothing is left."""
+    import shapely
+
+    poly = shapely.Polygon(ring)
+    if not poly.is_valid:
+        parts = [g for g in getattr(shapely.make_valid(poly), "geoms", [shapely.make_valid(poly)])
+                 if g.geom_type == "Polygon"]
+        if not parts:
+            return None
+        poly = max(parts, key=lambda g: g.area)
+    poly = poly.simplify(SIMPLIFY)
+    return _ring(poly) if poly.geom_type == "Polygon" and poly.area > 0 else None
 
 
 def strakes(seam_list: list[dict], sign: int, params=None, edges: dict | None = None) -> list[dict]:
-    """The strakes between the seams: per side, the seams in order of their mean distance from the keel line, a band
-    between each one and the next that overlaps it along x by ``min_seam`` (a piece of a seam that does not is passed
-    over); the first band from the keel line offset by ``clinker.DEFAULTS["keel_half_width"]`` (``edge`` "keel
-    line"), the last to the model's edge when ``edges`` gives it (``{side: (x, y)}``, :meth:`_Grid.edges`; ``edge``
-    "model"). ``sign`` is the frame's: the seams are already in the ship plan, it only says which way the names run
-    when two strakes share a mean distance (never on a real hull). Dicts with ``side``, ``name`` (``fascia B1``...
-    from the keel), ``ship_xy`` (the ring), ``seams`` (the indexes in ``seam_list`` bounding it) and ``edge``."""
-    import shapely
-
+    """The strakes between the lands (:func:`lands`): per side and per x, the band between land k - 1 and land k
+    where both are there (``fascia B``k / ``T``k from the keel, whatever pieces the lands are made of: a strake broken by
+    a hole keeps its name fore and aft of it, two items of one name), the first from the keel line offset by
+    ``clinker.DEFAULTS["keel_half_width"]`` (``edge`` "keel line"), the last from the outermost land to the model's
+    edge when ``edges`` gives it (``{side: (x, y)}``, :meth:`_Grid.edges`; ``edge`` "model"). Gaps of a land shorter
+    than ``gap`` are bridged. ``sign`` is the frame's; the seams are already in the ship plan. Dicts with ``side``,
+    ``name``, ``ship_xy`` (the ring), ``seams`` (the indexes in ``seam_list`` of the pieces bounding it) and ``edge``."""
     p = _params(params)
     half = clinker.DEFAULTS["keel_half_width"]
     word = t("fascia", "strake")
+    ranks = lands(seam_list, p)
     out = []
     for side, s_side in (("port", 1.0), ("starboard", -1.0)):
-        chosen = [(i, np.asarray(s["ship_xy"], float)) for i, s in enumerate(seam_list) if s["side"] == side]
-        chosen.sort(key=lambda c: (float(np.mean(np.abs(c[1][:, 1]))), sign * c[0]))
-        chain = []
-        for i, line in chosen:
-            if not chain:
-                chain.append((i, line))
-                continue
-            last = chain[-1][1]
-            lo, hi = max(last[:, 0].min(), line[:, 0].min()), min(last[:, 0].max(), line[:, 0].max())
-            if hi - lo >= p["min_seam"]:
-                chain.append((i, line))
-        bands = []
-        if chain:
-            i, line = chain[0]
-            xs = np.unique(line[:, 0])
-            bands.append((xs, np.full(len(xs), s_side * half), _y_on(line, xs), [i], "keel line"))
-        for (i, a), (j, b) in zip(chain, chain[1:]):
-            lo, hi = max(a[:, 0].min(), b[:, 0].min()), min(a[:, 0].max(), b[:, 0].max())
-            xs = np.unique(np.r_[a[:, 0], b[:, 0], lo, hi])
-            xs = xs[(xs >= lo) & (xs <= hi)]
-            bands.append((xs, _y_on(a, xs), _y_on(b, xs), [i, j], "seam"))
-        if chain and edges and side in edges:
-            i, line = chain[-1]
+        mine = [i for i, (sm, r) in enumerate(zip(seam_list, ranks)) if sm["side"] == side and r is not None]
+        if not mine:
+            continue
+        x0 = min(float(np.min(np.asarray(seam_list[i]["ship_xy"])[:, 0])) for i in mine)
+        x1 = max(float(np.max(np.asarray(seam_list[i]["ship_xy"])[:, 0])) for i in mine)
+        xs = np.linspace(x0, x1, max(2, int(round((x1 - x0) / BAND_STEP)) + 1))
+        land = _land_lines(seam_list, ranks, side, xs, p["gap"])
+        top = max(land)
+        land[0] = np.full(len(xs), s_side * half)
+        if edges and side in edges:
             ex, ey = edges[side]
-            xs = np.unique(line[:, 0])
-            xs = xs[(xs >= ex.min()) & (xs <= ex.max())]
-            if len(xs) >= 2:
-                bands.append((xs, _y_on(line, xs), np.interp(xs, ex, ey), [i], "model"))
-        for k, (xs, inner, outer, bounding, edge) in enumerate(bands, 1):
-            ring = _band(xs, inner, outer)
-            if len(ring) < 3:
+            land[top + 1] = np.where((xs >= ex.min()) & (xs <= ex.max()), np.interp(xs, ex, ey), np.nan)
+        for k in range(1, top + 2):
+            inner, outer = land.get(k - 1), land.get(k)
+            if inner is None or outer is None:
                 continue
-            poly = shapely.Polygon(ring)
-            if not poly.is_valid:  # two seams touching at an end: the largest part
-                parts = [g for g in getattr(shapely.make_valid(poly), "geoms", [shapely.make_valid(poly)])
-                         if g.geom_type == "Polygon"]
-                if not parts:
+            for a, b in _runs(np.isfinite(inner) & np.isfinite(outer)):
+                if b - a < 2:
                     continue
-                ring = _ring(max(parts, key=lambda g: g.area))
-            elif poly.area <= 0:
-                continue
-            out.append({"side": side, "name": f"{word} {clinker._strake_name(side, k)}", "ship_xy": ring,
-                        "seams": bounding, "edge": edge})
+                ring = _clean_ring(np.vstack([np.column_stack([xs[a:b], inner[a:b]]),
+                                              np.column_stack([xs[a:b][::-1], outer[a:b][::-1]])]))
+                if ring is None:
+                    continue
+                lo, hi = xs[a], xs[b - 1]
+                bounding = [i for i in mine if ranks[i] in (k - 1, k) and
+                            np.asarray(seam_list[i]["ship_xy"])[:, 0].min() <= hi and
+                            np.asarray(seam_list[i]["ship_xy"])[:, 0].max() >= lo]
+                out.append({"side": side, "name": f"{word} {clinker._strake_name(side, k)}", "ship_xy": ring,
+                            "seams": bounding, "edge": "keel line" if k == 1 else "model" if k == top + 1 else "seam"})
     return out
 
 
@@ -575,13 +682,22 @@ def _covered(item: dict, taken: list) -> bool:
     return False
 
 
+def frame_space(frames: list[dict]) -> float:
+    """The median space of the frames, read on each side by itself (``x`` of dicts with ``side``; a frame on the
+    centre counts on both): mixed, the two pieces of one frame a little apart would make the space their distance."""
+    diffs: list[float] = []
+    for side in ("port", "starboard"):
+        xs = sorted(f["x"] for f in frames if f["side"] in (side, "centre"))
+        diffs += np.diff(xs).tolist()
+    return float(np.median(diffs)) if diffs else 0.0
+
+
 def _name_frames(frames: list[dict], bow_x: float) -> None:
-    """``ordinata N`` from the bow; frames on different sides within half the median space share N."""
+    """``ordinata N`` from the bow; frames on different sides within half the space (:func:`frame_space`) share N."""
     if not frames:
         return
     order = sorted(frames, key=lambda f: abs(f["x"] - bow_x))
-    xs = sorted({round(f["x"], 4) for f in frames})
-    space = float(np.median(np.diff(xs))) if len(xs) > 1 else 0.0
+    space = frame_space(frames)
     word = t("ordinata", "frame")
     groups: list[list[dict]] = []
     for f in order:
@@ -625,27 +741,31 @@ def build(chunk, params=None, progress=None) -> dict:
     words = {"keelson": t("paramezzale", "keelson"), "stringer": t("serretta", "stringer"),
              "other": t("altro", "other"), "seam": t("comento", "seam")}
     items: list[dict] = []
-    for k, s in enumerate(seam_list):
-        inner = sum(1 for o in seam_list[:k] if o["side"] == s["side"]) + 1
-        code = clinker._strake_name(s["side"], inner)
+    for s, rank in zip(seam_list, lands(seam_list, p)):
+        if rank is None:  # a stray piece over a land already there
+            continue
+        code = clinker._strake_name(s["side"], rank)
         items.append({"kind": "seam", "side": s["side"], "name": f"{words['seam']} {code}", "ship_xy": s["ship_xy"],
                       "score": s["score"], "step_mm": s["step_mm"], "room": None})
     frames = [dict(r) for r in found if r["kind"] == "frame"]
     _name_frames(frames, frame.bow_x)
     counters: dict[str, int] = {}
+    keelsons = sum(1 for r in found if r["kind"] == "keelson")
     for r in frames + [r for r in found if r["kind"] != "frame"]:
         if r["kind"] == "frame":
             name = r["name"]
         else:
             counters[r["kind"]] = counters.get(r["kind"], 0) + 1
-            name = words[r["kind"]] if r["kind"] == "keelson" else f"{words[r['kind']]} {counters[r['kind']]}"
+            numbered = r["kind"] != "keelson" or keelsons > 1  # one keelson is the keelson; pieces of it are numbered
+            name = f"{words[r['kind']]} {counters[r['kind']]}" if numbered else words[r["kind"]]
         items.append({"kind": r["kind"], "side": r["side"], "name": name, "ship_xy": r["ship_xy"], "score": r["score"],
                       "step_mm": None, "room": r["room"]})
     for b in bands:
         steps = [seam_list[i]["step_mm"] for i in b["seams"]]
         scores = [seam_list[i]["score"] for i in b["seams"]]
         items.append({"kind": "plank", "side": b["side"], "name": b["name"], "ship_xy": b["ship_xy"],
-                      "score": float(min(scores)), "step_mm": float(np.median(steps)), "room": None})
+                      "score": float(min(scores)) if scores else 0.0,
+                      "step_mm": float(np.median(steps)) if steps else None, "room": None})
     taken = _taken(chunk, frame)
     st = ship.state(chunk)
     previous = st.get("proposals") or {}
@@ -668,6 +788,11 @@ def summary(chunk) -> str:
     if not prop:
         return t("Nessuna proposta: leggi prima il rilievo dello scafo.", "No proposals: read the relief of the hull first.")
     count = {k: sum(1 for i in prop["items"] if i["kind"] == k) for k in KINDS}
+    named = {}  # a frame in two pieces (one name on both sides) is one frame
+    for i in prop["items"]:
+        if i["kind"] == "frame":
+            named.setdefault(i["name"], []).append(float(np.mean(np.asarray(i["ship_xy"])[:, 0])))
+    count["frame"] = len(named)
     parts = []
     if count["seam"]:
         parts.append(plural(count["seam"], ("comento", "comenti"), ("seam", "seams")))
@@ -681,7 +806,7 @@ def summary(chunk) -> str:
         if count[kind]:
             parts.append(plural(count[kind], it, en))
     text = t("Proposte: ", "Proposals: ") + ", ".join(parts)
-    xs = sorted(float(np.mean(np.asarray(i["ship_xy"])[:, 0])) for i in prop["items"] if i["kind"] == "frame")
+    xs = sorted(float(np.mean(v)) for v in named.values())
     if len(xs) > 1:
         space = num(float(np.median(np.diff(xs))), 2)
         text += t(f" (passo mediano delle ordinate {space} m)", f" (median frame space {space} m)")
