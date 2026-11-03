@@ -61,9 +61,24 @@ def dress(item, style: dict, kind: str, proposed: bool, done: bool) -> None:
         item.setPen(pen)
 
 
+def with_holes(view, item, polygon) -> None:
+    """The path of a polygon drawn by the view (its outer ring only) given its holes too: the interior rings as
+    sub-paths, filled odd-even (a segment of SAM around a stone leaves the stone unfilled)."""
+    from PySide6.QtCore import Qt
+
+    from pyarchinit_photogrammetry.gui.image_views import polyline_path
+
+    path = item.path()
+    for ring in polygon.interiors:
+        xy = np.asarray(ring.coords)[:-1]
+        path.addPath(polyline_path([view.scene_pt(float(x), float(y)) for x, y in xy], close=True))
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    item.setPath(path)
+
+
 def draw(view, chunk, cid: str) -> bool:
-    """The layers of the campaign ``cid`` on ``view`` (which shows its elevation): polygons filled with the legend's
-    colour and its hatch, lines in the term's colour, notes as discs; the proposals apart, pale and marked "?".
+    """The layers of the campaign ``cid`` on ``view`` (which shows its elevation): polygons (with their holes) filled
+    with the legend's colour and its hatch, lines in the term's colour, notes as discs; the proposals apart, pale and marked "?".
     Returns whether anything could be drawn (the view has a raster)."""
     from shapely import get_parts, wkt
 
@@ -92,6 +107,8 @@ def draw(view, chunk, cid: str) -> bool:
                     xy = np.asarray(part.exterior.coords)[:-1]
                     item = view.add_polygon(xy, label, colour, PROPOSED_ALPHA if proposed else FILL_ALPHA,
                                             layer=layer, attrs=attrs)
+                    if part.interiors:
+                        with_holes(view, item, part)
                     dress(item, style, f["kind"], proposed, done)
                 elif part.geom_type == "LineString":
                     view.add_line(np.asarray(part.coords), colour, label, layer=layer, attrs=attrs, width=3.0,

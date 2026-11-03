@@ -59,6 +59,16 @@ def c_numbers():
                 pass
 
 
+def need_ifcopenshell() -> None:
+    """NotReady when IfcOpenShell is missing (the program's extra ``bim``)."""
+    import importlib.util
+
+    if importlib.util.find_spec("ifcopenshell") is None:
+        raise NotReady(t("IFC 4.3: serve l'extra bim del programma (IfcOpenShell): pip install "
+                         "\"pyarchinit-photogrammetry[bim]\".", "IFC 4.3: the program's extra bim is needed "
+                         "(IfcOpenShell): pip install \"pyarchinit-photogrammetry[bim]\"."))
+
+
 # ---------------------------------------------------------------- the hosts
 def _bounds(chunk, entry) -> tuple[float, float, float, float]:
     """``(u0, v0, u1, v1)`` of the face: its bounds, else its orthophoto's extent."""
@@ -128,9 +138,14 @@ def _cylinder_band(chunk, entry, frame, gid, thickness, warnings) -> dict:
                           f"«{entry.get('name')}»: thickness reduced to {num(thickness)} m, less than the radius"))
     outer = frame.radius + (thickness if frame.inside else 0.0)
     step = 2.0 * np.arccos(1.0 - SAGITTA / outer)
-    t0, t1 = float(frame._turn(u0)), float(frame._turn(u1))
-    n = max(2, int(np.ceil(abs(t1 - t0) / step)))
-    us = frame._u(np.linspace(t0, t1, n + 1))
+    if hasattr(frame, "_turn") and hasattr(frame, "_u"):  # the program's map of u to the angle (a "wall" scale)
+        t0, t1 = float(frame._turn(u0)), float(frame._turn(u1))
+        n = max(2, int(np.ceil(abs(t1 - t0) / step)))
+        us = frame._u(np.linspace(t0, t1, n + 1))
+    else:  # a program without it: u is the arc on the radius
+        t0, t1 = u0 / frame.radius, u1 / frame.radius
+        n = max(2, int(np.ceil(abs(t1 - t0) / step)))
+        us = np.linspace(u0, u1, n + 1)
     uu, vv, dd = np.meshgrid(us, [v0, v1], [0.0, -thickness], indexing="ij")
     pts = frame.point(uu.ravel(), vv.ravel(), dd.ravel()).reshape(n + 1, 2, 2, 3)
     return {"gid": gid, "name": _stand_in_name(entry), "wall": None, "kind": "band", "grid": pts,
@@ -228,10 +243,11 @@ def _host_classes(chunk, c: dict) -> tuple[dict, dict]:
 def export(chunk, cids: list[str], path, thickness: float = 0.5, project: str = "Rilievo", site=None) -> dict:
     """The campaigns ``cids`` in one IFC 4.3 file at ``path``: a host wall per elevation, the accepted features
     adhering to it (those still to be named left out and counted). Returns ``{"path", "hosts", "features",
-    "warnings"}``; NotReady when no campaign is on a face (a section is refused)."""
+    "warnings"}``; NotReady when no campaign is on a face (a section is refused) or when IfcOpenShell is missing."""
     from .geometry import lift
     from .outputs import _context, _order, glossary_names
 
+    need_ifcopenshell()
     if thickness is None or float(thickness) <= 0:
         raise ValueError(t("Lo spessore della parete di appoggio è una lunghezza positiva.",
                            "The host wall's thickness is a positive length."))

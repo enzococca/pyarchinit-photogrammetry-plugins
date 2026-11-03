@@ -176,6 +176,12 @@ def test_the_host_is_the_masonry_wall(tmp_path):
     assert host["id"] == masonry_ifc.stable_global_id(ch.key, w["id"], entry["id"])
     assert host["id"] == ifc43.stable_global_id(ch.key, w["id"], entry["id"]) and host["name"] == "Muro sud"
     assert all(f["host"] == host["id"] for f in rb["features"]) and len(rb["features"]) == 7
+    # the features still on the face and lifted on the relief: the hole 3 cm into the wall
+    by_id = {f["id"]: f for f in rb["features"]}
+    for f in rb["features"]:
+        assert np.abs(_uv(ch, entry, f["vertices"])[:, 2]).max() < 0.035
+    hole = by_id[ifc43.stable_global_id(ch.key, entry["id"], feats["hole"]["id"])]
+    assert abs(_uv(ch, entry, hole["vertices"])[:, 2].min() + S.HOLE_DEPTH) < 0.002
     # the masonry plugin's own file names the same wall, export after export
     ids = []
     for n in (1, 2):
@@ -186,6 +192,37 @@ def test_the_host_is_the_masonry_wall(tmp_path):
     mb = ifc43.read_back(tmp_path / "m1.ifc")["hosts"][0]
     same = [np.unique(np.round(v, 3), axis=0) for v in (mb["vertices"], host["vertices"])]
     assert same[0].shape == same[1].shape and np.abs(same[0] - same[1]).max() < 2e-3
+
+
+def test_ifc_under_an_italian_numeric_locale(tmp_path):
+    """With LC_NUMERIC Italian (a decimal comma, as Qt sets it) the stand-in slab is still 0.45 m thick, read back
+    from the file; the caller's locale is kept."""
+    import locale
+
+    doc, ch, entry, c, feats = campaign(tmp_path)
+    old = locale.setlocale(locale.LC_NUMERIC)
+    try:
+        locale.setlocale(locale.LC_NUMERIC, "it_IT.UTF-8")
+    except locale.Error:
+        pytest.skip("no it_IT.UTF-8 locale here")
+    try:
+        r = ifc43.export(ch, [c["id"]], tmp_path / "c.ifc", thickness=0.45)
+        assert locale.setlocale(locale.LC_NUMERIC) == "it_IT.UTF-8"
+    finally:
+        locale.setlocale(locale.LC_NUMERIC, old)
+    (host,) = ifc43.read_back(r["path"])["hosts"]
+    d = _uv(ch, entry, host["vertices"])[:, 2]
+    assert abs(d.min() + 0.45) < 1e-3
+
+
+def test_ifc_without_ifcopenshell_is_said(tmp_path, monkeypatch):
+    import importlib.util as iu
+
+    doc, ch, entry, c, feats = campaign(tmp_path)
+    real = iu.find_spec
+    monkeypatch.setattr(iu, "find_spec", lambda name, *a: None if name == "ifcopenshell" else real(name, *a))
+    with pytest.raises(NotReady, match="extra bim"):
+        ifc43.export(ch, [c["id"]], tmp_path / "c.ifc")
 
 
 @pytest.mark.skipif(not HAS_MASONRY, reason="the masonry plugin")

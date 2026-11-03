@@ -333,16 +333,17 @@ def _pyarchinit(doc, chunk, a) -> int:
 def _ifc(doc, chunk, a) -> int:
     from . import ifc43
 
+    eid = _elevation(chunk, a.elevation)["id"] if a.elevation else None  # resolved once
     if a.campaign:
         cids = []
         for key in a.campaign:
             found = [c for c in records.campaigns(chunk) if key in (c["id"], c["name"]) and
-                     (not a.elevation or _elevation(chunk, a.elevation)["id"] == c["elevation"])]
+                     (eid is None or eid == c["elevation"])]
             if not found:
                 raise NotReady(t(f"Nessuna campagna {key!r}.", f"No campaign {key!r}."))
             cids += [c["id"] for c in found]
-    elif a.elevation:
-        cids = [c["id"] for c in records.campaigns(chunk, _elevation(chunk, a.elevation)["id"])]
+    elif eid is not None:
+        cids = [c["id"] for c in records.campaigns(chunk, eid)]
     else:
         cids = [c["id"] for c in records.campaigns(chunk)]
     if not cids:
