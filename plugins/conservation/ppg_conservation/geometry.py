@@ -13,11 +13,21 @@ KEY = 1e-7  # metres: vertices nearer than this on (u, v) are one vertex
 
 
 def as_geometry(geometry):
-    """A shapely geometry from a geometry or its WKT."""
+    """A shapely geometry from a geometry or its WKT; an invalid polygon repaired (``buffer(0)``). ValueError for a
+    text that is not WKT, or a polygon that is empty once repaired."""
     if isinstance(geometry, str):
-        from shapely import wkt
+        import shapely
 
-        return wkt.loads(geometry)
+        try:
+            geometry = shapely.from_wkt(geometry)
+        except Exception:  # noqa: BLE001 - GEOS says why in its own words
+            raise ValueError(f"not a geometry in WKT: {geometry[:80]!r}") from None
+    if geometry is None or not hasattr(geometry, "geom_type"):
+        raise ValueError(f"not a geometry: {geometry!r}")
+    if geometry.geom_type in ("Polygon", "MultiPolygon") and not geometry.is_valid:
+        geometry = geometry.buffer(0)
+        if geometry.is_empty:
+            raise ValueError("the polygon is not valid and nothing is left of it once repaired")
     return geometry
 
 
@@ -53,8 +63,6 @@ def triangulate(geometry, step: float = 0.10) -> tuple[np.ndarray, np.ndarray]:
     geom = as_geometry(geometry)
     if geom.geom_type not in ("Polygon", "MultiPolygon"):
         raise ValueError(f"a polygon is lifted, not a {geom.geom_type}: make a band of a line or a disc of a point")
-    if not geom.is_valid:
-        geom = geom.buffer(0)
     step = float(step)
     if step <= 0:
         raise ValueError("the step of the inner points is a positive length")

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
@@ -64,6 +64,7 @@ class Term:
     aliases: tuple = ()
     source: str = ""
     group: str | None = None
+    deterioration: bool = True  # False: a change "without visible deterioration" (ICOMOS-ISCS alteration, patina)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Term":
@@ -79,7 +80,7 @@ class Term:
                    hatch=dict(d.get("hatch") or {"mpl": "//", "dxf": "ANSI31"}), uni=d.get("uni"),
                    iscs=list(d["iscs"]) if d.get("iscs") else None, local=bool(d.get("local", False)),
                    parent=d.get("parent"), aliases=tuple(d.get("aliases") or ()), source=d.get("source", ""),
-                   group=d.get("group"))
+                   group=d.get("group"), deterioration=bool(d.get("deterioration", True)))
 
     def to_dict(self) -> dict:
         out = {"code": self.code, "family": self.family, "kind": self.kind, "geometry": self.geometry,
@@ -92,7 +93,13 @@ class Term:
             out["iscs"] = list(self.iscs)
         if self.aliases:
             out["aliases"] = list(self.aliases)
+        if not self.deterioration:
+            out["deterioration"] = False
         return out
+
+    def copy(self) -> "Term":
+        return replace(self, names=dict(self.names), definition=dict(self.definition), hatch=dict(self.hatch),
+                       iscs=list(self.iscs) if self.iscs else None)
 
 
 def _fold(text: str) -> str:
@@ -118,15 +125,15 @@ class Vocabulary:
         return code in self._terms or code in self._short
 
     def terms(self, kind: str | None = None, family: str | None = None) -> list[Term]:
-        return [t for t in self._terms.values() if (kind is None or t.kind == kind)
+        return [t.copy() for t in self._terms.values() if (kind is None or t.kind == kind)
                 and (family is None or t.family == family)]
 
     def term(self, code: str) -> Term:
         """The term of ``code`` (a sub-type also by its short form); KeyError naming the known codes."""
         if code in self._terms:
-            return self._terms[code]
+            return self._terms[code].copy()
         if code in self._short:
-            return self._terms[self._short[code]]
+            return self._terms[self._short[code]].copy()
         raise KeyError(f"unknown term {code!r}; the known codes: {', '.join(self._terms)}")
 
     def families(self, lang: str = "it") -> list[tuple[str, str]]:
@@ -144,7 +151,11 @@ class Vocabulary:
             return term.names["en"]
         if not term.code.startswith("ISCS."):
             return term.names["it"]
-        base = self.term(term.uni).names["it"] if term.uni and term.uni in self else term.names["it"]
+        uni = self.term(term.uni) if term.uni and term.uni in self else None
+        if uni is not None and term.parent and len(uni.iscs or ()) > 1 and \
+                _fold(uni.names["it"]) != _fold(term.names["it"]):
+            return f"{term.names['it']} (UNI: {uni.names['it']})"  # a sub-type of a wider UNI term
+        base = uni.names["it"] if uni is not None else term.names["it"]
         english = term.names["en"].lower()
         return base if _fold(base) == _fold(english) else f"{base} ({english})"
 
@@ -191,6 +202,19 @@ def load(chunk=None) -> Vocabulary:
     if not local:
         return _base_vocabulary()
     return Vocabulary(list(_base()) + [Term.from_dict(d) for d in local])
+
+
+def deteriorates(vocab: Vocabulary, term: Term) -> bool:
+    """Whether a term is a deterioration pattern: not a general term, not a change "without visible deterioration"
+    (nor a sub-type of one, nor a UNI term mapped onto one)."""
+    if term.iscs:
+        term = vocab.term(term.iscs[0])
+    while True:
+        if term.family == "general" or not term.deterioration:
+            return False
+        if not term.parent or term.parent not in vocab:
+            return True
+        term = vocab.term(term.parent)
 
 
 def legend(chunk) -> dict[str, dict]:
@@ -264,7 +288,7 @@ def _rgb(colour: str) -> tuple[int, int, int]:
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
 
 
-def _hatch_layers(hatch: str, colour: str) -> list[str]:
+def _hatch_layers(hatch: str, colour: str, index: int = 0) -> list[str]:
     """QGIS symbol layers drawing a matplotlib hatch: lines at its angles, points for dots and circles; the
     repetition of a character makes it denser."""
     angles = []
@@ -279,6 +303,7 @@ def _hatch_layers(hatch: str, colour: str) -> list[str]:
     distance = round(3.0 / count, 2)
     layers = []
     for a in angles:
+        k = len(layers) + 1  # the simple fill is layer 0
         layers.append(
             '<layer class="LinePatternFill" enabled="1" locked="0" pass="0"><Option type="Map">'
             f'<Option name="angle" type="QString" value="{a}"/>'
@@ -286,7 +311,7 @@ def _hatch_layers(hatch: str, colour: str) -> list[str]:
             '<Option name="distance_unit" type="QString" value="MM"/>'
             f'<Option name="color" type="QString" value="{colour},255"/>'
             '<Option name="line_width" type="QString" value="0.2"/></Option>'
-            '<symbol type="line" name="@0@1" alpha="1" clip_to_extent="1" force_rhr="0">'
+            f'<symbol type="line" name="@{index}@{k}" alpha="1" clip_to_extent="1" force_rhr="0">'
             '<layer class="SimpleLine" enabled="1" locked="0" pass="0"><Option type="Map">'
             f'<Option name="line_color" type="QString" value="{colour},255"/>'
             '<Option name="line_width" type="QString" value="0.2"/>'
@@ -299,7 +324,7 @@ def _hatch_layers(hatch: str, colour: str) -> list[str]:
             f'<Option name="distance_y" type="QString" value="{distance}"/>'
             '<Option name="distance_x_unit" type="QString" value="MM"/>'
             '<Option name="distance_y_unit" type="QString" value="MM"/></Option>'
-            '<symbol type="marker" name="@0@1" alpha="1" clip_to_extent="1" force_rhr="0">'
+            f'<symbol type="marker" name="@{index}@{len(layers) + 1}" alpha="1" clip_to_extent="1" force_rhr="0">'
             '<layer class="SimpleMarker" enabled="1" locked="0" pass="0"><Option type="Map">'
             f'<Option name="name" type="QString" value="{"star" if "*" in hatch else "circle"}"/>'
             f'<Option name="color" type="QString" value="{colour},{255 if "." in hatch else 0}"/>'
@@ -329,19 +354,20 @@ def _symbol(index: int, colour: str, hatch: str, geometry: str) -> str:
             '<Option name="outline_style" type="QString" value="solid"/>'
             '<Option name="outline_width" type="QString" value="0.4"/>'
             '<Option name="outline_width_unit" type="QString" value="MM"/></Option></layer>')
-    return head.format("fill") + fill + "".join(_hatch_layers(hatch, rgb)) + "</symbol>"
+    return head.format("fill") + fill + "".join(_hatch_layers(hatch, rgb, index)) + "</symbol>"
 
 
-def write_qml(path, codes, legend: dict, geometry: str = "area", labels: dict | None = None) -> Path:
+def write_qml(path, codes, legend: dict, geometry: str = "area", labels: dict | None = None,
+              chunk=None) -> Path:
     """A QGIS 3 style (``.qml``): a categorized renderer on the column ``code``, one category per code with the
     legend's colour (a translucent fill and the outline) and its hatch drawn as line (or point) pattern fills;
     ``geometry`` "line" or "point" for tables of lines or points. ``labels``: ``{code: label}`` (default: the names
-    of the vocabulary in the interface's language, else the code)."""
+    of the vocabulary - with ``chunk``, also its local terms - in the interface's language, else the code)."""
     from .texts import lang
 
     if geometry not in GEOMETRIES:
         raise ValueError(f"geometry is one of {', '.join(GEOMETRIES)}")
-    vocab = load()
+    vocab = load(chunk)
     categories, symbols = [], []
     for i, code in enumerate(dict.fromkeys(codes)):
         style = legend.get(code) or {"colour": "#808080", "hatch": {"mpl": "", "dxf": "SOLID"}}

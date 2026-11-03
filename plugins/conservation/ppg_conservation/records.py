@@ -4,9 +4,9 @@
   reason}, made}``: one survey of a face (an elevation of the program) on a date; the EN 16096 condition and urgency
   classes are the surveyor's, never filled by the plugin;
 * ``features`` - what is mapped on a face in a campaign: ``{id, campaign, kind (decay|crack|treatment|note), code,
-  code_uni, geometry (WKT in (u, v): POLYGON for areas, LINESTRING for cracks, POINT for notes), intensity, extent (m2
-  or m, computed), width_mm, depth_mm, cause, condition, urgency, notes, photos, source, status (accepted|proposed),
-  treatment, links: {us}, made}``;
+  code_uni, code_iscs (the ICOMOS-ISCS codes of the term), geometry (WKT in (u, v): POLYGON for areas, LINESTRING for
+  cracks, POINT for notes), intensity, extent (m2 or m, computed), width_mm, depth_mm, cause, condition, urgency,
+  notes, photos, source, status (accepted|proposed), treatment, links: {us}, made}``;
 * ``assessments`` - ``{date: {rc, reason, surveyor}}``: the EN 16096 recommendation class of the whole object
   surveyed on that date, one per chunk and date;
 * ``legend``, ``local_terms`` - the project's colours and hatches and its own terms (:mod:`.vocabulary`).
@@ -191,8 +191,6 @@ def _checked(chunk, kind: str, code: str, geometry):
         raise ValueError("the geometry of a feature is empty")
     if geom.geom_type not in GEOMETRY_OF[kind]:
         raise ValueError(f"a feature of kind {kind!r} is a {WKT_OF[kind]}, not a {geom.geom_type.upper()}")
-    if geom.geom_type in ("Polygon", "MultiPolygon") and not geom.is_valid:
-        geom = geom.buffer(0)
     text = shapely.to_wkt(geom, rounding_precision=6, trim=True)
     geom = shapely.from_wkt(text)
     if geom.geom_type in ("Polygon", "MultiPolygon"):
@@ -224,6 +222,14 @@ def _check_fields(rec: dict) -> None:
     rec["depth_mm"] = _optional(rec.get("depth_mm"), "depth_mm")
 
 
+def iscs_codes(term) -> list[str] | None:
+    """The ICOMOS-ISCS codes of a term: its mapping for a UNI term, itself for an ISCS term, None for local terms and
+    interventions."""
+    if term.iscs:
+        return list(term.iscs)
+    return [term.code] if term.code.startswith("ISCS.") else None
+
+
 def add_feature(chunk, cid: str, kind: str, code: str, geometry, status: str = "accepted", source: str = "drawn",
                 code_uni: str | None = None, intensity: str | None = None, width_mm=None, depth_mm=None,
                 cause: str = "", condition=None, urgency=None, notes: str = "", photos=None,
@@ -235,7 +241,8 @@ def add_feature(chunk, cid: str, kind: str, code: str, geometry, status: str = "
     campaign(chunk, cid)
     term, _geom, text, extent = _checked(chunk, kind, code, geometry)
     rec = {"id": uuid.uuid4().hex[:8], "campaign": cid, "kind": kind, "code": term.code,
-           "code_uni": code_uni if code_uni is not None else term.uni, "geometry": text, "intensity": intensity,
+           "code_uni": code_uni if code_uni is not None else term.uni, "code_iscs": iscs_codes(term),
+           "geometry": text, "intensity": intensity,
            "extent": extent, "width_mm": width_mm, "depth_mm": depth_mm, "cause": cause, "condition": condition,
            "urgency": urgency, "notes": notes, "photos": list(photos or []), "source": source, "status": status,
            "treatment": dict(treatment) if treatment is not None else None, "links": {"us": []}, "made": _now()}
@@ -273,6 +280,7 @@ def update_feature(chunk, fid: str, **fields) -> dict:
         new.update(code=term.code, geometry=text, extent=extent)
         if "code" in fields and "code_uni" not in fields:
             new["code_uni"] = term.uni
+        new["code_iscs"] = iscs_codes(term)
     _check_fields(new)
     rec.update(new)
     return rec
@@ -351,19 +359,24 @@ def face_area(chunk, entry: dict) -> float | None:
 
 def totals(chunk, cid: str) -> dict:
     """What a campaign maps (accepted features only): ``area_by_code`` and ``area_by_family`` of the decay areas
-    (m2), ``length_by_code`` of the cracks (m), ``treatment_area_by_code`` / ``treatment_length_by_code``,
-    ``face_area`` (m2) and ``share_of_face`` = the decay areas (their union) / the face's surface, the widest crack
-    and the deepest loss (mm)."""
+    (m2); ``area_by_iscs`` the same areas on the first ICOMOS-ISCS code of each feature (a UNI and an ISCS drawing of
+    one phenomenon meet there; local terms keep their own code); ``length_by_code`` of the cracks (m),
+    ``treatment_area_by_code`` / ``treatment_length_by_code``, ``face_area`` (m2) and ``share_of_face`` = the union of
+    the areas of deterioration (not the general terms nor a patina "without visible deterioration"), within the
+    face's bounds, / the face's surface (at most 1); the widest crack and the deepest loss (mm)."""
     from shapely import wkt
+    from shapely.geometry import box
     from shapely.ops import unary_union
 
-    from .vocabulary import load
+    from pyarchinit_photogrammetry.engine.elevation import bounds_of
+
+    from .vocabulary import deteriorates, load
 
     rec = campaign(chunk, cid)
     vocab = load(chunk)
-    out = {"area_by_code": {}, "area_by_family": {}, "length_by_code": {}, "treatment_area_by_code": {},
-           "treatment_length_by_code": {}, "face_area": None, "share_of_face": None, "crack_max_width_mm": None,
-           "loss_max_depth_mm": None, "features": 0}
+    out = {"area_by_code": {}, "area_by_iscs": {}, "area_by_family": {}, "length_by_code": {},
+           "treatment_area_by_code": {}, "treatment_length_by_code": {}, "face_area": None, "share_of_face": None,
+           "crack_max_width_mm": None, "loss_max_depth_mm": None, "features": 0}
     areas = []
 
     def add(table, key, value):
@@ -375,9 +388,11 @@ def totals(chunk, cid: str) -> dict:
         polygon = g.geom_type in ("Polygon", "MultiPolygon")
         if f["kind"] == "decay" and polygon:
             add("area_by_code", f["code"], g.area)
-            family = vocab.term(f["code"]).family if f["code"] in vocab else "masonry"
-            add("area_by_family", family, g.area)
-            areas.append(g)
+            add("area_by_iscs", (f.get("code_iscs") or [f["code"]])[0], g.area)
+            known = f["code"] in vocab
+            add("area_by_family", vocab.term(f["code"]).family if known else "masonry", g.area)
+            if not known or deteriorates(vocab, vocab.term(f["code"])):
+                areas.append(g)
         elif f["kind"] == "crack":
             add("length_by_code", f["code"], g.length)
         elif f["kind"] == "treatment":
@@ -391,8 +406,8 @@ def totals(chunk, cid: str) -> dict:
     if entry is not None:
         out["face_area"] = face_area(chunk, entry)
         if out["face_area"]:
-            mapped = unary_union(areas).area if areas else 0.0
-            out["share_of_face"] = mapped / out["face_area"]
+            mapped = unary_union(areas).intersection(box(*bounds_of(chunk, entry))).area if areas else 0.0
+            out["share_of_face"] = min(1.0, mapped / out["face_area"])
     return out
 
 

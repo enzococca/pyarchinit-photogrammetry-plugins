@@ -70,6 +70,7 @@ def test_features_and_their_extent(face):
                                 intensity="high")
     assert abs(crust["extent"] - _painted_area(ch, entry, S.BLACK_CRUST)) / crust["extent"] < 0.01
     assert crust["code_uni"] == "UNI.CROSTA" and crust["geometry"].startswith("POLYGON")
+    assert crust["code_iscs"] == ["ISCS.CRUST.BLACK_CRUST"]
     assert crust["status"] == "accepted" and crust["source"] == "drawn" and len(crust["id"]) == 8
     crack = records.add_feature(ch, c["id"], "crack", "ISCS.CRACK", S.groove().wkt, width_mm=3.0)
     assert crack["extent"] == pytest.approx(S.groove().length) and crack["code_uni"] == "UNI.FESSURAZIONE"
@@ -92,9 +93,20 @@ def test_features_and_their_extent(face):
         records.add_feature(ch, c["id"], "decay", "ISCS.NOTHING", S.box(S.BLACK_CRUST))
     with pytest.raises(NotReady):
         records.add_feature(ch, "nothing", "decay", "ISCS.CRUST", S.box(S.BLACK_CRUST))
+    with pytest.raises(ValueError, match="WKT"):
+        records.add_feature(ch, c["id"], "decay", "ISCS.CRUST", "POLYGON ((0 0, 1 0")
+    with pytest.raises(ValueError, match="repaired"):
+        records.add_feature(ch, c["id"], "decay", "ISCS.CRUST", "POLYGON ((0 0, 1 0, 2 0, 0 0))")
     treat = records.add_feature(ch, c["id"], "treatment", "INT.CLEANING", S.box(S.BLACK_CRUST),
                                 treatment={"technique": "INT.CLEANING", "materials": "impacchi", "done": False})
     assert treat["treatment"]["materials"] == "impacchi" and treat["code_uni"] is None
+    assert treat["code_iscs"] is None
+    uni = records.add_feature(ch, c["id"], "decay", "UNI.DISTACCO", S.box((5, Z0, 5.2, Z0 + 0.2)))
+    assert uni["code"] == "UNI.DISTACCO" and uni["code_uni"] == "UNI.DISTACCO"
+    assert uni["code_iscs"] == ["ISCS.DELAMINATION", "ISCS.BLISTERING", "ISCS.SCALING"]
+    records.update_feature(ch, uni["id"], code="ISCS.EROSION")
+    assert uni["code_iscs"] == ["ISCS.EROSION"] and uni["code_uni"] == "UNI.EROSIONE"
+    records.remove_feature(ch, uni["id"])
     # editing: the geometry changes the extent
     records.update_feature(ch, crust["id"], geometry=S.box((0.5, Z0 + 0.5, 1.0, Z0 + 1.3)), notes="ridotta")
     assert crust["extent"] == pytest.approx(0.4) and crust["notes"] == "ridotta"
@@ -155,6 +167,27 @@ def test_totals_of_a_campaign(face):
     assert tot["face_area"] == pytest.approx(face_area)
     assert tot["share_of_face"] == pytest.approx(1.56 / face_area)
     assert tot["crack_max_width_mm"] == 3.0 and tot["loss_max_depth_mm"] == 30.0
+    assert tot["area_by_iscs"] == pytest.approx(tot["area_by_code"])
+
+
+def test_one_phenomenon_drawn_with_the_two_glossaries(face):
+    from shapely.geometry import box
+
+    doc, ch, entry = face
+    c = records.new_campaign(ch, entry["id"])
+    records.add_feature(ch, c["id"], "decay", "UNI.CROSTA", box(0.5, Z0 + 0.5, 1.0, Z0 + 1.0))
+    records.add_feature(ch, c["id"], "decay", "ISCS.CRUST", box(2.0, Z0 + 0.5, 2.5, Z0 + 1.5))
+    tot = records.totals(ch, c["id"])
+    assert tot["area_by_code"] == pytest.approx({"UNI.CROSTA": 0.25, "ISCS.CRUST": 0.5})
+    assert tot["area_by_iscs"] == pytest.approx({"ISCS.CRUST": 0.75})
+    # a patina is no deterioration; an area beyond the face counts within it only, the share never above 1
+    records.add_feature(ch, c["id"], "decay", "ISCS.PATINA", box(3.0, Z0, 4.0, Z0 + 1.0))
+    assert records.totals(ch, c["id"])["share_of_face"] == pytest.approx(0.75 / tot["face_area"])
+    records.add_feature(ch, c["id"], "decay", "ISCS.EROSION", box(-5.0, Z0 - 5.0, 20.0, Z0 + 20.0))
+    tot = records.totals(ch, c["id"])
+    u0, v0, u1, v1 = entry["bounds"]
+    assert tot["share_of_face"] == pytest.approx(min(1.0, (u1 - u0) * (v1 - v0) / tot["face_area"]))
+    assert tot["share_of_face"] <= 1.0
 
 
 def test_lift_on_the_relief(face):

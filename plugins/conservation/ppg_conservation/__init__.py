@@ -80,7 +80,7 @@ class ConservationPlugin(Plugin):
     def command(self, *args) -> int:
         import pyarchinit_photogrammetry as ppg
 
-        from . import records
+        from . import records, texts
         from .vocabulary import load
 
         parser = argparse.ArgumentParser(prog="ppg plugin conservation", description="decay mapping on elevations")
@@ -94,7 +94,7 @@ class ConservationPlugin(Plugin):
             print(f"no chunk {a.chunk!r}")
             return 2
         vocab = load(chunk)
-        lang = "en" if t("it", "en") == "en" else "it"
+        lang = texts.lang()
         names = {e["id"]: e.get("name", e["id"]) for e in chunk.meta.get("elevations") or []}
         found = records.campaigns(chunk)
         if not found:

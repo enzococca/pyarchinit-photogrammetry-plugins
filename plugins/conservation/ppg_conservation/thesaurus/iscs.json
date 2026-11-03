@@ -24,7 +24,8 @@
    "hatch": {
     "mpl": "//",
     "dxf": "ANSI31"
-   }
+   },
+   "deterioration": false
   },
   {
    "code": "ISCS.DAMAGE",
@@ -1496,7 +1497,8 @@
    "hatch": {
     "mpl": "|",
     "dxf": "BRICK"
-   }
+   },
+   "deterioration": false
   },
   {
    "code": "ISCS.PATINA.IRON_RICH_PATINA",

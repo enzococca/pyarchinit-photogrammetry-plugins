@@ -112,6 +112,27 @@ def test_names_in_the_two_languages():
     assert v.name("ISCS.CRACK.HAIR_CRACK", "it") == "microfessura (hair crack)"
     assert v.name("ISCS.PITTING", "it") == "pitting"
     assert v.name("UNI.DISTACCO", "it") == "distacco"
+    # a sub-type of a wider UNI term: its own name first, the UNI one in brackets
+    assert v.name("ISCS.CRUST.BLACK_CRUST", "it") == "crosta nera (UNI: crosta)"
+    assert v.name("ISCS.CRUST", "it") == "crosta (crust)"
+    assert v.name("ISCS.DELAMINATION.EXFOLIATION", "it") == "esfoliazione (exfoliation)"
+
+
+def test_terms_are_copies_and_deterioration():
+    v = vocabulary.load()
+    term = v.term("ISCS.CRACK")
+    term.names["it"] = "cambiato"
+    term.hatch["mpl"] = "?"
+    v.terms(family="crack_deformation")[0].colour = "#000000"
+    assert v.term("ISCS.CRACK").names["it"] == "fessura" and v.term("ISCS.CRACK").hatch["mpl"] != "?"
+    assert v.term("ISCS.CRACK").colour != "#000000"
+    assert not vocabulary.deteriorates(v, v.term("ISCS.PATINA"))
+    assert not vocabulary.deteriorates(v, v.term("ISCS.PATINA.OXALATE_PATINA"))
+    assert not vocabulary.deteriorates(v, v.term("UNI.PATINA"))
+    assert not vocabulary.deteriorates(v, v.term("ISCS.ALTERATION"))
+    assert not vocabulary.deteriorates(v, v.term("ISCS.DECAY"))  # a general term, not a pattern
+    assert vocabulary.deteriorates(v, v.term("ISCS.CRUST.BLACK_CRUST"))
+    assert vocabulary.deteriorates(v, v.term("UNI.CROSTA"))
 
 
 def test_search_both_languages():
@@ -169,6 +190,12 @@ def test_write_qml(tmp_path):
     for code in codes:
         assert f'value="{code}"' in text
     assert "16,16,16" in text and "LinePatternFill" in text
+    names = re.findall(r'<symbol type="(?:line|marker)" name="(@[0-9]+@[0-9]+)"', text)
+    assert names and len(names) == len(set(names)) and "@1@1" in names
+    # the chunk's own terms are named in the labels
+    term = vocabulary.add_local(ch, "malta", {"it": "malta cementizia", "en": "cement mortar"}, "decay", "area", {})
+    text = vocabulary.write_qml(tmp_path / "locali.qml", [term.code], vocabulary.legend(ch), chunk=ch).read_text()
+    assert "malta cementizia" in text
     import xml.etree.ElementTree as ET
 
     ET.fromstring(text.split("\n", 1)[1])  # well formed
