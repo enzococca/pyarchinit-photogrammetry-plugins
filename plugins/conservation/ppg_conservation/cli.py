@@ -1,5 +1,5 @@
-"""``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|ifc|legend PROJECT ...``: the plugin's
-steps from the command line, the same functions as the pane's. Common options: ``--chunk LABEL``, ``--elevation
+"""``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|ifc|compare|legend PROJECT ...``: the
+plugin's steps from the command line, the same functions as the pane's. Common options: ``--chunk LABEL``, ``--elevation
 ID|NAME``, ``--campaign ID|NAME`` (default: the only elevation, the latest campaign of the elevation; ``ifc`` takes
 ``--campaign`` more than once, by default every campaign of the elevation, or of the chunk). Geometry in ``(u, v)``
 metres of the elevation, from WKT (text or a file holding it) or a GeoPackage table. What is missing is printed as one
@@ -13,7 +13,7 @@ from . import records
 from .records import NotReady
 from .texts import num, plural, t
 
-COMMANDS = ("list", "campaign", "map", "detect", "plate", "export", "pyarchinit", "ifc", "legend")
+COMMANDS = ("list", "campaign", "map", "detect", "plate", "export", "pyarchinit", "ifc", "compare", "legend")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -73,6 +73,10 @@ def parser() -> argparse.ArgumentParser:
                    help="a campaign: its id or name, more than once (default: those of the elevation)")
     s.add_argument("--out", required=True, help="the .ifc file")
     s.add_argument("--thickness", type=float, default=0.5, help="of the stand-in host wall, metres (default 0.5)")
+    s = sub.add_parser("compare", parents=[common], help="campaign A (--campaign) against campaign B (--with)")
+    s.add_argument("--with", dest="other", required=True, help="campaign B: its id or name")
+    s.add_argument("--chunk-b", help="the chunk of campaign B, a later survey aligned with this one (default: this)")
+    s.add_argument("--folder", help="default: <chunk data>/conservation/<elevation>/compare_<A>_<B>/")
     s = sub.add_parser("legend", parents=[common], help="the legend of the project; --set changes a term")
     s.add_argument("--set", action="append", default=[], help="CODE=#rrggbb[:hatch]")
     s.add_argument("--qml", help="a folder: the QGIS styles of the four tables")
@@ -339,6 +343,38 @@ def _ifc(doc, chunk, a) -> int:
     return 0
 
 
+def _compare(doc, chunk, a) -> int:
+    from pyarchinit_photogrammetry.core.progress import print_progress
+
+    from . import compare
+
+    c = _campaign(chunk, a)
+    other = chunk
+    if a.chunk_b:
+        other = next((x for x in doc.chunks if x.label == a.chunk_b), None)
+        if other is None:
+            raise NotReady(t(f"Nessun chunk {a.chunk_b!r}.", f"No chunk {a.chunk_b!r}."))
+    found = [x for x in records.campaigns(other) if a.other in (x["id"], x["name"]) and x["id"] != c["id"]]
+    if other is chunk:  # the same face first
+        found.sort(key=lambda x: x["elevation"] != c["elevation"])
+    if not found:
+        raise NotReady(t(f"Nessuna campagna {a.other!r} in «{other.label}».",
+                         f"No campaign {a.other!r} in «{other.label}»."))
+    r = compare.compare(chunk, c["id"], found[0]["id"], folder=a.folder, progress=print_progress, other=other)
+    for line in r["lines"]:
+        print(line)
+    for row in r["terms"]:
+        print(f"  {row['code']:<34} A {num(row['area_a'], 3)}  B {num(row['area_b'], 3)}  "
+              + t(f"guadagnata {num(row['gained'], 3)}  persa {num(row['lost'], 3)} m²",
+                  f"gained {num(row['gained'], 3)}  lost {num(row['lost'], 3)} m²"))
+    for row in r["cracks"]:
+        print(f"  {row['id_b'] or ', '.join(row['id_a'])}  {row['state_text']}")
+    for key in ("xlsx", "pdf", "png", "change", "relief_change", "json"):
+        if r.get(key):
+            print(f"  {r[key]}")
+    return 0
+
+
 def _legend(doc, chunk, a) -> int:
     from . import outputs, texts
     from .vocabulary import legend, load, set_legend
@@ -369,7 +405,7 @@ def _legend(doc, chunk, a) -> int:
 
 
 HANDLERS = {"list": _list, "campaign": _campaign_cmd, "map": _map, "detect": _detect, "plate": _plate,
-            "export": _export, "pyarchinit": _pyarchinit, "ifc": _ifc, "legend": _legend}
+            "export": _export, "pyarchinit": _pyarchinit, "ifc": _ifc, "compare": _compare, "legend": _legend}
 
 
 def run(args) -> int:

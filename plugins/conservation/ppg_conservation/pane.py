@@ -8,7 +8,7 @@ import unicodedata
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QTreeWidget,
+                               QPlainTextEdit, QPushButton, QSlider, QTableWidget, QTableWidgetItem, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
@@ -77,6 +77,8 @@ OUTPUT_ACTIONS = (
     ("compare", ("Confronta...", "Compare..."), "Due campagne della stessa faccia", "Two campaigns of the same face"),
     ("folder", ("Apri la cartella", "Open the folder"), "La cartella dei file della campagna",
      "The folder of the campaign's files"))
+OVERLAYS = (("", ("Nessuno", "None")), ("colour", ("Cambiamento di colore", "Colour change")),
+            ("relief", ("Cambiamento del rilievo", "Change of the relief")))
 COLUMNS = (("Termine", "Term"), ("Tipo", "Kind"), ("Estensione", "Extent"), ("Intensità", "Intensity"),
            ("Stato", "Status"), ("Foto", "Photos"), ("Note", "Notes"))
 KIND_TITLES = {"decay": ("degrado", "decay"), "crack": ("lesione", "crack"), "treatment": ("intervento", "treatment"),
@@ -114,6 +116,8 @@ class ConservationPane(QWidget):
     requested = Signal(str)  # an action of the tuples above
     elevation_changed = Signal(str)
     campaign_changed = Signal(str)
+    overlay_changed = Signal(str)  # "" | "colour" | "relief": the raster of the last comparison shown over the view
+    opacity_changed = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -171,6 +175,7 @@ class ConservationPane(QWidget):
         lay.addWidget(self._flow(ASSESS_ACTIONS))
         lay.addWidget(QLabel(f"<b>{t('Esiti', 'Outputs')}</b>"))
         lay.addWidget(self._flow(OUTPUT_ACTIONS))
+        lay.addWidget(self._comparison_row())
         self.summary = QPlainTextEdit()
         self.summary.setReadOnly(True)
         self.summary.setMinimumHeight(110)
@@ -182,6 +187,48 @@ class ConservationPane(QWidget):
         self._elevation_ids: list[str] = []
         self._campaign_ids: list[str] = []
         self.set_families([])
+
+    def _comparison_row(self) -> QWidget:
+        """The overlay of the last comparison (none, colour change, change of the relief) and its opacity."""
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel(t("Confronto sul prospetto", "Comparison on the elevation")))
+        self.overlay = QComboBox()
+        self.overlay.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.overlay.setMinimumContentsLength(10)
+        for key, text in OVERLAYS:
+            self.overlay.addItem(t(*text), key)
+        self.overlay.currentIndexChanged.connect(lambda _i: self.overlay_changed.emit(self.overlay_kind()))
+        row.addWidget(self.overlay, 1)
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(0, 100)
+        self.opacity_slider.setValue(60)
+        self.opacity_slider.setToolTip(t("Opacità del confronto sul prospetto",
+                                         "Opacity of the comparison on the elevation"))
+        self.opacity_slider.valueChanged.connect(lambda v: self.opacity_changed.emit(v / 100.0))
+        row.addWidget(self.opacity_slider, 1)
+        self.set_comparison([])
+        return box
+
+    def set_comparison(self, available: list[str], shown: str = "") -> None:
+        """The overlays the last comparison has (``colour``, ``relief``) and the one shown."""
+        self.overlay.blockSignals(True)
+        model = self.overlay.model()
+        for i in range(self.overlay.count()):
+            key = self.overlay.itemData(i)
+            model.item(i).setEnabled(not key or key in available)
+        keys = [self.overlay.itemData(i) for i in range(self.overlay.count())]
+        self.overlay.setCurrentIndex(keys.index(shown) if shown in keys else 0)
+        self.overlay.blockSignals(False)
+        self.overlay.setEnabled(bool(available))
+        self.opacity_slider.setEnabled(bool(available))
+
+    def overlay_kind(self) -> str:
+        return self.overlay.currentData() or ""
+
+    def opacity_value(self) -> float:
+        return self.opacity_slider.value() / 100.0
 
     @staticmethod
     def _combo() -> QComboBox:

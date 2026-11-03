@@ -130,3 +130,129 @@ def test_markers_on_both_faces_decide(tmp_path):
     assert check["shift_m"] == pytest.approx(0.05, abs=1e-3)
     assert "Allinea chunk" in check["message"]
     assert built["id"] != entry["id"] or other is not ch
+
+
+def _surveys(tmp_path):
+    """A face with campaign A, a later survey 2 cm in front (aligned) with campaign B, and a survey 5 cm along the
+    wall (not aligned) with campaign C: the project saved."""
+    doc, ch, entry = S.face(tmp_path)
+    later = S.second_chunk(doc, label="Rilievo 2027", offset=0.02)
+    moved = S.second_chunk(doc, label="Rilievo spostato", shift_u=0.05)
+    doc.chunk = ch
+    a = records.new_campaign(ch, entry["id"], date="2026-05-14", name="Prima")
+    records.add_feature(ch, a["id"], "decay", "ISCS.CRUST.BLACK_CRUST", S.box(S.BLACK_CRUST))
+    built = {}
+    for other, shift, name in ((later, 0.0, "Seconda"), (moved, 0.05, "Spostata")):
+        e = compare.ensure_elevation(other, entry)
+        S.copy_orthophoto(ch, entry, other, e, shift_u=shift)
+        c = records.new_campaign(other, e["id"], date="2027-05-14", name=name)
+        u0, v0, u1, v1 = S.BLACK_CRUST
+        records.add_feature(other, c["id"], "decay", "ISCS.CRUST.BLACK_CRUST", S.box((u0, v0, u1 + 0.25, v1)))
+        built[name] = (other, e, c)
+    doc.save()
+    return doc, ch, entry, a, built
+
+
+def test_the_comparison_in_the_pane(tmp_path, monkeypatch):
+    pytest.importorskip("PySide6")
+    from test_plugin import _window
+
+    from ppg_conservation import ConservationPlugin
+    from pyarchinit_photogrammetry.plugins import Context
+
+    import locale
+
+    numbers = locale.setlocale(locale.LC_NUMERIC)  # Qt sets the system's: the tests after this one want theirs
+    w, doc, ch, entry, errors, infos = _window(tmp_path, monkeypatch)
+    later = S.second_chunk(doc, label="Rilievo 2027", offset=0.02)
+    moved = S.second_chunk(doc, label="Rilievo spostato", shift_u=0.05)
+    doc.chunk = ch
+    a = records.new_campaign(ch, entry["id"], date="2026-05-14", name="Prima")
+    records.add_feature(ch, a["id"], "decay", "ISCS.CRUST.BLACK_CRUST", S.box(S.BLACK_CRUST))
+    plugin = ConservationPlugin()
+    try:
+        plugin.activate(Context("conservation", tmp_path / "plugin", window=w))
+        said, asked, answers = [], [], {}
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+
+        def answer(title, fields, intro="", photos=None, **_k):
+            asked.append(({f.name: f for f in fields}, intro))
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            values.update(answers)
+            return values
+
+        monkeypatch.setattr(plugin, "_ask", answer)
+        plugin.refresh_pane()
+        plugin.pane.select_campaign(a["id"])
+        assert not plugin.pane.overlay.isEnabled()
+        # no B yet: the later survey's elevation is built on the same plane
+        answers["other"] = f"b:{later.key}:"
+        plugin._requested("compare")
+        w.runner.wait()
+        fields, intro = asked[-1]
+        assert set(dict(fields["other"].choices)) == {f"b:{later.key}:", f"b:{moved.key}:"}
+        assert "Allinea chunk" in intro
+        assert "costruito" in said[-1]
+        built = compare.find_elevation(later, entry)
+        assert built is not None
+        S.copy_orthophoto(ch, entry, later, built)
+        b = records.new_campaign(later, built["id"], date="2027-05-14", name="Seconda")
+        u0, v0, u1, v1 = S.BLACK_CRUST
+        records.add_feature(later, b["id"], "decay", "ISCS.CRUST.BLACK_CRUST", S.box((u0, v0, u1 + 0.25, v1)))
+        answers["other"] = f"c:{later.key}:{b['id']}"
+        plugin._requested("compare")
+        w.runner.wait()
+        assert said[-1].startswith("Confronto:") and "confronto.xlsx" in said[-1], said[-1]
+        assert plugin.overlay is not None and plugin.overlay.shown() and plugin.overlay.key.endswith(":colour")
+        assert plugin._shown_eid() == entry["id"]
+        assert plugin.pane.overlay_kind() == "colour" and plugin.pane.overlay.isEnabled()
+        plugin.pane.opacity_slider.setValue(30)
+        assert plugin.overlay.opacity() == pytest.approx(0.3)
+        keys = [plugin.pane.overlay.itemData(i) for i in range(plugin.pane.overlay.count())]
+        plugin.pane.overlay.setCurrentIndex(keys.index("relief"))
+        assert plugin.overlay.shown() and plugin.overlay.key.endswith(":relief")
+        assert plugin.overlay.limit >= 2.0  # cm: the later survey 2 cm in front
+        w.show_elevation(entry)  # the raster again (the scene cleared): the overlay shown again on its face
+        assert plugin.overlay.shown() and plugin.overlay.key.endswith(":relief")
+        plugin.pane.overlay.setCurrentIndex(0)
+        assert not plugin.overlay.shown()
+        # a survey not aligned: refused with the shift, nothing written
+        e = compare.ensure_elevation(moved, entry)
+        S.copy_orthophoto(ch, entry, moved, e, shift_u=0.05)
+        m = records.new_campaign(moved, e["id"], date="2027-05-14", name="Spostata")
+        answers["other"] = f"c:{moved.key}:{m['id']}"
+        plugin._requested("compare")
+        w.runner.wait()
+        assert "Allinea chunk" in said[-1] and "5,0 px" in said[-1], said[-1]
+        assert not (ch.data_dir / "conservation" / entry["id"] / f"compare_{a['id']}_{m['id']}").exists()
+        assert not errors, errors
+        plugin.deactivate()
+        plugin.context.release()
+    finally:
+        w.setWindowModified(False)
+        w.close()
+        locale.setlocale(locale.LC_NUMERIC, numbers)
+
+
+def test_the_comparison_from_the_command_line(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from pyarchinit_photogrammetry.cli import app
+    from test_outputs import _plugin_folder
+
+    doc, ch, entry, a, built = _surveys(tmp_path)
+    monkeypatch.setenv("PPG_PLUGINS_DIR", str(_plugin_folder(tmp_path)))
+    cli = CliRunner()
+
+    def run(*args):
+        return cli.invoke(app, ["plugin", "conservation", "compare", str(doc.path), *args])
+
+    r = run("--campaign", "Prima", "--with", "Seconda", "--chunk-b", "Rilievo 2027")
+    assert r.exit_code == 0, r.output
+    assert "guadagnata 0,200" in r.output and "confronto.xlsx" in r.output and "relief_change.tif" in r.output
+    r = run("--campaign", "Prima", "--with", "Spostata", "--chunk-b", "Rilievo spostato")
+    assert r.exit_code == 1 and "Allinea chunk" in r.output, r.output
+    r = run("--campaign", "Prima", "--with", "Nessuna")
+    assert r.exit_code == 1 and "Nessuna campagna" in r.output, r.output
+    r = run("--campaign", "Prima", "--with", "Seconda", "--chunk-b", "Nessuno")
+    assert r.exit_code == 1 and "Nessun chunk" in r.output, r.output

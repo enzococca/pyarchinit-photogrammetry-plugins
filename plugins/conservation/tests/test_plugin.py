@@ -262,9 +262,9 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         assert crust["id"] in _fids(view, "Degrado")
         w.history.redo()
         assert [x["id"] for x in records.campaigns(ch)] == [c2["id"]]
-        # the comparison is for later
+        # nothing to compare with: said
         plugin._requested("compare")
-        assert "in arrivo" in said[-1]
+        assert "Nessun'altra campagna" in said[-1]
         assert len(said) == 3, said  # the term missing, the crack drawn as an area, the comparison: nothing else
         assert not errors, errors
         plugin.deactivate()

@@ -89,6 +89,8 @@ class ConservationPlugin(Plugin):
         self.pane = None
         self.drawn: tuple[str, str] | None = None  # (eid, cid) whose features are on the view
         self._terms_key: str | None = None  # what the term chooser was filled with
+        self.comparison: dict | None = None  # the last comparison: {"chunk", "eid", "colour", "relief", "folder"}
+        self.overlay = None  # its raster over the view (.overlay.Overlay)
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
@@ -97,7 +99,7 @@ class ConservationPlugin(Plugin):
                            tip=t("Il pannello della conservazione", "The conservation pane"))
         context.add_command("conservation", self.command,
                             help="decay mapping on elevations: list, campaign, map, detect, plate, export, pyarchinit, "
-                                 "ifc, legend")
+                                 "ifc, compare, legend")
         context.add_exporter(t("Tavola della campagna (PDF)", "Plate of the campaign (PDF)"), ".pdf",
                              self._export_plate)
         context.add_exporter(t("Conservazione (IFC 4.3)", "Conservation (IFC 4.3)"), ".ifc", self._export_ifc)
@@ -111,6 +113,8 @@ class ConservationPlugin(Plugin):
             self.pane.elevation_changed.connect(lambda _e: self.refresh_pane())
             self.pane.campaign_changed.connect(lambda _c: self.refresh_pane())
             self.pane.search.returnPressed.connect(self._first_found)
+            self.pane.overlay_changed.connect(lambda kind: self._guarded(self._show_overlay, kind))
+            self.pane.opacity_changed.connect(self._opacity_changed)
             context.on_refresh(self.refresh_pane)
             context.on_raster_loaded(self._raster_loaded)
             for layer in LAYERS.values():
@@ -123,6 +127,7 @@ class ConservationPlugin(Plugin):
         window = self.context.window if self.context else None
         if window is not None:
             window.qgis_providers = [p for p in getattr(window, "qgis_providers", []) if p != self._qgis_entries]
+        self._drop_overlay()
         self._drop_layers()
         self.pane = None
 
@@ -263,6 +268,12 @@ class ConservationPlugin(Plugin):
     def _raster_loaded(self, *_args) -> None:
         self.drawn = None
         self._redraw()
+        kind = self.pane.overlay_kind() if self.pane is not None else ""
+        if kind and self._comparison_shown():  # the overlay went with the old raster: shown again on its face
+            try:
+                self._show_overlay(kind)
+            except (RuntimeError, OSError) as exc:
+                self.context.log.info("conservation: overlay not shown again: %s", exc)
 
     def _drop_layers(self) -> None:
         from .layers import drop
@@ -975,15 +986,148 @@ class ConservationPlugin(Plugin):
         records.set_assessment(chunk, c["date"], v["rc"], reason=v["reason"], surveyor=v["surveyor"])
         self._changed(chunk, before, t("raccomandazione", "recommendation"))
 
-    # ------------------------------------------------------------------ outputs
-    def _coming(self) -> None:
+    # ------------------------------------------------------------------ comparison
+    def _document(self):
+        window = self.context.window
+        return getattr(window, "doc", None) or self.context.app.document
+
+    def _chunk_by_key(self, key: str):
         from .records import NotReady
 
-        raise NotReady(t("Questa uscita è in arrivo in questa versione del plugin.",
-                         "This output is coming in this version of the plugin."))
+        for ch in getattr(self._document(), "chunks", None) or []:
+            if str(ch.key) == key:
+                return ch
+        raise NotReady(t("Il chunk scelto non è più nel progetto.", "The chunk chosen is no longer in the project."))
 
-    _do_compare = _coming
+    def _compare_choices(self, chunk, entry: dict, c: dict) -> list[tuple[str, str]]:
+        """What campaign A can be compared with: ``c:<chunk key>:<campaign id>`` for the other campaigns of the face
+        (this elevation, or another chunk's elevation on the same frame), ``b:<chunk key>:`` to build that elevation
+        in a chunk with a model that has none."""
+        from . import compare, records
 
+        out = [(f"c:{chunk.key}:{x['id']}", t(f"{x['date']}  {x['name']} (stesso prospetto)",
+                                             f"{x['date']}  {x['name']} (same elevation)"))
+               for x in records.campaigns(chunk, entry["id"]) if x["id"] != c["id"]]
+        for other in getattr(self._document(), "chunks", None) or []:
+            if other is chunk:
+                continue
+            found = compare.find_elevation(other, entry)
+            if found is not None:
+                out += [(f"c:{other.key}:{x['id']}", f"«{other.label}»: {x['date']}  {x['name']}")
+                        for x in records.campaigns(other, found["id"])]
+            elif other.product_path("model") is not None:
+                out.append((f"b:{other.key}:", t(f"«{other.label}»: costruisci il prospetto sullo stesso piano",
+                                                 f"«{other.label}»: build the elevation on the same plane")))
+        return out
+
+    def _do_compare(self) -> None:
+        """*Confronta*: campaign A (the one chosen) against another campaign of the same face - of this elevation, or
+        of another chunk's elevation on the same frame (built here when the chunk has none) - after the check that
+        the two chunks are aligned; the tables, the PDF page and the overlays."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import compare, records
+
+        chunk, entry, c = self._need_campaign()
+        options = self._compare_choices(chunk, entry, c)
+        if not options:
+            raise records.NotReady(t(
+                "Nessun'altra campagna di questa faccia e nessun altro chunk con un modello: fai una seconda campagna, "
+                "o aggiungi il rilievo successivo come chunk allineato (Allinea chunk).",
+                "No other campaign of this face and no other chunk with a model: make a second campaign, or add the "
+                "later survey as an aligned chunk (Align chunks)."))
+        v = self._ask(t("Confronta due campagne", "Compare two campaigns"), [
+            Field("other", t("Campagna B", "Campaign B"), options[0][0], choices=options),
+            Field("folder", t("Cartella (vuota: quella del confronto)", "Folder (empty: the comparison's own)"), "",
+                  kind="dir")],
+            intro=t(f"A: {c['date']}  {c['name']}. Un rilievo in un altro chunk deve essere già allineato a questo "
+                    f"(Flusso di lavoro > Allinea chunk): il plugin lo verifica con i marker sulla faccia (entro 1 cm) "
+                    f"o con lo spostamento delle ortofoto (sotto 2 px) e rifiuta altrimenti.",
+                    f"A: {c['date']}  {c['name']}. A survey in another chunk must already be aligned with this one "
+                    f"(Workflow > Align chunks): the plugin checks it with the markers on the face (within 1 cm) or "
+                    f"with the shift of the orthophotos (under 2 px) and refuses otherwise."))
+        if v is None:
+            return
+        kind, key, cid_b = str(v["other"]).split(":", 2)
+        other = self._chunk_by_key(key)
+        if kind == "b":
+            def built(found):
+                self.context.mark_modified()
+                self.context.refresh_tree()
+                self._message("information", t(
+                    f"Prospetto «{found.get('name')}» costruito in «{other.label}» sullo stesso piano: fai lì la "
+                    f"campagna B (scegli quel chunk), poi Confronta.",
+                    f"Elevation «{found.get('name')}» built in «{other.label}» on the same plane: make campaign B "
+                    f"there (choose that chunk), then Compare."))
+
+            self.context.run(t("Conservazione: prospetto sullo stesso piano", "Conservation: elevation on the same "
+                               "plane"), lambda progress: compare.ensure_elevation(other, entry, progress), built)
+            return
+        folder = Path(v["folder"]) if v.get("folder") else None
+
+        def work(progress):
+            try:
+                return compare.compare(chunk, c["id"], cid_b, folder=folder, progress=progress, other=other)
+            except records.NotReady as exc:  # the alignment refused, the grids differ: said, nothing written
+                return {"refused": str(exc)}
+
+        self.context.run(t("Conservazione: confronto", "Conservation: comparison"), work,
+                         lambda r: self._guarded(self._compared, chunk, entry, r))
+
+    def _compared(self, chunk, entry: dict, r: dict) -> None:
+        if r.get("refused"):
+            self._message("warning", r["refused"])
+            return
+        self.comparison = {"chunk": str(chunk.key), "eid": entry["id"], "colour": r["change"],
+                           "relief": r.get("relief_change"), "folder": r["folder"]}
+        available = ["colour"] + (["relief"] if r.get("relief_change") else [])
+        if self.pane is not None:
+            self.pane.set_comparison(available, "colour")
+        self._show(entry)
+        self._show_overlay("colour")
+        files = [r[k] for k in ("xlsx", "pdf", "png", "change", "relief_change", "json") if r.get(k)]
+        self._done_files(t("Confronto:", "Comparison:"), files, "\n".join(r.get("lines") or []))
+
+    def _comparison_shown(self) -> bool:
+        chunk = self._chunk()
+        return bool(self.comparison) and chunk is not None and str(chunk.key) == self.comparison["chunk"] and \
+            self._shown_eid() == self.comparison["eid"]
+
+    def _drop_overlay(self) -> None:
+        if self.overlay is not None:
+            self.overlay.remove()
+
+    def _show_overlay(self, kind: str) -> None:
+        """The raster ``kind`` (``colour``, ``relief``) of the last comparison over its elevation; none for ``""``."""
+        from .overlay import Overlay
+        from .records import NotReady
+
+        window = self.context.window
+        view = getattr(window, "ortho_view", None) if window is not None else None
+        if view is None:
+            return
+        if self.overlay is None or self.overlay.view is not view:
+            self.overlay = Overlay(view)
+        if not kind:
+            self.overlay.remove()
+            return
+        if not self.comparison or not self.comparison.get(kind):
+            raise NotReady(t("Nessun confronto con questo strato: Confronta...",
+                             "No comparison with this layer: Compare..."))
+        if not self._comparison_shown():
+            chunk = self._chunk()
+            if chunk is None or str(chunk.key) != self.comparison["chunk"]:
+                raise NotReady(t("Il confronto è di un altro chunk: torna a quel chunk.",
+                                 "The comparison is of another chunk: go back to that chunk."))
+            self._show(self._entry(chunk, self.comparison["eid"]))  # its raster_loaded shows the overlay
+        opacity = self.pane.opacity_value() if self.pane is not None else 0.6
+        self.overlay.show(self.comparison[kind], f"{self.comparison['eid']}:{kind}", kind, opacity=opacity)
+
+    def _opacity_changed(self, value: float) -> None:
+        if self.overlay is not None:
+            self.overlay.set_opacity(value)
+
+    # ------------------------------------------------------------------ outputs
     def _ifc_done(self, out: dict) -> None:
         from .texts import plural
 
@@ -1256,7 +1400,7 @@ class ConservationPlugin(Plugin):
 
     # ------------------------------------------------------------------ command line
     def command(self, *args) -> int:
-        """``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|ifc|legend PROJECT ...``
+        """``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|ifc|compare|legend PROJECT ...``
         (:mod:`.cli`)."""
         from . import cli
 
