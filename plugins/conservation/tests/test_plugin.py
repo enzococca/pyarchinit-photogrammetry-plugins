@@ -140,7 +140,7 @@ def test_the_pane_in_the_window(tmp_path, monkeypatch):
         # the dialogs answered by the test: the defaults, changed by ``answers``
         asked, answers = [], {}
 
-        def answer(title, fields, intro="", photos=None):
+        def answer(title, fields, intro="", photos=None, **_k):
             asked.append((title, intro, [f.name for f in fields]))
             values = {f.name: f.default for f in fields if f.kind != "heading"}
             values.update(answers)
@@ -292,7 +292,7 @@ def test_proposals_edits_and_treated_areas(tmp_path, monkeypatch):
         pane = plugin.pane
         asked, answers = [], {}
 
-        def answer(title, fields, intro="", photos=None):
+        def answer(title, fields, intro="", photos=None, **_k):
             asked.append((title, intro, [f.name for f in fields]))
             values = {f.name: f.default for f in fields if f.kind != "heading"}
             values.update(answers)
@@ -362,6 +362,140 @@ def test_proposals_edits_and_treated_areas(tmp_path, monkeypatch):
         w.history.undo()
         assert records.feature(ch, treat["id"])["treatment"]["done"] is False
         assert len(said) == 4, said  # nothing chosen, no proposal, none left, no photo
+        assert not errors, errors
+        plugin.deactivate()
+        plugin.context.release()
+    finally:
+        w.setWindowModified(False)
+        w.close()
+
+
+def test_forms_photos_and_safe_removals(tmp_path, monkeypatch):
+    """A photo opened from the feature form centred on the feature; a number that cannot be read asks the form again
+    and keeps the drawing; accepted features discarded only when confirmed; a campaign removed keeps its folder; a
+    script's changes are not pushed twice; the campaign edited; favourites; the term tree keeps what the user opened."""
+    pytest.importorskip("PySide6")
+    from types import SimpleNamespace
+
+    from ppg_conservation import ConservationPlugin, pane as pane_module
+    from pyarchinit_photogrammetry.engine.elevation import world_of
+    from pyarchinit_photogrammetry.plugins import Context
+
+    w, doc, ch, entry, errors, infos = _window(tmp_path, monkeypatch)
+    plugin = ConservationPlugin()
+    try:
+        plugin.activate(Context("conservation", tmp_path / "plugin", window=w))
+        said = []
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+        pane = plugin.pane
+        # the forms answered in turn by the list ``replies`` (the defaults when it is empty)
+        asked, replies = [], []
+
+        def answer(title, fields, intro="", photos=None, **_k):
+            asked.append((title, intro, {f.name: f.default for f in fields}))
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            values.update(replies.pop(0) if replies else {})
+            return values
+
+        monkeypatch.setattr(plugin, "_ask", answer)
+        plugin._requested("new_campaign")
+        c = records.campaigns(ch, entry["id"])[0]
+        # the campaign edited
+        replies.append({"name": "Rilievo di maggio", "weather": "sereno", "method": "da ponteggio"})
+        plugin._requested("edit_campaign")
+        c = records.campaign(ch, c["id"])
+        assert c["name"] == "Rilievo di maggio" and c["weather"] == "sereno"
+        assert "da ponteggio" in plugin.context.settings["methods"]
+        assert "Rilievo di maggio" in pane.campaigns.currentText()
+        # a crack whose opening is no number: the form again with what was typed, then the drawing kept
+        assert pane.choose_term("ISCS.CRACK")
+        monkeypatch.setattr(plugin.context, "request_line",
+                            lambda done, cancelled=None, hint="": done(np.asarray(S.groove().coords, float)))
+        replies += [{"width_mm": "tre", "notes": "da rivedere"}, {"width_mm": "2,5"}]
+        plugin._requested("line")
+        assert [a[0] for a in asked[-2:]] == ["Elemento", "Elemento"]
+        assert "Non è un numero" in asked[-1][1] and asked[-1][2]["width_mm"] == "tre"
+        assert asked[-1][2]["notes"] == "da rivedere"
+        crack = [f for f in records.features(ch, c["id"]) if f["kind"] == "crack"][0]
+        assert crack["width_mm"] == 2.5 and crack["notes"] == "da rivedere"
+        # the photos of the feature form (the plugin's own _ask): the one chosen opened at the feature's point
+        monkeypatch.setattr(plugin, "_ask", ConservationPlugin._ask.__get__(plugin))
+        camera = SimpleNamespace(key=987, label="IMG_0001.JPG", enabled=False, aligned=False)
+        ch.cameras.append(camera)
+        photo = {"key": 987, "label": "IMG_0001.JPG", "distance": 3.0, "angle": 10.0, "px": 100.0, "py": 80.0}
+        monkeypatch.setattr(plugin, "_photos", lambda *a, **k: [photo])
+        opened = []
+        monkeypatch.setattr(w, "open_photo", lambda cam, focus=None: opened.append((cam, focus)))
+
+        def form(parent, title, fields, intro, photos, open_photo):
+            open_photo(photos[0])  # *apri*, then the form confirmed as it is
+            return {f.name: f.default for f in fields if f.kind != "heading"}
+
+        monkeypatch.setattr(pane_module, "feature_dialog", form)
+        pane.select(crack["id"])
+        plugin._requested("edit")
+        assert records.feature(ch, crack["id"])["photos"][0]["key"] == 987
+        cam, focus = opened[-1]
+        assert cam is camera and focus is not None
+        point = S.groove().representative_point()
+        expected = world_of(entry, point.x, point.y, None, ch)
+        if expected is None:
+            expected = world_of(entry, point.x, point.y, 0.0)
+        assert np.allclose(ch.to_world(np.asarray(focus, float)[None])[0], expected, atol=1e-6)
+        plugin._requested("photos")
+        assert len(opened) == 2 and opened[-1][1] is not None
+        ch.cameras.remove(camera)
+        monkeypatch.setattr(plugin, "_ask", answer)
+        # accepted features discarded only when confirmed; proposals without asking
+        prop = records.add_feature(ch, c["id"], "decay", "ISCS.ALGA", S.box(S.GREEN_PATCH), status="proposed")
+        plugin.refresh_pane()
+        confirmations = []
+        monkeypatch.setattr(plugin, "_confirm", lambda text: confirmations.append(text) or False)
+        pane.select(prop["id"])
+        plugin._requested("discard")
+        assert confirmations == [] and records.features(ch, c["id"], status="proposed") == []
+        pane.select(crack["id"])
+        plugin._requested("discard")
+        assert "non sono proposte" in confirmations[-1] and records.feature(ch, crack["id"])
+        monkeypatch.setattr(plugin, "_confirm", lambda text: confirmations.append(text) or True)
+        plugin._requested("discard")
+        assert not records.features(ch, c["id"])
+        # a script's changes: the script's own entry of the undo, none of the plugin's
+        n = len(w.history.entries)
+        w._script_running = True
+        try:
+            replies.append({"notes": "dallo script"})
+            plugin._requested("edit_campaign")
+        finally:
+            w._script_running = False
+        assert len(w.history.entries) == n and records.campaign(ch, c["id"])["notes"] == "dallo script"
+        # favourites: on and off, at the top of the chooser
+        assert pane.choose_term("ISCS.EFFLORESCENCE")
+        plugin._requested("favourite")
+        assert plugin.context.settings["favourites"] == ["ISCS.EFFLORESCENCE"]
+        top = pane.terms.topLevelItem(0)
+        assert top.childCount() == 1 and top.child(0).data(0, 0x0100) == "ISCS.EFFLORESCENCE"
+
+        def uni_group():
+            return next(pane.terms.topLevelItem(i) for i in range(pane.terms.topLevelItemCount())
+                        if pane.terms.topLevelItem(i).text(0) == "UNI 11182")
+
+        # the tree as the user opened it: neither a refresh nor a new favourite closes it
+        uni_group().setExpanded(True)
+        plugin.refresh_pane()
+        assert uni_group().isExpanded()
+        plugin._requested("favourite")
+        assert plugin.context.settings["favourites"] == [] and uni_group().isExpanded()
+        # a campaign removed keeps its folder (the files are the exports'; the undo brings the records back)
+        folder = records.campaign_folder(ch, entry["id"], c["id"])
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "tavola.pdf").write_bytes(b"%PDF")
+        plugin._requested("remove_campaign")
+        assert "restano nella cartella" in confirmations[-1] and (folder / "tavola.pdf").exists()
+        assert records.campaigns(ch) == []
+        w.history.undo()
+        assert records.campaign(ch, c["id"])["name"] == "Rilievo di maggio"
+        assert not said, said
         assert not errors, errors
         plugin.deactivate()
         plugin.context.release()

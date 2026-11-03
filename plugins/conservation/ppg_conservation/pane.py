@@ -249,8 +249,11 @@ class ConservationPane(QWidget):
     # ------------------------------------------------------------------ the term chooser
     def set_terms(self, groups: list[tuple]) -> None:
         """``groups``: ``(title, rows, expanded)``, each row ``{"code", "label", "tip", "search", "children"}``;
-        the code chosen is kept."""
+        the code chosen and the groups opened or closed by the user are kept."""
         keep = self.term_code()
+        opened = {self.terms.topLevelItem(i).text(0): self.terms.topLevelItem(i).isExpanded()
+                  for i in range(self.terms.topLevelItemCount())
+                  if self.terms.topLevelItem(i).childCount()}  # the groups as the user left them
         self.terms.blockSignals(True)
         self.terms.clear()
 
@@ -272,7 +275,7 @@ class ConservationPane(QWidget):
             top.setFont(0, font)
             for row in rows:
                 add(top, row)
-            top.setExpanded(bool(expanded))
+            top.setExpanded(opened.get(name, bool(expanded)))
         self.terms.blockSignals(False)
         if keep:
             self.choose_term(keep)
@@ -399,7 +402,8 @@ class ConservationPane(QWidget):
 
 def feature_dialog(parent, title_text: str, fields: list, intro: str, photos: list[dict], open_photo):
     """The form of a feature (:class:`ParamDialog`) with the photos that see it below, each with its *apri*
-    button (``open_photo(photo)``); returns the values or None."""
+    button: the photo chosen is opened (``open_photo(photo)``) when the form closes, so the modal form does not hide
+    it; returns the values or None."""
     from PySide6.QtWidgets import QDialog
 
     from pyarchinit_photogrammetry.gui.dialogs import ParamDialog
@@ -407,6 +411,15 @@ def feature_dialog(parent, title_text: str, fields: list, intro: str, photos: li
     from .texts import num
 
     dialog = ParamDialog(title_text, fields, parent, intro)
+    chosen: list[dict] = []
+    buttons: list = []
+
+    def choose(photo, button) -> None:
+        chosen[:] = [photo]
+        for b in buttons:
+            b.setText(t("apri", "open"))
+        button.setText(t("si apre alla chiusura", "opens on closing"))
+
     if photos:
         box = QWidget()
         rows = QVBoxLayout(box)
@@ -419,8 +432,13 @@ def feature_dialog(parent, title_text: str, fields: list, intro: str, photos: li
             h.setContentsMargins(0, 0, 0, 0)
             h.addWidget(QLabel(f"{p['label']}  {num(p['distance'], 1)} m, {num(p['angle'], 0)}°"), 1)
             b = QPushButton(t("apri", "open"))
-            b.clicked.connect(lambda _=False, photo=p: open_photo(photo))
+            b.clicked.connect(lambda _=False, photo=p, button=b: choose(photo, button))
+            buttons.append(b)
             h.addWidget(b)
             rows.addWidget(line)
         dialog.layout().insertWidget(dialog.layout().count() - 1, box)
-    return dialog.values() if dialog.exec() == QDialog.DialogCode.Accepted else None
+    accepted = dialog.exec() == QDialog.DialogCode.Accepted
+    values = dialog.values() if accepted else None
+    if chosen:
+        open_photo(chosen[0])
+    return values
