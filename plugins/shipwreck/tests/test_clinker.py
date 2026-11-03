@@ -158,3 +158,94 @@ def test_the_land_lines_written_as_dxf_and_geopackage(tmp_path):
     finally:
         con.close()
     assert srs == 32633 and has_z == 1
+
+
+# ------------------------------------------------------------------------- fix round 1
+def test_an_eroded_station_keeps_its_lands_numbered_from_the_keel(tmp_path):
+    """A station with fewer lands (the sheer eroded on port): its lands are the garboard's and the next, by
+    arc from the keel, not by the fraction of a shorter profile; the upper lines miss it, nothing jumps."""
+    _doc, ch, ends = clinker_project(tmp_path, hole=(4.95, 5.07, 0.42, 3.0))  # port, above y = 0.42 at S4
+    _ready(ch, ends)
+    result = clinker.detect_lands(ch)
+    assert result["uncertain"] == {"port": ["S4"], "starboard": []} and not result["skipped"]
+    section = next(s for s in lines.sections_of(ch, "station") if s["name"] == "S4")
+    truth = clinker_truth(section["value"])
+    port = {d["k"]: d for d in clinker.match_lines(ch) if d["side"] == "port"}
+    for k in (1, 2):
+        point = next(p for p in port[k]["points"] if p[0] == pytest.approx(section["value"]))
+        assert _arc_of(clinker.profile(section, "port"), point[1], point[2]) == pytest.approx(truth[k - 1], abs=0.005)
+        assert not port[k]["unmatched"]
+    for k in (3, 4):
+        assert port[k]["unmatched"] == ["S4"] and len(port[k]["points"]) == len(STATIONS) - 1
+    assert not ch.meta["shipwreck"]["clinker"]["unmatched"]
+    assert "S4" in clinker.summary(ch)
+
+
+def _one_station(tmp_path, polylines):
+    """A project whose one station's section is replaced by ``polylines`` (the sections file kept valid)."""
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, [6.01])
+    data = lines.load(ch)
+    data["sections"][0]["lines"] = [np.round(p, 5).tolist() for p in polylines]
+    lines._save(ch, data)
+    return ch
+
+
+def _check_four_lands(result, side):
+    found = sorted((d for d in result["lands"] if d["side"] == side), key=lambda d: d["s"])
+    assert len(found) == 4, [d["s"] for d in found]
+    assert np.abs(np.array([d["s"] for d in found]) - clinker_truth(6.01)).max() < 0.005
+    assert np.abs(np.array([d["step_mm"] for d in found]) - 15.0).max() < 2.0
+
+
+def test_a_closed_section_ends_at_the_sheer(tmp_path):
+    """Outer face, round the sheer, the inner face back down: the profile turns back and stops there."""
+    from hulls import clinker_section
+
+    outer = clinker_section(6.01)
+    centre = np.array([0.0, outer[:, 1].max() + 0.5])
+    inner = outer + 0.02 * (centre - outer) / np.linalg.norm(centre - outer, axis=1)[:, None]  # 2 cm inside
+    loop = np.vstack([outer, inner[::-1], outer[:1]])
+    ch = _one_station(tmp_path, [loop])
+    result = clinker.detect_lands(ch)
+    for side in ("port", "starboard"):
+        _check_four_lands(result, side)
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert record["end"] == "turn"
+
+
+def test_a_section_running_into_the_seabed_ends_at_the_sheer(tmp_path):
+    from hulls import clinker_section
+
+    hull = clinker_section(6.01)
+    b, top = hull[-1, 0], hull[-1, 1]
+    port = np.array([[b + 0.05, top - 0.2], [b + 1.5, top - 0.2]])
+    starboard = port * [-1.0, 1.0]
+    ch = _one_station(tmp_path, [np.vstack([starboard[::-1], hull, port])])
+    result = clinker.detect_lands(ch)
+    for side in ("port", "starboard"):
+        _check_four_lands(result, side)
+        assert next(st for st in result["stations"] if st["side"] == side)["end"] == "turn"
+
+
+def test_a_stray_piece_and_a_keel_off_the_centreline(tmp_path):
+    """A loose timber 30 cm inside the hull is listed apart, not a gap; a hull 4 cm off the centreline is read
+    from its lowest point, the arcs unchanged."""
+    from hulls import clinker_section
+
+    hull = clinker_section(6.01) + [0.04, 0.0]
+    y = np.linspace(0.5, 0.6, 6)
+    timber = np.column_stack([y + 0.04, 1.5 * (y**2 / 1.99**2 - 1.0) + 0.3])  # above the bottom, inside
+    ch = _one_station(tmp_path, [hull, timber])
+    result = clinker.detect_lands(ch)
+    assert not result["skipped"]
+    for side in ("port", "starboard"):
+        _check_four_lands(result, side)
+    assert next(st for st in result["stations"] if st["side"] == "port")["stray"] == 1
+    assert next(st for st in result["stations"] if st["side"] == "starboard")["stray"] == 0
+    # a piece that goes on beyond the chain's end is a gap, not a stray
+    upper = hull[hull[:, 0] > 1.0]
+    lower = hull[hull[:, 0] < 0.8]
+    (tmp_path / "gap").mkdir()
+    ch = _one_station(tmp_path / "gap", [lower, upper])
+    assert [(d["side"], d["reason"]) for d in clinker.detect_lands(ch)["skipped"]] == [("port", "gap")]

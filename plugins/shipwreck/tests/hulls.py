@@ -185,3 +185,13 @@ def clinker_project(tmp_path: Path, heading_deg: float = 0.0, offset=UTM, crs: s
         inside = (centre[:, 0] > x0) & (centre[:, 0] < x1) & (centre[:, 1] > y0) & (centre[:, 1] < y1)
         faces = faces[~inside]
     return _project(tmp_path, vertices, faces, heading_deg, offset, crs, scale)
+
+
+def clinker_section(x, cell: float = 0.02, strakes: int = 5, land: float = 0.015, lap: float = 0.02,
+                    stealer=None) -> np.ndarray:
+    """The clinker hull's section at ``x`` as one polyline ``(N, 2)`` (y, z), starboard sheer to port sheer, the
+    columns of :func:`clinker_hull` (for tests that make a section by hand: closed, over a seabed, with a stray piece)."""
+    s, off = _side(x, cell, strakes, land, lap, stealer)
+    yp, zp = _section_points(x, s, off, 1.0)
+    ys, zs = _section_points(x, s[1:], off[1:], -1.0)
+    return np.column_stack([np.concatenate([ys[::-1], yp]), np.concatenate([zs[::-1], zp])])
