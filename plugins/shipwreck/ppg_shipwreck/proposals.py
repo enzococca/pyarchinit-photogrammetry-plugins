@@ -26,9 +26,10 @@ height raster turned so (its v is ``sign`` * y).
   a longitudinal within ``keel_band`` of y 0 is the keelson, else a stringer; a frame shorter than ``min_frame`` or a
   longitudinal shorter than ``min_longitudinal`` (a loose timber) is ``other``, as anything else is (the residues of
   one loose timber in both openings are one item).
-- Strakes: per side, each seam's land is its rank from the keel among the seams present at the same x (:func:`lands`:
-  the pieces of one land, fore and aft of a hole, share it; a stray piece overlapping a land of its rank is left
-  out); per x, a band between consecutive lands where both are there; the first from the keel line offset by
+- Strakes: per side, each seam's land is its rank from the keel (:func:`lands`: the pieces of one land, fore and aft of
+  a hole, share it; a land lost over part of the hull keeps its rank; a piece between two consecutive lands in a band
+  of a strake's width - the edge of a loose plank, noise - is a stray, proposed as ``comento B?`` / ``T?`` with a low
+  score and renaming nothing; a duplicate is left out); per x, a band between consecutive lands where both are there; the first from the keel line offset by
   ``clinker.DEFAULTS["keel_half_width"]``, the last to the model's edge. Names ``fascia B1..`` (port) and ``fascia
   T1..`` (starboard) from the keel, ``comento B1..`` for the lands; a strake broken by a hole keeps its name. The
   bands run under the frames (the outline is not cut by them).
@@ -68,7 +69,9 @@ DEFAULTS = {"sigma_cells": 1.5, "trend": 0.05, "min_step": 0.008, "low_step": 0.
 Limits measured on the synthetic hull at 5 mm cells (lands of 1.5 cm): frames and keelson unaffected by any noise
 tried; the seams stay whole under 2 mm of white noise on the heights; with 2 mm of noise correlated over a few cells
 they break into pieces, which the strakes still take as pieces of their lands (:func:`lands`: same names, widths
-within 2 %); with 4 mm of white noise stray pieces beyond the last land can add a strake (B6) and should be rejected."""
+within 2 %); with 4 mm of white noise stray pieces beyond the last land can add a strake (B6) and should be rejected.
+A remnant of a land whose neighbours run on as consecutive lands with a band of a strake's width over the same x is
+taken for a stray (``comento B?``): accept it by hand and the strake beside it splits in two there."""
 
 KINDS = ("seam", "frame", "keelson", "stringer", "plank", "other")
 COLLINEAR = 0.02  # metres: two pieces of a seam continue each other within this across
@@ -540,19 +543,53 @@ def _longest_path(nodes: list[int], edges: dict) -> dict:
         del edges[weakest]
 
 
+STRAY_SCORE = 0.1  # the score of a stray seam piece proposed as ``comento ?``
+WIDE_BAND = 1.5  # a band this many times as wide as the side's others there has lost a land: a piece in it is one
+
+
+def _wide_band(i: int, lo: int, hi: int, placed: list[int], rank: dict, ys: dict) -> bool:
+    """Whether the band between the lands ``lo`` and ``hi`` is at least :data:`WIDE_BAND` times as wide as the other
+    bands between consecutive lands of the side, where the piece ``i`` is (medians over its samples); True when there
+    is no other band to compare with."""
+    where = np.isfinite(ys[i])
+
+    def land(r):
+        y = np.full(len(where), np.nan)
+        for j in placed:
+            if rank[j] == r:
+                y = np.where(np.isfinite(y), y, ys[j])
+        return np.where(where, y, np.nan)
+
+    present = sorted({rank[j] for j in placed})
+    lines = {r: land(r) for r in present}
+    band = lines[hi] - lines[lo]
+    others = [lines[b] - lines[a] for a, b in zip(present, present[1:]) if b == a + 1 and (a, b) != (lo, hi)]
+    ref = np.concatenate([o[np.isfinite(o)] for o in others]) if others else np.array([])
+    band = band[np.isfinite(band)]
+    if not len(ref) or not len(band):
+        return True
+    return float(np.median(band)) >= WIDE_BAND * float(np.median(ref))
+
+
 def lands(seam_list: list[dict], params=None) -> list[int | None]:
-    """The land of each seam: its rank from the keel on its side, 1 the innermost, or None for a piece left out.
+    """The land of each seam: its rank from the keel on its side, 1 the innermost; 0 for a stray (proposed as
+    ``comento ?``), None for a duplicate (left out).
 
     The pieces of a side are compared two by two where they overlap along x (sampled every :data:`LAND_SAMPLE`): one
-    within :data:`COLLINEAR` of a longer one over more than :data:`CONFLICT` is a duplicate and is left out; otherwise
-    the one nearer the keel there lies inside the other. The rank of a piece of at least ``2 * min_seam`` is one more
-    than the longest chain of pieces inside it: a land lost over part of the hull (sediment, a broken plank) keeps the
-    rank of its pieces, and so do the lands beyond it, as long as some piece of it overlaps them. Shorter pieces are
-    then placed, the longest first, between the ranked pieces they overlap: one that falls between two consecutive
-    lands is a stray (None), one in a free place takes it (the end of a land the long piece does not reach). Pieces of
-    one rank are one land (fore and aft of a hole, broken by noise)."""
-    p = _params(params)
-    out: list[int | None] = [None] * len(seam_list)
+    within :data:`COLLINEAR` of a longer one over more than :data:`CONFLICT` is a duplicate; otherwise the one nearer
+    the keel there lies inside the other. The pieces are then placed one by one, the longest first, among those
+    already placed, ranked by the longest chain of placed pieces inside them (a land lost over part of the hull - under
+    sediment, a broken plank - keeps the rank of its pieces, and so do the lands beyond it). A piece is placed when it
+    lies inside the innermost land, beyond the outermost, between two lands that are not consecutive, or between two
+    consecutive lands whose band is at least :data:`WIDE_BAND` times as wide there as the other bands of the side (a
+    land lost over the rest of the hull, its remnant here). Otherwise - between two consecutive lands, in a band of a
+    strake's width - it is a stray: the edge of a loose plank lying along the hull, a stray of noise, but also the
+    remnant of a land whose neighbours run on as consecutive lands elsewhere with a band of normal width; it is
+    proposed as ``comento ?`` with a low score and never counts in the ranks, so it renames nothing. Pieces of one rank
+    are one land (fore and aft of a hole, broken by noise). A stray in a free place (a piece of noise at an end of the
+    hull where the innermost land is not seen) takes that place's rank."""
+    _params(params)  # checked: the reading has no parameter of its own
+    out: list[int | None] = [None] * len(seam_list)  # None: a duplicate
     for side in ("port", "starboard"):
         live = [i for i, sm in enumerate(seam_list) if sm["side"] == side]
         if not live:
@@ -591,22 +628,22 @@ def lands(seam_list: list[dict], params=None) -> list[int | None]:
                 return -1 if relation[(j, i)][0] > 0 else 1
             return 0
 
-        long_ones = [i for i in kept if length[i] >= 2.0 * p["min_seam"]]
-        edges = {}
-        for i in long_ones:
-            for j in long_ones:
-                if i != j and nearer(i, j) > 0:
-                    r = relation.get((i, j)) or relation.get((j, i))
-                    edges[(i, j)] = abs(r[0])
-        rank = _longest_path(long_ones, edges)
-        for i in sorted((i for i in kept if i not in rank), key=lambda i: -length[i]):
-            inner = [rank[j] for j in rank if nearer(j, i) > 0]
-            outer = [rank[j] for j in rank if nearer(j, i) < 0]
-            lo = max(inner, default=0)
-            hi = min(outer, default=None)
-            if hi is not None and hi <= lo + 1:
-                continue  # between two lands that lie side by side there: a stray
-            rank[i] = lo + 1
+        rank: dict[int, int] = {}
+        placed: list[int] = []
+        edges: dict = {}
+        for i in sorted(kept, key=lambda i: -length[i]):
+            inner = [rank[j] for j in placed if nearer(j, i) > 0]
+            outer = [rank[j] for j in placed if nearer(j, i) < 0]
+            lo, hi = max(inner, default=0), min(outer, default=None)
+            if hi is not None and lo >= 1 and hi <= lo + 1 and not _wide_band(i, lo, hi, placed, rank, ys):
+                out[i] = 0
+                continue
+            for j in placed:
+                r = relation.get((i, j)) or relation.get((j, i))
+                if r is not None:
+                    edges[(i, j) if nearer(i, j) > 0 else (j, i)] = abs(r[0])
+            placed.append(i)
+            rank = _longest_path(placed, edges)
         for i, r in rank.items():
             out[i] = r
     return out
@@ -616,7 +653,7 @@ def _land_lines(seam_list, ranks, side, xs, gap):
     """``{rank: y at xs}`` of one side's lands (NaN where no piece of the land is), gaps shorter than ``gap`` bridged."""
     out = {}
     for i, (sm, r) in enumerate(zip(seam_list, ranks)):
-        if r is None or sm["side"] != side:
+        if not r or sm["side"] != side:  # a duplicate or a stray
             continue
         line = np.asarray(sm["ship_xy"], float)
         y = out.setdefault(r, np.full(len(xs), np.nan))
@@ -664,7 +701,7 @@ def strakes(seam_list: list[dict], sign: int, params=None, edges: dict | None = 
     ranks = lands(seam_list, p)
     out = []
     for side, s_side in (("port", 1.0), ("starboard", -1.0)):
-        mine = [i for i, (sm, r) in enumerate(zip(seam_list, ranks)) if sm["side"] == side and r is not None]
+        mine = [i for i, (sm, r) in enumerate(zip(seam_list, ranks)) if sm["side"] == side and r]
         if not mine:
             continue
         x0 = min(float(np.min(np.asarray(seam_list[i]["ship_xy"])[:, 0])) for i in mine)
@@ -807,11 +844,12 @@ def build(chunk, params=None, progress=None) -> dict:
              "other": t("altro", "other"), "seam": t("comento", "seam")}
     items: list[dict] = []
     for s, rank in zip(seam_list, lands(seam_list, p)):
-        if rank is None:  # a stray piece over a land already there
+        if rank is None:  # a duplicate of a land already there
             continue
-        code = clinker._strake_name(s["side"], rank)
+        code = clinker._strake_name(s["side"], rank) if rank else f"{clinker.SIDE_CODES[s['side']][0]}?"
+        score = s["score"] if rank else min(s["score"], STRAY_SCORE)  # a stray: proposed, unnamed, doubtful
         items.append({"kind": "seam", "side": s["side"], "name": f"{words['seam']} {code}", "ship_xy": s["ship_xy"],
-                      "score": s["score"], "step_mm": s["step_mm"], "room": None})
+                      "score": score, "step_mm": s["step_mm"], "room": None})
     frames = [dict(r) for r in found if r["kind"] == "frame"]
     _name_frames(frames, frame.bow_x)
     counters: dict[str, int] = {}

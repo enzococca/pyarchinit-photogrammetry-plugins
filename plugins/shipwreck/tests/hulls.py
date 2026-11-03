@@ -238,19 +238,29 @@ LOOSE = (0.3, 0.08, 0.05)  # a loose timber lying on the hull: length, width, he
 
 
 def _boxes(vertices: np.ndarray, loose) -> tuple[np.ndarray, np.ndarray]:
-    """Closed boxes of :data:`LOOSE` lying on the hull: ``loose`` = [(x, y, degrees from x)] in the hull's coordinates,
-    the top :data:`LOOSE` [2] above the hull's highest vertex within 2 cm of the centre, the bottom sunk 0.1 m."""
-    length, width, height = LOOSE
+    """Closed boxes lying on the hull, ``loose`` = [(x, y, degrees from x)] in the hull's coordinates: :data:`LOOSE`
+    boxes with a level top :data:`LOOSE` [2] above the hull's highest vertex within 2 cm of the centre; or
+    [(x, y, degrees, length, width, thickness)]: a plank whose top follows the hull, each corner ``thickness`` above
+    the hull's highest vertex within 2 cm of it. The bottoms are sunk 0.1 m."""
     out_v, out_f = [], []
-    corners = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) * [length / 2.0, width / 2.0]
     quad = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
                      [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
-    for x, y, deg in loose:
-        near = np.hypot(vertices[:, 0] - x, vertices[:, 1] - y) < 0.02
-        top = float(vertices[near, 2].max()) + height
+
+    def top_at(px, py):
+        near = np.hypot(vertices[:, 0] - px, vertices[:, 1] - py) < 0.02
+        return float(vertices[near, 2].max())
+
+    for item in loose:
+        x, y, deg = item[:3]
+        length, width, height = item[3:] if len(item) == 6 else LOOSE
         a = np.radians(deg)
+        corners = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) * [length / 2.0, width / 2.0]
         plan = corners @ np.array([[np.cos(a), np.sin(a)], [-np.sin(a), np.cos(a)]]) + [x, y]
-        box = np.vstack([np.column_stack([plan, np.full(4, top - height - 0.1)]), np.column_stack([plan, np.full(4, top)])])
+        if len(item) == 6:
+            tops = np.array([top_at(*c) for c in plan]) + height
+        else:
+            tops = np.full(4, top_at(x, y) + height)
+        box = np.vstack([np.column_stack([plan, tops - height - 0.1]), np.column_stack([plan, tops])])
         out_f.append(quad + len(vertices) + sum(len(v) for v in out_v))
         out_v.append(box)
     return np.vstack(out_v), np.vstack(out_f)
