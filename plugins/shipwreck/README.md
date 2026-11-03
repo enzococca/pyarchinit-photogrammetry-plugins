@@ -4,7 +4,7 @@
 
 **[User guide](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/shipwreck/)**: from a 3D model of an excavated hull to its drawings, step by step.
 
-Plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry) (1.3.4 or later): the
+Plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry) (1.7.0 or later): the
 technical drawing of an excavated hull from its 3D model. Where the ship's axis runs, the shape of the hull at each
 frame, a plan, and a numbered list of the timbers with their measures. It measures what is there: it reconstructs
 nothing, and it does not fair a line away from the model.
@@ -17,12 +17,32 @@ nothing, and it does not fair a line away from the model.
 | **Water** | a level and an index (1.34): under the level a point is drawn at `level - (level - z) * n`. Off by default. A first approximation for a nadir view: oblique rays and a moving surface are not modelled. The raw and the corrected line are both kept and each drawing says which it shows. |
 | **Drawings** | body plan (seen from aft, port on the left), half-breadth plan, profile, plan with the stations over the orthophoto: a scale, automatic or chosen, a scale bar, the north, a title block; SVG, PDF, PNG and DXF with a layer per kind. Plans are never mirror images, whichever way x runs. |
 | **Timbers** | keel, keelson, frames, planks, ceiling, stringers, fastenings: drawn on the raster or from a CSV; length along the timber over the model, width across, heights above a datum, room and space; a table, a layer of the raster view, CSV, XLSX and GeoPackage. |
+| **Strakes (clinker)** | *Find the strakes*: the lands (the steps where a strake laps over the one below) on the raw section of every station and side, from the rabbet out to the sheer, joined into land lines along the hull; stations with another count of lands (a stealer, a drop strake, damage) or whose rabbet or garboard jumps are listed as uncertain; the lines in the drawings and in a layer "Fasce" of the raster view, DXF and GeoPackage with Z. *Strake model*: a strake between two land lines, its width at every station with an uncertainty, length, thickness (the median step) and lap, a mesh per strake (OBJ, PLY in the chunk's coordinates), CSV and XLSX; *Into the catalogue* adds a plank record per strake. *For the Clinker Boat Tool* writes the files for Fröhlich & Nielsen's Houdini asset (Y up); *Planks from Houdini* reads its planks back with their distance from the scan. The lands are measured; the lines and the strake model are a hypothesis, and every file says so. |
 
 Limits. A chunk in degrees (WGS 84) is refused: a frame needs metres (*GNSS > System and heights* brings the chunk to a
 projected system; the import from Metashape does it by itself). No hull reconstruction, mirrored sides, lofted surfaces,
 hydrostatics, plank expansion, automatic detection of timbers, or merging of several days. Picks in the 3D view are not
 offered directly: place two markers there and use *From two markers*. Heights over the model are good to about one edge of
 the mesh.
+
+Limits of the strakes. On sections of a mesh noisier than about 0.5 mm the widths are good to about a centimetre; at 1 mm
+of noise about one side in fifteen may get a wrong count of lands (flagged as an uncertain station). A jump of 2-2.5 cm of
+the rabbet at an end station, three or more adjacent shifted stations, or a gradual step are not flagged; a permanent step
+of the keel (a broken or displaced hull, a scarf) flags every station on one side of it; above about 3 mm of scatter on the
+rabbet a station may be flagged wrongly. A V of planking steeper than 80° within the keel's half width without a sole is
+read as keel until it flattens; a keel side in line with the garboard is a side not read (`keel_unclear`). The strake model
+needs at least three stations with a width on each side with lands. A hull seen from inside (planking under the frames,
+the keel hidden by the keelson) gives uncertain stations: the next version will trace the lands on the hull's relief.
+The jumps of the rabbet and the garboard are looked for with five stations or more on a side: with fewer a true jump is
+not caught. A new detection renames the earlier strake model's files `.old` and takes its strakes out of the timber
+catalogue; save the planks exported by the Clinker Boat Tool under a name of your own (`planks.obj`), never
+`strakes.obj` or `lands.obj` in the export folder.
+
+The Clinker Boat Tool is a Houdini Digital Asset by Fred Fröhlich and Sigurd Solhaug Nielsen (MIT,
+[10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), described in *From Photogrammetry to Construction
+Knowledge: 3D Documentation and Parametric Reconstruction of Historic Clinker Boats* (CC BY 4.0,
+[10.5281/zenodo.23422398](https://doi.org/10.5281/zenodo.23422398)). The plugin writes files that the asset's own steps
+take in and reads back the planks it exports; nothing of the asset is copied or used.
 
 The transform, the model and the products of the chunk are never changed. Everything is written in
 `<chunk data>/shipwreck/`, apart from what you export.
@@ -41,6 +61,11 @@ ppg plugin shipwreck drawings PROJECT.ppg [--scale 20] [--out FOLDER]
 ppg plugin shipwreck timbers PROJECT.ppg [--table FILE]
 ppg plugin shipwreck export PROJECT.ppg --out timbers.xlsx                      # .csv, .xlsx, .gpkg
 ppg plugin shipwreck status PROJECT.ppg
+ppg plugin shipwreck clinker detect PROJECT.ppg [--min-step MM] [--min-strake M]   # the lands and the land lines
+ppg plugin shipwreck clinker strakes PROJECT.ppg [--lap MM] [--thickness MM] [--catalogue]
+ppg plugin shipwreck clinker export PROJECT.ppg --out FOLDER                        # files for the Clinker Boat Tool
+ppg plugin shipwreck clinker import PROJECT.ppg --obj PLANKS.obj [--side-from y|name] [--no-deviation]
+ppg plugin shipwreck clinker status PROJECT.ppg                                     # also says when the lands are stale
 ```
 
 A table of timbers has a header: `kind`, `side`, `name`, `station`, `notes` and either `x, y` (a point) or `x1, y1, x2, y2`

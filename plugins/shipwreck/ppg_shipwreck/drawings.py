@@ -27,9 +27,10 @@ KIND_TITLES = {"body_plan": ("Piano di costruzione: sezioni trasversali", "Body 
                "profile": ("Profilo: longitudinali", "Profile: longitudinals"),
                "plan": ("Pianta dello scafo con le stazioni", "Plan of the hull with the stations")}
 LAYERS = {"STATIONS": "#111111", "LONGITUDINALS": "#111111", "HORIZONTALS": "#111111", "RAW": "#9a9a9a", "KEEL": "#b02020",
-          "LEVEL": "#2060b0", "TIMBERS": "#b06000", "GRID": "#bbbbbb"}
+          "LEVEL": "#2060b0", "TIMBERS": "#b06000", "GRID": "#bbbbbb", "Fasce": "#1a8f5a"}
 WEIGHTS = {"STATIONS": 0.35, "LONGITUDINALS": 0.35, "HORIZONTALS": 0.35, "RAW": 0.13, "KEEL": 0.35, "LEVEL": 0.35,
-           "TIMBERS": 0.5, "GRID": 0.18}  # millimetres of paper
+           "TIMBERS": 0.5, "GRID": 0.18, "Fasce": 0.3}  # millimetres of paper
+LAND_MARK = 0.015  # metres: the arms of the cross that marks a land on the body plan
 MARGIN = 12.0  # mm of paper around the lines
 TITLE_BLOCK = 30.0  # mm of paper under the lines, at least
 MIN_SHEET = 210.0  # mm: the title block needs a sheet at least this wide
@@ -117,8 +118,24 @@ def _notes(chunk, data: dict, frame: ship.Frame, kind: str) -> list[str]:
     if crs_mod.is_local(chunk.crs):
         notes.append(t("Sistema locale: l'alto è l'asse z del modello, non verificato come verticale.",
                        "Local frame: up is the z axis of the model, not verified as vertical."))
+    if kind in ("body_plan", "profile", "plan") and _land_lines(chunk):
+        notes.append(t("Fasce: gradini rilevati sulle sezioni (croci sul piano di costruzione: i gradini sulle linee); linee delle fasce: "
+                       "ipotesi che unisce i gradini fra le stazioni, non una misura.",
+                       "Strakes: lands found on the sections (crosses on the body plan: the lands on the lines); land lines: a hypothesis "
+                       "joining the lands between the stations, not a measure."))
     extra = title_fields(chunk)["notes"]
     return notes + ([extra] if extra else [])
+
+
+def _land_lines(chunk) -> list[dict]:
+    """The land lines found on the sections (Task 1 of the clinker strakes) when they still match them: else none."""
+    from . import clinker
+
+    state = chunk.meta.get(ship.KEY, {}).get("clinker") or {}
+    found = [line for line in state.get("lines") or [] if line["points"]]
+    if not found or clinker.is_stale(chunk):
+        return []
+    return found
 
 
 def _level_line(d: Drawing, data: dict, lo: float, hi: float) -> None:
@@ -152,6 +169,10 @@ def body_plan(chunk, data: dict, frame: ship.Frame) -> Drawing:
             longest = max(drawn, key=len)
             top = longest[np.argmax(longest[:, 1])]
             d.label(top[0], top[1], s["name"], tint)
+    for line in _land_lines(chunk):  # a cross at each land: left, right, centre, down, up
+        for _x, y, z in line["points"]:
+            c, a = np.array([-y, z]), LAND_MARK
+            d.add("Fasce", [[c - [a, 0], c + [a, 0], c, c - [0, a], c + [0, a]]], LAYERS["Fasce"])
     if d.lines:
         x0, x1, y0, y1 = d.extent
         d.add("KEEL", [[[0.0, y0], [0.0, y1]]])
@@ -192,6 +213,10 @@ def profile(chunk, data: dict, frame: ship.Frame) -> Drawing:
         if drawn:
             first = max(drawn, key=len)[0]
             d.label(first[0], first[1], s["name"], tint)
+    for line in _land_lines(chunk):
+        p = np.asarray(line["points"], float)
+        if len(p) > 1:
+            d.add("Fasce", [p[:, [0, 2]]], LAYERS["Fasce"])
     if d.lines:
         x0, x1, y0, y1 = d.extent
         _station_ticks(data, y0, y1, d)
@@ -269,6 +294,10 @@ def plan(chunk, data: dict, frame: ship.Frame, scale: int | None = None) -> Draw
             if len(p) > 1:
                 d.add("TIMBERS", [p])
             d.label(p[0, 0], p[0, 1], r["name"] or r["id"], LAYERS["TIMBERS"])
+    for line in _land_lines(chunk):
+        p = np.asarray(line["points"], float)
+        if len(p) > 1:
+            d.add("Fasce", [np.column_stack([p[:, 0], p[:, 1] * frame.sign])], LAYERS["Fasce"])
     scale = scale or drawing_scale(x1 - x0, 2 * half)
     raster = ortho_in_ship(chunk, frame, (x0, x1), (-half, half), scale * 0.00025)  # 4 pixels per mm of paper
     if raster is not None:
@@ -387,7 +416,7 @@ def write_dxf(d: Drawing, path) -> Path:
     doc.header["$LWDISPLAY"] = 1
     msp = doc.modelspace()
     colours = {"STATIONS": 7, "LONGITUDINALS": 7, "HORIZONTALS": 7, "RAW": 8, "KEEL": 1, "LEVEL": 5, "TIMBERS": 30,
-               "GRID": 9, "TEXT": 7}
+               "GRID": 9, "TEXT": 7, "Fasce": 3}
     for name, colour in colours.items():
         doc.layers.add(name, color=colour, lineweight=int(WEIGHTS.get(name, 0.18) * 100))
     for layer, p, _colour in d.lines:
@@ -414,6 +443,10 @@ def _signature(chunk, kind: str) -> dict:
     if kind == "plan":
         text = json.dumps(timbers.timbers_of(chunk), sort_keys=True)
         out["timbers"] = hashlib.sha256(text.encode()).hexdigest()
+    if kind in ("body_plan", "profile", "plan"):
+        found = _land_lines(chunk) if frame is not None else []
+        if found:
+            out["lands"] = hashlib.sha256(json.dumps(found, sort_keys=True).encode()).hexdigest()
     return out
 
 
