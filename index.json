@@ -43,6 +43,26 @@
       "sha256": "c06ccef304d5690b8066e9f2b0ee611faef8c86351d2571492c4b24ac04c328b"
     },
     {
+      "name": "conservation",
+      "version": "0.1.0",
+      "title": "Conservation",
+      "description": "Decay mapping on the program's elevations: ICOMOS-ISCS terms with UNI 11182 as their Italian face, local masonry terms and EN 15898 interventions; campaigns of a face with EN 16096 classes chosen by the surveyor; areas, cracks and treatments with their extent, photos and units; plates, tables, GeoPackages, QGIS styles, PyArchInit, IFC 4.3",
+      "i18n": {
+        "it": {
+          "title": "Conservazione",
+          "description": "Mappatura del degrado sui prospetti del programma: termini ICOMOS-ISCS con la UNI 11182 come volto italiano, termini locali delle murature e interventi secondo la EN 15898; campagne di una faccia con le classi EN 16096 scelte dal rilevatore; aree, lesioni e interventi con estensione, foto e unità; tavole, tabelle, GeoPackage, stili QGIS, PyArchInit, IFC 4.3"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/conservation",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.7.1",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/conservation-v0.1.0/ppg_conservation-0.1.0-py3-none-any.whl",
+      "sha256": "f18cdd728d8bde912f359a59e5bb5aa728a8449bcaf69a83ac2615bdce9b4b6e"
+    },
+    {
       "name": "geoai",
       "version": "0.2.0",
       "title": "GeoAI",
