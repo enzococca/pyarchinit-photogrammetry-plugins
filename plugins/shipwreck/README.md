@@ -33,6 +33,10 @@ rabbet a station may be flagged wrongly. A V of planking steeper than 80° withi
 read as keel until it flattens; a keel side in line with the garboard is a side not read (`keel_unclear`). The strake model
 needs at least three stations with a width on each side with lands. A hull seen from inside (planking under the frames,
 the keel hidden by the keelson) gives uncertain stations: the next version will trace the lands on the hull's relief.
+The jumps of the rabbet and the garboard are looked for with five stations or more on a side: with fewer a true jump is
+not caught. A new detection renames the earlier strake model's files `.old` and takes its strakes out of the timber
+catalogue; save the planks exported by the Clinker Boat Tool under a name of your own (`planks.obj`), never
+`strakes.obj` or `lands.obj` in the export folder.
 
 The Clinker Boat Tool is a Houdini Digital Asset by Fred Fröhlich and Sigurd Solhaug Nielsen (MIT,
 [10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), described in *From Photogrammetry to Construction
@@ -60,7 +64,7 @@ ppg plugin shipwreck status PROJECT.ppg
 ppg plugin shipwreck clinker detect PROJECT.ppg [--min-step MM] [--min-strake M]   # the lands and the land lines
 ppg plugin shipwreck clinker strakes PROJECT.ppg [--lap MM] [--thickness MM] [--catalogue]
 ppg plugin shipwreck clinker export PROJECT.ppg --out FOLDER                        # files for the Clinker Boat Tool
-ppg plugin shipwreck clinker import PROJECT.ppg --obj PLANKS.obj [--side-from y|name]
+ppg plugin shipwreck clinker import PROJECT.ppg --obj PLANKS.obj [--side-from y|name] [--no-deviation]
 ppg plugin shipwreck clinker status PROJECT.ppg                                     # also says when the lands are stale
 ```
 

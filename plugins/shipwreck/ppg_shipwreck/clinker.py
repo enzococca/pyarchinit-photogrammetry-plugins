@@ -101,6 +101,7 @@ FLAT = 0.005  # the flats' samples beside a land, 5 mm apart
 LAYERS = {"port": "FASCE_BABORDO", "starboard": "FASCE_TRIBORDO"}
 TABLE = "fasce_linee"
 JUMP = 0.02  # a station whose rabbet or garboard lies farther than this from the curve through its neighbours
+JUMP_STATIONS = 5  # the jumps are looked for on sides with at least this many stations (a parabola through four)
 END_GAIN = 1.25  # ... times this at the end stations, where the curve is extrapolated from one side
 SCATTER_TOL = 1e-4  # metres: another choice of neighbours is taken only when its scatter is this much tighter
 NOISE_FACTOR = 4.0  # a width's uncertainty: this many times the section's noise, plus half the step (see build_strakes)
@@ -618,12 +619,15 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
         mode[side] = int(best)
         uncertain[side] = [st["name"] for st in stations if st["side"] == side and st["count"] != mode[side]]
     jumps = {side: _jumps([st for st in stations if st["side"] == side], found) for side in SIDES}
+    aside = _set_aside(chunk)  # first: a file that cannot be renamed leaves the chunk as it was
+    removed = _off_catalogue(chunk)
     state = _state(chunk)
-    for key in ("lines", "unmatched", "strakes", "strakes_built", "set_aside"):
+    for key in ("lines", "unmatched", "strakes", "strakes_built", "set_aside", "catalogue", "catalogue_removed"):
         state.pop(key, None)
-    aside = _set_aside(chunk)
     if aside:
         state["set_aside"] = aside
+    if removed:
+        state["catalogue_removed"] = removed
     state.update({"params": p, "source": _signature(data), "lands": found, "stations": stations, "mode": mode,
                   "uncertain": uncertain, "jumps": jumps, "skipped": skipped,
                   "detected": datetime.now().isoformat(timespec="seconds")})
@@ -643,21 +647,48 @@ EXPORT_FILES = ("strakes.obj", "strakes.csv", "strakes.xlsx", "lands.obj")
 def _set_aside(chunk) -> list[str]:
     """The files of an earlier strake model no longer follow the lands just found: each is renamed ``<name>.old``
     (an earlier ``.old`` replaced), here and in the last folder exported for the Clinker Boat Tool. Returns the new
-    names, as paths from the chunk's ``shipwreck`` folder or absolute for the export's."""
+    names, as paths from the chunk's ``shipwreck`` folder or absolute for the export's. When a file cannot be renamed
+    (open in another program) those renamed are put back and :class:`ship.NotReady` names it: nothing changes."""
     base = ship.folder(chunk)
     places = [(base / "clinker", MODEL_FILES)]
     export = ((chunk.meta.get(ship.KEY) or {}).get("houdini") or {}).get("export")
     if export:
         places.append((Path(export), EXPORT_FILES))
-    out = []
+    done, failed = [], []
     for folder, names in places:
         for name in names:
             path = folder / name
-            if path.is_file():
-                old = path.with_name(name + ".old")
+            if not path.is_file():
+                continue
+            old = path.with_name(name + ".old")
+            try:
                 os.replace(path, old)
-                out.append(str(old.relative_to(base)) if old.is_relative_to(base) else str(old))
-    return out
+                done.append((path, old))
+            except OSError as exc:
+                failed.append(f"{path} ({exc.strerror or exc})")
+    if failed:
+        for path, old in reversed(done):
+            try:
+                os.replace(old, path)
+            except OSError:
+                pass
+        raise ship.NotReady(t(f"Non riesco a mettere da parte i file del modello delle fasce precedente: "
+                              f"{'; '.join(failed)}. Chiudili negli altri programmi e rileva di nuovo: i gradini di "
+                              "prima restano come erano.",
+                              f"Cannot set aside the files of the earlier strake model: {'; '.join(failed)}. Close "
+                              "them in the other programs and find the lands again: the earlier lands stay as they were."))
+    return [str(old.relative_to(base)) if old.is_relative_to(base) else str(old) for _path, old in done]
+
+
+def _off_catalogue(chunk) -> int:
+    """The records an earlier strake model wrote into the timber catalogue (a ``plank`` with the hypothesis note,
+    :func:`to_catalogue`) taken away: they no longer follow the lands just found. Returns how many."""
+    from . import timbers
+
+    ids = [r["id"] for r in timbers.timbers_of(chunk) if r["kind"] == "plank" and r.get("notes") in CATALOGUE_NOTES]
+    if ids:
+        timbers.remove(chunk, ids)
+    return len(ids)
 
 
 def _noise(vertices: np.ndarray) -> float:
@@ -790,11 +821,13 @@ def _cleared(x: np.ndarray, values: np.ndarray, found: dict[int, float]) -> dict
 
 def _jumps(rows: list[dict], lands: list[dict]) -> list[str]:
     """The stations of one side whose rabbet (y, z) or garboard (the arc to the first land) jumps more than ``JUMP``
-    (or the neighbours' own scatter) from the curve through the neighbouring stations (:func:`_outliers`): the count of lands is right but the
-    origin may be shifted. Each such station's record gets ``jump`` (what jumped, mm); names by x."""
+    (or the neighbours' own scatter) from the curve through the neighbouring stations (:func:`_outliers`): the count
+    of lands is right but the origin may be shifted. Each such station's record gets ``jump`` (what jumped, mm); names
+    by x. None below ``JUMP_STATIONS`` stations: the curve is a parabola through four neighbours, and with fewer it
+    is a straight line extrapolated at the ends, which flags the end stations of a rockered keel."""
     rows = sorted(rows, key=lambda st: st["x"])
     found: dict[str, dict] = {}
-    if rows:
+    if len(rows) >= JUMP_STATIONS:
         x = np.array([st["x"] for st in rows])
         for i, r in _outliers(x, np.array([st["rabbet"] for st in rows], float)).items():
             found.setdefault(rows[i]["name"], {})["rabbet_mm"] = round(r * 1000.0, 1)
@@ -950,11 +983,19 @@ def summary(chunk) -> str:
                                 f"Uncertain stations (the rabbet or the garboard jumping more than {cm} cm from the "
                                 f"stations beside them): {', '.join(jumped)}.")
             parts.append(text)
-    if state.get("set_aside"):
-        parts.append(t(f"Il modello delle fasce precedente non segue i gradini nuovi: file rinominati "
-                       f"{', '.join(state['set_aside'])}.",
-                       f"The earlier strake model does not follow the new lands: files renamed "
-                       f"{', '.join(state['set_aside'])}."))
+    if state.get("set_aside") or state.get("catalogue_removed"):
+        done = []
+        if state.get("set_aside"):
+            done.append(t(f"file rinominati {', '.join(state['set_aside'])}",
+                          f"files renamed {', '.join(state['set_aside'])}"))
+        if state.get("catalogue_removed"):
+            n = state["catalogue_removed"]
+            done.append(t(f"{plural(n, ('fascia', 'fasce'), ('strake', 'strakes'))} del modello precedente tolte dal "
+                          "catalogo" if n != 1 else "1 fascia del modello precedente tolta dal catalogo",
+                          f"{plural(n, ('strake', 'strakes'), ('strake', 'strakes'))} of the earlier model taken out of "
+                          "the catalogue"))
+        parts.append(t(f"Il modello delle fasce precedente non segue i gradini nuovi: {'; '.join(done)}.",
+                       f"The earlier strake model does not follow the new lands: {'; '.join(done)}."))
     extra = state.get("unmatched") or []
     if extra:
         listed = ", ".join(f"{d['station']} {_side_name(d['side'])}" for d in extra)

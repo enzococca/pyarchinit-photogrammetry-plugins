@@ -34,6 +34,10 @@ di fasciame più ripida di 80° entro la metà larghezza della chiglia, senza su
 apre; un fianco della chiglia allineato al torello è un lato non letto (`keel_unclear`). Il modello delle fasce vuole
 almeno tre stazioni con una larghezza su ogni lato con gradini. Uno scafo visto dall'interno (fasciame sotto le ordinate,
 chiglia nascosta dal paramezzale) dà stazioni incerte: la prossima versione traccerà i gradini sul rilievo dello scafo.
+I salti della battura e del torello si cercano con cinque stazioni o più su un lato: con meno un salto vero non viene
+preso. Un nuovo rilevamento rinomina `.old` i file del modello delle fasce precedente e toglie le sue fasce dal catalogo
+dei legni; salva le tavole esportate dal Clinker Boat Tool con un nome tuo (`tavole.obj`), mai `strakes.obj` o
+`lands.obj` nella cartella dell'esportazione.
 
 Il Clinker Boat Tool è un Houdini Digital Asset di Fred Fröhlich e Sigurd Solhaug Nielsen (MIT,
 [10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), descritto in *From Photogrammetry to Construction
@@ -61,7 +65,7 @@ ppg plugin shipwreck status PROGETTO.ppg
 ppg plugin shipwreck clinker detect PROGETTO.ppg [--min-step MM] [--min-strake M]   # i gradini e le loro linee
 ppg plugin shipwreck clinker strakes PROGETTO.ppg [--lap MM] [--thickness MM] [--catalogue]
 ppg plugin shipwreck clinker export PROGETTO.ppg --out CARTELLA                     # file per il Clinker Boat Tool
-ppg plugin shipwreck clinker import PROGETTO.ppg --obj TAVOLE.obj [--side-from y|name]
+ppg plugin shipwreck clinker import PROGETTO.ppg --obj TAVOLE.obj [--side-from y|name] [--no-deviation]
 ppg plugin shipwreck clinker status PROGETTO.ppg                                    # dice anche se i gradini sono superati
 ```
 

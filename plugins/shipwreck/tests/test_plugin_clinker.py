@@ -4,6 +4,7 @@ catch-all groups, and the step in the pane (the window offscreen, the dialogs an
 program's command line."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -72,16 +73,59 @@ def test_finding_the_lands_again_sets_the_old_strake_files_aside(tmp_path):
     out = houdini.export(ch, tmp_path / "hda")
     assert out["strakes"].exists()
     folder = ship.folder(ch) / "clinker"
+    assert clinker.to_catalogue(ch) == 10
+    timbers.add(ch, "plank", "port", "F1", timbers.geometry("point", [[0.0, 0.0]]))  # the user's: stays
     clinker.detect_lands(ch, {"min_step": 0.009})
+    planks = [r for r in timbers.timbers_of(ch) if r["kind"] == "plank"]
+    assert [r["name"] for r in planks] == ["F1"]
     for name in ("strakes.obj", "strakes.ply", "strakes.csv", "strakes.xlsx"):
         assert not (folder / name).exists() and (folder / f"{name}.old").exists(), name
     for name in ("strakes.obj", "strakes.csv", "strakes.xlsx", "lands.obj"):
         assert not (out["readme"].parent / name).exists() and (out["readme"].parent / f"{name}.old").exists(), name
     text = clinker.summary(ch)
     assert "modello delle fasce precedente" in text and "strakes.obj.old" in text
+    assert "10 fasce del modello precedente tolte dal catalogo" in text
     # a second detection with nothing new to set aside leaves the .old as they are, and says nothing more
     clinker.detect_lands(ch)
     assert (folder / "strakes.obj.old").exists() and "modello delle fasce precedente" not in clinker.summary(ch)
+
+
+def test_a_file_that_cannot_be_set_aside_leaves_the_lands_as_they_were(tmp_path, monkeypatch):
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=37.0)
+    _ready(ch, ends)
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    clinker.write_tables(ch)
+    clinker.to_catalogue(ch)
+    before = json.loads(json.dumps(ship.state(ch)["clinker"]))
+    real = clinker.os.replace
+
+    def locked(a, b):
+        if Path(a).name == "strakes.xlsx":
+            raise PermissionError(13, "Permission denied", str(a))
+        return real(a, b)
+
+    monkeypatch.setattr(clinker.os, "replace", locked)
+    with pytest.raises(ship.NotReady, match="strakes.xlsx"):
+        clinker.detect_lands(ch, {"min_step": 0.009})
+    folder = ship.folder(ch) / "clinker"
+    assert ship.state(ch)["clinker"] == before  # the old lands, lines and model untouched
+    assert all((folder / n).exists() for n in clinker.MODEL_FILES)  # the files renamed before are back
+    assert not any(folder.glob("*.old"))
+    assert sum(r["kind"] == "plank" for r in timbers.timbers_of(ch)) == 10
+
+
+# ------------------------------------------------------------------------------------ the jumps
+def test_four_stations_on_a_rockered_keel_have_no_jump():
+    for count in (3, 4):
+        for spacing in (0.5, 1.0):
+            x = np.arange(count) * spacing
+            z = (x - x.mean()) ** 2 / (2 * 20.0)  # a rocker of radius 20 m, no jump anywhere
+            rows = [{"name": f"S{i + 1}", "x": float(v), "side": "port", "rabbet": [0.05, float(h)]}
+                    for i, (v, h) in enumerate(zip(x, z))]
+            lands = [{"station": r["name"], "side": "port", "s": 0.3} for r in rows]
+            assert clinker._jumps(rows, lands) == [], (count, spacing)
+            assert not any("jump" in r for r in rows)
 
 
 # ------------------------------------------------------------------------------------ the mesh keeps the stations
@@ -102,6 +146,19 @@ def test_a_catch_all_group_without_the_loose_faces_is_dropped(tmp_path):
         "g fascia_B1 tutte", "f 1 2 3", "g fascia_T1 tutte", "f 4 5 6", "g", "f 7 8 9"]) + "\n")
     planks = houdini.read_obj(path)
     assert sorted(planks) == ["fascia_B1", "fascia_T1"]
+
+
+def _groups(path, lines_):
+    v = [f"v {i} {i % 3} {i % 5}" for i in range(12)]
+    path.write_text("\n".join(v + lines_) + "\n")
+    return sorted(houdini.read_obj(path))
+
+
+def test_nested_groups_and_a_single_plank_with_its_catch_all(tmp_path):
+    # a group inside another is a plank of its own: the outer one holds one group only, it is no catch-all
+    assert _groups(tmp_path / "a.obj", ["g B1", "f 1 2 3", "g B1 B1_end", "f 4 5 6"]) == ["B1", "B1_end"]
+    # one plank and its catch-all hold the same faces: one plank, the first named
+    assert _groups(tmp_path / "b.obj", ["g B1 all", "f 1 2 3", "f 4 5 6"]) == ["B1"]
 
 
 def test_an_import_saved_by_an_earlier_version_is_kept(tmp_path):

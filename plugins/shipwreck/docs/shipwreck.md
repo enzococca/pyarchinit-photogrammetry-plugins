@@ -29,7 +29,8 @@ section from the rabbet and its step in millimetres.
 
 Across the stations, the count of lands found most often is the hull's on that side. A station with another count (a
 stealer, a drop strake, an eroded sheer, damage) is **uncertain**, and so is a station whose rabbet or garboard lies
-more than 2 cm from the curve through its neighbours. The lands of an uncertain station are matched to the lines by
+more than 2 cm from the curve through its neighbours (looked for with five stations or more on a side: the curve is
+a parabola through four neighbours, and with fewer a true jump is not caught). The lands of an uncertain station are matched to the lines by
 their position along the section; a land on no line is listed. Nothing is faired or filled: a side with a gap, a loose
 piece or no readable keel gives no lands and is listed with the reason.
 
@@ -60,7 +61,8 @@ coordinates, double precision), `strakes.csv` and `strakes.xlsx`.
 
 The model is refused when a side with lands has fewer than three stations with a width: it would be all interpolation.
 When the lands are found again, the files of the earlier model (and their copies in the last folder exported for the
-Clinker Boat Tool) are renamed `.old` and the pane lists them.
+Clinker Boat Tool) are renamed `.old`, its strakes are taken out of the timber catalogue, and the pane says so. If a
+file cannot be renamed (open in another program), nothing changes and the message names it.
 
 ### The Clinker Boat Tool
 
@@ -75,7 +77,8 @@ ship frame turned so that Y is up (Houdini's up axis) and the keel runs along X:
 3. **Define sections**: the stations' x are in `stations.json`; `sections.obj` shows the cuts there.
 4. **Generate the plank layout**: read widths, thickness and lap per strake from `lands.obj` and `strakes.xlsx`.
 5. **Bend and align** the planks on the scan.
-6. **Presets and export**: export the planks as OBJ, one object or group per plank.
+6. **Presets and export**: export the planks as OBJ, one object or group per plank, under a name of your own
+   (`planks.obj`): never `strakes.obj` or `lands.obj` in the export folder, which a new detection sets aside.
 
 *Planks from Houdini...* reads that OBJ back: each plank becomes a `plank` record of the catalogue (its outline in plan,
 its side from the mean y or from B/T in its name), with the distance of its vertices from the scan, median and 90th
@@ -95,7 +98,8 @@ is copied or used. Please cite:
 
 - On sections of a mesh noisier than about 0.5 mm the widths are good to about a centimetre. At 1 mm of noise about one
   side in fifteen may get a wrong count of lands; it is flagged as an uncertain station.
-- A jump of 2-2.5 cm of the rabbet at an end station is not caught. Three or more adjacent stations shifted together,
+- The jumps are looked for only with five stations or more on a side. A jump of 2-2.5 cm of the rabbet at an end
+  station is not caught. Three or more adjacent stations shifted together,
   or a gradual step, are not flagged.
 - A permanent step of the keel (a broken or displaced hull, a scarf) flags every station on one side of it. Above about
   3 mm of scatter on the rabbet a station may be flagged wrongly.

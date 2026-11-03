@@ -99,7 +99,8 @@ def _readme(files: list[str]) -> str:
         "4. Generate the plank layout: widths, thickness and lap per strake can be read from lands.obj and from the "
         "strake table (strakes.csv and strakes.xlsx in this folder), when present.",
         "5. Bend and align the planks on the scan.",
-        "6. Presets and export: export the planks as OBJ, one object or group per plank, and read them back in the "
+        "6. Presets and export: export the planks as OBJ, one object or group per plank, under a name of your own "
+        "(planks.obj; not strakes.obj or lands.obj, which the plugin sets aside or replaces), and read them back in the "
         "plugin (step 7 of the Shipwreck pane, Planks from Houdini...): each plank becomes a timber record with its "
         "deviation from the scan.",
         "",
@@ -111,7 +112,8 @@ def _readme(files: list[str]) -> str:
         "4. Genera la disposizione delle fasce: larghezze, spessore e sovrapposizione per fascia si leggono da "
         "lands.obj e dalla tabella delle fasce (strakes.csv e strakes.xlsx in questa cartella), se presenti.",
         "5. Piega e allinea le fasce sulla scansione.",
-        "6. Preset ed esportazione: esporta le fasce in OBJ, un oggetto o gruppo per fascia, e rileggile nel plugin "
+        "6. Preset ed esportazione: esporta le fasce in OBJ, un oggetto o gruppo per fascia, con un nome tuo "
+        "(tavole.obj; non strakes.obj o lands.obj, che il plugin mette da parte o sostituisce), e rileggile nel plugin "
         "(passo 7 del pannello Relitto, Fasce da Houdini...): ogni fascia diventa una scheda di legno con il suo "
         "scostamento dalla scansione.",
         "",
@@ -277,9 +279,9 @@ def _strakes(source: Path, path: Path, sign: int, head: list[str]) -> Path:
 def read_obj(path) -> dict[str, np.ndarray]:
     """The planks of an OBJ as name -> vertices ``(N, 3)``: its objects (``o``) or its groups (``g``), whichever level
     has more names (one ``o`` wrapping a group per plank gives the groups). A ``g`` line with several names puts what
-    follows in each of them (the OBJ convention, Houdini writes it), and a group holding every element of the other
-    groups (a catch-all such as "all", with or without the elements outside any group: :func:`_catch_all`) is left
-    out. The vertices of a plank are those its faces, lines and points use, or, when it has none, those written
+    follows in each of them (the OBJ convention, Houdini writes it), and a group holding every element of two or
+    more other groups, or the same elements as a group before it (a catch-all such as "all": :func:`_catch_all`), is
+    left out. The vertices of a plank are those its faces, lines and points use, or, when it has none, those written
     under it. Refused when the file has neither objects nor
     groups, or a line cannot be read (its number is given)."""
     try:
@@ -359,10 +361,16 @@ def read_obj(path) -> dict[str, np.ndarray]:
 
 
 def _catch_all(group: str, groups: list[str], elements: dict[str, set]) -> bool:
-    """A group holding every element of the other groups ("all", "planks"): it holds no plank of its own, whether
-    the file's loose elements (outside any group) are in it or not."""
-    others = set().union(*(elements[g] for g in groups if g != group))
-    return bool(others) and others <= elements[group]
+    """A group that is no plank of its own: one holding every element of at least two other groups ("all",
+    "planks"; with the file's loose elements or not), or holding exactly the elements of a group named before it (a
+    single plank and its catch-all: the first name is the plank's). A group inside one other group (``B1_end`` in
+    ``B1``) is a plank, and so is the outer one."""
+    mine = elements[group]
+    if not mine:
+        return False
+    if any(elements[g] == mine for g in groups[:groups.index(group)]):
+        return True
+    return sum(1 for g in groups if g != group and elements[g] and elements[g] <= mine) >= 2
 
 
 def _side(name: str, y: float, side_from: str) -> str:

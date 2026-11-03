@@ -634,9 +634,12 @@ class ShipwreckPlugin(Plugin):
                 ("name", t("Dal nome (B/T, babordo/tribordo)", "From the name (B/T, port/starboard)"))]),
             Field("deviation", t("Distanza dalla scansione", "Distance from the scan"), True)],
             intro=t("Un oggetto (o un gruppo) del file per tavola, Y in alto come le esporta il Clinker Boat Tool. "
-                    "Le tavole di un'importazione precedente dello stesso file vengono sostituite.",
+                    "Le tavole di un'importazione precedente dello stesso file vengono sostituite. Salva le tavole "
+                    "dello strumento con un nome tuo, non strakes.obj o lands.obj: quelli il plugin li mette da parte "
+                    "a ogni nuovo rilevamento.",
                     "One object (or group) of the file per plank, Y up as the Clinker Boat Tool exports them. The "
-                    "planks of an earlier import of the same file are replaced."))
+                    "planks of an earlier import of the same file are replaced. Save the tool's planks under a name "
+                    "of your own, not strakes.obj or lands.obj: the plugin sets those aside at every new detection."))
         if not v:
             return
 

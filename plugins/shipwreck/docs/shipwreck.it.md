@@ -29,7 +29,8 @@ sua posizione lungo la sezione dalla battura e il suo salto in millimetri.
 
 Fra le stazioni, il numero di gradini trovato più spesso è quello dello scafo su quel lato. Una stazione con un altro
 numero (una fascia che si interrompe, un orlo eroso, un danno) è **incerta**, e così una stazione la cui battura o il cui
-torello stanno a più di 2 cm dalla curva per le stazioni vicine. I gradini di una stazione incerta si assegnano alle
+torello stanno a più di 2 cm dalla curva per le stazioni vicine (cercati con cinque stazioni o più su un lato: la curva
+è una parabola per quattro vicine, e con meno un salto vero non viene preso). I gradini di una stazione incerta si assegnano alle
 linee per la loro posizione lungo la sezione; un gradino fuori dalle linee viene elencato. Niente viene carenato o
 riempito: un lato con un buco, un pezzo staccato o una chiglia illeggibile non dà gradini e viene elencato con il motivo.
 
@@ -60,7 +61,8 @@ chiamano `B1, B2, ...` a babordo e `T1, T2, ...` a tribordo. File in `<dati del 
 
 Il modello viene rifiutato quando un lato con gradini ha meno di tre stazioni con una larghezza: sarebbe tutto
 interpolato. Quando i gradini si rilevano di nuovo, i file del modello precedente (e le loro copie nell'ultima cartella
-esportata per il Clinker Boat Tool) prendono il suffisso `.old` e il pannello li elenca.
+esportata per il Clinker Boat Tool) prendono il suffisso `.old`, le sue fasce escono dal catalogo dei legni e il pannello
+lo dice. Se un file non si può rinominare (aperto in un altro programma), non cambia niente e il messaggio lo nomina.
 
 ### Il Clinker Boat Tool
 
@@ -76,7 +78,8 @@ scegli, nel sistema della nave girato con Y in alto (l'asse verticale di Houdini
 4. **Genera la disposizione delle tavole**: larghezze, spessore e sovrapposizione per fascia da `lands.obj` e
    `strakes.xlsx`.
 5. **Piega e allinea** le tavole sulla scansione.
-6. **Preset ed esportazione**: esporta le tavole in OBJ, un oggetto o un gruppo per tavola.
+6. **Preset ed esportazione**: esporta le tavole in OBJ, un oggetto o un gruppo per tavola, con un nome tuo
+   (`tavole.obj`): mai `strakes.obj` o `lands.obj` nella cartella dell'esportazione, che un nuovo rilevamento mette da parte.
 
 *Fasce da Houdini...* rilegge quell'OBJ: ogni tavola diventa una scheda `plank` del catalogo (il contorno in pianta, il
 lato dalla y media o da B/T nel nome), con la distanza dei suoi vertici dalla scansione, mediana e 90° percentile in
@@ -96,7 +99,8 @@ copiato o usato. Da citare:
 
 - Su sezioni di una mesh con un rumore oltre circa 0,5 mm le larghezze valgono a circa un centimetro. A 1 mm di rumore
   circa un lato su quindici può avere un numero di gradini sbagliato; viene segnalato come stazione incerta.
-- Un salto di 2-2,5 cm della battura a una stazione d'estremità non viene preso. Tre o più stazioni vicine spostate
+- I salti si cercano solo con cinque stazioni o più su un lato. Un salto di 2-2,5 cm della battura a una stazione
+  d'estremità non viene preso. Tre o più stazioni vicine spostate
   insieme, o un gradino graduale, non vengono segnalati.
 - Un gradino permanente della chiglia (uno scafo rotto o spostato, una palella) segnala ogni stazione da un lato. Oltre
   circa 3 mm di dispersione sulla battura una stazione può essere segnalata a torto.
