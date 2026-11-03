@@ -1,0 +1,683 @@
+"""Proposals of the decay mapping: what the image and the relief of an elevation suggest, never more than a proposal.
+
+Every detector reads a window of the elevation (``bounds`` = ``(u0, v0, u1, v1)`` in its metres, None = the whole face)
+and returns a list of proposals ``{"kind", "code" | None, "geometry" (shapely, in (u, v)), "width_mm", "depth_mm",
+"notes", "coverage"}``: ``notes`` say which detector and with which parameters, ``coverage`` the share of the window
+where the relief has a value. A window with no surface at all (no relief and no opaque pixel) gives ``[]``.
+
+- :func:`sam_areas`: segments of SAM 2.1 (the program's ``ai.sam.auto_units`` on ``elevation.tif``), with no term;
+  :func:`like_this` finds the segments that look like one the user named.
+- :func:`cracks`: valleys of the relief (Hessian of the smoothed depth at a few scales, a Frangi-like line measure,
+  both sides higher) joined with the dark thin lines of the orthophoto (black-hat on L, near Canny edges), thinned,
+  followed into polylines; joints between drawn stones are not cracks.
+- :func:`material_loss`: depressions of the relief under the wall's robust plane.
+- :func:`colour_classes`: k-means on Lab of the orthophoto; the user names the classes.
+
+The relief is ``d`` in metres, positive towards the viewer, NaN where the model is missing: a groove or a hole is a
+negative ``d``. Only cracks (``ISCS.CRACK``) and material loss (``ISCS.MISSING_PART``, ``ISCS.ALVEOLIZATION``) come
+with a term, said as "proposto"; the others are segments for the user to name."""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+import numpy as np
+
+CRACK = "ISCS.CRACK"
+MISSING_PART = "ISCS.MISSING_PART"
+ALVEOLIZATION = "ISCS.ALVEOLIZATION"
+BIG_FACE = 4.0  # m2: SAM on a coarser copy and the "normale" thoroughness above it
+BIG_FACE_RESOLUTION = 0.005  # m/px: the finest pixel SAM gets on a big face (the Khutm lesson on MPS)
+JOINT_DISTANCE = 0.01  # m: a crack within this of a joint between two stones lies on the joint
+JOINT_GAP = 0.05  # m: two stones nearer than this have a joint between them
+JOINT_SHARE = 0.6  # a crack longer than this share on a joint is dropped
+VALLEY_DEPTH = 0.0005  # m: the least depth of a valley of the relief (scale-normalised curvature and both sides)
+DARK_CONTRAST = 12.0  # L units: the least black-hat of a dark thin line
+SUGGESTIONS = {"green": ("ISCS.BIOLOGICAL_COLONIZATION",), "bright": ("ISCS.EFFLORESCENCE", "ISCS.DEPOSIT"),
+               "dark": ("ISCS.CRUST.BLACK_CRUST", "ISCS.DISCOLOURATION.STAINING")}
+
+
+def _t(it: str, en: str) -> str:
+    from .texts import t
+
+    return t(it, en)
+
+
+def _num(value, decimals: int = 2) -> str:
+    from .texts import num
+
+    return num(value, decimals)
+
+
+def _progress(progress):
+    from pyarchinit_photogrammetry.core.progress import as_progress
+
+    return as_progress(progress)
+
+
+@dataclass
+class Window:
+    """A window of the elevation's two rasters on the same grid: ``rgb`` (H, W, 3) uint8, ``opaque`` (H, W) bool,
+    ``relief`` (H, W) float64 with NaN, ``transform`` (rasterio Affine of the window), ``res`` (m/px), ``bounds``
+    the window clipped to the rasters, ``ortho``/``relief_path`` the files."""
+    rgb: np.ndarray
+    opaque: np.ndarray
+    relief: np.ndarray
+    transform: object
+    res: float
+    bounds: tuple
+    ortho: str
+    relief_path: str
+
+    @property
+    def coverage(self) -> float:
+        return float(np.isfinite(self.relief).mean()) if self.relief.size else 0.0
+
+    @property
+    def empty(self) -> bool:
+        return not (self.opaque.any() or np.isfinite(self.relief).any())
+
+    def uv(self, rows, cols):
+        """``(u, v)`` of the centres of the cells ``(rows, cols)``."""
+        t = self.transform
+        return t.c + (np.asarray(cols, float) + 0.5) * t.a, t.f + (np.asarray(rows, float) + 0.5) * t.e
+
+    def rc(self, u, v):
+        """Fractional ``(row, col)`` of the points ``(u, v)`` (cell centres at whole numbers)."""
+        t = self.transform
+        return (np.asarray(v, float) - t.f) / t.e - 0.5, (np.asarray(u, float) - t.c) / t.a - 0.5
+
+
+def read_window(chunk, entry, bounds=None) -> Window | None:
+    """The window ``bounds`` (None: the whole face) of the elevation's orthophoto and relief, or None when it lies
+    outside the rasters."""
+    import rasterio
+    from rasterio.windows import Window as RWindow
+    from rasterio.windows import from_bounds
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    ortho, relief_path = (str(p) for p in elevation_paths(chunk, entry))
+    with rasterio.open(ortho) as src:
+        full = src.bounds
+        bx = (full.left, full.bottom, full.right, full.top) if bounds is None else (
+            max(bounds[0], full.left), max(bounds[1], full.bottom), min(bounds[2], full.right),
+            min(bounds[3], full.top))
+        if bx[2] <= bx[0] or bx[3] <= bx[1]:
+            return None
+        w = from_bounds(*bx, transform=src.transform).round_offsets().round_lengths()
+        w = w.intersection(RWindow(0, 0, src.width, src.height))
+        if w.width < 1 or w.height < 1:
+            return None
+        data = src.read(window=w)
+        transform = src.window_transform(w)
+        res = abs(src.res[0])
+    rgb = np.moveaxis(data[:3], 0, -1).copy() if data.shape[0] >= 3 else np.repeat(data[:1], 3, 0).transpose(1, 2, 0)
+    opaque = data[3] > 0 if data.shape[0] >= 4 else np.ones(data.shape[1:], bool)
+    relief = np.full(opaque.shape, np.nan)
+    try:
+        with rasterio.open(relief_path) as src:
+            rw = from_bounds(*bx, transform=src.transform).round_offsets().round_lengths()
+            rw = rw.intersection(RWindow(0, 0, src.width, src.height))
+            d = src.read(1, window=rw, masked=True).astype(np.float64).filled(np.nan)
+        if d.shape != opaque.shape:
+            import cv2
+
+            d = cv2.resize(d, (opaque.shape[1], opaque.shape[0]), interpolation=cv2.INTER_NEAREST)
+        relief = d
+    except Exception:  # noqa: BLE001 - an elevation without relief: the image detectors still work
+        pass
+    out = (transform.c, transform.f + transform.e * opaque.shape[0], transform.c + transform.a * opaque.shape[1],
+           transform.f)
+    return Window(rgb, opaque, relief, transform, float(res), out, ortho, relief_path)
+
+
+def lab(rgb: np.ndarray) -> np.ndarray:
+    """Lab of ``rgb`` uint8 (L 0-100, a and b signed) as float32."""
+    import cv2
+
+    return cv2.cvtColor(rgb.astype(np.float32) / 255.0, cv2.COLOR_RGB2Lab)
+
+
+def _polygons(mask: np.ndarray, win: Window, min_area: float = 0.0) -> list:
+    """The polygons of ``mask`` in (u, v) (``rasterio.features.shapes``), those of at least ``min_area`` m2."""
+    from rasterio.features import shapes
+    from shapely.geometry import shape
+
+    out = []
+    if not mask.any():
+        return out
+    for geom, value in shapes(mask.astype(np.uint8), mask=mask, transform=win.transform, connectivity=8):
+        if value:
+            g = shape(geom).buffer(0)
+            if not g.is_empty and g.area >= min_area:
+                out.append(g)
+    return out
+
+
+def _proposal(kind, code, geometry, notes, coverage, width_mm=None, depth_mm=None) -> dict:
+    return {"kind": kind, "code": code, "geometry": geometry, "width_mm": width_mm, "depth_mm": depth_mm,
+            "notes": notes, "coverage": round(float(coverage), 4)}
+
+
+# ---------------------------------------------------------------- SAM
+
+
+def sam_areas(chunk, entry, bounds=None, thoroughness: str = "normale", resolution: float | None = None,
+              progress=None, segmenter=None) -> list[dict]:
+    """The segments of SAM 2.1 in the window, with no term (``code`` None). On a window over ``BIG_FACE`` m2 the
+    pixel SAM gets is ``BIG_FACE_RESOLUTION`` at the finest unless ``resolution`` is given. ``segmenter``: the
+    program's SAM worker (``ai.sam_env.make_segmenter()`` when None)."""
+    from pyarchinit_photogrammetry.ai.sam import auto_units
+
+    progress = _progress(progress)
+    win = read_window(chunk, entry, bounds)
+    if win is None or win.empty:
+        return []
+    bx = win.bounds
+    area = (bx[2] - bx[0]) * (bx[3] - bx[1])
+    if resolution is None and area > BIG_FACE:
+        resolution = max(win.res, BIG_FACE_RESOLUTION)
+    if segmenter is None:
+        from pyarchinit_photogrammetry.ai.sam_env import make_segmenter
+
+        segmenter = make_segmenter()
+    units = auto_units(None, segmenter, path=win.ortho, bounds=bx, resolution=resolution, thoroughness=thoroughness,
+                       exclusive=True, max_tiles=400, progress=progress.sub(0, 0.95))
+    res = resolution or win.res
+    notes = _t(f"proposto da SAM 2.1: accuratezza {thoroughness}, pixel {_num(res * 1000, 1)} mm",
+               f"proposed by SAM 2.1: thoroughness {thoroughness}, pixel {_num(res * 1000, 1)} mm")
+    out = [_proposal("decay", None, u.geometry, notes, win.coverage) for u in units
+           if u.geometry is not None and not u.geometry.is_empty]
+    progress(1.0, _t(f"SAM: {len(out)} segmenti", f"SAM: {len(out)} segments"))
+    return out
+
+
+def _descriptor(L, a, b, valid) -> np.ndarray | None:
+    """Lab mean and standard deviation, gradient energy of L, an 8-bin histogram of the neighbours brighter than
+    each pixel (LBP-like) of the pixels ``valid``."""
+    import cv2
+
+    if valid.sum() < 4:
+        return None
+    gx = cv2.Sobel(L, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(L, cv2.CV_32F, 0, 1, ksize=3)
+    energy = float(np.sqrt(np.mean((gx * gx + gy * gy)[valid])))
+    pad = np.pad(L, 1, mode="edge")
+    h, w = L.shape
+    brighter = np.zeros(L.shape, np.int32)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy or dx:
+                brighter += pad[1 + dy:1 + dy + h, 1 + dx:1 + dx + w] > L
+    hist = np.bincount(np.clip(brighter[valid] - 1, 0, 7), minlength=8).astype(float)
+    hist /= hist.sum()
+    stats = [float(c[valid].mean()) for c in (L, a, b)] + [float(c[valid].std()) for c in (L, a, b)]
+    return np.array(stats + [energy] + list(hist))
+
+
+# the least spread of each component of the descriptor: Lab mean, Lab spread, gradient energy, the 8 bins (a share)
+SPREAD_FLOORS = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 2.0] + [0.1] * 8)
+
+
+def like_this(chunk, entry, segments: list, reference, radius: float = 1.0) -> list[int]:
+    """The indices of ``segments`` (polygons in (u, v)) that look like ``reference``: descriptor (Lab mean and spread,
+    Sobel gradient energy, an 8-bin LBP-like histogram, from the orthophoto inside each polygon) within ``radius``
+    of the reference's, each component standardised by its spread over the segments (Euclidean distance), never by
+    less than its ``SPREAD_FLOORS`` (a component that hardly changes between the segments - the histogram of a
+    uniform texture - would else turn its noise into distance)."""
+    from rasterio.features import geometry_mask
+    from shapely.ops import unary_union
+
+    from .geometry import as_geometry
+
+    reference = as_geometry(reference)
+    segments = [as_geometry(s) for s in segments]
+    if not segments:
+        return []
+    u0, v0, u1, v1 = unary_union(segments + [reference]).bounds
+    win = read_window(chunk, entry, (u0, v0, u1, v1))
+    if win is None:
+        return []
+    L, a, b = np.moveaxis(lab(win.rgb), -1, 0)
+
+    def describe(g):
+        inside = ~geometry_mask([g], out_shape=win.opaque.shape, transform=win.transform, all_touched=False)
+        return _descriptor(L, a, b, inside & win.opaque)
+
+    ref = describe(reference)
+    found = [describe(g) for g in segments]
+    if ref is None:
+        return []
+    have = [i for i, f in enumerate(found) if f is not None]
+    if not have:
+        return []
+    table = np.array([found[i] for i in have])
+    spread = np.maximum(table.std(axis=0), SPREAD_FLOORS)
+    dist = np.sqrt((((table - ref) / spread) ** 2).sum(axis=1))
+    return [i for i, d in zip(have, dist) if d <= radius]
+
+
+# ---------------------------------------------------------------- relief
+
+
+def _smooth(d: np.ndarray, sigma: float) -> tuple[np.ndarray, np.ndarray]:
+    """NaN-aware gaussian: (smoothed, share of the kernel with values)."""
+    from scipy import ndimage
+
+    w = np.isfinite(d).astype(np.float64)
+    num = ndimage.gaussian_filter(np.where(w > 0, d, 0.0), sigma, mode="nearest")
+    den = ndimage.gaussian_filter(w, sigma, mode="nearest")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(den > 1e-6, num / den, np.nan), den
+
+
+def _valleys(d: np.ndarray, res: float, scales_mm) -> np.ndarray:
+    """The valleys of the depth: for each scale, the Hessian of the relief smoothed at that scale; a pixel is a
+    valley where the largest principal curvature is positive (a trough of ``d``) and dominates the other
+    (Frangi-like), its scale-normalised depth is at least ``VALLEY_DEPTH`` and both sides across it, along the
+    principal direction, stand higher than its centre by ``VALLEY_DEPTH``."""
+    from scipy import ndimage
+
+    out = np.zeros(d.shape, bool)
+    if not np.isfinite(d).any():
+        return out
+    sigmas = sorted({round(max(0.7, s / 1000.0 / res), 2) for s in scales_mm})
+    for sigma in sigmas:
+        g, cover = _smooth(d, sigma)
+        filled = np.where(np.isfinite(g), g, np.nanmedian(g))
+        hyy = ndimage.gaussian_filter(filled, sigma * 0.5, order=(2, 0), mode="nearest")
+        hxx = ndimage.gaussian_filter(filled, sigma * 0.5, order=(0, 2), mode="nearest")
+        hxy = ndimage.gaussian_filter(filled, sigma * 0.5, order=(1, 1), mode="nearest")
+        half = (hxx + hyy) / 2.0
+        root = np.sqrt(((hxx - hyy) / 2.0) ** 2 + hxy ** 2)
+        l1, l2 = half + root, half - root  # l1 the largest
+        s2 = sigma * sigma
+        ratio = np.abs(l2) / np.maximum(l1, 1e-12)
+        strength = s2 * np.sqrt(l1 * l1 + l2 * l2)
+        frangi = np.exp(-ratio ** 2 / 0.5) * (1.0 - np.exp(-(strength / VALLEY_DEPTH) ** 2 / 2.0))
+        cand = (l1 > 0) & (s2 * l1 >= VALLEY_DEPTH) & (frangi > 0.4) & (cover > 0.9) & np.isfinite(d)
+        if not cand.any():
+            continue
+        rows, cols = np.nonzero(cand)
+        # the eigenvector of l1: across the valley
+        ex = hxy[rows, cols]
+        ey = l1[rows, cols] - hxx[rows, cols]
+        small = np.hypot(ex, ey) < 1e-15
+        ex = np.where(small, np.where(hxx[rows, cols] >= hyy[rows, cols], 1.0, 0.0), ex)
+        ey = np.where(small, np.where(hxx[rows, cols] >= hyy[rows, cols], 0.0, 1.0), ey)
+        n = np.hypot(ex, ey)
+        ex, ey = ex / n, ey / n
+        k = max(1.5, 2.0 * sigma)
+        centre = filled[rows, cols]
+        sides = []
+        for s in (-k, k):
+            sides.append(ndimage.map_coordinates(filled, [rows + s * ey, cols + s * ex], order=1, mode="nearest"))
+        both = (sides[0] - centre >= VALLEY_DEPTH) & (sides[1] - centre >= VALLEY_DEPTH)
+        out[rows[both], cols[both]] = True
+    return out
+
+
+def _dark_lines(L: np.ndarray, opaque: np.ndarray, res: float, scales_mm) -> np.ndarray:
+    """The dark thin lines of the orthophoto: black-hat of L (a kernel wider than the largest scale) above
+    ``DARK_CONTRAST`` and the noise, the components that touch Canny edges."""
+    import cv2
+
+    k = max(5, 2 * int(round(max(scales_mm) / 1000.0 / res)) + 3)
+    k += 1 - k % 2
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    Lf = np.where(opaque, L, np.median(L[opaque]) if opaque.any() else 0).astype(np.float32)
+    bh = cv2.morphologyEx(Lf, cv2.MORPH_BLACKHAT, kernel)
+    vals = bh[opaque]
+    if vals.size == 0:
+        return np.zeros(L.shape, bool)
+    med = float(np.median(vals))
+    mad = float(np.median(np.abs(vals - med))) * 1.4826
+    dark = (bh > max(DARK_CONTRAST, med + 6 * mad)) & opaque
+    if not dark.any():
+        return dark
+    edges = cv2.Canny(np.clip(Lf * 2.55, 0, 255).astype(np.uint8), 40, 100)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8)) > 0
+    n, labels = cv2.connectedComponents(dark.astype(np.uint8), connectivity=8)
+    touch = np.zeros(n, bool)
+    touch[np.unique(labels[edges & dark])] = True
+    touch[0] = False
+    return touch[labels]
+
+
+def _skeleton_lines(mask: np.ndarray, spur: float) -> list:
+    """Polylines (in pixel coordinates (col, row)) of the thinned ``mask``: the skeleton's pixels joined to their
+    4-neighbours, and diagonally when no 4-path joins them, merged into lines; end branches shorter than ``spur``
+    pixels at a junction pruned."""
+    import cv2
+    import shapely
+    from shapely.geometry import MultiLineString
+    from shapely.ops import linemerge
+
+    sk = cv2.ximgproc.thinning(mask.astype(np.uint8) * 255) > 0
+    if not sk.any():
+        return []
+    p = np.pad(sk, 1)
+    segs = []
+    rows, cols = np.nonzero(sk)
+    r, c = rows + 1, cols + 1
+    for dr, dc in ((0, 1), (1, 0)):
+        m = p[r + dr, c + dc]
+        segs += [((x, y), (x + dc, y + dr)) for x, y in zip(cols[m], rows[m])]
+    for dc in (1, -1):
+        m = p[r + 1, c + dc] & ~p[r, c + dc] & ~p[r + 1, c]
+        segs += [((x, y), (x + dc, y + 1)) for x, y in zip(cols[m], rows[m])]
+    if not segs:
+        return []
+    lines = list(shapely.get_parts(linemerge(MultiLineString(segs))))
+    for _ in range(3):
+        ends = {}
+        for ln in lines:
+            for pt in (ln.coords[0], ln.coords[-1]):
+                ends[pt] = ends.get(pt, 0) + 1
+        kept = []
+        pruned = False
+        for ln in lines:
+            a, b = ends[ln.coords[0]], ends[ln.coords[-1]]
+            if ln.length < spur and min(a, b) == 1 and max(a, b) >= 3:
+                pruned = True
+                continue
+            kept.append(ln)
+        lines = kept
+        if not pruned or not lines:
+            break
+        lines = list(shapely.get_parts(linemerge(MultiLineString([list(ln.coords) for ln in lines]))))
+    return lines
+
+
+def _joints(chunk, entry):
+    """The joints between the stones drawn on the face (within ``JOINT_DISTANCE`` of the space between two stones
+    nearer than ``JOINT_GAP``), or None when the face has no stones."""
+    import shapely
+    from shapely.ops import unary_union
+    from shapely.strtree import STRtree
+
+    from pyarchinit_photogrammetry.engine.elevation import frame_drawings
+
+    stones = (frame_drawings(chunk, entry["id"]).get("stones") or {}).get(entry["id"]) or []
+    polys = []
+    for text in stones:
+        try:
+            g = shapely.from_wkt(text) if isinstance(text, str) else text
+        except Exception:  # noqa: BLE001 - a broken record is no stone
+            continue
+        if g is not None and not g.is_empty:
+            polys.append(g.buffer(0))
+    if not polys:
+        return None
+    tree = STRtree(polys)
+    zones = []
+    for i, g in enumerate(polys):
+        for j in tree.query(g.buffer(JOINT_GAP)):
+            j = int(j)
+            if j <= i:
+                continue
+            gap = g.distance(polys[j])
+            if gap > JOINT_GAP:
+                continue
+            r = gap / 2.0 + JOINT_DISTANCE
+            zone = g.buffer(r).intersection(polys[j].buffer(r))
+            if not zone.is_empty:
+                zones.append(zone)
+    return unary_union(zones) if zones else unary_union([])
+
+
+def _profile_width(d: np.ndarray, rows, cols, nx, ny, reach: float) -> np.ndarray:
+    """The width (pixels) at half depth of the relief's profile across a line at ``(rows, cols)`` along the normal
+    ``(nx, ny)`` (column, row), sampled every quarter pixel up to ``reach`` on each side; NaN where the profile
+    has no value or no depth."""
+    from scipy import ndimage
+
+    t = np.arange(-reach, reach + 1e-9, 0.25)
+    rr = rows[:, None] + t[None] * ny[:, None]
+    cc = cols[:, None] + t[None] * nx[:, None]
+    filled = np.where(np.isfinite(d), d, np.nan)
+    prof = ndimage.map_coordinates(np.nan_to_num(filled, nan=0.0), [rr.ravel(), cc.ravel()], order=1,
+                                   mode="nearest").reshape(rr.shape)
+    have = ndimage.map_coordinates(np.isfinite(filled).astype(float), [rr.ravel(), cc.ravel()], order=1,
+                                   mode="constant", cval=0.0).reshape(rr.shape)
+    out = np.full(len(rows), np.nan)
+    outer = np.abs(t) >= reach * 0.6
+    mid = np.abs(t) <= 1.5
+    for i in range(len(rows)):
+        if (have[i] < 0.999).any():
+            continue
+        base = float(np.median(prof[i, outer]))
+        j0 = np.nonzero(mid)[0]
+        jmin = j0[np.argmin(prof[i, j0])]
+        depth = base - prof[i, jmin]
+        if depth < VALLEY_DEPTH:
+            continue
+        below = prof[i] < base - depth / 2.0
+        lo = jmin
+        while lo > 0 and below[lo - 1]:
+            lo -= 1
+        hi = jmin
+        while hi < len(t) - 1 and below[hi + 1]:
+            hi += 1
+        if lo == 0 or hi == len(t) - 1:
+            continue
+        # the crossings of the half level, interpolated between the samples
+        level = base - depth / 2.0
+
+        def cross(k0, k1):
+            p0, p1 = prof[i, k0], prof[i, k1]
+            f = (level - p0) / (p1 - p0) if p1 != p0 else 0.5
+            return t[k0] + f * (t[k1] - t[k0])
+
+        out[i] = cross(hi, hi + 1) - cross(lo - 1, lo)
+    return out
+
+
+def cracks(chunk, entry, bounds=None, min_length: float = 0.10, scales_mm=(2, 5, 10, 20),
+           progress=None) -> list[dict]:
+    """Cracks proposed in the window (``code`` ``ISCS.CRACK``, said as "proposto"): the valleys of the relief at the
+    scales ``scales_mm`` joined with the dark thin lines of the orthophoto, thinned, followed into polylines,
+    simplified by a pixel, those shorter than ``min_length`` m dropped. ``width_mm``: the median along the line of
+    the dark width across it (distance transform of the dark mask: ``2 d - 1`` pixels) and, where the relief has a
+    value, of the width at half depth of its profile. A line lying for more than ``JOINT_SHARE`` of its length on a
+    joint between two stones drawn on the face is dropped and counted."""
+    import cv2
+    from shapely.geometry import LineString
+
+    progress = _progress(progress)
+    win = read_window(chunk, entry, bounds)
+    if win is None or win.empty:
+        return []
+    res = win.res
+    progress(0.05, _t("lesioni: valli del rilievo", "cracks: valleys of the relief"))
+    valleys = _valleys(win.relief, res, scales_mm)
+    progress(0.4, _t("lesioni: linee scure dell'immagine", "cracks: dark lines of the image"))
+    L = lab(win.rgb)[..., 0]
+    dark = _dark_lines(L, win.opaque, res, scales_mm)
+    mask = valleys | dark
+    progress(0.6, _t("lesioni: scheletro", "cracks: skeleton"))
+    lines = _skeleton_lines(mask, spur=max(5.0, 0.3 * min_length / res))
+    dist = cv2.distanceTransform(dark.astype(np.uint8), cv2.DIST_L2, 5)
+    joints = _joints(chunk, entry)
+    reach = max(4.0, 2.5 * max(scales_mm) / 1000.0 / res)
+    found, on_joints = [], 0
+    for ln in lines:
+        ln = ln.simplify(1.0)
+        xy = np.asarray(ln.coords)
+        u, v = win.uv(xy[:, 1], xy[:, 0])  # the skeleton's pixels (col, row): their cells' centres
+        geom = LineString(np.column_stack([u, v]))
+        if geom.length < min_length:
+            continue
+        if joints is not None and not joints.is_empty and geom.intersection(joints).length > JOINT_SHARE * geom.length:
+            on_joints += 1
+            continue
+        # samples every pixel along the line
+        n = max(2, int(np.ceil(ln.length)) + 1)
+        pts = [ln.interpolate(s) for s in np.linspace(0, ln.length, n)]
+        pc = np.array([[p.x, p.y] for p in pts])
+        tang = np.gradient(pc, axis=0)
+        tn = np.hypot(tang[:, 0], tang[:, 1])
+        tn[tn == 0] = 1.0
+        nx, ny = -tang[:, 1] / tn, tang[:, 0] / tn
+        rows = np.clip(np.round(pc[:, 1]).astype(int), 0, mask.shape[0] - 1)
+        cols = np.clip(np.round(pc[:, 0]).astype(int), 0, mask.shape[1] - 1)
+        dark_w = dist[rows, cols]
+        dark_w = (2.0 * dark_w[dark_w > 0] - 1.0) * res
+        relief_w = _profile_width(win.relief, pc[:, 1], pc[:, 0], nx, ny, reach) * res
+        relief_w = relief_w[np.isfinite(relief_w)]
+        widths = np.concatenate([dark_w, relief_w])
+        width = float(np.median(widths) * 1000.0) if widths.size else None
+        source = _t("rilievo e immagine", "relief and image") if relief_w.size and dark_w.size else (
+            _t("solo dal rilievo", "relief only") if relief_w.size else _t("solo dall'immagine", "image only"))
+        notes = _t(f"lesione proposta: valli del rilievo a {', '.join(str(s) for s in scales_mm)} mm e linee scure "
+                   f"dell'immagine, lunghezza minima {_num(min_length * 100, 0)} cm; apertura {source}",
+                   f"crack proposed: valleys of the relief at {', '.join(str(s) for s in scales_mm)} mm and dark "
+                   f"lines of the image, least length {_num(min_length * 100, 0)} cm; opening {source}")
+        found.append(_proposal("crack", CRACK, geom, notes, win.coverage, width_mm=width))
+    if joints is None:
+        extra = _t("le pietre del prospetto non sono disegnate: le proposte possono comprendere i giunti",
+                   "the stones of the elevation are not drawn: the proposals may include joints")
+    else:
+        extra = _t(f"{on_joints} linee sui giunti tra le pietre tolte", f"{on_joints} lines on joints between the "
+                   "stones dropped")
+    for f in found:
+        f["notes"] += "; " + extra
+    progress(1.0, _t(f"lesioni: {len(found)} proposte; {extra}", f"cracks: {len(found)} proposals; {extra}"))
+    return found
+
+
+def plane_fit(u, v, d) -> tuple[np.ndarray, float]:
+    """The robust plane ``d = a u + b v + c`` of the samples: least squares, then again without those farther than
+    3 MAD (at least 0.5 mm); ``(coefficients, MAD)``."""
+    A = np.column_stack([u, v, np.ones_like(u)])
+    keep = np.ones(len(u), bool)
+    coef, mad = np.zeros(3), 0.0
+    for _ in range(2):
+        coef, *_ = np.linalg.lstsq(A[keep], d[keep], rcond=None)
+        r = d - A @ coef
+        mad = float(np.median(np.abs(r[keep] - np.median(r[keep])))) * 1.4826
+        keep = np.abs(r) <= max(3.0 * mad, 0.0005)
+        if keep.sum() < 3:
+            break
+    return coef, mad
+
+
+def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: float = 0.01,
+                  progress=None) -> list[dict]:
+    """Losses of material proposed in the window: the relief against the wall's robust plane in the window (on a
+    cylinder the relief is already radial: the plane takes its residual tilt), depressions deeper than ``min_depth``
+    m as connected components of at least ``min_area`` m2, polygons with ``depth_mm`` = their median depth.
+    ``ISCS.MISSING_PART`` over 0.05 m2; ``ISCS.ALVEOLIZATION`` for the components under 0.02 m2 when the window
+    holds at least five of them; the others with no term."""
+    import cv2
+
+    progress = _progress(progress)
+    win = read_window(chunk, entry, bounds)
+    if win is None or win.empty:
+        return []
+    d = win.relief
+    ok = np.isfinite(d)
+    if ok.sum() < 3:
+        return []
+    rows, cols = np.nonzero(ok)
+    u, v = win.uv(rows, cols)
+    pick = np.arange(len(u))
+    if len(pick) > 200_000:
+        pick = np.random.default_rng(0).choice(len(u), 200_000, replace=False)
+    coef, _mad = plane_fit(u[pick], v[pick], d[rows[pick], cols[pick]])
+    resid = np.full(d.shape, np.nan)
+    resid[rows, cols] = d[rows, cols] - (coef[0] * u + coef[1] * v + coef[2])
+    progress(0.5, _t("mancanze: depressioni", "losses: depressions"))
+    deep = np.nan_to_num(resid, nan=0.0) < -min_depth
+    n, labels, stats, _c = cv2.connectedComponentsWithStats(deep.astype(np.uint8), connectivity=8)
+    cell = win.res * win.res
+    comps = []
+    for k in range(1, n):
+        if stats[k, cv2.CC_STAT_AREA] * cell < min_area:
+            continue
+        m = labels == k
+        depth = float(np.median(-resid[m])) * 1000.0
+        for g in _polygons(m, win):
+            comps.append((g, depth))
+    small = [g.area < 0.02 for g, _ in comps]
+    alveoli = sum(small) >= 5
+    found = []
+    for (g, depth), is_small in zip(comps, small):
+        if g.area > 0.05:
+            code = MISSING_PART
+        elif alveoli and is_small:
+            code = ALVEOLIZATION
+        else:
+            code = None
+        notes = _t(f"mancanza proposta: più di {_num(min_depth * 100, 1)} cm sotto il piano del muro nella finestra, "
+                   f"area minima {_num(min_area, 3)} m²", f"loss proposed: more than {_num(min_depth * 100, 1)} cm "
+                   f"behind the wall's plane in the window, least area {_num(min_area, 3)} m²")
+        found.append(_proposal("decay", code, g, notes, win.coverage, depth_mm=round(depth, 1)))
+    progress(1.0, _t(f"mancanze: {len(found)} proposte", f"losses: {len(found)} proposals"))
+    return found
+
+
+# ---------------------------------------------------------------- colours
+
+
+def looks(lab_mean) -> str | None:
+    """``green`` when a < -8, ``bright`` when L > 80 and chroma < 10, ``dark`` when L < 35, else None."""
+    L, a, b = (float(x) for x in lab_mean)
+    if a < -8:
+        return "green"
+    if L > 80 and math.hypot(a, b) < 10:
+        return "bright"
+    if L < 35:
+        return "dark"
+    return None
+
+
+def colour_classes(chunk, entry, bounds=None, k: int = 5, progress=None, min_area: float = 0.005) -> list[dict]:
+    """Classes of colour in the window: k-means (``cv2.kmeans``, 3 attempts) on Lab of the opaque pixels; each class
+    cleaned (opening 3 px, components of at least ``min_area`` m2) and vectorised: ``{"class", "lab_mean", "share",
+    "polygons", "looks", "suggest" (codes the dialog proposes), "notes", "coverage"}``, the largest first."""
+    import cv2
+
+    progress = _progress(progress)
+    win = read_window(chunk, entry, bounds)
+    if win is None or win.empty or not win.opaque.any():
+        return []
+    labimg = lab(win.rgb)
+    data = labimg[win.opaque].astype(np.float32)
+    k = int(max(1, min(k, len(data))))
+    sample = data
+    if len(data) > 200_000:
+        sample = data[np.random.default_rng(0).choice(len(data), 200_000, replace=False)]
+    cv2.setRNGSeed(0)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.2)
+    progress(0.1, _t("colori: k-means", "colours: k-means"))
+    _c, _l, centres = cv2.kmeans(sample, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+    dist = ((data[:, None, :] - centres[None]) ** 2).sum(axis=2)
+    label = np.full(win.opaque.shape, -1, np.int32)
+    label[win.opaque] = dist.argmin(axis=1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    total = float(win.opaque.sum())
+    out = []
+    for i in range(k):
+        m = label == i
+        share = float(m.sum()) / total
+        clean = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_OPEN, kernel) > 0
+        polys = _polygons(clean, win, min_area=min_area)
+        mean = [round(float(x), 2) for x in centres[i]]
+        what = looks(mean)
+        notes = _t(f"classe di colore {i + 1} di {k} (k-means su Lab), pulita con apertura di 3 px, aree da "
+                   f"{_num(min_area, 3)} m²", f"colour class {i + 1} of {k} (k-means on Lab), cleaned by a 3 px "
+                   f"opening, areas from {_num(min_area, 3)} m²")
+        out.append({"class": i, "lab_mean": mean, "share": round(share, 4), "polygons": polys, "looks": what,
+                    "suggest": list(SUGGESTIONS.get(what, ())), "notes": notes, "coverage": round(win.coverage, 4)})
+    out.sort(key=lambda c: -c["share"])
+    progress(1.0, _t(f"colori: {k} classi", f"colours: {k} classes"))
+    return out
+
+
+DETECTORS = ("sam", "cracks", "loss", "colours")
+
+__all__ = ["CRACK", "MISSING_PART", "ALVEOLIZATION", "BIG_FACE", "BIG_FACE_RESOLUTION", "SUGGESTIONS", "DETECTORS",
+           "Window", "read_window", "lab", "sam_areas", "like_this", "cracks", "material_loss", "plane_fit", "looks",
+           "colour_classes"]
