@@ -122,11 +122,13 @@ def _register_pdf(pa, entry: dict, c: dict, pdf: Path, sito: str, link_us, previ
                           overwrite=True, preview=preview, **dirs)
 
 
-def save(pa, chunk, cid: str, sito: str | None = None, words=None, folder=None) -> dict:
+def save(pa, chunk, cid: str, sito: str | None = None, words=None, folder=None, keep: bool = True) -> dict:
     """The campaign ``cid`` into PyArchInit through the bridge ``pa`` (see the module). ``sito``: the project's
     site by default (NotReady without one); ``words``: the four words of CC 0-3; ``folder``: where the files sent go
     (default ``<campaign folder>/pyarchinit``). Returns ``{"media" (ids), "us" [(area, us, tipo, id_us)], "missing"
-    [(area, us, tipo)] (forms not in the database), "word", "unnamed"}``."""
+    [(area, us, tipo)] (forms not in the database), "word", "unnamed", "campaign_media"}``: the ids of the media
+    the campaign keeps, written into ``campaign["media"]`` here when ``keep`` (the window passes False and writes
+    them in the interface thread, within its undo step)."""
     from pyarchinit_photogrammetry.engine.elevation import _safe_stem
 
     from . import outputs
@@ -174,7 +176,8 @@ def save(pa, chunk, cid: str, sito: str | None = None, words=None, folder=None) 
         if pid is not None:
             media["pdf"] = pid
             ids.append(pid)
-    c["media"] = media
+    if keep:
+        c["media"] = media
     vocab = load(chunk)
     word = condition_value(pa, (c.get("classes") or {}).get("cc"), words)
     updated = []
@@ -186,7 +189,7 @@ def save(pa, chunk, cid: str, sito: str | None = None, words=None, folder=None) 
         pa.update_us(rec["id_us"], **fields)
         updated.append((area, us, tipo, rec["id_us"]))
     return {"media": ids, "us": updated, "missing": missing, "word": word,
-            "unnamed": outputs.unnamed_count(chunk, cid)}
+            "unnamed": outputs.unnamed_count(chunk, cid), "campaign_media": media}
 
 
 __all__ = ["save", "condition_value", "database_words", "observation", "FIELD_LENGTH"]

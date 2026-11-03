@@ -75,6 +75,48 @@ def test_the_plate(made, tmp_path):
     assert default["svg"].parent == records.campaign_folder(ch, entry["id"], c["id"])
 
 
+def test_the_plate_frames_a_window_and_numbers_the_cracks(made, tmp_path):
+    """The plate frames the features (with half a metre), the whole face, or a window given (clipped to the face);
+    with more than 30 cracks in the frame the 30 widest show their opening and the others their number of the
+    Cracks table."""
+    import re
+
+    from shapely.geometry import LineString
+
+    from ppg_conservation import plate as plate_mod
+    from pyarchinit_photogrammetry.engine.elevation import bounds_of
+
+    doc, ch, entry, c, feats = made
+    face = bounds_of(ch, entry)
+    assert plate_mod.frame(ch, c["id"], "face") == pytest.approx(face)
+    auto = plate_mod.frame(ch, c["id"])  # the features from u 0.5 to 5.2, v 0.2 to 2.6, half a metre around
+    assert auto == pytest.approx((0.0, face[1], 5.7, face[3]))
+    window = (2.0, Z0 + 1.0, 6.5, Z0 + 2.5)  # beyond the face on the right: clipped
+    out = outputs.plate(ch, c["id"], tmp_path / "w", scale=10, formats=("svg",), bounds=window)
+    assert out["bounds"] == pytest.approx((2.0, Z0 + 1.0, face[2], Z0 + 2.5)) and out["scale"] == 10
+    svg = out["svg"].read_text(encoding="utf-8")
+    width_pt = float(re.search(r'<svg[^>]*width="([0-9.]+)pt"', svg).group(1))
+    draw_mm = (face[2] - 2.0) * 1000.0 / 10
+    assert width_pt == pytest.approx((max(draw_mm, plate_mod.MIN_WIDTH_MM) + 2 * plate_mod.MARGIN_MM) / 25.4 * 72,
+                                     rel=1e-3)
+    whole = outputs.plate(ch, c["id"], tmp_path / "f", scale=10, formats=("svg",), bounds="face")
+    assert float(re.search(r'<svg[^>]*width="([0-9.]+)pt"', whole["svg"].read_text(encoding="utf-8")).group(1)) > \
+        width_pt
+    # 35 cracks across the window: 30 openings, 5 numbers
+    for k in range(35):
+        u = 2.1 + 0.1 * k
+        records.add_feature(ch, c["id"], "crack", "ISCS.CRACK", LineString([(u, Z0 + 1.1), (u, Z0 + 1.4)]),
+                            width_mm=1.0 + k)
+    out = outputs.plate(ch, c["id"], tmp_path / "n", scale=50, formats=("svg",), bounds=window)
+    assert out["labels"] == 30 and out["numbers"] == 5  # the five narrowest (the groove is outside the window)
+    svg = out["svg"].read_text(encoding="utf-8")
+    assert "35 mm" in svg and "le altre con il numero" in svg
+    numbers = outputs.crack_numbers(outputs._context(ch, c["id"]))
+    sheet = outputs.table_data(ch, c["id"])["Lesioni"]
+    assert sheet["headers"][0] == "N." and sorted(r[0] for r in sheet["rows"]) == list(range(1, 37))
+    assert {r[1]: r[0] for r in sheet["rows"]} == numbers
+
+
 def test_the_tables(made, tmp_path):
     from openpyxl import load_workbook
 

@@ -19,6 +19,9 @@ SHEET = (384.0, 199.0)  # the drawing on an A3 sheet (420 x 297 mm, landscape) b
 TITLE_MM = 62.0
 MARGIN_MM = 18.0
 MIN_WIDTH_MM = 320.0  # the sheet is at least this wide inside its margins: the legend needs it
+MARGIN_M = 0.5  # m: around the features' extent, the default frame of a plate
+LABELS = 30  # cracks with their opening printed; beyond, the widest and the others by their number
+PRINT_DPI = 200  # the orthophoto read at the pixel this resolution needs at the plate's scale
 
 
 def _o():
@@ -137,26 +140,78 @@ def _wrap(text: str, width: int) -> str:
     return "\n".join(textwrap.wrap(text, width)) or text
 
 
-def plate(chunk, cid: str, folder=None, scale: int | None = None, formats=("svg", "pdf"), stem: str = "tavola") -> dict:
+def frame(chunk, cid: str, bounds=None) -> tuple:
+    """The window ``(u0, v0, u1, v1)`` a plate draws, within the face: ``bounds`` given (clipped to the face),
+    ``"face"`` the whole face, None the extent of the campaign's accepted features plus ``MARGIN_M`` (the whole face
+    when it has none)."""
+    from shapely.ops import unary_union
+
+    from pyarchinit_photogrammetry.engine.elevation import bounds_of
+
+    ctx = _context(chunk, cid)
+    face = bounds_of(chunk, ctx["entry"])
+    if bounds is None:
+        geoms = [_geom(f) for f in ctx["features"]]
+        if not geoms:
+            return tuple(face)
+        x0, y0, x1, y1 = unary_union(geoms).bounds
+        bounds = (x0 - MARGIN_M, y0 - MARGIN_M, x1 + MARGIN_M, y1 + MARGIN_M)
+    elif isinstance(bounds, str):
+        if bounds != "face":
+            raise ValueError(f"bounds: a tuple, None or 'face', not {bounds!r}")
+        return tuple(face)
+    out = (max(bounds[0], face[0]), max(bounds[1], face[1]), min(bounds[2], face[2]), min(bounds[3], face[3]))
+    if out[2] <= out[0] or out[3] <= out[1]:
+        raise records.NotReady(t("La finestra della tavola è fuori dalla faccia.",
+                                 "The window of the plate is outside the face."))
+    return out
+
+
+def _ortho_window(path, bounds, pixel: float):
+    """The orthophoto in ``bounds`` read with a rasterio window at about ``pixel`` m (never finer than the
+    raster): ``(rgba, extent)`` or None."""
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.windows import from_bounds
+
+    with rasterio.open(path) as src:
+        w = from_bounds(*bounds, transform=src.transform).round_offsets().round_lengths()
+        w = w.intersection(rasterio.windows.Window(0, 0, src.width, src.height))
+        if w.width < 1 or w.height < 1:
+            return None
+        res = abs(src.res[0])
+        k = max(1.0, pixel / res)
+        shape = (src.count, max(1, int(round(w.height / k))), max(1, int(round(w.width / k))))
+        img = src.read(window=w, out_shape=shape, resampling=Resampling.average)
+        b = rasterio.windows.bounds(w, src.transform)
+    rgba = np.moveaxis(img[:4], 0, -1) if img.shape[0] >= 3 else np.repeat(np.moveaxis(img[:1], 0, -1), 3, -1)
+    return rgba, (b[0], b[2], b[1], b[3])
+
+
+def plate(chunk, cid: str, folder=None, scale: int | None = None, formats=("svg", "pdf"), stem: str = "tavola",
+          bounds=None) -> dict:
     """The plate of the campaign ``cid`` (A3 landscape, as the masonry plugin's) in ``folder`` (default the
-    campaign's folder). Returns ``{"svg", "pdf", "scale"}`` (``"png"`` instead when matplotlib cannot write vector
-    files here)."""
+    campaign's folder), framing ``bounds`` (:func:`frame`: by default the accepted features' extent plus half a
+    metre, within the face). The orthophoto is read in that window at the pixel the scale needs at ``PRINT_DPI``.
+    The cracks' openings are printed up to ``LABELS`` cracks in the frame; beyond, the ``LABELS`` widest get their
+    opening and the others their number of the *Lesioni* table. Returns ``{"svg", "pdf", "scale", "bounds",
+    "labels", "numbers"}`` (``"png"`` instead of the vector files when matplotlib cannot write them here)."""
     import matplotlib
     import matplotlib.patches as mpatches
-    import rasterio
     from matplotlib.colors import to_rgba
     from matplotlib.figure import Figure
     from matplotlib.lines import Line2D
-    from rasterio.enums import Resampling
+    from shapely.geometry import box
 
-    from pyarchinit_photogrammetry.engine.elevation import bounds_of, elevation_paths
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
 
     from .assess import class_text
 
     ctx = _context(chunk, cid)
     c, entry, vocab, leg = ctx["campaign"], ctx["entry"], ctx["vocab"], ctx["legend"]
     language = lang()
-    u0, v0, u1, v1 = bounds_of(chunk, entry)
+    u0, v0, u1, v1 = frame(chunk, cid, bounds)
+    window = box(u0, v0, u1, v1)
     width_m, height_m = u1 - u0, v1 - v0
     n = int(scale or choose_scale(width_m, height_m))
     draw_w, draw_h = width_m * 1000.0 / n, height_m * 1000.0 / n
@@ -166,13 +221,18 @@ def plate(chunk, cid: str, folder=None, scale: int | None = None, formats=("svg"
     ax = fig.add_axes([MARGIN_MM / fig_w, (MARGIN_MM + TITLE_MM) / fig_h, draw_w / fig_w, draw_h / fig_h])
     ortho, _relief = elevation_paths(chunk, entry)
     if ortho.exists():
-        with rasterio.open(ortho) as src:
-            k = max(1, int(np.ceil(max(src.width, src.height) / 3000)))
-            img = src.read(out_shape=(src.count, max(1, src.height // k), max(1, src.width // k)),
-                           resampling=Resampling.average)
-            b = src.bounds
-        rgba = np.moveaxis(img[:4], 0, -1) if img.shape[0] >= 3 else np.repeat(np.moveaxis(img[:1], 0, -1), 3, -1)
-        ax.imshow(rgba, extent=(b.left, b.right, b.bottom, b.top), interpolation="bilinear", alpha=0.85)
+        got = _ortho_window(ortho, (u0, v0, u1, v1), n * 25.4 / PRINT_DPI / 1000.0)
+        if got is not None:
+            ax.imshow(got[0], extent=got[1], interpolation="bilinear", alpha=0.85)
+    # the cracks in the frame: their opening printed, or - too many - the widest ones and the others' numbers
+    numbers = _o().crack_numbers(ctx)
+    shown = [f for f in ctx["features"] if f["kind"] == "crack" and _geom(f).intersects(window)]
+    if len(shown) <= LABELS:
+        opening = {f["id"] for f in shown}
+    else:
+        widest = sorted((f for f in shown if f.get("width_mm") is not None), key=lambda f: -float(f["width_mm"]))
+        opening = {f["id"] for f in widest[:LABELS]}
+    labels = {"opening": 0, "number": 0}
 
     def style(code):
         s = leg.get(code) or {"colour": "#808080", "hatch": {"mpl": "//"}}
@@ -201,15 +261,23 @@ def plate(chunk, cid: str, folder=None, scale: int | None = None, formats=("svg"
                 ax.plot(xy[:, 0], xy[:, 1], color=colour, lw=1.2 if f["kind"] == "crack" else 2.4,
                         ls="-" if done else "--", alpha=1.0 if f["kind"] == "crack" else 0.7,
                         solid_capstyle="round")
-            if f["kind"] == "crack" and _opening(f):
-                a = _anchor(g)
-                ax.text(a.x, a.y, f" {_opening(f)}", color=colour, fontsize=5, va="bottom",
-                        bbox={"boxstyle": "round,pad=0.1", "fc": "white", "ec": "none", "alpha": 0.7})
+            if f["kind"] == "crack" and g.intersects(window):
+                inside = g.intersection(window)
+                a = _anchor(inside if not inside.is_empty and inside.length > 0 else g)
+                if f["id"] in opening and _opening(f):
+                    text, labels["opening"] = f" {_opening(f)}", labels["opening"] + 1
+                elif f["id"] not in opening:
+                    text, labels["number"] = f" {numbers[f['id']]}", labels["number"] + 1
+                else:
+                    text = ""
+                if text:
+                    ax.text(a.x, a.y, text, color=colour, fontsize=5, va="bottom", clip_on=True,
+                            bbox={"boxstyle": "round,pad=0.1", "fc": "white", "ec": "none", "alpha": 0.7})
         elif f["kind"] == "note":
             notes += 1
             a = _anchor(g)
             ax.plot([a.x], [a.y], marker="o", ms=4, mfc="white", mec=colour, mew=1.0)
-            ax.text(a.x, a.y, f"  {notes}", color=colour, fontsize=5, va="center")
+            ax.text(a.x, a.y, f"  {notes}", color=colour, fontsize=5, va="center", clip_on=True)
     ax.set_xlim(u0, u1)
     ax.set_ylim(v0, v1)
     ax.set_aspect("equal")
@@ -267,6 +335,10 @@ def plate(chunk, cid: str, folder=None, scale: int | None = None, formats=("svg"
         lines.append(t("Rilevatore e metodo: ", "Surveyor and method: ") + " · ".join(who))
     lines.append(t(f"Scala 1:{n}  ·  stampata il {time.strftime('%d/%m/%Y')}",
                    f"Scale 1:{n}  ·  printed on {time.strftime('%Y-%m-%d')}"))
+    if labels["number"]:
+        lines.append(t(f"Lesioni: aperture delle {labels['opening']} più larghe; le altre con il numero della "
+                       "tabella Lesioni", f"Cracks: openings of the {labels['opening']} widest; the others with "
+                       "their number of the Cracks table"))
     lines.append(class_text("cc", classes.get("cc"), language) if classes.get("cc") is not None
                  else t("CC non scelta", "CC not chosen"))
     lines.append(class_text("uc", classes.get("uc"), language) if classes.get("uc") is not None
@@ -320,7 +392,7 @@ def plate(chunk, cid: str, folder=None, scale: int | None = None, formats=("svg"
                 fontsize=4.5, transform=tb.transAxes, color="#444444")
     folder = Path(folder) if folder else records.campaign_folder(chunk, entry["id"], c["id"])
     folder.mkdir(parents=True, exist_ok=True)
-    out = {"scale": n}
+    out = {"scale": n, "bounds": (u0, v0, u1, v1), "labels": labels["opening"], "numbers": labels["number"]}
     with matplotlib.rc_context({"svg.fonttype": "none", "pdf.fonttype": 42, "hatch.linewidth": 0.4}):
         try:
             for ext in formats:

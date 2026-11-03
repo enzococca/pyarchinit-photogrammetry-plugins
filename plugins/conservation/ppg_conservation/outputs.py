@@ -133,6 +133,12 @@ def _order(ctx: dict) -> list[dict]:
     return sorted(ctx["features"], key=lambda f: (rank.get(f["kind"], 4), -(float(f.get("extent") or 0.0))))
 
 
+def crack_numbers(ctx: dict) -> dict:
+    """The number of each crack of the campaign (``{feature id: n}``, from 1 in the order of :func:`_order`): the
+    column *N.* of the *Lesioni* table and the label of a crack on a plate too crowded for its opening."""
+    return {f["id"]: i for i, f in enumerate((f for f in _order(ctx) if f["kind"] == "crack"), 1)}
+
+
 def _codes_present(ctx: dict) -> list[str]:
     """The codes of the campaign in the legend's order: decay by family, cracks, treatments, notes."""
     vocab = ctx["vocab"]
@@ -266,14 +272,15 @@ def table_data(chunk, cid: str) -> dict:
                 for k, v in sorted(fam.items(), key=lambda kv: FAMILY_ORDER.index(kv[0])
                                    if kv[0] in FAMILY_ORDER else 99)]
     # cracks
-    crack_head = ["id", t("Codice", "Code"), t("Termine", "Term"), t("Lunghezza (m)", "Length (m)"),
+    crack_head = [t("N.", "No."), "id", t("Codice", "Code"), t("Termine", "Term"), t("Lunghezza (m)", "Length (m)"),
                   t("Apertura (mm)", "Opening (mm)"), t("Intensità", "Intensity"), t("Causa", "Cause"),
                   t("Urgenza", "Urgency"), "US", t("Note", "Notes")]
     crack_rows = []
+    numbers = crack_numbers(ctx)
     for f in feats:
         if f["kind"] == "crack":
             g = glossary_names(vocab, f["code"], f.get("code_iscs"))
-            crack_rows.append([f["id"], f["code"], g["it"] if lang() == "it" else g["en"], _r(f.get("extent")),
+            crack_rows.append([numbers[f["id"]], f["id"], f["code"], g["it"] if lang() == "it" else g["en"], _r(f.get("extent")),
                                _r(f.get("width_mm"), 2), _word(INTENSITY_WORDS, f.get("intensity")),
                                f.get("cause") or "", f.get("urgency"), _links_text(f), f.get("notes") or ""])
     # treatments
