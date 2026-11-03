@@ -489,3 +489,109 @@ def test_a_steep_start_with_no_sole_is_keel_unclear(tmp_path, lean):
     assert clinker.profile(station, "port") is None and clinker.profile(station, "starboard") is None
     text = clinker.summary(ch)
     assert "chiglia o fasciame" in text and "S1 babordo" in text and "S1 tribordo" in text
+
+
+# ------------------------------------------------------------------------- task 1b: scan noise, steep Vs
+NOISE = 0.0005  # half a millimetre, the least a photogrammetric model gives
+SPACING = 0.005  # the vertices of a section cut from a mesh
+
+
+def _noisy(polyline, sigma=NOISE, seed=1, spacing=SPACING):
+    """``polyline`` resampled every ``spacing`` along its arc, Gaussian noise of ``sigma`` on both coordinates:
+    a section cut from a photogrammetric model, not a clean polyline."""
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(polyline, axis=0).T))]
+    su = np.arange(0.0, s[-1], spacing)
+    p = np.column_stack([np.interp(su, s, polyline[:, 0]), np.interp(su, s, polyline[:, 1])])
+    return p + np.random.default_rng(seed).normal(0.0, sigma, p.shape)
+
+
+def _both_sides(ch, result, truth, rabbet_z=None, tol=0.005):
+    assert not result["skipped"] and result["mode"] == {"port": 4, "starboard": 4}
+    for side in ("port", "starboard"):
+        _check_lands(ch, side, truth)
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert record["end"] == "line"
+        if rabbet_z is not None:
+            assert record["rabbet"][1] == pytest.approx(rabbet_z, abs=tol)
+
+
+def test_a_noisy_section_of_the_clinker_hull(tmp_path):
+    """The hull's section with the vertices every 5 mm and half a millimetre of noise: the four lands within 5 mm
+    of the arcs of the clean section (the arc is read on the smoothed profile, which noise does not lengthen)."""
+    from hulls import clinker_section
+
+    ch = _one_station(tmp_path, [_noisy(clinker_section(6.01))])
+    result = clinker.detect_lands(ch)
+    _both_sides(ch, result, clinker_truth(6.01))
+
+
+def test_a_noisy_keel_with_leaning_sides(tmp_path):
+    section, truth = _built(_KEEL_HULL, [0.15, 0.32, 0.5, 0.7], keel=(0.08, 0.15), deadrise=15.0, lean=20.0)
+    ch = _one_station(tmp_path, [_noisy(section, seed=2)])
+    result = clinker.detect_lands(ch)
+    _both_sides(ch, result, truth, rabbet_z=0.0)
+    for side in ("port", "starboard"):
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert abs(record["rabbet"][0]) == pytest.approx(0.08, abs=0.005)
+
+
+def test_a_noisy_heeled_wreck(tmp_path):
+    section, truth = _built(_KEEL_HULL, [0.15, 0.32, 0.5, 0.7], keel=(0.05, 0.15), deadrise=15.0, heel=12.0)
+    ch = _one_station(tmp_path, [_noisy(section, seed=3)])
+    result = clinker.detect_lands(ch)
+    _both_sides(ch, result, truth)
+
+
+def test_a_noisy_v_above_a_keel(tmp_path):
+    section, truth = _built([(0.8, 0.0)], [0.15, 0.32, 0.5, 0.68], keel=(0.05, 0.15), deadrise=70.0)
+    ch = _one_station(tmp_path, [_noisy(section, seed=4)])
+    result = clinker.detect_lands(ch)
+    _both_sides(ch, result, truth, rabbet_z=0.0)
+
+
+@pytest.mark.parametrize("deadrise", [80.0, 85.0])
+def test_a_near_vertical_v_is_planking(tmp_path, deadrise):
+    """A V of planking at 80-85 degrees with no keel (the stem and stern stations of a fine-ended hull): its
+    steepness comes back after every land, so no run of it is a keel's side; four lands from the apex."""
+    section, truth = _built([(0.8, 0.0)], [0.15, 0.32, 0.5, 0.68], deadrise=deadrise)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    _both_sides(ch, result, truth, rabbet_z=0.0, tol=0.003)
+
+
+def test_a_near_vertical_v_above_a_keel_is_keel_unclear(tmp_path):
+    """A V at 85 degrees above a 15 cm keel on a sole: the keel's side and the planking are 5 degrees apart, no
+    corner; the run rising from the sole is refused (its steepness returns): the side is skipped, never read
+    from the keel's bottom with the keel's top as a fifth land."""
+    section, _truth = _built([(0.8, 0.0)], [0.15, 0.32, 0.5, 0.68], keel=(0.05, 0.15), deadrise=85.0)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    assert [(d["side"], d["reason"]) for d in result["skipped"]] == [("port", "keel_unclear"),
+                                                                     ("starboard", "keel_unclear")]
+    assert result["lands"] == [] and result["mode"] == {"port": 0, "starboard": 0}
+
+
+def test_a_keel_side_collinear_with_the_planking_is_keel_unclear(tmp_path):
+    """A keel on a sole whose sides lean 20 degrees and whose garboards go on at the same 70 degrees: the rabbet
+    is invisible; the run leaves the keel's half width with no corner: skipped with the reason, not read from
+    the keel's bottom."""
+    section, _truth = _built([(0.8, 0.0)], [0.15, 0.32, 0.5, 0.68], keel=(0.08, 0.15), deadrise=70.0, lean=20.0)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    assert [(d["side"], d["reason"]) for d in result["skipped"]] == [("port", "keel_unclear"),
+                                                                     ("starboard", "keel_unclear")]
+    assert result["lands"] == []
+    assert "chiglia o fasciame" in clinker.summary(ch)
+
+
+def test_a_narrow_sole_is_read_with_a_lower_sole_width(tmp_path):
+    """A worn keel whose bottom is under 2 cm wide (sides at 75 degrees) is keel_unclear with the default; with
+    ``sole_width`` lowered to 1.5 cm its bottom is a sole, the sides are the keel's and the lands are read from
+    the rabbet."""
+    assert clinker.DEFAULTS["sole_width"] == 0.02
+    section, truth = _built(_KEEL_HULL, [0.15, 0.32, 0.5, 0.7], keel=(0.05, 0.15), deadrise=15.0, lean=15.0)
+    ch = _one_station(tmp_path, [section])
+    assert [d["reason"] for d in clinker.detect_lands(ch)["skipped"]] == ["keel_unclear", "keel_unclear"]
+    result = clinker.detect_lands(ch, {"sole_width": 0.015})
+    _both_sides(ch, result, truth, rabbet_z=0.0, tol=0.003)
+    assert ch.meta["shipwreck"]["clinker"]["params"]["sole_width"] == 0.015

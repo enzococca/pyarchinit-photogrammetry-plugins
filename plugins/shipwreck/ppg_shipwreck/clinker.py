@@ -9,14 +9,20 @@ without one) with its arc length ``s``, ended where it turns back (round the she
 face, or where it bends back into sediment, a trench or the seabed: a rule on the direction of the smoothed
 profile, never on heights); pieces that do not continue it (a loose timber) are left apart and counted, a piece that
 goes on beyond a gap makes the side unreadable, a side whose keel cannot be told from the planking (steep from the
-start, within the keel's half width, with no sole) is skipped. A moving average over
-``window`` metres of arc, applied twice, is the hull "without planks"; the signed offset ``d(s)`` of the raw profile
-from it, along its outward normal, is a saw tooth on a clinker hull: walking from the sheer down to the keel ``d``
+start within the keel's half width with no sole; a steep run rising from the sole that leaves the half width with no
+corner, or whose steepness comes back after it) is skipped. The keel, the sole, the rabbet, the direction rules and
+the ARC are read on a working profile: the raw one resampled every ``SAMPLE`` of arc and averaged twice over
+``SMOOTH`` (a triangle over 1 cm, below the lap, so the lands' steps survive); a scan's noise lengthens the raw arc
+by its variance over the vertex spacing squared (1 % at half a millimetre on 5 mm) and breaks any rule read on
+single segments. A moving average over ``window`` metres of arc, applied twice, is the hull "without planks"; the
+signed offset ``d(s)`` of the raw profile from it, along its outward normal, is a saw tooth on a clinker hull:
+walking from the sheer down to the keel ``d``
 rises gently inside a strake and drops by the step at each land (the lower edge of a strake lies outside the strake
 below). A land is where ``d`` changes by more than ``min_step`` within ``step_len`` of arc, the lands at least
 ``min_strake`` apart; its position is the centre of the step (the centroid of the rise of ``d``); its step is read
 on ``d`` - the same as on the raw profile once the slope of the flats is taken out: the two flats' lines (three
-samples each side, their median, the common slope removed) differenced at the land. Lands too near an end of the
+samples each side, their median, the common slope removed) differenced at the land; its arc ``s`` is the working
+profile's arc at that point, from the rabbet. Lands too near an end of the
 profile to read both flats are left out and counted. Nothing is faired or filled: a side with too few vertices, a
 gap or no keel gives no lands and is listed. Where the preserved edge meets flat sediment at less than about 45
 degrees the profile may run on into the sediment: narrow --half-width or check the stations listed as uncertain.
@@ -43,26 +49,33 @@ from pyarchinit_photogrammetry.core.progress import as_progress
 from . import lines, ship
 from .texts import num, plural, t
 
-DEFAULTS = {"min_step": 0.008, "step_len": 0.03, "min_strake": 0.08, "window": 0.12, "keel_half_width": 0.10}
+DEFAULTS = {"min_step": 0.008, "step_len": 0.03, "min_strake": 0.08, "window": 0.12, "keel_half_width": 0.10,
+            "sole_width": 0.02}
 """The parameters of the lands, in metres: ``min_step`` the least step of a land; ``step_len`` the arc it may take;
 ``min_strake`` the least distance between two lands; ``window`` the arc of the moving average (the hull "without
-planks"); ``keel_half_width`` how far from the keel's y a keel standing below the planking may reach. The keel's
-side, whose top is the rabbet where the profile starts, is read in two ways. On a SOLE (the bottom through the keel
-point flatter than ``SOLE_DEG``, 30 degrees, and at least ``SOLE_WIDTH``, 2 cm, wide over both sides: the apex of a
-V has none, a heeled wreck's bottom still has one) a run of segments steeper than ``SOLE_STEEP_DEG`` (60 degrees: a
-tapered keel, worn edges, the low side of a wreck heeled by 12-15 degrees) that rises at least ``RABBET_RISE`` (2 cm)
-within the half width is the keel's side; the rabbet is its sharpest drop of direction within the half width (at
-least ``CORNER_DEG``, 10 degrees, read on chords of ``CORNER_ARC``, 2 cm: 90 to 70 degrees under a V of planking
-above a keel, 90 to the deadrise otherwise), else its top when the run ends within the half width; a run that leaves
-the half width without such a corner is not a keel's side (the rabbet is invisible: the profile starts at the keel).
-Without a sole only a run steeper than ``STEEP_DEG`` (80 degrees) that lies ALL within the half width and rises
-``RABBET_RISE`` is the keel's side (a steep V of planking, the end stations, goes on beyond the half width); a profile
-that starts (within 2 cm of arc) with a run between 60 and 80 degrees, within the half width and rising 2 cm, whose
-steepness does not return within twice ``step_len`` after it (a land's ramp, after which a V of planking goes on) is
-``keel_unclear``: that side is skipped and listed, never measured from a wrong origin. Known limit, left as it is: a
-near-vertical V of planking (about 85 degrees) lying within the half width is read as keel: the profile starts at the
-top of the last such run still within the half width (each land moves the V outward), and the lands below it are
-lost."""
+planks"); ``keel_half_width`` how far from the keel's y a keel standing below the planking may reach; ``sole_width``
+the least width of a SOLE over both sides (2 cm: a narrow worn keel that comes out ``keel_unclear`` at every station
+is read by lowering it). The keel's side, whose top is the rabbet where the profile starts, is read on the working
+profile (resampled every ``SAMPLE``, averaged twice over ``SMOOTH``: the rules below hold at half a millimetre of
+noise on vertices 5 mm apart, mostly at 1 mm) in two ways. On a sole (the bottom through the keel point flatter than
+``SOLE_DEG``, 30 degrees, and at least ``sole_width`` wide over both sides: the apex of a V has none, a heeled wreck's
+bottom still has one) a run of segments steeper than ``SOLE_STEEP_DEG`` (60 degrees: a tapered keel, worn edges, the
+low side of a wreck heeled by 12-15 degrees) that rises at least ``RABBET_RISE`` (2 cm) within the half width is the
+keel's side; the rabbet is its sharpest drop of direction within the half width (at least ``CORNER_DEG``, 10 degrees,
+read on chords of ``CORNER_ARC``, 2 cm: 90 to 70 degrees under a V of planking above a keel, 90 to the deadrise
+otherwise), else its top when the run ends within the half width AND its steepness does not come back within
+``min_strake`` after it (a land's ramp, after which a V of planking goes on: planking, not keel; a chord within
+``RETURN_TOL_DEG`` of the threshold counts). The first such run,
+the one rising from the sole, that leaves the half width with no corner, or is refused because its steepness comes
+back, gives ``keel_unclear``: a keel's side collinear with the garboards (the rabbet invisible), a V of 80 degrees or
+more above a keel (the corner under 10 degrees) are flagged sides, never measured from the keel's bottom with the
+keel's top as a land (known limits). Without a sole only a run steeper than ``STEEP_DEG`` (80 degrees) that lies ALL
+within the half width, rises ``RABBET_RISE`` and whose steepness does not come back after it is the keel's side (a
+steep V of planking, the end stations, goes on beyond the half width or comes back after each land); a profile that
+starts (within ``sole_width`` of arc) with a run between 60 and 80 degrees, within the half width and rising 2 cm,
+whose steepness does not return within ``min_strake`` after it is ``keel_unclear``: that side is skipped and
+listed, never measured from a wrong origin. A pointed keel (no sole) collinear with the planking is read as planking
+from its bottom: nothing tells them apart."""
 SIDES = ("port", "starboard")
 SIDE_SIGN = {"port": 1.0, "starboard": -1.0}
 MIN_VERTICES = 10
@@ -70,16 +83,19 @@ JOIN = 0.02  # pieces of a side's line farther apart than this: the model is mis
 KEEL_BAND = 0.05  # the keel: the hull's lowest point within 5 cm of y = 0
 KEEL_FLAT = 0.002  # ... the middle of the bottom within 2 mm of that height (a flat keel, a keel off the centreline)
 KEEL_REACH = 1.5  # the hull among the pieces near y = 0: the one that rises most within 1.5 m of it
-SOLE_DEG = 30.0  # a sole: the bottom through the keel point flatter than this...
-SOLE_WIDTH = 0.02  # ... and at least 2 cm wide over both sides (the apex of a V has none)
+SOLE_DEG = 30.0  # a sole: the bottom through the keel point flatter than this (and at least ``sole_width`` wide)
 TURN_DEG = 150.0  # the profile has turned round the sheer onto the inner face
 STEEP_DEG = 80.0  # no sole: a keel's side is steeper than this, all of it within ``keel_half_width`` of the keel's y...
 RABBET_RISE = 0.02  # ... and rising at least 2 cm: the planking starts at its top, the rabbet
 SOLE_STEEP_DEG = 60.0  # a keel's side on a sole: steeper than this (a tapered keel, a heeled wreck)...
 CORNER_ARC = 0.02  # ... the rabbet where its direction drops most, read on chords of 2 cm either side of a vertex...
 CORNER_DEG = 10.0  # ... by at least this much; else its top, when the run ends within the half width
+RETURN_TOL_DEG = 1.0  # a chord this much under a run's threshold still brings its steepness back (a V of planking built
+# or scanned right at the threshold reads 80 degrees on one chord and 79.9 on the next)
 BEND_DEG = 45.0  # ... or bends back this much below the steepest it reached, for ``min_strake``: sediment, a trench
 SAMPLE = 0.002  # the profile resampled every 2 mm of arc
+SMOOTH = 0.006  # the working profile: the raw one averaged twice over this much arc (a triangle over 1 cm, below the
+# lap: the lands' steps stay; a box of 1 cm cut 0.3 mm off each corner of a lap, 5 mm over eight lands)
 FLAT = 0.005  # the flats' samples beside a land, 5 mm apart
 LAYERS = {"port": "FASCE_BABORDO", "starboard": "FASCE_TRIBORDO"}
 TABLE = "fasce_linee"
@@ -94,9 +110,11 @@ def _reason_text(reason: str) -> str:
             "few": t(f"meno di {MIN_VERTICES} vertici", f"fewer than {MIN_VERTICES} vertices"),
             "gap": t("sezione interrotta: il modello manca", "section broken: the model is missing"),
             "keel": t("la sezione non arriva alla chiglia", "the section does not reach the keel"),
-            "keel_unclear": t("chiglia o fasciame? il profilo parte ripido entro la mezza larghezza della chiglia, "
-                              "senza suola",
-                              "keel or planking? the profile starts steep within the keel's half width, with no sole"),
+            "keel_unclear": t("chiglia o fasciame? il fianco della chiglia non si distingue dal fasciame (ripido "
+                              "dall'inizio entro la mezza larghezza della chiglia senza suola, o senza spigolo in "
+                              "cima)",
+                              "keel or planking? the keel's side cannot be told from the planking (steep from the "
+                              "start within the keel's half width with no sole, or with no corner at its top)"),
             }.get(reason, reason)
 
 
@@ -148,23 +166,27 @@ def _hull_piece(polylines: list[np.ndarray]) -> np.ndarray | None:
     return best
 
 
-def _keel(p: np.ndarray) -> tuple[np.ndarray, float]:
-    """The keel of the hull's piece and the width of its sole. The keel: the piece's lowest point near y = 0, moved
-    to the middle of the bottom that lies within ``KEEL_FLAT`` of that height (a flat keel is read at its middle, a
-    hull lying a few cm off the centreline from its own keel). The sole: the bottom through the keel point flatter
-    than ``SOLE_DEG``, measured over both sides (:func:`_sole`)."""
+def _keel(p: np.ndarray, params: dict) -> tuple[np.ndarray, float]:
+    """The keel of the hull's working piece ``p`` (:func:`_working`) and the width of its sole. The keel: the
+    piece's lowest point near y = 0, moved to the middle of the bottom that lies within ``KEEL_FLAT`` of that height
+    (a flat keel is read at its middle, a hull lying a few cm off the centreline from its own keel); the heights are
+    those of the piece smoothed twice over ``window`` (on a round bottom the band is 15 cm wide and one noisy sample
+    2 mm up cut it short by centimetres), the point itself lies on ``p``. The sole: the bottom through the keel
+    point flatter than ``SOLE_DEG``, measured over both sides (:func:`_sole`)."""
     near = np.flatnonzero(np.abs(p[:, 0]) <= KEEL_BAND)
     if not len(near):  # the piece crosses y = 0 between two vertices: its lowest crossing
         keel = _crossings(p)[0]
     else:
-        i0 = int(near[np.argmin(p[near, 1])])
-        flat = p[:, 1] <= p[i0, 1] + KEEL_FLAT
+        n = int(round(params["window"] / SAMPLE))
+        z = (_smooth(_smooth(p, n), n) if len(p) > n + 2 else p)[:, 1]
+        i0 = int(near[np.argmin(z[near])])
+        flat = z <= z[i0] + KEEL_FLAT
         lo, hi = i0, i0
         while lo > 0 and flat[lo - 1]:
             lo -= 1
         while hi < len(p) - 1 and flat[hi + 1]:
             hi += 1
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(p[lo:hi + 1], axis=0).T))]
+        s = _arc(p[lo:hi + 1])
         mid = s[-1] / 2.0
         keel = np.array([np.interp(mid, s, p[lo:hi + 1, 0]), np.interp(mid, s, p[lo:hi + 1, 1])])
     return keel, _sole(p, keel)
@@ -200,9 +222,23 @@ def _spans(mask: np.ndarray) -> list[tuple[int, int]]:
     return out
 
 
+def _arc(points: np.ndarray) -> np.ndarray:
+    """The arc length along a polyline, 0 at its first vertex."""
+    return np.r_[0.0, np.cumsum(np.hypot(*np.diff(points, axis=0).T))]
+
+
 def _resample(points: np.ndarray, s: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     su = np.linspace(0.0, float(s[-1]), int(np.ceil(float(s[-1]) / SAMPLE)) + 1)
     return su, np.column_stack([np.interp(su, s, points[:, 0]), np.interp(su, s, points[:, 1])])
+
+
+def _working(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(raw, su, smooth)`` of a polyline: its vertices resampled every ``SAMPLE`` of its own arc ``su``, and the
+    working profile, those samples averaged twice over ``SMOOTH`` of arc (:func:`_smooth`; a polyline shorter than
+    the average is left as it is), sample by sample beside them."""
+    su, raw = _resample(points, _arc(points))
+    n = int(round(SMOOTH / SAMPLE))
+    return raw, su, _smooth(_smooth(raw, n), n) if len(raw) > n else raw.copy()
 
 
 def _end(points: np.ndarray, s: np.ndarray, sign: float, params: dict) -> tuple[float, str] | None:
@@ -251,26 +287,57 @@ def _end(points: np.ndarray, s: np.ndarray, sign: float, params: dict) -> tuple[
 
 
 def _rabbet(points: np.ndarray, keel: np.ndarray, sign: float, params: dict, sole: bool) -> int | str:
-    """The index where the planking leaves the keel, the top of the keel's side; 0 when there is none (a hull
-    without a keel standing below it: the profile starts at the keel); ``"keel_unclear"`` when the keel cannot be
-    told from the planking. With a ``sole`` under the keel point the keel's side is a run of segments steeper than
-    ``SOLE_STEEP_DEG`` rising at least ``RABBET_RISE`` within ``keel_half_width`` of the keel's y: the rabbet is the
-    sharpest drop of its direction (at least ``CORNER_DEG`` on chords of ``CORNER_ARC``) within the half width - the
-    corner where the planking leaves it, 90 to 70 degrees under a V, 90 to the deadrise otherwise - else its top when
-    it ends within the half width; the last such run counts (a worn step in the side). A run that leaves the half
-    width without a corner gives nothing. Without a sole (the apex of a V) only a run steeper than ``STEEP_DEG`` that
-    lies ALL within the half width is the keel's side (a steep V of planking, an end station, goes on beyond it);
-    and a profile that starts (within ``SOLE_WIDTH`` of arc: a rounded apex) with a run between ``SOLE_STEEP_DEG``
-    and ``STEEP_DEG``, within the half width and rising ``RABBET_RISE``, is a V of planking when its steepness
-    returns within twice ``step_len`` after the run (a land's ramp), else ``keel_unclear``."""
+    """The index where the planking leaves the keel, the top of the keel's side, on the working profile
+    ``points``; 0 when there is none (a hull without a keel standing below it: the profile starts at the keel);
+    ``"keel_unclear"`` when the keel cannot be told from the planking. A run's steepness RETURNS when, within
+    ``min_strake`` of arc after its top, the direction never falls under the run's threshold less ``RETURN_TOL_DEG``
+    (the profile goes on as steep) or comes back over it within ``min_strake`` of where it first fell under (a
+    land's ramp in a V of planking, after which the next strake runs at least that far); such a run is planking, not
+    keel. With a ``sole`` under the keel point the keel's
+    side is a run of segments steeper than ``SOLE_STEEP_DEG`` rising at least ``RABBET_RISE`` within
+    ``keel_half_width`` of the keel's y: the rabbet is the sharpest drop of its direction (at least ``CORNER_DEG``,
+    read on chords of ``CORNER_ARC`` either side of a vertex, over the whole profile) among its vertices within the
+    half width and half a chord past its top (the smoothing rounds a corner: its middle lies a sample or two past
+    the last steep segment) - the corner where the planking leaves it, 90 to 70 degrees under a V, 90 to the deadrise
+    otherwise; a drop within a chord of the top of a run whose steepness returns is a land's ramp, never the rabbet -
+    else its top when it ends within the half width and its steepness does not return; the last such run counts (a
+    worn step in the side). The first run, the one rising from the sole,
+    that leaves the half width with no corner (the keel's side collinear with the garboards: the rabbet invisible)
+    or whose top is refused (a V of 80 degrees or more above the keel, its corner too small) gives ``keel_unclear``.
+    Without a sole (the apex of a V) only a run steeper than ``STEEP_DEG`` that lies ALL within the half width and
+    whose steepness does not return is the keel's side (a steep V of planking, an end station, goes on beyond it or
+    comes back after each land); and a profile that starts (within ``sole_width`` of arc: a rounded apex) with a
+    run between ``SOLE_STEEP_DEG`` and ``STEEP_DEG``, within the half width and rising ``RABBET_RISE``, is a V of
+    planking when its steepness returns, else ``keel_unclear``."""
     half_width = params["keel_half_width"]
-    d = np.diff(points, axis=0)
     q = np.column_stack([sign * (points[:, 0] - keel[0]), points[:, 1]])  # (out from the keel's y, height)
     u = q[:, 0]
-    angle = np.degrees(np.arctan2(d[:, 1], sign * d[:, 0]))
-    arc = np.r_[0.0, np.cumsum(np.hypot(d[:, 0], d[:, 1]))]
+    arc = _arc(points)
+    # the direction of each segment, read on a chord of CORNER_ARC centred on it (shorter at the profile's ends):
+    # the noise of a scan, even averaged, breaks a run read on single segments of 2 mm; rounded to a millionth of
+    # a degree, so that a side built right at a threshold reads the same on every chord
+    mid = 0.5 * (arc[:-1] + arc[1:])
+    back = np.maximum(np.searchsorted(arc, mid - 0.5 * CORNER_ARC, side="right") - 1, 0)
+    fore = np.minimum(np.searchsorted(arc, mid + 0.5 * CORNER_ARC, side="left"), len(arc) - 1)
+    angle = np.round(np.degrees(np.arctan2(q[fore, 1] - q[back, 1], q[fore, 0] - q[back, 0])), 6)
+
+    def returns(j: int, steep: float) -> bool:
+        """Whether the steepness of a run ending at vertex ``j`` comes back: within ``min_strake`` after it the
+        direction never falls under ``steep`` less ``RETURN_TOL_DEG`` (the run ended on a chord within the
+        tolerance, or at the profile's end: the profile goes on as steep), or comes back over it within
+        ``min_strake`` of where it first fell under (a land's ramp, after which the next strake runs at least
+        that far)."""
+        span, low = params["min_strake"], steep - RETURN_TOL_DEG
+        later = j + np.flatnonzero(arc[j:-1] - arc[j] <= span)
+        fallen = later[angle[later] < low]
+        if not len(fallen):
+            return True
+        after = fallen[0] + np.flatnonzero(arc[fallen[0]:-1] - arc[fallen[0]] <= span)
+        return bool((angle[after] >= low).any())
+
     found = 0
     if sole:
+        first = True  # the next run rising within the half width is the one rising from the sole
         for i, j in _spans(angle >= SOLE_STEEP_DEG):
             within = _spans(u[i:j + 1] <= half_width)
             if not within:
@@ -278,10 +345,13 @@ def _rabbet(points: np.ndarray, keel: np.ndarray, sign: float, params: dict, sol
             a, b = i + within[0][0], i + within[0][1] - 1  # the run's vertices within the half width
             if b <= a or q[b, 1] - q[a, 1] < RABBET_RISE:
                 continue
-            v = np.arange(a + 1, b)
+            from_sole, first = first and a == i, False
+            v = np.flatnonzero((arc >= arc[a]) & (arc <= arc[b] + 0.5 * CORNER_ARC))
+            if b == j and returns(j, SOLE_STEEP_DEG):  # a drop at the top of this run is a land's ramp
+                v = v[arc[b] - arc[v] >= CORNER_ARC]
             if len(v):
-                back = np.maximum(np.searchsorted(arc[a:b + 1], arc[v] - CORNER_ARC, side="right") - 1 + a, a)
-                fore = np.minimum(np.searchsorted(arc[a:b + 1], arc[v] + CORNER_ARC, side="left") + a, b)
+                back = np.maximum(np.searchsorted(arc, arc[v] - CORNER_ARC, side="right") - 1, 0)
+                fore = np.minimum(np.searchsorted(arc, arc[v] + CORNER_ARC, side="left"), len(arc) - 1)
                 before = np.degrees(np.arctan2(q[v, 1] - q[back, 1], q[v, 0] - q[back, 0]))
                 after = np.degrees(np.arctan2(q[fore, 1] - q[v, 1], q[fore, 0] - q[v, 0]))
                 drop = before - after
@@ -289,32 +359,35 @@ def _rabbet(points: np.ndarray, keel: np.ndarray, sign: float, params: dict, sol
                 if drop[k] >= CORNER_DEG:
                     found = int(v[k])
                     continue
-            if b == j:
+            if b == j and not returns(j, SOLE_STEEP_DEG):
                 found = j
+                continue
+            if from_sole:  # no corner, and it leaves the half width or its steepness comes back: keel or planking?
+                return "keel_unclear"
         return found
     for i, j in _spans(angle >= STEEP_DEG):
-        if u[i] <= half_width and q[j, 1] - q[i, 1] >= RABBET_RISE and u[i:j + 1].max() <= half_width:
+        if (u[i] <= half_width and q[j, 1] - q[i, 1] >= RABBET_RISE and u[i:j + 1].max() <= half_width
+                and not returns(j, STEEP_DEG)):
             found = j
     if found:
         return found
-    runs = [(i, j) for i, j in _spans(angle >= SOLE_STEEP_DEG) if arc[i] <= SOLE_WIDTH]  # steep from the start
+    # steep from the start (a rounded apex: within sole_width of arc)
+    runs = [(i, j) for i, j in _spans(angle >= SOLE_STEEP_DEG) if arc[i] <= params["sole_width"]]
     if runs:
         i, j = runs[0]
-        if u[:j + 1].max() <= half_width and q[j, 1] - q[0, 1] >= RABBET_RISE:
-            later = np.arange(j, len(angle))
-            later = later[arc[later] - arc[j] <= 2.0 * params["step_len"]]
-            if not (angle[later] >= SOLE_STEEP_DEG).any():
-                return "keel_unclear"
+        if u[:j + 1].max() <= half_width and q[j, 1] - q[0, 1] >= RABBET_RISE and not returns(j, SOLE_STEEP_DEG):
+            return "keel_unclear"
     return 0
 
 
 def _profile(section: dict, side: str, params: dict | None = None):
     """``(points, s, info)`` of the side from the keel outward, or the reason why not: ``empty``, ``keel``, ``gap``,
-    ``few``, ``keel_unclear`` (the profile starts steep within the keel's half width with no sole: keel or planking?).
-    ``info``: ``end`` "turn" or "bend" when the profile was ended there (:func:`_end`; a piece beyond that end is a
-    stray, never a gap), else "line"; ``stray``: pieces left apart; ``keel``: the keel's y (the sides split there);
-    ``sole``: the width of the bottom under it (:func:`_sole`); ``rabbet``: (y, z) where the profile and its arcs
-    start (:func:`_rabbet`)."""
+    ``few``, ``keel_unclear`` (the keel cannot be told from the planking: :func:`_rabbet`). ``points, s``: the
+    working profile (:func:`_working`) and its arc; ``info["raw"]``: the raw profile and its own arc, sample by
+    sample beside it (the lands are read on the raw one, their arcs on the working one). ``info``: ``end`` "turn" or
+    "bend" when the profile was ended there (:func:`_end`; a piece beyond that end is a stray, never a gap), else
+    "line"; ``stray``: pieces left apart; ``keel``: the keel's y (the sides split there); ``sole``: the width of the
+    bottom under it (:func:`_sole`); ``rabbet``: (y, z) where the profile and its arcs start (:func:`_rabbet`)."""
     sign = SIDE_SIGN[side]
     polylines = [np.asarray(line, float).reshape(-1, 2) for line in section.get("lines") or []]
     polylines = [p for p in polylines if len(p) > 1]
@@ -323,7 +396,8 @@ def _profile(section: dict, side: str, params: dict | None = None):
     piece = _hull_piece(polylines)
     if piece is None:
         return "keel"
-    keel, sole = _keel(piece)
+    params = DEFAULTS if params is None else {**DEFAULTS, **params}
+    keel, sole = _keel(_working(piece)[2], params)
     pieces = []
     for p in polylines:
         for r in _runs(p - [keel[0], 0.0], sign):
@@ -342,45 +416,53 @@ def _profile(section: dict, side: str, params: dict | None = None):
             break
         r = rest.pop(i)
         chain.append(r if np.hypot(*(r[0] - end)) <= np.hypot(*(r[-1] - end)) else r[::-1])
-    points = np.vstack(chain)
-    points = points[np.r_[True, np.hypot(*np.diff(points, axis=0).T) > 1e-9]]
-    if len(points) < MIN_VERTICES:
+    vertices = np.vstack(chain)
+    vertices = vertices[np.r_[True, np.hypot(*np.diff(vertices, axis=0).T) > 1e-9]]
+    if len(vertices) < MIN_VERTICES:
         return "few"
-    params = DEFAULTS if params is None else {**DEFAULTS, **params}
     info = {"end": "line", "stray": len(rest), "keel": round(float(keel[0]), 5), "sole": round(sole, 4)}
-    j = _rabbet(points, keel, sign, params, sole >= SOLE_WIDTH)
+    s_raw = _arc(vertices)  # the raw vertices' arcs: how many of them a cut profile keeps
+    raw, su, points = _working(vertices)
+    s = _arc(points)
+    j = _rabbet(points, keel, sign, params, sole >= params["sole_width"])
     if isinstance(j, str):
         return j
+    lo = 0.0
     if j:
-        points = points[j:]
-        if len(points) < MIN_VERTICES:
+        lo = float(su[j])
+        raw, su, points, s = raw[j:], su[j:] - su[j], points[j:], s[j:] - s[j]
+        if np.count_nonzero(s_raw >= lo - 1e-9) < MIN_VERTICES:
             return "few"
     info["rabbet"] = [round(float(v), 5) for v in points[0]]
-    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(points, axis=0).T))]
     ended = _end(points, s, sign, params)
     if ended is not None:
         cut, info["end"] = ended
-        keep = s < cut
-        points = np.vstack([points[keep], [np.interp(cut, s, points[:, 0]), np.interp(cut, s, points[:, 1])]])
-        s = np.r_[s[keep], cut]
-        if len(points) < MIN_VERTICES:
+        f = min(float(np.interp(cut, s, np.arange(len(s)))), len(s) - 1.0)
+        k = int(np.ceil(f))  # the samples before the cut, then the cut itself, on both profiles alike
+        at = (lambda a: a[k - 1] + (f - (k - 1)) * (a[k] - a[k - 1])) if k else (lambda a: a[0])
+        points, raw = np.vstack([points[:k], at(points)]), np.vstack([raw[:k], at(raw)])
+        s, su = np.r_[s[:k], cut], np.r_[su[:k], at(su)]
+        if np.count_nonzero((s_raw >= lo - 1e-9) & (s_raw <= lo + su[-1] + 1e-9)) < MIN_VERTICES:
             return "few"
     else:  # the line ends by itself: a piece farther out and higher goes on beyond a gap, the model is missing there
         end = points[-1]
         for r in rest:
             if ((sign * (r[:, 0] - end[0]) > JOIN) & (r[:, 1] > end[1])).any():
                 return "gap"
+    info["raw"] = (raw, su)
     return points, s, info
 
 
 def profile(section: dict, side: str) -> tuple[np.ndarray, np.ndarray] | None:
-    """The side's polyline of a station's section from the rabbet (where the planking leaves the keel; the keel
-    itself, its lowest point near y = 0, when no keel stands below the planking) outward, ``(N, 2)``
-    (y, z), and its arc length ``s`` ``(N,)``, ended where it turns round the sheer or bends back (sediment, a trench);
+    """The side's working profile of a station's section (the raw line resampled every 2 mm of arc and averaged
+    twice over 6 mm: the noise of a scan taken out, the lands' steps kept) from the rabbet (where the planking
+    leaves the keel; the keel itself, its lowest point near y = 0, when no keel stands below the planking) outward,
+    ``(N, 2)`` (y, z), and its arc length ``s`` ``(N,)``, ended where it turns round the sheer or bends back
+    (sediment, a trench);
     None when the side has fewer than 10 vertices, does not reach the keel, goes on beyond a gap of more than
-    2 cm (the model is missing there), or starts steep within the keel's half width with no sole under the keel
-    point, so that the keel cannot be told from the planking. Pieces that do not continue it (a loose timber) are
-    left apart."""
+    2 cm (the model is missing there), or its keel cannot be told from the planking (steep from the start within the
+    keel's half width with no sole; a steep run from the sole with no corner at its top). Pieces that do not continue
+    it (a loose timber) are left apart."""
     out = _profile(section, side)
     return None if isinstance(out, str) else out[:2]
 
@@ -399,17 +481,20 @@ def _smooth(a: np.ndarray, n: int) -> np.ndarray:
 
 def lands_of_profile(points, s, params: dict | None = None, side: str | None = None) -> list[dict]:
     """The lands of one side's profile (from the keel outward, as :func:`profile` gives it): ``{"s", "y", "z",
-    "step_mm", "drop"}`` ordered from the keel; ``s`` the arc of the land's centre, ``y, z`` its point on the raw
+    "step_mm", "drop"}`` ordered from the keel; ``s`` the arc of the land's centre, ``y, z`` its point on the
     profile, ``step_mm`` the step, ``drop`` the fall of the offset ``d`` across ``step_len`` seen from the sheer
     (metres). ``side``: "port" or "starboard" (which way is outward); None: the side the profile lies on."""
     return _lands(points, s, params, side)[0]
 
 
-def _lands(points, s, params=None, side=None) -> tuple[list[dict], int]:
+def _lands(points, s, params=None, side=None, arc=None) -> tuple[list[dict], int]:
     """:func:`lands_of_profile` and the number of lands left out because they lie too near an end of the profile to
-    read both flats."""
+    read both flats. ``arc``: the working profile's arc, sample by sample beside ``s`` (:func:`_profile`): the lands
+    are read on ``points`` (the raw profile: their points and steps) and their ``s`` given on ``arc``, which the
+    noise of a scan does not lengthen."""
     p = {**DEFAULTS, **(params or {})}
     points, s = np.asarray(points, float), np.asarray(s, float)
+    arc = s if arc is None else np.asarray(arc, float)
     length = float(s[-1]) if len(s) else 0.0
     half = p["step_len"] / 2.0
     m = max(1, int(round(half / SAMPLE)))
@@ -459,7 +544,8 @@ def _lands(points, s, params=None, side=None) -> tuple[list[dict], int]:
         step = float(np.median(upper - g * offsets) - np.median(below + g * offsets))
         if step < p["min_step"]:
             continue
-        out.append({"s": round(centre, 5), "y": round(float(np.interp(centre, su, raw[:, 0])), 5),
+        out.append({"s": round(float(np.interp(centre, s, arc)), 5),
+                    "y": round(float(np.interp(centre, su, raw[:, 0])), 5),
                     "z": round(float(np.interp(centre, su, raw[:, 1])), 5), "step_mm": round(step * 1000.0, 2),
                     "drop": round(float(rise[i]), 5)})
     return out, dropped
@@ -503,7 +589,8 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
                 skipped.append({"station": section["name"], "x": float(section["value"]), "side": side, "reason": prof})
                 continue
             points, arc, info = prof
-            here, dropped = _lands(points, arc, p, side)
+            raw, raw_arc = info.pop("raw")
+            here, dropped = _lands(raw, raw_arc, p, side, arc=arc)
             stations.append({"name": section["name"], "x": float(section["value"]), "side": side, "count": len(here),
                              "length": round(float(arc[-1]), 5), "end": info["end"], "stray": info["stray"],
                              "keel": info["keel"], "sole": info["sole"], "rabbet": info["rabbet"],
