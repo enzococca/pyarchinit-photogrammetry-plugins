@@ -183,7 +183,7 @@ def test_the_geopackages(made, tmp_path):
     assert np.allclose(uvd[:, 2], 0, atol=1e-6) and np.allclose(uvd[:, :2].min(0), S.HOLE[:2], atol=1e-6)
 
 
-def test_qgis_styles_and_project(made, tmp_path, monkeypatch):
+def test_qgis_styles_and_project(made, tmp_path, monkeypatch, caplog):
     from pyarchinit_photogrammetry.io import qgis_link
 
     from ppg_conservation.vocabulary import legend
@@ -222,6 +222,13 @@ def test_qgis_styles_and_project(made, tmp_path, monkeypatch):
         assert (project.parent / f"{table}.qml").exists()
     xml = project.read_text(encoding="utf-8")
     assert xml.count('type="categorizedSymbol"') == 4 and "ISCS.CRUST.BLACK_CRUST" in xml
+    # a project where the styles could not go: said in the log, not silent
+    import logging
+
+    monkeypatch.setattr(qgis_link, "build_project", lambda project, *a, **k: project.write_text("<qgis/>"))
+    with caplog.at_level(logging.WARNING, logger="ppg_conservation"):
+        outputs.qgis_project(ch, c["id"], tmp_path / "q2", open_it=False)
+    assert "0 of the 4 layers" in caplog.text
 
 
 def test_the_whole_export(made):
@@ -232,7 +239,10 @@ def test_the_whole_export(made):
                               status="proposed", source="proposed:sam")
     seg["status"] = "accepted"  # as an older project might hold it: still never exported
     out = outputs.export_campaign(ch, c["id"])
-    assert out["unnamed"] == 1
+    assert out["unnamed"] == 1 and out["unnamed_proposed"] == 0
+    assert outputs.unnamed_text(ch, c["id"]) == "1 elementi da nominare esclusi"
+    records.add_feature(ch, c["id"], "decay", UNNAMED, S.box((5.4, Z0 + 0.4, 5.8, Z0 + 0.6)), status="proposed")
+    assert "1 proposte ancora da nominare" in outputs.unnamed_text(ch, c["id"])
     assert UNNAMED not in out["plate_svg"].read_text(encoding="utf-8")
     assert len(outputs.table_data(ch, c["id"])["Elementi"]["rows"]) == 7
     folder = records.campaign_folder(ch, entry["id"], c["id"])
@@ -262,6 +272,9 @@ class FakePyArchInit:
         return list(self.words) if (code, table) == ("stato_di_conservazione", "us_table") else []
 
     def register_elevation_media(self, chunk, entry, paths, sito=None, link_us=None):
+        for link in link_us or []:  # as the program's bridge: a link to a form that is not there stops everything
+            if (str(link[0]), str(link[1])) not in self.forms:
+                raise KeyError(f"US {link[1]} (area {link[0]}) not found in site {sito}")
         self.media.append((entry, paths, sito, link_us))
         entry["media"] = {"dxf": 11, "svg": 12}
         return [11, 12]
@@ -285,7 +298,7 @@ def test_pyarchinit_save(made, tmp_path):
     shadow, paths, sito, link = pa.media[0]
     assert sito == "Saggio" and "conservazione" in shadow["name"] and shadow["id"] == entry["id"]
     assert paths["dxf"].exists() and paths["svg"].exists() and paths["svg"].suffix == ".svg"
-    assert sorted(map(tuple, link)) == [("1", "5", "US"), ("1", "6", "US")]
+    assert [tuple(x) for x in link] == [("1", "5", "US")]  # the unit without its form is not linked
     assert c["media"] == {"dxf": 11, "svg": 12}
     assert out["us"] == [("1", "5", "US", 50)] and out["missing"] == [("1", "6", "US")]
     (id_us, fields), = pa.updates
@@ -320,12 +333,14 @@ def test_pyarchinit_round_trip_on_a_demo_database(made, tmp_path):
     cfg = demo_db.create_demo_database(tmp_path / "home", demo_content=False)
     pa = PyArchInit.connect(config_path=cfg, media_root=tmp_path / "media")
     sito = demo_db.DEMO_SITE
-    pa.create_us(sito, "1", "5", osservazioni="muro in blocchi")
-    S.put_units(ch, entry["id"], {"5": S.box((0.0, Z0, 3.0, Z0 + 3.0))}, sito=sito)
+    pa.create_us(sito, "1", "5", osservazioni="muro in blocchi")  # US 6 is drawn on the face but has no form
+    S.put_units(ch, entry["id"], {"5": S.box((0.0, Z0, 3.0, Z0 + 3.0)), "6": S.box((3.0, Z0, 6.0, Z0 + 3.0))},
+                sito=sito)
     for f in records.features(ch, c["id"]):
         records.link_units(ch, entry, f["id"])
     before = len(pa.db.query("media_table"))
     out = pyarchinit.save(pa, ch, c["id"], sito=sito)
+    assert out["missing"] == [("1", "6", "US")] and [x[:3] for x in out["us"]] == [("1", "5", "US")]
     assert len(out["media"]) == 3 and set(c["media"]) == {"dxf", "svg", "pdf"}
     media = pa.db.query("media_table")
     assert len(media) == before + 3
@@ -338,6 +353,10 @@ def test_pyarchinit_round_trip_on_a_demo_database(made, tmp_path):
     assert not entry.get("media")  # the elevation's own media record untouched
     pyarchinit.save(pa, ch, c["id"], sito=sito)  # again: the same records
     assert len(pa.db.query("media_table")) == before + 3
+    pdf = c["media"]["pdf"]
+    entry["name"] = "Prospetto rinominato"  # renamed: still the same media records, the PDF too
+    pyarchinit.save(pa, ch, c["id"], sito=sito)
+    assert len(pa.db.query("media_table")) == before + 3 and c["media"]["pdf"] == pdf
     assert pa.us_record(sito, "1", "5")["osservazioni"].count("[conservazione") == 1
 
 
@@ -380,12 +399,14 @@ def test_outputs_from_the_pane(tmp_path, monkeypatch):
         plugin._requested("tables")
         w.runner.wait()
         assert (tmp_path / "tab").exists() and ".xlsx" in said[-1]
-        answers.clear()
+        answers["folder"] = str(tmp_path / "dis")
         plugin._requested("drawings")
         w.runner.wait()
+        answers.clear()
         assert ".dxf" in said[-1] and "_mondo.gpkg" in said[-1]
-        rasters, vectors = plugin._qgis_entries()
+        rasters, vectors = plugin._qgis_entries()  # from the folder the user chose
         assert rasters == [] and {v["table"] for v in vectors} == {"degrado", "lesioni", "interventi", "note"}
+        assert all(v["path"].startswith(str(tmp_path / "dis")) for v in vectors)
         # QGIS
         calls = {}
         monkeypatch.setattr(qgis_link, "find_qgis", lambda: None)
@@ -464,6 +485,8 @@ def test_command_line(tmp_path, monkeypatch):
 
     r = run("list", project)
     assert r.exit_code == 0 and "Nessuna campagna" in r.output, r.output
+    r = run("list", str(tmp_path / "nessuno.ppg"))
+    assert r.exit_code == 1 and "Progetto non aperto" in r.output, r.output
     r = run("plate", project)
     assert r.exit_code == 1 and "Nessuna campagna" in r.output, r.output
     r = run("campaign", project, "--new", "--surveyor", "E. Cocca", "--method", "drone", "--name", "Prima")

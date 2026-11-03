@@ -31,7 +31,7 @@ from .texts import NAME, num, t
 
 __version__ = "0.1.0"
 
-from .layers import FILL_ALPHA, LAYERS, PROPOSED_ALPHA  # noqa: F401 - the plugin's layers, named here too
+from .layers import LAYERS  # noqa: E402 - the plugin's layers
 from .vocabulary import UNNAMED  # noqa: E402 - the working term of a proposal not named yet
 
 RECENT = 10  # the last terms used, at the top of the chooser
@@ -1042,10 +1042,10 @@ class ConservationPlugin(Plugin):
             return None
         return Path(v["folder"] or default)
 
-    def _done_files(self, title: str, paths, unnamed: int = 0) -> None:
+    def _done_files(self, title: str, paths, note: str = "") -> None:
         lines = [str(p) for p in paths if p]
-        if unnamed:
-            lines.append(t(f"{unnamed} elementi da nominare esclusi", f"{unnamed} features to be named left out"))
+        if note:
+            lines.append(note)
         self._message("information", title + "\n" + "\n".join(lines))
 
     def _do_plate(self) -> None:
@@ -1069,7 +1069,7 @@ class ConservationPlugin(Plugin):
                          lambda out: self._done_files(t(f"Tavola in scala 1:{out['scale']}:",
                                                         f"Plate at 1:{out['scale']}:"),
                                                       [out.get(k) for k in ("pdf", "svg", "png")],
-                                                      outputs.unnamed_count(chunk, c["id"])))
+                                                      outputs.unnamed_text(chunk, c["id"])))
 
     def _do_tables(self) -> None:
         from . import outputs
@@ -1082,7 +1082,7 @@ class ConservationPlugin(Plugin):
         self.context.run(t("Conservazione: tabelle", "Conservation: tables"),
                          lambda _p: outputs.tables(chunk, c["id"], folder, stem),
                          lambda out: self._done_files(t("Tabelle:", "Tables:"), out.values(),
-                                                      outputs.unnamed_count(chunk, c["id"])))
+                                                      outputs.unnamed_text(chunk, c["id"])))
 
     def _do_drawings(self) -> None:
         from . import outputs
@@ -1103,11 +1103,14 @@ class ConservationPlugin(Plugin):
             styles = outputs.qgis_styles(folder, codes, outputs._context(chunk, c["id"])["legend"], chunk=chunk)
             return paths + list(made.values()) + list(styles.values())
 
-        self.context.run(t("Conservazione: disegni", "Conservation: drawings"), work,
-                         lambda paths: self._done_files(t("Disegni (DXF, GeoPackage spiegato e 3D, stili QGIS):",
-                                                          "Drawings (DXF, unfolded and 3D GeoPackages, QGIS "
-                                                          "styles):"), paths,
-                                                        outputs.unnamed_count(chunk, c["id"])))
+        def done(paths):
+            c.setdefault("exports", {})["drawings"] = str(folder)  # the plan's QGIS project reads them there
+            self.context.mark_modified()
+            self._done_files(t("Disegni (DXF, GeoPackage spiegato e 3D, stili QGIS):",
+                               "Drawings (DXF, unfolded and 3D GeoPackages, QGIS styles):"), paths,
+                             outputs.unnamed_text(chunk, c["id"]))
+
+        self.context.run(t("Conservazione: disegni", "Conservation: drawings"), work, done)
 
     def _do_qgis(self) -> None:
         from pyarchinit_photogrammetry.io import qgis_link
@@ -1193,7 +1196,8 @@ class ConservationPlugin(Plugin):
 
     def _qgis_entries(self):
         """For the QGIS project of the plan: the shown campaign's tables in 3D in the chunk's system (the GeoPackage
-        the campaign's *Disegni* or export wrote)."""
+        the campaign's *Disegni* wrote last - in the folder the user chose, kept in ``campaign["exports"]`` - else the
+        one in the campaign's folder)."""
         from . import outputs, records
 
         chunk = self._chunk()
@@ -1204,9 +1208,11 @@ class ConservationPlugin(Plugin):
             ctx = outputs._context(chunk, cid)
         except records.NotReady:
             return [], []
-        folder = records.campaign_folder(chunk, ctx["entry"]["id"], cid)
-        path = folder / f"{outputs._stem(ctx)}_conservazione_mondo.gpkg"
-        if not path.exists():
+        name = f"{outputs._stem(ctx)}_conservazione_mondo.gpkg"
+        folders = [(ctx["campaign"].get("exports") or {}).get("drawings"),
+                   records.campaign_folder(chunk, ctx["entry"]["id"], cid)]
+        path = next((Path(f) / name for f in folders if f and (Path(f) / name).exists()), None)
+        if path is None:
             return [], []
         vectors = []
         for table, (gtype, _style, _kinds) in outputs.TABLES.items():

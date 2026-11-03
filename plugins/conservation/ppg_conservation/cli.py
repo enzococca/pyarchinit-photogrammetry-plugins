@@ -282,8 +282,12 @@ def _export(doc, chunk, a) -> int:
                 print(f"  {path}")
         elif isinstance(value, Path):
             print(f"  {value}")
-    if out.get("unnamed"):
-        print(t(f"{out['unnamed']} elementi da nominare esclusi", f"{out['unnamed']} features to be named left out"))
+    if a.folder:  # the plan's QGIS project reads the 3D tables there
+        c.setdefault("exports", {})["drawings"] = str(Path(a.folder))
+        doc.save()
+    note = outputs.unnamed_text(chunk, c["id"])
+    if note:
+        print(note)
     return 0
 
 
@@ -294,7 +298,10 @@ def _pyarchinit(doc, chunk, a) -> int:
 
     c = _campaign(chunk, a)
     words = [w.strip() for w in a.words.split(",")] if a.words else None
-    pa = PyArchInit.connect(config_path=a.config) if a.config else PyArchInit.connect()
+    try:
+        pa = PyArchInit.connect(config_path=a.config) if a.config else PyArchInit.connect()
+    except Exception as exc:  # noqa: BLE001 - no database, no config.cfg, a server not reached: one line
+        raise NotReady(t(f"PyArchInit non raggiungibile: {exc}", f"PyArchInit not reachable: {exc}")) from None
     out = pyarchinit.save(pa, chunk, c["id"], sito=a.sito, words=words)
     doc.save()
     print(t(f"Media registrati: {', '.join(map(str, out['media'])) or '-'}",
@@ -370,7 +377,11 @@ def run(args) -> int:
     import pyarchinit_photogrammetry as ppg
 
     a = parser().parse_args(list(args))
-    doc = ppg.Document.open(a.project)
+    try:
+        doc = ppg.Document.open(a.project)
+    except Exception as exc:  # noqa: BLE001 - a missing or broken project: one line
+        print(t(f"Progetto non aperto: {a.project} ({exc})", f"Project not opened: {a.project} ({exc})"))
+        return 1
     chunk = next((c for c in doc.chunks if c.label == a.chunk), None) if a.chunk else doc.chunk
     if chunk is None:
         print(f"no chunk {a.chunk!r}")

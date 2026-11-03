@@ -12,6 +12,7 @@ into the database, called by the pane's handler and by ``ppg plugin conservation
   campaign is saved again)."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from . import records
@@ -19,6 +20,7 @@ from .texts import num, t
 
 FIELD_LENGTH = 20  # us_table.stato_di_conservazione is a VARCHAR(20) in PyArchInit 5
 TAG = "conservazione"
+LOG = logging.getLogger("ppg_conservation")
 
 
 def words_of(words=None) -> list[str] | None:
@@ -91,21 +93,33 @@ def _with_line(existing: str | None, line: str, date: str) -> str:
     text = (existing or "").rstrip("\n")
     head = f"[{TAG} {date}]"
     kept = [x for x in text.split("\n") if not x.startswith(head)] if text else []
-    kept = [x for x in kept if x or kept]
     return "\n".join([*kept, line]) if kept else line
 
 
-def _register_pdf(pa, chunk, entry: dict, c: dict, pdf: Path, sito: str, link_us, preview) -> int | None:
-    """The plate's PDF as a media of the site (the program's bridge only: its database and media folders)."""
-    if getattr(pa, "db", None) is None or not hasattr(pa, "_links"):
+def _register_pdf(pa, entry: dict, c: dict, pdf: Path, sito: str, link_us, preview) -> int | None:
+    """The plate's PDF as a media of the site, the program's bridge only (its database and media folders): the same
+    record again when the campaign already has one (its file rewritten where the record says, so that renaming the
+    elevation does not make a second record). None, said in the log, with another bridge."""
+    import shutil
+
+    if getattr(pa, "db", None) is None or not all(hasattr(pa, n) for n in ("_links", "_media_folder")):
+        LOG.info("PyArchInit: the plate's PDF is not registered (the bridge has no media folders)")
         return None
     from pyarchinit_photogrammetry.pyarchinit.media import register_media
 
+    target = pa._media_folder(sito, "prospetti") / pdf.name
+    known = (c.get("media") or {}).get("pdf")
+    record = pa.db.query("media_table", id_media=int(known)) if known is not None else []
+    if record and record[0].get("filepath"):
+        target = Path(record[0]["filepath"])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if Path(pdf).resolve() != target.resolve():
+        shutil.copy2(pdf, target)
     dirs = pa._media_dirs() if hasattr(pa, "_media_dirs") else {}
-    return register_media(pa.db, pdf, mediatype="image",
+    return register_media(pa.db, target, mediatype="image",
                           descrizione=f"Prospetto: {entry.get('name') or entry['id']} - {TAG} {c['date']} (PDF)",
                           tags=f"['fotogrammetria', 'prospetto', '{TAG}']", links=pa._links(sito, link_us),
-                          copy_to=pa._media_folder(sito, "prospetti"), overwrite=True, preview=preview, **dirs)
+                          overwrite=True, preview=preview, **dirs)
 
 
 def save(pa, chunk, cid: str, sito: str | None = None, words=None, folder=None) -> dict:
@@ -131,14 +145,23 @@ def save(pa, chunk, cid: str, sito: str | None = None, words=None, folder=None) 
     made = outputs.plate(chunk, cid, folder, stem=f"{stem}_tavola", formats=("svg", "pdf", "png"))
     dxf = outputs.dxf(chunk, cid, folder / f"{stem}.dxf")
     feats = [f for f in records.features(chunk, cid, status="accepted") if f["code"] != UNNAMED]
-    link_us = _links(feats)
+    # the forms first: a unit drawn on the face without its form in the database is reported, not linked (the
+    # bridge's links of a missing form stop the whole save)
+    forms, missing = {}, []
+    for link in _links(feats):
+        rec = pa.us_record(sito, link[0], link[1], link[2])
+        if rec is None:
+            missing.append(link)
+        else:
+            forms[link] = rec
+    link_us = [list(x) for x in forms]
     paths = {"dxf": dxf}
     for key in ("svg", "png"):
         if made.get(key) is not None:
             paths[key] = made[key]
     shadow = dict(entry, name=f"{entry.get('name') or entry['id']} - {TAG} {c['date']}",
                   media=dict(c.get("media") or {}))  # the program's media of the elevation stay its own
-    ids = list(pa.register_elevation_media(chunk, shadow, paths, sito, [list(x) for x in link_us]) or [])
+    ids = list(pa.register_elevation_media(chunk, shadow, paths, sito, link_us) or [])
     media = dict(shadow.get("media") or {})
     if made.get("pdf") is not None:
         preview = None
@@ -147,21 +170,16 @@ def save(pa, chunk, cid: str, sito: str | None = None, words=None, folder=None) 
 
             with Image.open(made["png"]) as im:
                 preview = im.convert("RGB")
-        pid = _register_pdf(pa, chunk, entry, c, made["pdf"], sito, link_us, preview)
+        pid = _register_pdf(pa, entry, dict(c, media=media), made["pdf"], sito, link_us, preview)
         if pid is not None:
             media["pdf"] = pid
             ids.append(pid)
     c["media"] = media
     vocab = load(chunk)
     word = condition_value(pa, (c.get("classes") or {}).get("cc"), words)
-    updated, missing = [], []
-    for area, us, tipo in link_us:
-        rec = pa.us_record(sito, area, us, tipo)
-        if rec is None:
-            missing.append((area, us, tipo))
-            continue
-        mine = [f for f in feats if any([str(x) for x in link[:2]] == [area, us]
-                                        for link in (f.get("links") or {}).get("us") or [])]
+    updated = []
+    for (area, us, tipo), rec in forms.items():
+        mine = [f for f in feats if (area, us, tipo) in _links([f])]
         fields = {"osservazioni": _with_line(rec.get("osservazioni"), observation(vocab, c, mine), c["date"])}
         if word is not None:
             fields["stato_di_conservazione"] = word
