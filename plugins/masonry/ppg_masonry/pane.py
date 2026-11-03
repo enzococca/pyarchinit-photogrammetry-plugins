@@ -24,7 +24,11 @@ FACE_MAKE = (("plane", ("Faccia su un piano...", "Face on a plane..."), "Traccia
               "cilindro da tre punti in pianta o dal cerchio della sezione a una quota", "Round tower, well, apse: the "
               "cylinder from three points in plan or from the circle of the slice at a height"),
              ("polygon", ("Torre poligonale...", "Polygonal tower..."), "Una faccia per lato dalla sezione del modello "
-              "a una quota", "One face per side from the slice of the model at a height"))
+              "a una quota", "One face per side from the slice of the model at a height"),
+             ("adopt", ("Prospetto esistente...", "Existing elevation..."), "Un prospetto già fatto dal programma "
+              "(piano o cilindro, anche sull'asse della torre) diventa una faccia del muro così com'è, senza rifarlo",
+              "An elevation the program already made (plane or cylinder, also on the tower's axis) becomes a face of "
+              "the wall as it is, without rebuilding it"))
 FACE_ACTIONS = (("show", ("Mostra", "Show")),
                 ("shape", ("Forma", "Shape")),
                 ("bulge", ("Spanciamento sì/no", "Bulge on/off")),

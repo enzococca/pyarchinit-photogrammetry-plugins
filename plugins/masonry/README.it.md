@@ -6,7 +6,9 @@ muri, edifici e torri in pietra rilevati per facce.
 * **Facce**: un muro (un edificio, una torre) si rileva per facce, ognuna un prospetto del programma - sul piano
   verticale per due punti tracciati in pianta (`v` è la quota), su un cilindro per una torre tonda, un pozzo o
   un'abside (tre punti in pianta, o il cerchio adattato a una sezione orizzontale del modello; visto da fuori o da
-  dentro), o un piano per lato di una torre poligonale. Le facce sono elencate con dimensioni, risoluzione e disegni.
+  dentro), un piano per lato di una torre poligonale, oppure un prospetto già fatto dal programma (*Prospetto
+  esistente...*, `--existing`), preso così com'è con le sue patch e i suoi disegni, anche sviluppato sull'asse della
+  torre. Le facce sono elencate con dimensioni, risoluzione e disegni.
 * **Forma**: sulla superficie del modello nella finestra della faccia, il piano (o il cilindro) adattato ai minimi
   quadrati con il peso di Huber; lo **strapiombo** (gradi, cm/m, azimut verso cui va la sommità); la carta dello
   **spanciamento** (scarto dalla superficie adattata, verso chi guarda, in cm) sopra il prospetto con una scala

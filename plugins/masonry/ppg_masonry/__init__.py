@@ -29,7 +29,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, kind_title, metres, num, t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 NEGATIVE_VALUES = ("--line", "--side", "--circle", "--heights", "--stations", "--sections", "--slice", "--polygon")
 
 
@@ -448,6 +448,41 @@ class MasonryPlugin(Plugin):
             chunk, rec["id"], v["height"], v.get("min_side", 0.5), v.get("tolerance") or None,
             v.get("resolution") or None, v.get("front", 0.5), v.get("back", 0.3), progress=p),
             lambda es: self._made(rec["id"], es))
+
+    def _do_adopt(self) -> None:
+        """An elevation the program already has, made a face of the wall as it is (nothing rebuilt)."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import walls
+        from .texts import surface_title
+
+        chunk = self._need_chunk()
+        free = walls.free_elevations(chunk)
+        if not free:
+            raise walls.NotReady(t("Nessun prospetto libero nel chunk: fai un prospetto con il pulsante Prospetto del "
+                                   "programma (piano o cilindro), oppure una faccia da qui.",
+                                   "No free elevation in the chunk: make one with the program's Elevation button "
+                                   "(plane or cylinder), or a face from here."))
+        rec = self._wall(create=True)
+        choices = []
+        for e in free:
+            info = walls.face_info(chunk, e["id"])
+            tilt = (e.get("tilt") or {}).get("tilt_deg")
+            axis = "" if not tilt or tilt < 0.05 else t(f", asse inclinato di {num(tilt, 1)}°",
+                                                        f", axis tilted by {num(tilt, 1)}°")
+            choices.append((e["id"], f"{info['name']} ({surface_title(info['surface'])}{axis}, "
+                                     f"{metres(info['width'])} x {metres(info['height'])}, "
+                                     f"{num(info['resolution'] * 1000, 1)} mm/px)"))
+        v = self._ask(t("Prospetto esistente", "Existing elevation"),
+                      [Field("eid", t("Prospetto", "Elevation"), choices[0][0], choices=choices)],
+                      intro=t(f"Il prospetto scelto diventa una faccia del muro «{rec['name']}» così com'è: le "
+                              "sue patch, i suoi disegni e la sua risoluzione restano quelli del programma.",
+                              f"The chosen elevation becomes a face of the wall «{rec['name']}» as it is: its "
+                              "patches, drawings and resolution stay the program's."))
+        if not v:
+            return
+        entry = walls.adopt_face(chunk, rec["id"], v["eid"])
+        self._made(rec["id"], entry)
 
     # ------------------------------------------------------------------ the face shown, its shape
     def _show_face(self, entry: dict) -> None:
@@ -958,6 +993,8 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--resolution", type=float, help="face: metres per pixel (default the model's median "
                                                              "edge, at least 1 mm)")
         parser.add_argument("--force", action="store_true", help="face: build a face over 20000 pixels on a side")
+        parser.add_argument("--existing", help="face: the id or the name of an elevation the program already has, "
+                                               "made a face as it is (nothing rebuilt)")
         parser.add_argument("--front", type=float, help="face: band in front (m; default 0.5, on a cylinder 15 %% of "
                                                          "the radius, at least 0.5)")
         parser.add_argument("--back", type=float, help="face: band behind (m; default 0.3, on a cylinder 15 %% of the "
@@ -1005,7 +1042,9 @@ class MasonryPlugin(Plugin):
                 made = []
                 front_plane = faces.DEFAULT_FRONT if ns.front is None else ns.front
                 back_plane = faces.DEFAULT_BACK if ns.back is None else ns.back
-                if ns.line:
+                if ns.existing:
+                    made.append(walls.adopt_face(chunk, rec["id"], ns.existing))
+                elif ns.line:
                     x1, y1, x2, y2 = parse_numbers(ns.line)
                     side = parse_numbers(ns.side) if ns.side else None
                     made.append(faces.plane_face(chunk, rec["id"], (x1, y1), (x2, y2), side, ns.resolution,
@@ -1021,7 +1060,7 @@ class MasonryPlugin(Plugin):
                                                 ns.resolution, front_plane, back_plane, progress=print_progress,
                                                 force=ns.force)
                 else:
-                    raise walls.NotReady("--line, --circle, --slice or --polygon")
+                    raise walls.NotReady("--line, --circle, --slice, --polygon or --existing")
                 changed = True
                 for e in made:
                     info = walls.face_info(chunk, e["id"])

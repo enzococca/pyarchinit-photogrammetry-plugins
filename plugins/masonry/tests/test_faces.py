@@ -103,3 +103,40 @@ def test_faces_taken_out_and_elevations_removed(tmp_path):
     assert walls.remove_wall(ch, w["id"], elevations_too=True)
     assert walls.walls(ch) == [] and walls.elevation(ch, c["id"]) is None
     assert not walls.wall_folder(ch, w["id"]).exists()
+
+
+def test_an_elevation_of_the_program_becomes_a_face_as_it_is(tmp_path):
+    """A prospect the program made itself (the Elevation button, ``ppg elevation``) is adopted as a face: nothing is
+    rebuilt, its entry is read like those of the faces the plugin makes; one wall at a time; sections and elevations
+    without an orthophoto are refused."""
+    from pyarchinit_photogrammetry.engine import elevation as E
+
+    doc, ch = S.project(tmp_path, S.wall())
+    p1, p2 = S.WORLD[:2] + [0.5, 0.0], S.WORLD[:2] + [5.5, 0.0]
+    own = E.build_elevation(ch, E.with_heights(E.plane_from_line(ch, p1, p2, side=S.WORLD[:2] + [3.0, -5.0])),
+                            resolution=0.02, name="Parete del programma")
+    assert walls.walls(ch) == [] and [e["id"] for e in walls.free_elevations(ch)] == [own["id"]]
+    w = walls.new_wall(ch, "Muro nord")
+    entry = walls.adopt_face(ch, w["id"], "Parete del programma")
+    assert entry is own and walls.need(ch, w["id"])["faces"] == [own["id"]]
+    assert walls.free_elevations(ch) == [] and walls.wall_of_face(ch, own["id"])["id"] == w["id"]
+    info = walls.face_info(ch, own["id"])
+    assert info["surface"] == "plane" and 5.5 < info["width"] < 6.5 and info["resolution"] == 0.02  # the whole wall
+    assert json.loads(walls.write_summary(ch, w["id"]).read_text())["faces"][0]["id"] == own["id"]
+    # the same elevation again is no change; another wall cannot take it
+    assert walls.adopt_face(ch, w["id"], own["id"]) is own and walls.need(ch, w["id"])["faces"] == [own["id"]]
+    other = walls.new_wall(ch, "Muro sud")
+    with pytest.raises(walls.NotReady, match="Muro nord"):
+        walls.adopt_face(ch, other["id"], own["id"])
+    with pytest.raises(walls.NotReady, match="Nessun prospetto"):
+        walls.adopt_face(ch, other["id"], "non esiste")
+    # a section (no plane or cylinder frame) and an elevation without its orthophoto are not faces
+    ch.meta["elevations"].append({"id": "sez1", "name": "Sezione", "kind": "section", "frame": {"kind": "section"},
+                                  "orthophoto": own["orthophoto"]})
+    ch.meta["elevations"].append({"id": "gone", "name": "Senza file", "frame": {"kind": "plane"},
+                                  "orthophoto": "elevations/gone/elevation.tif"})
+    assert walls.free_elevations(ch) == []
+    with pytest.raises(walls.NotReady, match="piano"):
+        walls.adopt_face(ch, other["id"], "sez1")
+    with pytest.raises(walls.NotReady, match="ortofoto"):
+        walls.adopt_face(ch, other["id"], "gone")

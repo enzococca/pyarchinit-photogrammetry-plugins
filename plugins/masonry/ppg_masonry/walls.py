@@ -146,6 +146,46 @@ def wall_of_face(chunk, eid: str) -> dict | None:
     return next((w for w in walls(chunk) if eid in w["faces"]), None)
 
 
+def _usable(chunk, entry: dict) -> str | None:
+    """Why the program's elevation ``entry`` cannot be a face (None when it can): the plugin reads the orthophoto,
+    the relief and the frame of a plane or a cylinder, as it does for the faces it makes itself."""
+    if (entry.get("frame") or {}).get("kind") not in ("plane", "cylinder"):
+        return t("Il prospetto non è su un piano né su un cilindro: il plugin lavora su quelli.",
+                 "The elevation is neither on a plane nor on a cylinder: the plugin works on those.")
+    if not entry.get("orthophoto") or not (Path(chunk.data_dir) / entry["orthophoto"]).exists():
+        return t("Il prospetto non ha la sua ortofoto sul disco.", "The elevation has no orthophoto on disk.")
+    return None
+
+
+def free_elevations(chunk) -> list[dict]:
+    """The chunk's elevations that can become a face and are not one yet: made by the program's own tools (the
+    *Prospetto* button, ``ppg elevation``), with their orthophoto on disk, in the chunk's order."""
+    taken = {f for w in walls(chunk) for f in w["faces"]}
+    return [e for e in chunk.meta.get("elevations") or []
+            if isinstance(e, dict) and e.get("id") not in taken and _usable(chunk, e) is None]
+
+
+def adopt_face(chunk, wid: str, key: str) -> dict:
+    """An elevation the program already has (``key``: its id or its name) made a face of the wall ``wid`` as it is:
+    nothing is rebuilt. Refused when it is a face of another wall, has no orthophoto, or is neither on a plane nor on
+    a cylinder (a section). Returns the elevation entry."""
+    rec = _live(chunk, wid)
+    entries = [e for e in chunk.meta.get("elevations") or [] if isinstance(e, dict)]
+    entry = next((e for e in entries if key in (e.get("id"), e.get("name"))), None)
+    if entry is None:
+        raise NotReady(t(f"Nessun prospetto «{key}» nel chunk.", f"No elevation «{key}» in the chunk."))
+    other = wall_of_face(chunk, entry["id"])
+    if other is not None and other["id"] != rec["id"]:
+        raise NotReady(t(f"Il prospetto «{entry.get('name', key)}» è già una faccia del muro «{other['name']}».",
+                         f"The elevation «{entry.get('name', key)}» is already a face of the wall «{other['name']}»."))
+    why = _usable(chunk, entry)
+    if why:
+        raise NotReady(why)
+    add_face(chunk, rec["id"], entry["id"])
+    write_summary(chunk, rec["id"])
+    return entry
+
+
 def remove_face(chunk, wid: str, eid: str, elevation_too: bool = False) -> bool:
     """The face out of the wall, its files with it; ``elevation_too``: the program's elevation removed as well."""
     rec = _live(chunk, wid)

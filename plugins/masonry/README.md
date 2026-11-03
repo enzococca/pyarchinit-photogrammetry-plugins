@@ -6,8 +6,9 @@ walls, buildings and stone towers recorded by their faces.
 * **Faces**: a wall (a building, a tower) is recorded by its faces, each an elevation of the program - on the vertical
   plane through two points traced on the plan (`v` is the height), on a cylinder for a round tower, a well or an apse
   (three points on the plan, or the circle fitted to a horizontal slice of the model; seen from outside or inside), or
-  one plane per side of a polygonal tower (the slice's outline simplified into a polygon). The faces are listed with
-  their size, resolution and the drawings they hold.
+  one plane per side of a polygonal tower (the slice's outline simplified into a polygon); or an elevation the
+  program already made (*Existing elevation...*, `--existing`), taken as it is with its patches and drawings, also one
+  developed on the tower's axis. The faces are listed with their size, resolution and the drawings they hold.
 * **Shape**: on the model's surface within the face's window, the plane (or the cylinder) fitted by least squares with
   Huber's weight; the **lean** (degrees, cm/m, the azimuth its top goes towards, towards the viewer or away); the
   **bulge** map - the distance of the surface from the fit, signed towards the viewer, in cm, on the elevation's grid -
