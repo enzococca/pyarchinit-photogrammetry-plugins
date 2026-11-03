@@ -270,8 +270,8 @@ def _move_drawings(data: dict, old_id: str, new_id: str, mapping=None) -> tuple[
         for rec in data["lines"]:
             rec = dict(rec)
             if rec.get("coords") and mapping is not None:
-                c = [list(map(float, q)) for q in rec["coords"]]
-                uv = mapping(np.array([q[:2] for q in c]))
+                c = [list(q) for q in rec["coords"]]  # the window writes [u, v, None]: only u, v are moved
+                uv = mapping(np.array([[float(q[0]), float(q[1])] for q in c]))
                 rec["coords"] = [[float(a), float(b), *q[2:]] for (a, b), q in zip(uv, c)]
             out["lines"].append(rec)
         count += len(out["lines"])
@@ -290,15 +290,15 @@ def _move_drawings(data: dict, old_id: str, new_id: str, mapping=None) -> tuple[
     return out, count
 
 
-def _carry_drawings(chunk, old_entry: dict | None, new_entry: dict) -> dict:
-    """The drawings made on the previous relief carried over to the new one, so that saving does not prune them with
-    the old elevation: as they are when the plane is the same (u, v are ship metres, whatever the cell), else through
-    the old plane to the world and into the new one."""
+def _carried_drawings(chunk, old_entry: dict | None, new_entry: dict):
+    """The drawings made on the previous relief, ready for the new one (nothing in the chunk is changed): as they are
+    when the plane is the same (u, v are ship metres, whatever the cell), else through the old plane to the world and
+    into the new one. None when there are none; else ``(data, {"records", "moved"})`` for :func:`_apply_drawings`."""
     from pyarchinit_photogrammetry.engine.elevation import frame_from_dict
 
     frames = (chunk.meta.get("drawings") or {}).get("frames") or {}
     if old_entry is None or old_entry["id"] not in frames:
-        return {"records": 0, "moved": False}
+        return None
     old_plane, new_plane = frame_from_dict(old_entry["frame"]), frame_from_dict(new_entry["frame"])
     same = all(np.allclose(getattr(old_plane, k), getattr(new_plane, k), rtol=0, atol=1e-9)
                for k in ("origin", "u_axis", "v_axis"))
@@ -308,10 +308,18 @@ def _carry_drawings(chunk, old_entry: dict | None, new_entry: dict) -> dict:
         world = old_plane.point(uv[:, 0], uv[:, 1], np.zeros(len(uv)))
         return new_plane.coords(world)[:, :2]
 
-    data, count = _move_drawings(frames.pop(old_entry["id"]), old_entry["id"], new_entry["id"],
-                                 None if same else mapping)
-    frames[new_entry["id"]] = data
-    return {"records": count, "moved": not same}
+    data, count = _move_drawings(frames[old_entry["id"]], old_entry["id"], new_entry["id"], None if same else mapping)
+    return data, {"records": count, "moved": not same}
+
+
+def _apply_drawings(chunk, old_id: str, new_id: str, carried) -> dict:
+    """The drawings of :func:`_carried_drawings` under the new id, the old id's taken away."""
+    if carried is None:
+        return {"records": 0, "moved": False}
+    frames = chunk.meta["drawings"]["frames"]
+    frames.pop(old_id, None)
+    frames[new_id] = carried[0]
+    return carried[1]
 
 
 # ----------------------------------------------------------------------------- building
@@ -340,19 +348,29 @@ def build(chunk, cell: float | None = None, progress=None) -> dict:
     work = ship.folder(chunk) / "relief.new"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
-    try:
+    backup = ship.folder(chunk) / "relief.old"
+    try:  # everything that can fail before the old relief is touched; then nothing can
         for k, kind in enumerate(("hillshade", "slrm")):
             _derive(height, work / f"{kind}.tif", kind, cell, frame, progress.sub(0.8 + 0.1 * k, 0.1))
+        carried = _carried_drawings(chunk, old_entry, e)
+        shutil.rmtree(backup, ignore_errors=True)
+        if final.exists():
+            final.rename(backup)
+        try:
+            work.rename(final)
+        except BaseException:
+            if backup.exists():
+                backup.rename(final)
+            raise
     except BaseException:
         remove_elevation(chunk, e["id"])
         shutil.rmtree(work, ignore_errors=True)
         raise
-    drawings = _carry_drawings(chunk, old_entry, e)
     old_id = (_relief_state(chunk) or {}).get("elevation")
+    drawings = _apply_drawings(chunk, old_entry["id"] if old_entry else "", e["id"], carried)
     if old_id:
         remove_elevation(chunk, old_id)
-    shutil.rmtree(final, ignore_errors=True)
-    work.rename(final)
+    shutil.rmtree(backup, ignore_errors=True)
     files = {kind: str((final / f"{kind}.tif").relative_to(chunk.data_dir)) for kind in ("hillshade", "slrm")}
     st = {"elevation": e["id"], "cell": cell, "files": files,
           "built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "frame": frame.to_dict(),

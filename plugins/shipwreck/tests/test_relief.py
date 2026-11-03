@@ -9,6 +9,8 @@ import pytest
 import rasterio
 from hulls import clinker_project, clinker_section
 
+from pyarchinit_photogrammetry.archaeo import breaklines
+
 from ppg_shipwreck import relief, ship
 from ppg_shipwreck.ship import NotReady
 
@@ -142,7 +144,7 @@ def _draw(ch, eid):
     ch.meta.setdefault("drawings", {}).setdefault("frames", {})[eid] = {
         "units": [{"us": "1", "wkt": "POLYGON ((5 0.5, 6 0.5, 6 1, 5 1, 5 0.5))"}],
         "points": [{"u": 6.0, "v": 0.8, "name": "p"}],
-        "lines": [{"coords": [[4.0, -0.5], [7.0, -0.5]]}],
+        "lines": [breaklines.new_record("breakline", [(4.0, -0.5, None), (7.0, -0.5, None)])],  # as the window
         "stones": {eid: ["POLYGON ((3 0, 3.2 0, 3.2 0.2, 3 0))"]}}
 
 
@@ -178,7 +180,7 @@ def test_drawings_follow_a_new_frame(tmp_path):
     assert np.abs(again[:2] - world[:2]).max() < 1e-9
     assert p["u"] == pytest.approx(8.0)
     line = ch.meta["drawings"]["frames"][st["elevation"]]["lines"][0]["coords"]
-    assert line[0] == pytest.approx([6.0, -0.5])
+    assert line[0][:2] == pytest.approx([6.0, -0.5]) and line[0][2] is None
 
 
 def test_a_failed_rebuild_keeps_the_relief(tmp_path, monkeypatch):
@@ -195,7 +197,8 @@ def test_a_failed_rebuild_keeps_the_relief(tmp_path, monkeypatch):
         relief.build(ch, cell=0.03)
     assert relief.entry(ch)["id"] == old["elevation"]
     assert [e["id"] for e in ch.meta["elevations"]] == [old["elevation"]]
-    assert old["elevation"] in ch.meta["drawings"]["frames"]
+    frames = ch.meta["drawings"]["frames"]
+    assert list(frames) == [old["elevation"]] and frames[old["elevation"]]["points"][0]["u"] == 6.0
     assert relief.load(ch, "slrm")[0].shape == relief.load(ch, "height")[0].shape
     assert not (ch.data_dir / "shipwreck" / "relief.new").exists()
 
@@ -212,3 +215,24 @@ def test_tiles_give_the_whole_raster_result(tmp_path, monkeypatch):
         arr, _ = relief.load(ch, kind)
         whole = compute(z.astype(np.float64), 0.02, method, **extra).astype(np.float32)
         np.testing.assert_allclose(arr, whole, atol=1e-6, equal_nan=True)
+
+
+def test_a_rebuild_failing_late_keeps_the_relief_and_its_drawings(tmp_path, monkeypatch):
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=35)
+    frame = _set(ch, ends)
+    old = relief.build(ch, cell=0.02)
+    _draw(ch, old["elevation"])
+    before = {k: dict(v) for k, v in ch.meta["drawings"]["frames"].items()}
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start", z0=frame.z0 + 0.5, x0=2.0))
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("cancelled")
+
+    monkeypatch.setattr(relief, "_move_drawings", broken)
+    with pytest.raises(RuntimeError):
+        relief.build(ch, cell=0.02)
+    assert ch.meta["drawings"]["frames"] == before
+    assert [e["id"] for e in ch.meta["elevations"]] == [old["elevation"]]
+    assert relief.entry(ch)["id"] == old["elevation"]
+    assert not (ch.data_dir / "shipwreck" / "relief.new").exists()
+    assert (ch.data_dir / old["files"]["slrm"]).exists()
