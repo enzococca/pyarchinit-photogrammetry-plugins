@@ -158,6 +158,7 @@ def face(folder: Path):
         doc, ch, entry = build(root)
         _CACHE.update(path=Path(doc.path), root=root)
     src = _CACHE["path"]
+    Path(folder).mkdir(parents=True, exist_ok=True)  # iterdir's order is the file system's: a file may come first
     for item in src.parent.iterdir():
         target = Path(folder) / item.name
         if item.is_dir():
