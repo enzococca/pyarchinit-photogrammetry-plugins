@@ -6,7 +6,7 @@ import json
 
 import numpy as np
 import pytest
-from hulls import clinker_project, project
+from hulls import clinker_project, half_breadth, project
 
 from ppg_shipwreck import clinker, houdini, lines, ship, timbers
 
@@ -107,6 +107,7 @@ def test_the_export_folder(tmp_path):
     _v, strakes = _obj(folder / "strakes.obj")
     assert sorted(strakes) == sorted(f"fascia_{s}{k}" for s in "BT" for k in range(1, 6))
     assert _strakes_point_outward(folder / "strakes.obj") == 1.0
+    assert (folder / "strakes.csv").exists() and (folder / "strakes.xlsx").exists()
     readme = (folder / "README.txt").read_text(encoding="utf-8")
     assert "10.5281/zenodo.23422398" in readme and "10.5281/zenodo.17488549" in readme and "CC BY 4.0" in readme
 
@@ -119,6 +120,7 @@ def test_a_plain_hull_exports_no_lands_nor_strakes(tmp_path):
     assert (folder / "hull.obj").exists() and (folder / "sections.obj").exists()
     assert not (folder / "lands.obj").exists() and not (folder / "strakes.obj").exists()
     assert "lands" not in out and "strakes" not in out
+    assert not (folder / "strakes.csv").exists() and not (folder / "strakes.xlsx").exists()
 
 
 def test_the_export_needs_the_sections(tmp_path):
@@ -149,7 +151,7 @@ def test_the_strakes_read_back_as_planks(tmp_path):
     assert len(rows) == 10
     for row in rows:
         assert row["median_mm"] < 10.0 and row["p90_mm"] >= row["median_mm"], row
-    assert ch.meta["shipwreck"]["houdini"]["planks"] == rows
+    assert ch.meta["shipwreck"]["houdini"]["planks"]["strakes.obj"] == rows
     assert result["csv"].exists() and result["csv"].parent == ch.data_dir / "shipwreck" / "clinker"
     assert result["xlsx"].exists()
     again = houdini.import_planks(ch, path)  # the same file again: replaced, never doubled; the user's record stays
@@ -231,3 +233,72 @@ def test_the_side_from_the_name_and_the_vertices_off_the_model(tmp_path):
     rows = {r["name"]: r for r in result["rows"]}
     assert rows["lontana"]["missing"] == 4 and rows["lontana"]["median_mm"] is None
     assert rows["fascia_T2"]["missing"] == 0 and rows["fascia_T2"]["median_mm"] is not None
+
+
+def test_a_plank_off_a_steep_side_reports_its_distance(tmp_path):
+    """The distance to the scan, not a height: a plank 10 mm off the steep side of the hull reports 10 mm."""
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, STATIONS[:3])
+    frame = ship.need_frame(ch)
+    mesh = lines.ship_mesh(ch, frame)
+    normals = np.asarray(mesh.vertex_normals)
+    v = mesh.vertices
+    inside = np.abs(v[:, 1]) < 0.95 * half_breadth(v[:, 0])  # away from the sheer, the mesh's edge
+    steep = np.flatnonzero((np.abs(normals[:, 2]) < 0.65) & (np.abs(v[:, 0] - 6.0) < 2.0) & inside)  # over 49 degrees
+    pick = steep[np.linspace(0, len(steep) - 1, 200).astype(int)]
+    moved = mesh.vertices[pick] + 0.010 * normals[pick]
+    text = ["o lato", *_y_up_lines(moved, frame.sign), "p " + " ".join(str(i + 1) for i in range(len(moved)))]
+    result = houdini.import_planks(ch, _write(tmp_path / "steep.obj", "\n".join(text) + "\n"))
+    row = result["rows"][0]
+    assert row["missing"] == 0
+    assert row["median_mm"] == pytest.approx(10.0, abs=0.5) and row["p90_mm"] < 11.0, row
+
+
+def _two_planks(sign):
+    starboard = [(x, -y, z) for x, y, z in PLANK]
+    return _y_up_lines(PLANK, sign), _y_up_lines(starboard, sign)
+
+
+def test_one_object_wrapping_a_group_per_plank(tmp_path):
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, STATIONS[:3])
+    a, b = _two_planks(ship.need_frame(ch).sign)
+    text = ["o Planks", "g fascia_B1", *a, "f 1 2 3 4", "g fascia_T1", *b, "f 5 6 7 8"]
+    result = houdini.import_planks(ch, _write(tmp_path / "w.obj", "\n".join(text) + "\n"), deviation=False)
+    assert result["planks"] == 2
+    assert sorted(r["name"] for r in timbers.timbers_of(ch)) == ["fascia_B1", "fascia_T1"]
+
+
+def test_several_groups_on_a_line_and_tabs(tmp_path):
+    """``g a b``: in both groups; a group holding every element (a catch-all) is not a plank; tabs separate too."""
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, STATIONS[:3])
+    a, b = _two_planks(ship.need_frame(ch).sign)
+    text = ["g\tfascia_B1 planks", *[ln.replace(" ", "\t", 1) for ln in a], "f\t1 2 3 4",
+            "g fascia_T1 planks", *b, "f 5 6 7 8"]
+    result = houdini.import_planks(ch, _write(tmp_path / "m.obj", "\n".join(text) + "\n"), deviation=False)
+    assert result["planks"] == 2
+    records = {r["name"]: r for r in timbers.timbers_of(ch)}
+    assert sorted(records) == ["fascia_B1", "fascia_T1"]
+    assert records["fascia_B1"]["side"] == "port" and records["fascia_T1"]["side"] == "starboard"
+
+
+@pytest.mark.parametrize("bad", ["f 1 x 3", "v 1.0 2.0"])
+def test_an_unreadable_line_is_refused_with_its_number(tmp_path, bad):
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, STATIONS[:3])
+    a, _b = _two_planks(1)
+    text = ["o p", *a, bad]
+    with pytest.raises(ship.NotReady, match="Riga 6"):
+        houdini.import_planks(ch, _write(tmp_path / "bad.obj", "\n".join(text) + "\n"))
+
+
+def test_each_file_keeps_its_rows(tmp_path):
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, STATIONS[:3])
+    a, b = _two_planks(ship.need_frame(ch).sign)
+    houdini.import_planks(ch, _write(tmp_path / "one.obj", "\n".join(["o x", *a, "f 1 2 3 4"]) + "\n"))
+    houdini.import_planks(ch, _write(tmp_path / "two.obj", "\n".join(["o y", *b, "f 1 2 3 4"]) + "\n"))
+    store = ch.meta["shipwreck"]["houdini"]
+    assert sorted(store["planks"]) == ["one.obj", "two.obj"] and sorted(store["imports"]) == ["one.obj", "two.obj"]
+    assert store["planks"]["one.obj"][0]["name"] == "x" and len(timbers.timbers_of(ch)) == 2

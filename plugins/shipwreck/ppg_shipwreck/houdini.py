@@ -31,6 +31,7 @@ from .texts import t
 Y_UP = "X = x, Y = z, Z = -y * sign"
 FOLDER = "clinker_boat_tool"
 SIMPLIFY = 0.01  # metres: the plank's outline in plan
+MISSING = 0.5  # metres: a plank's vertex farther than this from the model has no model there
 NOTE = ("importato dal Clinker Boat Tool: {}", "imported from the Clinker Boat Tool: {}")
 PAPER_DOI = "10.5281/zenodo.23422398"
 HDA_DOI = "10.5281/zenodo.17488549"
@@ -96,7 +97,7 @@ def _readme(files: list[str]) -> str:
         "2. Calibrate and align: already done - real metres, the keel along X, Y up; nothing to move.",
         "3. Define sections: the stations' x are in stations.json; sections.obj shows the cuts of the scan there.",
         "4. Generate the plank layout: widths, thickness and lap per strake can be read from lands.obj and from the "
-        "strake table of the plugin (strakes.csv), when present.",
+        "strake table (strakes.csv and strakes.xlsx in this folder), when present.",
         "5. Bend and align the planks on the scan.",
         "6. Presets and export: export the planks as OBJ, one object or group per plank, and read them back in the "
         "plugin (Import planks from the Clinker Boat Tool): each plank becomes a timber record with its deviation from "
@@ -108,7 +109,7 @@ def _readme(files: list[str]) -> str:
         "3. Definisci le sezioni: le x delle stazioni sono in stations.json; sections.obj mostra lì i tagli della "
         "scansione.",
         "4. Genera la disposizione delle fasce: larghezze, spessore e sovrapposizione per fascia si leggono da "
-        "lands.obj e dalla tabella delle fasce del plugin (strakes.csv), se presenti.",
+        "lands.obj e dalla tabella delle fasce (strakes.csv e strakes.xlsx in questa cartella), se presenti.",
         "5. Piega e allinea le fasce sulla scansione.",
         "6. Preset ed esportazione: esporta le fasce in OBJ, un oggetto o gruppo per fascia, e rileggile nel plugin "
         "(Importa le fasce dal Clinker Boat Tool): ogni fascia diventa una scheda di legno con il suo scostamento "
@@ -128,7 +129,8 @@ def _readme(files: list[str]) -> str:
 def export(chunk, folder, progress=None) -> dict:
     """The folder ``<folder>/clinker_boat_tool/`` for the Clinker Boat Tool: ``hull.obj``, ``sections.obj`` (an object
     per station, its raw polylines as ``l``), ``stations.json``, ``frame.json``, ``lands.obj`` and ``strakes.obj`` when
-    the land lines and the strake model exist and are current, ``README.txt``. Everything in the ship frame turned to Y
+    the land lines and the strake model exist and are current, ``README.txt``; with the strake model also its table (``strakes.csv``, ``strakes.xlsx``, keys ``strake_table``,
+    ``strake_sheet``). Everything in the ship frame turned to Y
     up (:data:`Y_UP`). Returns the paths by name (``hull``, ``sections``, ``stations``, ``frame``, ``lands``,
     ``strakes``, ``readme``). Refused without the sections at the stations, or with sections cut on another frame."""
     progress = as_progress(progress)
@@ -191,9 +193,14 @@ def export(chunk, folder, progress=None) -> dict:
     source = ship.folder(chunk) / "clinker" / "strakes.obj"
     if current and state.get("strakes") and source.exists():
         out["strakes"] = _strakes(source, out_dir / "strakes.obj", sign, head)
+        tables = clinker.write_tables(chunk, out_dir)  # widths, thickness and lap per strake, for the HDA's step 4
+        out["strake_table"], out["strake_sheet"] = tables["csv"], tables["xlsx"]
     for name in ("lands", "strakes"):  # an earlier export's files no longer true
         if name not in out:
             (out_dir / f"{name}.obj").unlink(missing_ok=True)
+    if "strakes" not in out:
+        for name in ("strakes.csv", "strakes.xlsx"):
+            (out_dir / name).unlink(missing_ok=True)
 
     names = [p.name for p in out.values()] + ["README.txt"]
     readme = out_dir / "README.txt"
@@ -242,53 +249,77 @@ def _strakes(source: Path, path: Path, sign: int, head: list[str]) -> Path:
 
 # ------------------------------------------------------------------------------------- the import
 def read_obj(path) -> dict[str, np.ndarray]:
-    """The objects of an OBJ (``o``), else its groups (``g``), as name -> vertices ``(N, 3)``: the vertices its faces,
-    lines and points use, or, when it has none, those written under it. Refused when the file has neither."""
+    """The planks of an OBJ as name -> vertices ``(N, 3)``: its objects (``o``) or its groups (``g``), whichever level
+    has more names (one ``o`` wrapping a group per plank gives the groups). A ``g`` line with several names puts what
+    follows in each of them (the OBJ convention, Houdini writes it), and a group holding every element of the file (a
+    catch-all such as "all") is left out when other groups remain. The vertices of a plank are those its faces, lines
+    and points use, or, when it has none, those written under it. Refused when the file has neither objects nor
+    groups, or a line cannot be read (its number is given)."""
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise ship.NotReady(t(f"Non riesco a leggere {path}: {exc}", f"Cannot read {path}: {exc}")) from None
     vertices: list[list[float]] = []
-    current = {"o": None, "g": None}
-    declared = {"o": {}, "g": {}}
-    used = {"o": {}, "g": {}}
-    for raw in text.splitlines():
-        ln = raw.strip()
-        if not ln or ln.startswith("#"):
+    current: dict[str, list[str]] = {"o": [], "g": []}
+    declared: dict[str, dict] = {"o": {}, "g": {}}
+    used: dict[str, dict] = {"o": {}, "g": {}}
+    elements: dict[str, dict] = {"o": {}, "g": {}}
+    total = 0
+
+    def bad(number, ln):
+        return ship.NotReady(t(f"Riga {number} del file illeggibile: {ln}", f"Line {number} of the file is unreadable: {ln}"))
+
+    for number, raw in enumerate(text.splitlines(), 1):
+        parts = raw.strip().split(None, 1)
+        if not parts or parts[0].startswith("#"):
             continue
-        key, _, rest = ln.partition(" ")
+        key, rest = parts[0], parts[1] if len(parts) > 1 else ""
         if key in ("o", "g"):
-            current[key] = rest.strip() or None
-            if current[key] is not None:
-                declared[key].setdefault(current[key], [])
-                used[key].setdefault(current[key], [])
+            names = [rest.strip()] if key == "o" and rest.strip() else rest.split()
+            current[key] = names
+            for name in names:
+                declared[key].setdefault(name, [])
+                used[key].setdefault(name, [])
+                elements[key].setdefault(name, 0)
         elif key == "v":
-            values = rest.split()
             try:
-                vertices.append([float(v) for v in values[:3]])
+                xyz = [float(v) for v in rest.split()[:3]]
             except ValueError:
-                raise ship.NotReady(t(f"Vertice illeggibile nel file: {ln}", f"An unreadable vertex in the file: {ln}")) \
-                    from None
+                raise bad(number, raw.strip()) from None
+            if len(xyz) < 3:
+                raise bad(number, raw.strip())
+            vertices.append(xyz)
             for kind in ("o", "g"):
-                if current[kind] is not None:
-                    declared[kind][current[kind]].append(len(vertices) - 1)
+                for name in current[kind]:
+                    declared[kind][name].append(len(vertices) - 1)
         elif key in ("f", "l", "p"):
             index = []
-            for token in rest.split():
-                i = int(token.split("/")[0])
-                index.append(i - 1 if i > 0 else len(vertices) + i)
+            try:
+                for token in rest.split():
+                    i = int(token.split("/")[0])
+                    index.append(i - 1 if i > 0 else len(vertices) + i)
+            except ValueError:
+                raise bad(number, raw.strip()) from None
+            if not index:
+                raise bad(number, raw.strip())
+            total += 1
             for kind in ("o", "g"):
-                if current[kind] is not None:
-                    used[kind][current[kind]].extend(index)
-    kind = "o" if declared["o"] else "g" if declared["g"] else None
-    if kind is None:
+                for name in current[kind]:
+                    used[kind][name].extend(index)
+                    elements[kind][name] += 1
+    groups = list(declared["g"])
+    if len(groups) > 1 and total:
+        kept = [g for g in groups if elements["g"][g] < total]
+        groups = kept or groups
+    if not declared["o"] and not groups:
         raise ship.NotReady(t("Il file non ha fasce da leggere: nessun oggetto o gruppo nel file (righe o / g). "
                               "Esporta dal Clinker Boat Tool un oggetto o un gruppo per fascia.",
                               "The file has no planks to read: no object or group in the file (o / g lines). Export "
                               "one object or group per plank from the Clinker Boat Tool."))
+    kind, names = ("g", groups) if len(groups) > len(declared["o"]) else ("o", list(declared["o"]))
     v = np.asarray(vertices, float).reshape(-1, 3)
     out = {}
-    for name in declared[kind]:
+    for name in names:
         index = used[kind][name] or declared[kind][name]
         index = np.unique(np.asarray(index, np.int64))
         if len(index) and (index.min() < 0 or index.max() >= len(v)):
@@ -326,6 +357,24 @@ def _outline(world_xy: np.ndarray) -> dict:
     return timbers.geometry("point", centre[None])
 
 
+class Distance:
+    """The unsigned distance from points to a mesh (its closest point, Open3D's raycasting scene). ``mesh``: a trimesh
+    in the ship frame, whose coordinates are small enough for single precision."""
+
+    def __init__(self, mesh):
+        import open3d as o3d
+
+        self.scene = o3d.t.geometry.RaycastingScene()
+        self.scene.add_triangles(o3d.core.Tensor(np.asarray(mesh.vertices, np.float32)),
+                                 o3d.core.Tensor(np.asarray(mesh.faces, np.uint32)))
+
+    def to(self, xyz) -> np.ndarray:
+        import open3d as o3d
+
+        points = o3d.core.Tensor(np.asarray(xyz, np.float32).reshape(-1, 3))
+        return self.scene.compute_distance(points).numpy().astype(float)
+
+
 def _notes(name: str) -> set:
     return {NOTE[0].format(name), NOTE[1].format(name)}
 
@@ -338,10 +387,12 @@ def import_planks(chunk, path, side_from: str = "y", deviation: bool = True, pro
     ``importato dal Clinker Boat Tool: <file name>``. The records of an earlier import of the same file name are
     replaced, never the user's.
 
-    ``deviation``: per plank the median and the 90th percentile, in millimetres, of ``|z_plank - z_model|`` at its
-    vertices (the model's height over each vertex, :class:`ship.Surface`); ``missing`` the vertices with no model
-    under them. Rows (``COLUMNS``) in ``chunk.meta["shipwreck"]["houdini"]["planks"]`` and in
-    ``<data>/shipwreck/clinker/<file stem>_scostamenti.csv`` and ``.xlsx``. Returns ``planks`` (how many),
+    ``deviation``: per plank the median and the 90th percentile, in millimetres, of the distance of its vertices
+    from the scan (the closest point of the chunk's model, :class:`Distance`, in any direction: right on steep
+    planking too); ``missing`` the vertices farther than ``MISSING`` (no model there), left out of the two. Rows
+    (``COLUMNS``) in ``chunk.meta["shipwreck"]["houdini"]["planks"][<file name>]`` (one entry per file imported;
+    ``["imports"][<file name>]`` says when) and in ``<data>/shipwreck/clinker/<file stem>_scostamenti.csv`` and
+    ``.xlsx``. Returns ``planks`` (how many),
     ``replaced``, ``rows``, ``csv``, ``xlsx``."""
     progress = as_progress(progress)
     if side_from not in ("y", "name"):
@@ -356,7 +407,7 @@ def import_planks(chunk, path, side_from: str = "y", deviation: bool = True, pro
         model = chunk.product_path("model")
         if model is not None and model.exists():
             progress(0.2, t("Lettura del modello", "Reading the model"))
-            surface = ship.Surface(lines.ship_mesh(chunk, frame).vertices)
+            surface = Distance(lines.ship_mesh(chunk, frame))
     notes = _notes(path.name)
     old = [r["id"] for r in timbers.timbers_of(chunk) if r["kind"] == "plank" and r.get("notes") in notes]
     timbers.remove(chunk, old)
@@ -371,15 +422,17 @@ def import_planks(chunk, path, side_from: str = "y", deviation: bool = True, pro
         row = {"id": record["id"], "name": name, "side": record["side"], "vertices": len(xyz),
                "x": float(xyz[:, 0].mean()), "y": y, "median_mm": None, "p90_mm": None, "missing": None}
         if deviation:
-            z = surface.at(xyz[:, :2]) if surface is not None else np.full(len(xyz), np.nan)
-            ok = np.isfinite(z)
+            d = surface.to(xyz) if surface is not None else np.full(len(xyz), np.inf)
+            ok = d <= MISSING
             row["missing"] = int((~ok).sum())
             if ok.any():
-                d = np.abs(xyz[ok, 2] - z[ok]) * 1000.0
+                d = d[ok] * 1000.0
                 row["median_mm"], row["p90_mm"] = round(float(np.median(d)), 2), round(float(np.percentile(d, 90)), 2)
         rows.append(row)
-    ship.state(chunk)["houdini"] = {"file": path.name, "imported": datetime.now().isoformat(timespec="seconds"),
-                                    "y_up": Y_UP, "planks": rows}
+    store = ship.state(chunk).setdefault("houdini", {})
+    store.setdefault("planks", {})[path.name] = rows
+    store.setdefault("imports", {})[path.name] = {"imported": datetime.now().isoformat(timespec="seconds"),
+                                                  "y_up": Y_UP, "planks": len(rows), "deviation": bool(deviation)}
     progress(0.92, t("Tabella degli scostamenti", "Table of the deviations"))
     files = _write_rows(chunk, rows, path.stem)
     progress(1.0, t("Fasce importate", "Planks imported"))
@@ -392,16 +445,17 @@ def _write_rows(chunk, rows: list[dict], stem: str) -> dict:
     folder = ship.folder(chunk) / "clinker"
     folder.mkdir(parents=True, exist_ok=True)
     headers = ["id", t("nome", "name"), t("lato", "side"), t("vertici", "vertices"), "x", "y",
-               t("scostamento mediano (mm)", "median deviation (mm)"), t("scostamento p90 (mm)", "p90 deviation (mm)"),
-               t("vertici senza modello", "vertices with no model")]
+               t("distanza dal modello, mediana (mm)", "distance from the model, median (mm)"),
+               t("distanza dal modello, p90 (mm)", "distance from the model, p90 (mm)"),
+               t(f"vertici senza modello entro {MISSING:g} m", f"vertices with no model within {MISSING:g} m")]
     table = [[r["id"], r["name"], timbers.side_title(r["side"]), r["vertices"], round(r["x"], 4), round(r["y"], 4),
               r["median_mm"], r["p90_mm"], r["missing"]] for r in rows]
     base = f"{_name(stem)}_scostamenti"
     path_csv = folder / f"{base}.csv"
     tmp = folder / f"{base}.csv.tmp"
     with open(tmp, "w", newline="", encoding="utf-8") as f:
-        f.write("# " + t("fasce dal Clinker Boat Tool: scostamento verticale dal modello", "planks from the Clinker "
-                         "Boat Tool: vertical deviation from the model") + "\n")
+        f.write("# " + t("fasce dal Clinker Boat Tool: distanza dei vertici dal modello (punto più vicino)",
+                         "planks from the Clinker Boat Tool: distance of the vertices from the model (closest point)") + "\n")
         w = csv.writer(f)
         w.writerow(headers)
         for line in table:
