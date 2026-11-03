@@ -252,11 +252,14 @@ def test_a_stray_piece_and_a_keel_off_the_centreline(tmp_path):
 
 
 # ------------------------------------------------------------------------- fix round 2
-def _built(segments, lands, land=0.015, lap=0.02, step=0.002, keel=None, deadrise=0.0):
+def _built(segments, lands, land=0.015, lap=0.02, step=0.002, keel=None, deadrise=0.0, lean=0.0, heel=0.0):
     """A section built by hand, both sides alike: a base curve from the keel (``segments``: (length, curvature)
     from a start at ``deadrise`` degrees), each land a step of ``land`` outward over ``lap`` at the arcs ``lands``;
-    ``keel``: (half width, depth) of a keel below the rabbet, where the planking starts. Returns the polyline
-    (starboard sheer to port sheer) and the truth: the arcs of the lands along the stepped profile from the rabbet."""
+    ``keel``: (half width, depth) of a keel below the rabbet, where the planking starts; ``lean``: degrees from
+    vertical of the keel's sides, the rabbet kept at the half width and the bottom narrower (a tapered keel; a
+    pointed one when the bottom's width reaches zero); ``heel``: the whole section rotated by these degrees about
+    the rabbet's level (port down for a positive heel). Returns the polyline (starboard sheer to port sheer) and the
+    truth: the arcs of the lands along the stepped profile from the rabbet (a rotation keeps them)."""
     angle = np.radians(deadrise)
     u = keel[0] if keel else 0.0
     z, base = 0.0, [(u, 0.0, angle)]
@@ -272,11 +275,17 @@ def _built(segments, lands, land=0.015, lap=0.02, step=0.002, keel=None, deadris
     arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(side, axis=0).T))]
     if keel:
         w, depth = keel
-        bottom = np.column_stack([np.arange(0.0, w, step), np.full(len(np.arange(0.0, w, step)), -depth)])
-        wall = np.column_stack([np.full(int(depth / step), w), np.linspace(-depth, 0.0, int(depth / step), endpoint=False)])
+        wb = w - depth * np.tan(np.radians(lean))  # the bottom's half width
+        wb = 0.0 if wb < 1e-9 else wb
+        n = int(depth / step)
+        wall = np.column_stack([np.linspace(wb, w, n, endpoint=False), np.linspace(-depth, 0.0, n, endpoint=False)])
+        bottom = np.column_stack([np.arange(0.0, wb, step), np.full(len(np.arange(0.0, wb, step)), -depth)])
         side = np.vstack([bottom, wall, side])
     first = 1 if side[0, 0] == 0.0 else 0  # the centre point once
     polyline = np.vstack([(side[first:] * [-1.0, 1.0])[::-1], side])
+    if heel:
+        c, sn = np.cos(np.radians(heel)), np.sin(np.radians(heel))
+        polyline = polyline @ np.array([[c, -sn], [sn, c]])  # (y, z) turned by heel: port (y > 0) goes down
     return polyline, np.interp(lands, s, arc)
 
 
@@ -415,3 +424,68 @@ def test_a_steep_v_section_is_not_a_keel(tmp_path, keel):
         assert np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
         record = next(st for st in result["stations"] if st["side"] == side)
         assert record["rabbet"][1] == pytest.approx(0.0, abs=0.003)  # the apex of the V, or the keel's top
+
+
+# ------------------------------------------------------------------------- fix round 5
+_KEEL_HULL = [(0.6, 0.0), (0.3 * np.pi / 2, 1 / 0.3), (0.4, 0.0)]  # 60 cm of floor, the bilge, 40 cm of side
+
+
+def _check_lands(ch, side, truth):
+    found = _lands_on(ch, side)
+    assert len(found) == 4, [d["s"] for d in found]
+    assert np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
+
+
+@pytest.mark.parametrize("lean", [15.0, 20.0])
+def test_a_keel_with_leaning_sides(tmp_path, lean):
+    """A tapered keel, its sides leaning 15-20 degrees from vertical (the bottom narrower than the rabbet), on a
+    sole: the sides are the keel's, the profile starts at the rabbet; four lands within 5 mm of the arcs from
+    there, none at the keel's corner."""
+    section, truth = _built(_KEEL_HULL, [0.15, 0.32, 0.5, 0.7], keel=(0.08, 0.15), deadrise=15.0, lean=lean)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    assert not result["skipped"] and result["mode"] == {"port": 4, "starboard": 4}
+    for side in ("port", "starboard"):
+        _check_lands(ch, side, truth)
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert record["end"] == "line" and record["rabbet"][1] == pytest.approx(0.0, abs=0.003)
+        assert abs(record["rabbet"][0]) == pytest.approx(0.08, abs=0.003)
+        assert record["sole"] == pytest.approx(2 * (0.08 - 0.15 * np.tan(np.radians(lean))), abs=0.005)
+
+
+@pytest.mark.parametrize("heel", [12.0, 15.0])
+def test_a_heeled_wreck_is_read_alike_on_both_sides(tmp_path, heel):
+    """A wreck lying heeled by 12-15 degrees (a 15 cm keel, 15 degrees of deadrise): the low side's keel face
+    leans, the high side's overhangs; both are read as the keel's side, four lands each within 5 mm of the arcs
+    from the rabbet, the same arcs on the two sides."""
+    section, truth = _built(_KEEL_HULL, [0.15, 0.32, 0.5, 0.7], keel=(0.05, 0.15), deadrise=15.0, heel=heel)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    assert not result["skipped"] and result["mode"] == {"port": 4, "starboard": 4}
+    c, sn = np.cos(np.radians(heel)), np.sin(np.radians(heel))
+    for side, sign in (("port", 1.0), ("starboard", -1.0)):
+        _check_lands(ch, side, truth)
+        record = next(st for st in result["stations"] if st["side"] == side)
+        rabbet = np.array([sign * 0.05 * c, -sign * 0.05 * sn])  # (+-0.05, 0) turned by the heel
+        assert np.hypot(*(np.array(record["rabbet"]) - rabbet)) < 0.003 and record["end"] == "line"
+    port = np.array([d["s"] for d in _lands_on(ch, "port")])
+    starboard = np.array([d["s"] for d in _lands_on(ch, "starboard")])
+    assert np.abs(port - starboard).max() < 0.002
+
+
+@pytest.mark.parametrize("lean", [np.degrees(np.arctan(0.05 / 0.15)), 15.0])
+def test_a_steep_start_with_no_sole_is_keel_unclear(tmp_path, lean):
+    """A pointed keel (its sides at 72 degrees meeting below) or one whose sole is under 2 cm (sides at 75
+    degrees): steep from the start, within the half width, the garboards flat above it (not a V of planking,
+    whose steepness returns after a land). Keel or planking? Both sides are skipped with the reason and listed;
+    no land is measured from a wrong origin."""
+    section, _truth = _built(_KEEL_HULL, [0.15, 0.32, 0.5, 0.7], keel=(0.05, 0.15), deadrise=15.0, lean=lean)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    assert [(d["station"], d["side"], d["reason"]) for d in result["skipped"]] == [
+        ("S1", "port", "keel_unclear"), ("S1", "starboard", "keel_unclear")]
+    assert result["lands"] == [] and result["mode"] == {"port": 0, "starboard": 0} and not result["lines"]
+    station = next(iter(lines.sections_of(ch, "station")))
+    assert clinker.profile(station, "port") is None and clinker.profile(station, "starboard") is None
+    text = clinker.summary(ch)
+    assert "chiglia o fasciame" in text and "S1 babordo" in text and "S1 tribordo" in text
