@@ -195,3 +195,16 @@ def clinker_section(x, cell: float = 0.02, strakes: int = 5, land: float = 0.015
     yp, zp = _section_points(x, s, off, 1.0)
     ys, zs = _section_points(x, s[1:], off[1:], -1.0)
     return np.column_stack([np.concatenate([ys[::-1], yp]), np.concatenate([zs[::-1], zp])])
+
+
+def clinker_widths(x, strakes: int = 5, land: float = 0.015, lap: float = 0.02, stealer=None) -> list[float]:
+    """The widths of the strakes at ``x`` from the keel (the arcs between the lands' centres, the last to the sheer)
+    along the clinker section, as :func:`clinker_truth` measures them."""
+    centres, active = _lands(x, strakes, stealer)
+    centres = centres[active]
+    s = np.linspace(0.0, girth(x), 300001)
+    offset = land * np.clip((s[:, None] - centres[None]) / lap + 0.5, 0.0, 1.0).sum(axis=1)
+    y, z = _section_points(x, s, offset, 1.0)
+    arc = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(y), np.diff(z)))])
+    edges = np.r_[0.0, np.interp(centres, s, arc), arc[-1]]
+    return [float(v) for v in np.diff(edges)]

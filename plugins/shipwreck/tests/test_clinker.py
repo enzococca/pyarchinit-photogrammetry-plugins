@@ -595,3 +595,201 @@ def test_a_narrow_sole_is_read_with_a_lower_sole_width(tmp_path):
     result = clinker.detect_lands(ch, {"sole_width": 0.015})
     _both_sides(ch, result, truth, rabbet_z=0.0, tol=0.003)
     assert ch.meta["shipwreck"]["clinker"]["params"]["sole_width"] == 0.015
+
+
+# ------------------------------------------------------------------------- task 2: the strake model
+def _point_to_polyline(p, line):
+    """The distance of the points ``p`` (N, 2) from the polyline ``line`` (M, 2)."""
+    a, b = line[:-1], line[1:]
+    ab = b - a
+    t = np.clip(((p[:, None] - a[None]) * ab[None]).sum(-1) / np.maximum((ab**2).sum(-1), 1e-18)[None], 0.0, 1.0)
+    q = a[None] + t[..., None] * ab[None]
+    return np.hypot(*(p[:, None] - q).transpose(2, 0, 1)).min(axis=1)
+
+
+def _objects(path):
+    return [ln.split()[1] for ln in path.read_text().splitlines() if ln.startswith("o ")]
+
+
+def test_the_strake_model_of_a_clinker_hull(tmp_path):
+    from hulls import clinker_section, clinker_widths
+
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
+
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=37.0)
+    _ready(ch, ends)
+    clinker.detect_lands(ch)
+    result = clinker.build_strakes(ch)
+    strakes = {(d["side"], d["k"]): d for d in result["strakes"]}
+    assert sorted(strakes) == [(s, k) for s in ("port", "starboard") for k in range(1, 6)]
+    truth = clinker_widths(6.01)
+    for (side, k), d in strakes.items():
+        assert d["widths"]["S5"] == pytest.approx(truth[k - 1], rel=0.05), (side, k, d["widths"]["S5"], truth[k - 1])
+        assert set(d["widths"]) == {f"S{i + 1}" for i in range(len(STATIONS))}
+        assert d["uncertainty_mm"]["S5"] > 0.0
+        assert abs(d["thickness_mm"] - 15.0) < 2.0 and d["lap_mm"] == pytest.approx(20.0)
+        assert d["length"] > 7.0
+    assert ch.meta["shipwreck"]["clinker"]["strakes"] == result["strakes"]
+    folder = ch.data_dir / "shipwreck" / "clinker"
+    assert result["obj"] == folder / "strakes.obj" and result["ply"] == folder / "strakes.ply"
+    names = _objects(result["obj"])
+    assert sorted(names) == sorted([f"fascia_{s}{k}" for s in "BT" for k in range(1, 6)])
+    text = result["obj"].read_text()
+    assert "ipotesi" in text and "# frame" in text
+    mesh = read_mesh(result["ply"])
+    assert mesh.vertices.dtype["x"] == np.float64
+    assert any("ipotesi" in c for c in mesh.comments)
+    k, side = mesh.field("strake"), mesh.field("side")
+    assert set(np.unique(k)) == {1, 2, 3, 4, 5} and set(np.unique(side)) == {0, 1}
+    frame = ship.need_frame(ch)
+    xyz = frame.to_ship(mesh.xyz)
+    assert (xyz[side == 0, 1] > -1e-6).all() and (xyz[side == 1, 1] < 1e-6).all()  # 0: port (B), y > 0
+    worst = 0.0
+    for x in np.unique(np.round(xyz[:, 0], 6)):
+        p = xyz[np.abs(xyz[:, 0] - x) < 1e-6][:, 1:]
+        worst = max(worst, _point_to_polyline(p, clinker_section(x, cell=0.005)).max())
+    assert worst < 0.01, worst
+
+
+def test_the_other_bow_swaps_the_names_of_the_sides_and_nothing_else(tmp_path):
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
+
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=37.0)
+    _ready(ch, ends, STATIONS[2:7])
+    clinker.detect_lands(ch)
+    first = clinker.build_strakes(ch)
+    before = read_mesh(first["ply"])
+    widths = {(d["side"], d["k"]): d["widths"] for d in first["strakes"]}
+    ship.set_frame(ch, ship.need_frame(ch).other_bow())
+    lines.build(ch, half_width=3.0)
+    clinker.detect_lands(ch)
+    second = clinker.build_strakes(ch)
+    after = read_mesh(second["ply"])
+    other = {"port": "starboard", "starboard": "port"}
+    for d in second["strakes"]:
+        assert d["widths"] == pytest.approx(widths[(other[d["side"]], d["k"])], abs=1e-4)
+    for k in range(1, 6):
+        for s in (0, 1):
+            a = before.xyz[(before.field("strake") == k) & (before.field("side") == s)]
+            b = after.xyz[(after.field("strake") == k) & (after.field("side") == 1 - s)]
+            assert a.shape == b.shape and np.abs(a - b).max() < 1e-4
+    names = _objects(second["obj"])
+    assert sorted(names) == sorted(_objects(first["obj"]))
+
+
+def test_the_strakes_in_the_catalogue(tmp_path):
+    import shapely
+
+    from ppg_shipwreck import timbers
+
+    _doc, ch, ends = clinker_project(tmp_path)
+    _ready(ch, ends, STATIONS[2:7])
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    timbers.add(ch, "frame", "port", "F1", timbers.geometry("point", [[0.0, 0.0]]))
+    assert clinker.to_catalogue(ch) == 10
+    assert clinker.to_catalogue(ch) == 10
+    records = timbers.timbers_of(ch)
+    planks = [r for r in records if r["kind"] == "plank"]
+    assert len(planks) == 10 and len(records) == 11
+    assert sorted(r["name"] for r in planks) == sorted(f"fascia {s}{k}" for s in "BT" for k in range(1, 6))
+    frame = ship.need_frame(ch)
+    for r in planks:
+        assert r["notes"] == "modello delle fasce (ipotesi)" and r["station"] == "" and r["geometry"]["type"] == "polygon"
+        assert r["side"] == ("port" if r["name"].endswith(("B1", "B2", "B3", "B4", "B5")) else "starboard")
+        xy = np.asarray(r["geometry"]["xy"])
+        assert shapely.Polygon(xy).area > 0.1
+        y = frame.to_ship(np.column_stack([xy, np.zeros(len(xy))]))[:, 1]
+        assert ((y > -1e-6) if r["side"] == "port" else (y < 1e-6)).all()  # the garboard's edge at the rabbet, y = 0
+
+
+def test_the_strake_tables(tmp_path):
+    from openpyxl import load_workbook
+
+    _doc, ch, ends = clinker_project(tmp_path, stealer=(4.5, 7.5))
+    _ready(ch, ends)
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    rows = clinker.strake_rows(ch)
+    assert len(rows) == 10
+    for row in rows:  # the stealer's stations are uncertain: no width measured there, nothing interpolated
+        for name in ("S4", "S5", "S6"):
+            assert row["widths"][name] is None and row["uncertainty_mm"][name] is None
+        assert row["widths"]["S1"] is not None and row["uncertainty_mm"]["S1"] > 0
+    files = clinker.write_tables(ch)
+    assert files["csv"].parent == ch.data_dir / "shipwreck" / "clinker"
+    text = files["csv"].read_text(encoding="utf-8")
+    assert "ipotesi dalle sezioni" in text and "±" in text
+    book = load_workbook(files["xlsx"])
+    sheet = book.worksheets[0]
+    assert "ipotesi dalle sezioni" in sheet.title
+    header = [c.value for c in sheet[1]]
+    assert header[:6] == ["fascia", "lato", "k", "lunghezza (m)", "spessore (mm)", "sovrapposizione (mm)"]
+    assert "S1 (m)" in header and "S1 ± mm" in header
+    assert sheet.max_row == 11
+    s4 = header.index("S4 (m)") + 1
+    assert all(sheet.cell(row=r, column=s4).value is None for r in range(2, 12))
+
+
+def test_a_plain_hull_has_no_strakes(tmp_path):
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, STATIONS[:3])
+    clinker.detect_lands(ch)
+    with pytest.raises(ship.NotReady, match="(?i)nessun gradino"):
+        clinker.build_strakes(ch)
+
+
+def _stations(tmp_path, polylines):
+    """A project whose stations' sections are replaced by ``polylines``, one per station, 1 m apart."""
+    _doc, ch, ends = project(tmp_path)
+    _ready(ch, ends, STATIONS[:len(polylines)])
+    data = lines.load(ch)
+    for section, p in zip(data["sections"], polylines):
+        section["lines"] = [np.round(p, 5).tolist()]
+    lines._save(ch, data)
+    return ch
+
+
+@pytest.mark.parametrize("move", ["garboard", "rabbet"])
+def test_a_station_whose_rabbet_or_garboard_jumps_is_uncertain(tmp_path, move):
+    """Five stations with the same section, the third with its lands 3 cm farther from the keel (the garboard
+    wider) or the whole section 3 cm higher (the rabbet higher): the count is right, but the station is uncertain on
+    both sides, its widths left empty; the other stations are not."""
+    lands = [0.15, 0.32, 0.5, 0.7]
+    plain, _truth = _built(_KEEL_HULL, lands)
+    moved, _ = _built(_KEEL_HULL, [v + 0.03 for v in lands]) if move == "garboard" else (plain + [0.0, 0.03], None)
+    ch = _stations(tmp_path, [plain, plain, moved, plain, plain])
+    result = clinker.detect_lands(ch)
+    assert result["uncertain"] == {"port": [], "starboard": []}
+    assert result["jumps"] == {"port": ["S3"], "starboard": ["S3"]}
+    for line in result["lines"]:
+        assert line["uncertain_stations"] == ["S3"]
+    assert "S3" in clinker.summary(ch)
+    strakes = clinker.build_strakes(ch)["strakes"]
+    for d in strakes:
+        assert d["widths"]["S3"] is None and d["widths"]["S2"] is not None
+
+
+def test_a_hull_with_no_jump_has_none(tmp_path):
+    _doc, ch, ends = clinker_project(tmp_path)
+    _ready(ch, ends)
+    assert clinker.detect_lands(ch)["jumps"] == {"port": [], "starboard": []}
+
+
+def test_widths_carry_their_uncertainty(tmp_path):
+    """Noisy sections (half a millimetre on vertices 5 mm apart) at five stations: the noise is read from the
+    sections, every width carries an uncertainty of at least twice the noise plus half the step, and the true
+    width lies within it."""
+    from hulls import clinker_section, clinker_widths
+
+    xs = STATIONS[2:7]
+    ch = _stations(tmp_path, [_noisy(clinker_section(x), seed=10 + i) for i, x in enumerate(xs)])
+    result = clinker.detect_lands(ch)
+    for st in result["stations"]:
+        assert st["noise_mm"] == pytest.approx(0.5, abs=0.15), st
+    for d in clinker.build_strakes(ch)["strakes"]:
+        for i, x in enumerate(xs):
+            name = f"S{i + 1}"
+            w, u = d["widths"][name], d["uncertainty_mm"][name]
+            assert u >= 2 * 0.4 + 0.5 * 13.0
+            assert abs(w - clinker_widths(x)[d["k"] - 1]) * 1000.0 <= u, (d["side"], d["k"], name, w, u)

@@ -20,8 +20,9 @@ walking from the sheer down to the keel ``d``
 rises gently inside a strake and drops by the step at each land (the lower edge of a strake lies outside the strake
 below). A land is where ``d`` changes by more than ``min_step`` within ``step_len`` of arc, the lands at least
 ``min_strake`` apart; its position is the centre of the step (the centroid of the rise of ``d``); its step is read
-on ``d`` - the same as on the raw profile once the slope of the flats is taken out: the two flats' lines (three
-samples each side, their median, the common slope removed) differenced at the land; its arc ``s`` is the working
+on ``d`` - the same as on the raw profile once the slope of the flats is taken out: the two flats' lines (five
+samples each side, ``FLAT`` apart over 35 mm of arc from the land's centre, their median, the common slope removed)
+differenced at the land; its arc ``s`` is the working
 profile's arc at that point, from the rabbet. Lands too near an end of the
 profile to read both flats are left out and counted. Nothing is faired or filled: a side with too few vertices, a
 gap or no keel gives no lands and is listed. Where the preserved edge meets flat sediment at less than about 45
@@ -99,6 +100,12 @@ SMOOTH = 0.006  # the working profile: the raw one averaged twice over this much
 FLAT = 0.005  # the flats' samples beside a land, 5 mm apart
 LAYERS = {"port": "FASCE_BABORDO", "starboard": "FASCE_TRIBORDO"}
 TABLE = "fasce_linee"
+JUMP = 0.02  # a station whose rabbet or garboard lies farther than this from the line through its neighbours
+NOISE_FACTOR = 4.0  # a width's uncertainty: this many times the section's noise, plus half the step (see build_strakes)
+MESH_STEP = 0.10  # the strakes' mesh: a row at every station and every 10 cm of x between them
+SIDE_CODES = {"port": ("B", 0), "starboard": ("T", 1)}  # babordo / tribordo: the letter of the name, the PLY's side
+HYPOTHESIS = ("modello delle fasce: ipotesi dalle sezioni, non una misura",
+              "strake model: a hypothesis from the sections, not a measure")
 
 
 def _side_name(side: str) -> str:
@@ -387,7 +394,8 @@ def _profile(section: dict, side: str, params: dict | None = None):
     sample beside it (the lands are read on the raw one, their arcs on the working one). ``info``: ``end`` "turn" or
     "bend" when the profile was ended there (:func:`_end`; a piece beyond that end is a stray, never a gap), else
     "line"; ``stray``: pieces left apart; ``keel``: the keel's y (the sides split there); ``sole``: the width of the
-    bottom under it (:func:`_sole`); ``rabbet``: (y, z) where the profile and its arcs start (:func:`_rabbet`)."""
+    bottom under it (:func:`_sole`); ``rabbet``: (y, z) where the profile and its arcs start (:func:`_rabbet`);
+    ``noise``: the noise of the raw vertices of the profile (:func:`_noise`)."""
     sign = SIDE_SIGN[side]
     polylines = [np.asarray(line, float).reshape(-1, 2) for line in section.get("lines") or []]
     polylines = [p for p in polylines if len(p) > 1]
@@ -450,6 +458,7 @@ def _profile(section: dict, side: str, params: dict | None = None):
             if ((sign * (r[:, 0] - end[0]) > JOIN) & (r[:, 1] > end[1])).any():
                 return "gap"
     info["raw"] = (raw, su)
+    info["noise"] = _noise(vertices[(s_raw >= lo - 1e-9) & (s_raw <= lo + su[-1] + 1e-9)])
     return points, s, info
 
 
@@ -535,7 +544,7 @@ def _lands(points, s, params=None, side=None, arc=None) -> tuple[list[dict], int
         lo, hi = max(0, i - m), min(len(d), i + m + 1)
         w = np.clip(slope[lo:hi], 0.0, None)
         centre = float((su[lo:hi] * w).sum() / w.sum()) if w.sum() > 0 else float(su[i])
-        offsets = half + FLAT * np.arange(3)
+        offsets = half + FLAT * np.arange(5)
         if centre - offsets[-1] < 0.0 or centre + offsets[-1] > length:
             dropped += 1  # too near an end of the profile to read both flats
             continue
@@ -594,7 +603,8 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
             stations.append({"name": section["name"], "x": float(section["value"]), "side": side, "count": len(here),
                              "length": round(float(arc[-1]), 5), "end": info["end"], "stray": info["stray"],
                              "keel": info["keel"], "sole": info["sole"], "rabbet": info["rabbet"],
-                             "dropped_at_ends": dropped})
+                             "sheer": [round(float(v), 5) for v in points[-1]],
+                             "noise_mm": round(info["noise"] * 1000.0, 3), "dropped_at_ends": dropped})
             found += [{"station": section["name"], "x": float(section["value"]), "side": side, **d, "k": None}
                       for d in here]
     mode, uncertain = {}, {}
@@ -604,16 +614,102 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
         best = values[freq == freq.max()].max()  # a tie: the larger count, fewer lands left out
         mode[side] = int(best)
         uncertain[side] = [st["name"] for st in stations if st["side"] == side and st["count"] != mode[side]]
+    jumps = {side: _jumps([st for st in stations if st["side"] == side], found) for side in SIDES}
     state = _state(chunk)
-    for key in ("lines", "unmatched"):
+    for key in ("lines", "unmatched", "strakes", "strakes_built"):
         state.pop(key, None)
     state.update({"params": p, "source": _signature(data), "lands": found, "stations": stations, "mode": mode,
-                  "uncertain": uncertain, "skipped": skipped, "detected": datetime.now().isoformat(timespec="seconds")})
+                  "uncertain": uncertain, "jumps": jumps, "skipped": skipped,
+                  "detected": datetime.now().isoformat(timespec="seconds")})
     progress(0.95, t("Linee delle fasce", "Land lines"))
     match_lines(chunk)
     progress(1.0, t("Gradini trovati", "Lands found"))
-    return {"lands": found, "stations": stations, "mode": mode, "uncertain": uncertain, "skipped": skipped,
-            "lines": state["lines"], "unmatched": state["unmatched"]}
+    return {"lands": found, "stations": stations, "mode": mode, "uncertain": uncertain, "jumps": jumps,
+            "skipped": skipped, "lines": state["lines"], "unmatched": state["unmatched"]}
+
+
+def _noise(vertices: np.ndarray) -> float:
+    """The noise of a side's section, metres: the robust spread (1.4826 MAD) of each raw vertex's offset from the
+    local smooth line through its two neighbours (their chord), divided by ``sqrt(1 + w1^2 + w2^2)`` (the chord's
+    own noise, ``w`` the neighbours' weights at the vertex; 1.5 for even spacing). Curvature adds the chord's sag
+    (0.04 mm on 2 cm at a radius of 1.3 m) and the lands' corners a few vertices, which do not move a median. The
+    offset from the working profile (averaged over 1 cm) is not it: on vertices 5 mm apart that average follows
+    the noise and reads a fifth of it."""
+    v = np.asarray(vertices, float)
+    if len(v) < 3:
+        return 0.0
+    a, b, c = v[:-2], v[1:-1], v[2:]
+    ac = c - a
+    span = np.hypot(*ac.T)
+    ok = span > 1e-9
+    if not ok.any():
+        return 0.0
+    a, b, ac, span = a[ok], b[ok], ac[ok], span[ok]
+    dist = (ac[:, 0] * (b[:, 1] - a[:, 1]) - ac[:, 1] * (b[:, 0] - a[:, 0])) / span
+    w2 = np.clip(((b - a) * ac).sum(axis=1) / span**2, 0.0, 1.0)  # the weight of c at b's place along the chord
+    e = dist / np.sqrt(1.0 + w2**2 + (1.0 - w2) ** 2)
+    return float(1.4826 * np.median(np.abs(e - np.median(e))))
+
+
+def _residuals(x: np.ndarray, values: np.ndarray, keep: list[int]) -> dict[int, float]:
+    """For each item of ``keep``, its distance from the least-squares line along x through its neighbours among
+    ``keep``: the two nearest on each side, the nearest two at an end (none with fewer than two)."""
+    out = {}
+    for i in keep:
+        before = [j for j in keep if x[j] < x[i]][-2:]
+        after = [j for j in keep if x[j] > x[i]][:2]
+        near = before + after
+        if len(near) < 2:
+            continue
+        a = np.column_stack([x[near] - x[i], np.ones(len(near))])
+        coef = np.linalg.lstsq(a, values[near], rcond=None)[0]
+        out[i] = float(np.linalg.norm(values[i] - coef[1]))  # the line's value at x[i]
+    return out
+
+
+def _outliers(x: np.ndarray, values: np.ndarray, limit: float = JUMP) -> dict[int, float]:
+    """The items whose ``values`` (N, d) lie farther than ``limit`` from the line through their neighbours
+    (:func:`_residuals`), one at a time: of those beyond it, the one whose removal leaves the others nearest to
+    their lines (a jump at the third station also throws the first two off their lines, extrapolated across it:
+    taking it out explains them, taking them out does not), then again without it. ``{index: distance}``."""
+    out: dict[int, float] = {}
+    while True:
+        keep = [i for i in range(len(x)) if i not in out]
+        r = _residuals(x, values, keep)
+        beyond = [i for i, v in r.items() if v > limit]
+        if not beyond:
+            return out
+        scores = {i: (max(_residuals(x, values, [j for j in keep if j != i]).values(), default=0.0), -r[i])
+                  for i in beyond}
+        best = min(beyond, key=scores.__getitem__)
+        out[best] = r[best]
+
+
+def _jumps(rows: list[dict], lands: list[dict]) -> list[str]:
+    """The stations of one side whose rabbet (y, z) or garboard (the arc to the first land) jumps more than ``JUMP``
+    from the line through the neighbouring stations (:func:`_outliers`): the count of lands is right but the
+    origin may be shifted. Each such station's record gets ``jump`` (what jumped, mm); names by x."""
+    rows = sorted(rows, key=lambda st: st["x"])
+    found: dict[str, dict] = {}
+    if rows:
+        x = np.array([st["x"] for st in rows])
+        for i, r in _outliers(x, np.array([st["rabbet"] for st in rows], float)).items():
+            found.setdefault(rows[i]["name"], {})["rabbet_mm"] = round(r * 1000.0, 1)
+        first = {}
+        for d in lands:
+            if d["side"] == rows[0]["side"] and (d["station"] not in first or d["s"] < first[d["station"]]):
+                first[d["station"]] = d["s"]
+        with_land = [st for st in rows if st["name"] in first]
+        if with_land:
+            x = np.array([st["x"] for st in with_land])
+            g = np.array([[first[st["name"]]] for st in with_land])
+            for i, r in _outliers(x, g).items():
+                found.setdefault(with_land[i]["name"], {})["garboard_mm"] = round(r * 1000.0, 1)
+    for st in rows:
+        st.pop("jump", None)
+        if st["name"] in found:
+            st["jump"] = found[st["name"]]
+    return [st["name"] for st in rows if st["name"] in found]
 
 
 def _need_lands(chunk) -> dict:
@@ -625,8 +721,9 @@ def _need_lands(chunk) -> dict:
 
 def match_lines(chunk) -> list[dict]:
     """The land lines ``{"side", "k", "points": [[x, y, z], ...], "uncertain_stations", "unmatched"}`` (``k`` from the
-    keel, points in ship coordinates by x; ``unmatched``: the stations where the line found no land), written to
-    ``["lines"]``; every land gets its ``k`` (None for a land on no line, listed in ``["unmatched"]``)."""
+    keel, points in ship coordinates by x; ``uncertain_stations``: those with another count of lands or whose rabbet
+    or garboard jumps (:func:`_jumps`), matched by arc like the others' lands; ``unmatched``: the stations where the
+    line found no land), written to ``["lines"]``; every land gets its ``k`` (None for a land on no line, listed in ``["unmatched"]``)."""
     from scipy.optimize import linear_sum_assignment
 
     state = _need_lands(chunk)
@@ -643,7 +740,11 @@ def match_lines(chunk) -> list[dict]:
             continue
         rows = sorted((st for st in state["stations"] if st["side"] == side), key=lambda st: st["x"])
         here = {st["name"]: by_station.get((side, st["name"]), []) for st in rows}
-        certain = [st for st in rows if st["count"] == m]
+        jumps = set((state.get("jumps") or {}).get(side) or [])
+        jumped = set(jumps)
+        certain = [st for st in rows if st["count"] == m and st["name"] not in jumped]
+        if not certain:  # every station with the count jumps: their arcs are all there is
+            certain, jumped = [st for st in rows if st["count"] == m], set()
         for st in certain:
             for k, d in enumerate(here[st["name"]], 1):
                 d["k"] = k
@@ -653,7 +754,7 @@ def match_lines(chunk) -> list[dict]:
         arcs = np.array([[d["s"] for d in here[st["name"]]] for st in certain])  # (stations, m)
         missing = {k: [] for k in range(1, m + 1)}
         for st in rows:
-            if st["count"] == m:
+            if st["count"] == m and st["name"] not in jumped:
                 continue
             expected = np.array([np.interp(st["x"], xs, arcs[:, k]) for k in range(m)])
             # a land is a line's when it lies nearer to it than half the way to the next line
@@ -672,7 +773,7 @@ def match_lines(chunk) -> list[dict]:
             for k in range(1, m + 1):
                 if k not in taken:
                     missing[k].append(st["name"])
-        flagged = [st["name"] for st in rows if st["count"] != m]
+        flagged = [st["name"] for st in rows if st["count"] != m or st["name"] in jumps]
         for k in range(1, m + 1):
             points = [[d["x"], d["y"], d["z"]] for st in rows for d in here[st["name"]] if d["k"] == k]
             out.append({"side": side, "k": k, "points": points, "uncertain_stations": flagged, "unmatched": missing[k]})
@@ -738,6 +839,13 @@ def summary(chunk) -> str:
                 why = ", ".join(_why(st) for st in state["stations"] if st["side"] == side and st["name"] in flagged)
                 text += " " + t(f"Stazioni incerte (un altro numero di gradini): {why}.",
                                 f"Uncertain stations (another count of lands): {why}.")
+            jumped = (state.get("jumps") or {}).get(side) or []
+            if jumped:
+                cm = num(JUMP * 100.0, 0)
+                text += " " + t(f"Stazioni incerte (battura o torello che saltano di oltre {cm} cm rispetto alle "
+                                f"stazioni vicine): {', '.join(jumped)}.",
+                                f"Uncertain stations (the rabbet or the garboard jumping more than {cm} cm from the "
+                                f"stations beside them): {', '.join(jumped)}.")
             parts.append(text)
     extra = state.get("unmatched") or []
     if extra:
@@ -808,3 +916,293 @@ def write_lines(chunk, folder=None) -> dict:
     finally:
         con.close()
     return {"dxf": dxf, "gpkg": path}
+
+
+# ------------------------------------------------------------------------------------- the strakes
+def _need_current(chunk) -> dict:
+    """The lands, refused when the sections changed after them."""
+    state = _need_lands(chunk)
+    if is_stale(chunk):
+        raise ship.NotReady(t("Le sezioni sono cambiate dopo il rilevamento: rileva di nuovo i gradini.",
+                              "The sections changed after the lands were found: find the lands again."))
+    return state
+
+
+def _boundaries(state: dict, side: str) -> tuple[list[dict], list[dict]]:
+    """The stations of a side (by x) and its ``mode + 2`` boundary lines, from the keel: the rabbet (the first
+    vertex of each station's profile), the land lines 1 .. mode, the sheer (the last vertex). Each boundary maps a
+    station's name to ``{"p": [x, y, z], "s": arc from the rabbet, "step_mm": the land's step or None}``."""
+    rows = sorted((st for st in state["stations"] if st["side"] == side), key=lambda st: st["x"])
+    m = int(state["mode"].get(side, 0))
+    keel = {st["name"]: {"p": [st["x"], *st["rabbet"]], "s": 0.0, "step_mm": None} for st in rows}
+    sheer = {st["name"]: {"p": [st["x"], *st["sheer"]], "s": st["length"], "step_mm": None} for st in rows}
+    lands = [{} for _ in range(m)]
+    for d in state["lands"]:
+        if d["side"] == side and d["k"] is not None:
+            lands[d["k"] - 1][d["station"]] = {"p": [d["x"], d["y"], d["z"]], "s": d["s"], "step_mm": d["step_mm"]}
+    return rows, [keel, *lands, sheer]
+
+
+def _polyline(boundary: dict) -> np.ndarray:
+    return np.array(sorted(v["p"] for v in boundary.values()), float).reshape(-1, 3)
+
+
+def _along(b: np.ndarray, xs: np.ndarray) -> np.ndarray:
+    """A boundary ``(N, 3)`` by x read at ``xs``: through its points, a cubic spline along x (not-a-knot; a
+    parabola through three points, a straight line through two). A land line follows the hull's curve in plan:
+    straight between stations 1 m apart it cuts in by more than a centimetre where the breadth changes."""
+    if len(b) < 3:
+        return np.column_stack([xs, np.interp(xs, b[:, 0], b[:, 1]), np.interp(xs, b[:, 0], b[:, 2])])
+    from scipy.interpolate import CubicSpline
+
+    spline = CubicSpline(b[:, 0], b[:, 1:], axis=0)
+    out = spline(np.clip(xs, b[0, 0], b[-1, 0]))
+    out[np.isin(xs, b[:, 0])] = b[np.searchsorted(b[:, 0], xs[np.isin(xs, b[:, 0])]), 1:]  # the points as they are
+    return np.column_stack([xs, out])
+
+
+def _rows_between(lower: np.ndarray, upper: np.ndarray, stations: list[float]) -> tuple[np.ndarray, np.ndarray]:
+    """The two boundaries of a strake resampled at the same x (:func:`_along`): every station and every
+    ``MESH_STEP`` within the x both run over (``(0, 3)`` arrays when they share no stretch of x)."""
+    if not len(lower) or not len(upper):
+        return np.zeros((0, 3)), np.zeros((0, 3))
+    x0, x1 = max(lower[0, 0], upper[0, 0]), min(lower[-1, 0], upper[-1, 0])
+    if x1 - x0 < 1e-6:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+    xs = np.unique(np.r_[[v for v in stations if x0 - 1e-9 <= v <= x1 + 1e-9], np.arange(x0, x1, MESH_STEP), x1])
+    xs = xs[np.r_[True, np.diff(xs) > 1e-3]]
+    return _along(lower, xs), _along(upper, xs)
+
+
+def _outer_face(lower: np.ndarray, upper: np.ndarray, side: str, h_lower: float, h_upper: float):
+    """The strake's outer face at its two edges. A land line runs through the middle of a land's step: the strake
+    above it laps outside, its outer face ``h`` (half the step) farther out; the strake below lies inside, its outer
+    face ``h`` farther in. So the lower edge moves out by ``h_lower`` and the upper one in by ``h_upper`` along the
+    outward normal of the section plane (from the chord between the edges): both then lie on the strake's own
+    outer face, which the scan shows (0 at the rabbet and at the sheer, which are on the scan)."""
+    chord = upper[:, 1:] - lower[:, 1:]
+    chord /= np.maximum(np.linalg.norm(chord, axis=1), 1e-12)[:, None]
+    normal = SIDE_SIGN[side] * np.column_stack([chord[:, 1], -chord[:, 0]])  # outward: away from the centreline
+    lo, hi = lower.copy(), upper.copy()
+    lo[:, 1:] += h_lower * normal
+    hi[:, 1:] -= h_upper * normal
+    return lo, hi
+
+
+def _median_step(boundary: dict) -> float | None:
+    steps = [v["step_mm"] for v in boundary.values() if v["step_mm"] is not None]
+    return float(np.median(steps)) if steps else None
+
+
+def _strake_name(side: str, k: int) -> str:
+    return f"{SIDE_CODES[side][0]}{k}"
+
+
+def build_strakes(chunk, lap: float = 0.02, thickness: float | None = None, progress=None) -> dict:
+    """The strake model, a hypothesis from the sections: per side, strake ``k`` (1 = the garboard) between the
+    boundary ``k - 1`` (the rabbet for k = 1) and ``k`` (the sheer for the last) - :func:`_boundaries`.
+
+    Measures per strake: ``widths`` per station, the arc between its two boundaries on that station's section
+    (None where the station is uncertain on that side - another count of lands, a jump of the rabbet or the
+    garboard - or skipped, or a boundary has no point there: never interpolated); ``uncertainty_mm`` per station,
+    ``NOISE_FACTOR`` times the section's noise (:func:`_noise`) plus half the step of the land that bounds it (the
+    upper one; the lower for the top strake): a land's centre is read on a ramp as wide as the lap and as high as
+    the step, so half the step is how far the plank's edge may lie from it, and the noise moves the centre of a
+    step by a few times its spread (on the test sections at 0.5 mm the lands lie within 1 mm of the truth; four
+    times the noise covers them with a margin); ``length``, the 3D length of the strake's upper boundary (the
+    land line, the sheer for the top strake); ``thickness_mm``, the median step of the land where the strake laps
+    over the one below (line k - 1; for the garboard, line 1), or ``thickness``; ``lap_mm``, ``lap`` as given.
+
+    Mesh: the two boundaries resampled at every station and every 10 cm of x where both run, moved onto the
+    strake's outer face (:func:`_outer_face`, half the thickness at each land), joined as a ruled surface of
+    triangles. ``<data>/shipwreck/clinker/strakes.obj`` in SHIP coordinates (``o fascia_B3``: port 3, ``T``
+    starboard), ``strakes.ply`` in the chunk's coordinates (``frame.to_world``, double precision) with the vertex
+    properties ``strake`` (int: k) and ``side`` (uchar: 0 port, 1 starboard). Kept in ``["strakes"]``. Refused
+    when no land was found (a plain hull) or the sections changed."""
+    progress = as_progress(progress)
+    frame = ship.need_frame(chunk)
+    state = _need_current(chunk)
+    if not any(line["points"] for line in state.get("lines") or []):
+        raise ship.NotReady(t("Nessun gradino di fasciame sulle sezioni: lo scafo appare liscio, nessuna fascia da "
+                              "costruire.",
+                              "No plank land on the sections: the hull looks smooth, no strake to build."))
+    out, meshes = [], []
+    for side in SIDES:
+        if int(state["mode"].get(side, 0)) == 0:
+            continue
+        rows, bounds = _boundaries(state, side)
+        unsure = set(state["uncertain"].get(side) or []) | set((state.get("jumps") or {}).get(side) or [])
+        xs = [st["x"] for st in rows]
+        for k in range(1, len(bounds)):
+            progress(0.8 * len(out) / (2 * len(bounds)), t(f"Fascia {_strake_name(side, k)}",
+                                                          f"Strake {_strake_name(side, k)}"))
+            lower, upper = bounds[k - 1], bounds[k]
+            widths, uncertainty = {}, {}
+            for st in rows:
+                a, b = lower.get(st["name"]), upper.get(st["name"])
+                if st["name"] in unsure or a is None or b is None:
+                    widths[st["name"]] = uncertainty[st["name"]] = None
+                    continue
+                step = b["step_mm"] if b["step_mm"] is not None else a["step_mm"]
+                widths[st["name"]] = round(float(b["s"] - a["s"]), 5)
+                uncertainty[st["name"]] = round(NOISE_FACTOR * st.get("noise_mm", 0.0) + 0.5 * (step or 0.0), 1)
+            own = _median_step(bounds[k - 1] if k > 1 else bounds[1])
+            thick = float(thickness * 1000.0) if thickness is not None else own
+            top = _polyline(upper)
+            length = float(np.linalg.norm(np.diff(top, axis=0), axis=1).sum()) if len(top) > 1 else 0.0
+            out.append({"side": side, "k": k, "name": _strake_name(side, k), "widths": widths,
+                        "uncertainty_mm": uncertainty, "length": round(length, 4),
+                        "thickness_mm": None if thick is None else round(thick, 2), "lap_mm": round(lap * 1000.0, 2)})
+            lo, hi = _rows_between(_polyline(lower), top, xs)
+            if len(lo) < 2:
+                continue
+            if thickness is not None:
+                h_lo = h_hi = thickness / 2.0
+            else:
+                h_lo = (_median_step(lower) or 0.0) / 2000.0 if k > 1 else 0.0
+                h_hi = (_median_step(upper) or 0.0) / 2000.0 if k < len(bounds) - 1 else 0.0
+            if k == 1:
+                h_lo = 0.0
+            if k == len(bounds) - 1:
+                h_hi = 0.0
+            lo, hi = _outer_face(lo, hi, side, h_lo, h_hi)
+            meshes.append((side, k, lo, hi))
+    folder = ship.folder(chunk) / "clinker"
+    folder.mkdir(parents=True, exist_ok=True)
+    progress(0.85, t("Modello delle fasce", "Strake model"))
+    obj, ply = _write_strakes(frame, meshes, folder)
+    state["strakes"] = out
+    state["strakes_built"] = datetime.now().isoformat(timespec="seconds")
+    progress(1.0, t("Fasce costruite", "Strakes built"))
+    return {"strakes": out, "obj": obj, "ply": ply}
+
+
+def _faces(n: int, start: int) -> np.ndarray:
+    """The triangles of a ruled strip of ``n`` rows, lower row's vertices first (``start``..), then the upper."""
+    i = np.arange(n - 1)
+    lo, hi = start + i, start + n + i
+    return np.vstack([np.column_stack([lo, lo + 1, hi]), np.column_stack([lo + 1, hi + 1, hi])])
+
+
+def _write_strakes(frame: ship.Frame, meshes: list, folder: Path) -> tuple[Path, Path]:
+    from pyarchinit_photogrammetry.io.mesh_ply import MeshData, write_mesh
+
+    hypothesis = t(*HYPOTHESIS)
+    frame_text = (f"frame: ship coordinates (x along the keel, y to port, z up); start {list(frame.start)}, "
+                  f"end {list(frame.end)}, bow {frame.bow}, z0 {frame.z0}, x0 {frame.x0}")
+    text = [f"# {hypothesis}", f"# {frame_text}", "# o fascia_B<k>: port (babordo), o fascia_T<k>: starboard (tribordo)"]
+    xyz, faces, strake, sides, start = [], [], [], [], 0
+    for side, k, lo, hi in meshes:
+        v = np.vstack([lo, hi])
+        f = _faces(len(lo), start)
+        text.append(f"o fascia_{_strake_name(side, k)}")
+        text += [f"v {a:.6f} {b:.6f} {c:.6f}" for a, b, c in v]
+        text += [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in f]
+        xyz.append(v)
+        faces.append(f)
+        strake.append(np.full(len(v), k, np.int32))
+        sides.append(np.full(len(v), SIDE_CODES[side][1], np.uint8))
+        start += len(v)
+    obj = folder / "strakes.obj"
+    tmp = folder / "strakes.obj.tmp"
+    tmp.write_text("\n".join(text) + "\n", encoding="utf-8")
+    os.replace(tmp, obj)
+    world = frame.to_world(np.vstack(xyz)) if xyz else np.zeros((0, 3))
+    vertices = np.empty(len(world), [("x", "<f8"), ("y", "<f8"), ("z", "<f8"), ("strake", "<i4"), ("side", "u1")])
+    vertices["x"], vertices["y"], vertices["z"] = world.T
+    vertices["strake"] = np.concatenate(strake) if strake else []
+    vertices["side"] = np.concatenate(sides) if sides else []
+    comments = ["strake model: a hypothesis from the sections, not a measure (modello delle fasce: ipotesi dalle "
+                "sezioni, non una misura)", "coordinates of the chunk (world), double precision",
+                "strake = k from the keel (1 = garboard); side = 0 port (B), 1 starboard (T)"]
+    ply = write_mesh(folder / "strakes.ply", MeshData(vertices, np.vstack(faces) if faces else np.zeros((0, 3), np.int64),
+                                                      comments=comments))
+    return obj, Path(ply)
+
+
+def _need_strakes(chunk) -> dict:
+    state = _need_current(chunk)
+    if not state.get("strakes"):
+        raise ship.NotReady(t("Costruisci prima il modello delle fasce.", "Build the strake model first."))
+    return state
+
+
+def strake_rows(chunk) -> list[dict]:
+    """One row per strake and side, port first, from the keel: ``strake`` (B3), ``side``, ``k``, ``length`` (m),
+    ``thickness_mm``, ``lap_mm``, ``widths`` and ``uncertainty_mm`` per station name, in the stations' order
+    (None where nothing was measured)."""
+    state = _need_strakes(chunk)
+    order = [st["name"] for st in sorted(state["stations"], key=lambda st: st["x"])]
+    order = list(dict.fromkeys(order))
+    rows = []
+    for d in sorted(state["strakes"], key=lambda d: (SIDES.index(d["side"]), d["k"])):
+        rows.append({"strake": d["name"], "side": d["side"], "k": d["k"], "length": d["length"],
+                     "thickness_mm": d["thickness_mm"], "lap_mm": d["lap_mm"],
+                     "widths": {n: d["widths"].get(n) for n in order},
+                     "uncertainty_mm": {n: d["uncertainty_mm"].get(n) for n in order}})
+    return rows
+
+
+def write_tables(chunk, folder=None) -> dict:
+    """``strakes.csv`` and ``strakes.xlsx`` in ``folder`` (default ``<chunk data>/shipwreck/clinker``): a row per
+    strake and side (:func:`strake_rows`), for each station its width (m) and its uncertainty (± mm); the CSV's
+    first line and the sheet's title say it is a hypothesis from the sections."""
+    import csv
+
+    from pyarchinit_photogrammetry.io.tables import Sheet, write_xlsx
+
+    rows = strake_rows(chunk)
+    folder = Path(folder) if folder is not None else ship.folder(chunk) / "clinker"
+    folder.mkdir(parents=True, exist_ok=True)
+    stations = list(rows[0]["widths"]) if rows else []
+    headers = [t("fascia", "strake"), t("lato", "side"), "k", t("lunghezza (m)", "length (m)"),
+               t("spessore (mm)", "thickness (mm)"), t("sovrapposizione (mm)", "lap (mm)")]
+    for name in stations:
+        headers += [f"{name} (m)", f"{name} ± mm"]
+    table = []
+    for r in rows:
+        line = [r["strake"], _side_name(r["side"]), r["k"], r["length"], r["thickness_mm"], r["lap_mm"]]
+        for name in stations:
+            line += [r["widths"][name], r["uncertainty_mm"][name]]
+        table.append(line)
+    title = t("Fasce (ipotesi dalle sezioni)", "Strakes (hypothesis from sections)")
+    path_csv = folder / "strakes.csv"
+    tmp = folder / "strakes.csv.tmp"
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
+        f.write(f"# {t(*HYPOTHESIS)}\n")
+        w = csv.writer(f)
+        w.writerow(headers)
+        for line in table:
+            w.writerow(["" if v is None else v for v in line])
+    os.replace(tmp, path_csv)
+    decimals = [None, None, 0, 3, 1, 1] + [3, 1] * len(stations)
+    path_xlsx = write_xlsx(folder / "strakes.xlsx", {title: Sheet(headers, table, decimals)},
+                           title=t(*HYPOTHESIS))
+    return {"csv": path_csv, "xlsx": Path(path_xlsx)}
+
+
+def to_catalogue(chunk) -> int:
+    """One ``plank`` record of the catalogue per strake: its outline in plan (its two boundaries, the land lines
+    k - 1 and k, in the chunk's x, y, closed), named ``fascia B3``, no station, noted as a hypothesis. Records of
+    the same name are replaced, never doubled. Returns how many."""
+    from . import timbers
+
+    frame = ship.need_frame(chunk)
+    state = _need_strakes(chunk)
+    added = 0
+    names = {f"fascia {d['name']}" for d in state["strakes"]}
+    timbers.remove(chunk, [r["id"] for r in timbers.timbers_of(chunk) if r["kind"] == "plank" and r["name"] in names])
+    for side in SIDES:
+        if not any(d["side"] == side for d in state["strakes"]):
+            continue
+        rows, bounds = _boundaries(state, side)
+        xs = [st["x"] for st in rows]
+        for k in range(1, len(bounds)):
+            lo, hi = _rows_between(_polyline(bounds[k - 1]), _polyline(bounds[k]), xs)
+            if len(lo) < 2:
+                continue
+            outline = frame.to_world(np.vstack([lo, hi[::-1]]))[:, :2]
+            timbers.add(chunk, "plank", side, f"fascia {_strake_name(side, k)}", timbers.geometry("polygon", outline),
+                        station="", notes=t("modello delle fasce (ipotesi)", "strake model (hypothesis)"))
+            added += 1
+    return added

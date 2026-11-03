@@ -429,3 +429,52 @@ def test_the_pane_in_the_window(tmp_path):
         context.release()
         w.setWindowModified(False)
         w.close()
+
+
+def test_the_land_lines_on_the_drawings(tmp_path):
+    import ezdxf
+    from hulls import clinker_project
+
+    from ppg_shipwreck import clinker
+
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=37.0)
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))  # sign -1: the plan's y is the ship's -y
+    ship.set_stations(ch, ship.regular(1.0, 5, start=4.01))
+    lines.build(ch, longitudinals=[0.5], half_width=3.0)
+    for kind in ("body_plan", "profile", "plan"):  # before the lands: no layer, no note
+        d = drawings.make(ch, kind)
+        assert "Fasce" not in {layer for layer, _p, _c in d.lines}
+        assert not any("ipotesi" in n for n in d.notes)
+    clinker.detect_lands(ch)
+    found = ch.meta["shipwreck"]["clinker"]["lines"]
+    frame = ship.need_frame(ch)
+    for kind in ("body_plan", "profile", "plan"):
+        d = drawings.make(ch, kind)
+        drawn = [(p, c) for layer, p, c in d.lines if layer == "Fasce"]
+        assert drawn and all(c == drawings.LAYERS["Fasce"] for _p, c in drawn)
+        assert drawings.LAYERS["Fasce"] not in {drawings.LAYERS[k] for k in drawings.LAYERS if k != "Fasce"}
+        notes = " ".join(d.notes).lower()
+        assert "fasce: gradini rilevati sulle sezioni" in notes and "linee delle fasce: ipotesi" in notes
+        if kind == "plan":
+            assert len(drawn) == len(found)
+            for line in found:
+                p = np.asarray(line["points"])
+                want = np.column_stack([p[:, 0], p[:, 1] * frame.sign])
+                assert any(q.shape == want.shape and np.abs(q - want).max() < 1e-9 for q, _c in drawn)
+        if kind == "profile":
+            assert any(np.abs(q - np.asarray(line["points"])[:, [0, 2]]).max() < 1e-9
+                       for q, _c in drawn for line in found if q.shape == (len(line["points"]), 2))
+        if kind == "body_plan":  # the land points at each station, port on the left
+            centres = np.array([q.mean(axis=0) for q, _c in drawn])
+            lands = np.array([[-y, z] for line in found for _x, y, z in line["points"]])
+            assert len(centres) == len(lands)
+            assert np.abs(np.sort(centres, axis=0) - np.sort(lands, axis=0)).max() < 1e-9
+    written = drawings.write_all(ch, kinds=("plan",))
+    dxf = ezdxf.readfile(next(p for p in written if p.suffix == ".dxf"))
+    assert "Fasce" in {e.dxf.layer for e in dxf.modelspace()}
+    # the sections cut again elsewhere: the lands are stale, the layer goes
+    ship.set_stations(ch, ship.regular(1.0, 4, start=4.51))
+    lines.build(ch, longitudinals=[0.5], half_width=3.0)
+    assert clinker.is_stale(ch)
+    d = drawings.make(ch, "plan")
+    assert "Fasce" not in {layer for layer, _p, _c in d.lines} and not any("ipotesi" in n for n in d.notes)
