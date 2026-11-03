@@ -742,14 +742,15 @@ def loss_residual(win: Window, min_depth: float, scale: float = REFERENCE_SCALE)
 
 
 def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: float = 0.01,
-                  progress=None, scale: float = REFERENCE_SCALE) -> list[dict]:
+                  progress=None, scale: float = REFERENCE_SCALE, stats: dict | None = None) -> list[dict]:
     """Losses of material proposed in the window: the relief against the wall's reference around it
     (:func:`loss_residual`: a robust surface over the window, then a local one at the scale ``scale`` m with the
     depressions left out), depressions deeper than ``min_depth`` m as connected components of at least ``min_area``
     m2, polygons with ``depth_mm`` = their median depth. ``ISCS.MISSING_PART`` over 0.05 m2; ``ISCS.ALVEOLIZATION``
     for the components under 0.02 m2 when the window holds at least five of them; the others with no term. A
     component larger than a quarter of ``scale²`` or than ``WIDE_SHARE`` of the window gets no term and the note
-    "da verificare" (``check`` True): at that size the reference cannot tell a loss from the shape of the wall."""
+    "da verificare" (``check`` True): at that size the reference cannot tell a loss from the shape of the wall.
+    ``stats`` (a dict, when given) gets ``check``, the number of those."""
     import cv2
 
     progress = _progress(progress)
@@ -763,14 +764,14 @@ def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: 
     resid, words = loss_residual(win, min_depth, scale)
     progress(0.5, _t("mancanze: depressioni", "losses: depressions"))
     deep = np.nan_to_num(resid, nan=0.0) < -min_depth
-    n, labels, stats, _c = cv2.connectedComponentsWithStats(deep.astype(np.uint8), connectivity=8)
+    n, labels, cc_stats, _c = cv2.connectedComponentsWithStats(deep.astype(np.uint8), connectivity=8)
     from rasterio.features import shapes
     from scipy import ndimage
     from shapely.geometry import shape
 
     cell = win.res * win.res
     big = np.zeros(n, bool)
-    big[1:] = stats[1:, cv2.CC_STAT_AREA] * cell >= min_area
+    big[1:] = cc_stats[1:, cv2.CC_STAT_AREA] * cell >= min_area
     labels = np.where(big[labels], labels, 0).astype(np.int32)
     ks = np.nonzero(big)[0]
     depths = dict(zip(ks.tolist(), (np.asarray(ndimage.median(-np.nan_to_num(resid), labels, ks)) * 1000.0
@@ -800,6 +801,8 @@ def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: 
                    f"behind the wall around it ({words}), least area {_num(min_area, 3)} m²") + check
         found.append({**_proposal("decay", code, g, notes, win.coverage, depth_mm=round(depth, 1)),
                       "check": bool(check)})
+    if stats is not None:
+        stats["check"] = sum(1 for f in found if f["check"])
     progress(1.0, _t(f"mancanze: {len(found)} proposte", f"losses: {len(found)} proposals"))
     return found
 
