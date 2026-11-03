@@ -208,3 +208,112 @@ def clinker_widths(x, strakes: int = 5, land: float = 0.015, lap: float = 0.02, 
     arc = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(y), np.diff(z)))])
     edges = np.r_[0.0, np.interp(centres, s, arc), arc[-1]]
     return [float(v) for v in np.diff(edges)]
+
+
+# ------------------------------------------------------------------------- a framed clinker hull
+FRAMES = [0.9 + 0.45 * k for k in range(23)]
+FRAME_ROOM, FRAME_MOULDED = 0.08, 0.06  # the frames: x across, height above the planking
+KEELSON_HALF, KEELSON_X, KEELSON_HEIGHT = 0.06, (1.0, 11.0), 0.12  # the keelson: |y|, its x, height above the planking
+_WALL = 5e-5  # half the run of a timber's side: two copies of the edge 0.1 mm apart, the inner one raised
+
+
+def _columns(cell: float, frames, keelson: bool):
+    """The x of the hull's columns: the regular grid and both copies of every edge of a frame or of the keelson;
+    for each column whether it lies inside a frame and inside the keelson's x."""
+    xs = list(np.linspace(0.2, L - 0.2, int((L - 0.4) / cell) + 1))
+    edges = [e for f in frames for e in (f - FRAME_ROOM / 2.0, f + FRAME_ROOM / 2.0)]
+    if keelson:
+        edges += list(KEELSON_X)
+    for e in edges:
+        xs += [e - _WALL, e + _WALL]
+    xs = np.unique(np.round(xs, 9))
+    in_frame = np.zeros(len(xs), bool)
+    for f in frames:
+        in_frame |= np.abs(xs - f) < FRAME_ROOM / 2.0
+    in_keel = (xs > KEELSON_X[0]) & (xs < KEELSON_X[1]) if keelson else np.zeros(len(xs), bool)
+    return xs, in_frame, in_keel
+
+
+def framed_hull(cell: float = 0.02, strakes: int = 5, frames=FRAMES, keelson: bool = True, missing=None,
+                x_range=None, land: float = 0.015, lap: float = 0.02) -> tuple[np.ndarray, np.ndarray]:
+    """The clinker hull of :func:`clinker_hull` with timbers on it, as vertical raises with sides 0.1 mm wide: a frame
+    at each x of ``frames`` (room :data:`FRAME_ROOM` along x, moulded :data:`FRAME_MOULDED` above the planking, across
+    the whole girth) and, with ``keelson``, the keelson (|y| < :data:`KEELSON_HALF`, x in :data:`KEELSON_X`,
+    :data:`KEELSON_HEIGHT` above the planking, over the frames it crosses). ``missing=(x0, x1, side)``: the faces of
+    ``side`` ("port" or "starboard" of the frame the tests set, bow at the start: port = the hull's y < 0) between
+    those x taken away; ``x_range=(x0, x1)``: only the part of the hull between those x is kept."""
+    xs, in_frame, in_keel = _columns(cell, frames, keelson)
+    rows = []
+    for x, framed, keeled in zip(xs, in_frame, in_keel):
+        s, off = _side(x, cell, strakes, land, lap, None)
+        b = float(half_breadth(x))
+        wall = float(_arc(KEELSON_HALF, 2.0 * D / b**2))
+        s_all = np.unique(np.r_[s, wall - _WALL, wall + _WALL]) if keelson else s
+        off_all = np.interp(s_all, s, off)
+        raise_ = np.full(len(s_all), FRAME_MOULDED if framed else 0.0)
+        if keelson and keeled:
+            raise_ = np.where(s_all < wall, np.maximum(raise_, KEELSON_HEIGHT), raise_)
+        yp, zp = _section_points(x, s_all, off_all, 1.0)
+        ys, zs = _section_points(x, s_all[1:], off_all[1:], -1.0)
+        y = np.concatenate([ys[::-1], yp])
+        z = np.concatenate([(zs + raise_[1:])[::-1], zp + raise_])
+        rows.append(np.column_stack([np.full(len(y), x), y, z]))
+    m, n = len(rows[0]), len(rows)
+    i, j = np.meshgrid(np.arange(n - 1), np.arange(m - 1), indexing="ij")
+    a = (i * m + j).ravel()
+    b_, c, d = a + 1, a + m, a + m + 1
+    faces = np.vstack([np.column_stack([a, b_, c]), np.column_stack([b_, d, c])])
+    vertices = np.vstack(rows)
+    centre = vertices[faces].mean(axis=1)
+    keep = np.ones(len(faces), bool)
+    if missing is not None:
+        x0, x1, side = missing
+        on_side = centre[:, 1] < 0 if side == "port" else centre[:, 1] > 0
+        keep &= ~((centre[:, 0] > x0) & (centre[:, 0] < x1) & on_side)
+    if x_range is not None:
+        keep &= (centre[:, 0] > x_range[0]) & (centre[:, 0] < x_range[1])
+    return vertices, faces[keep]
+
+
+def framed_project(tmp_path: Path, heading_deg: float = 0.0, offset=UTM, crs: str = "EPSG:32633", scale: float = 2.0,
+                   **hull):
+    """As :func:`project`, with :func:`framed_hull` (``hull``: its arguments)."""
+    return _project(tmp_path, *framed_hull(**hull), heading_deg, offset, crs, scale)
+
+
+def seam_y(x, strakes: int = 5, land: float = 0.015) -> list[float]:
+    """The plan y of the centre of each land of the clinker hull at ``x``, from the keel (the port side's: the
+    starboard's are the same with the sign changed)."""
+    centres, _active = _lands(x, strakes, None)
+    offsets = land * (np.arange(len(centres)) + 0.5)  # the lands below, and half of this one
+    return [float(v) for v in _section_points(x, centres, offsets, 1.0)[0]]
+
+
+def plan_half_breadth(x, strakes: int = 5, land: float = 0.015, lap: float = 0.02) -> float:
+    """The plan half-breadth of the clinker hull at ``x``: the farthest y of its section."""
+    s, off = _side(x, 0.001, strakes, land, lap, None)
+    return float(_section_points(x, s, off, 1.0)[0].max())
+
+
+def strake_widths(x, strakes: int = 5) -> list[float]:
+    """The widths in plan of the strakes at ``x``, from the keel line (y 0) to the first land, between the lands, from
+    the last land to the plan half-breadth."""
+    return [float(v) for v in np.diff(np.r_[0.0, seam_y(x, strakes), plan_half_breadth(x, strakes)])]
+
+
+def framed_truth(strakes: int = 5, frames=FRAMES, keelson: bool = True) -> dict:
+    """What :func:`framed_hull` holds: ``frames`` [(x, room)], ``volumes`` {"frames": [...], "keelson"} in cubic metres,
+    integrated in plan on a 1 mm grid along x (a raise times the hull's plan breadth; where a frame passes under the
+    keelson its volume counts to the keelson, whose height is taken from the planking), ``strake_widths`` the function
+    :func:`strake_widths`."""
+    step = 0.001
+    volumes = []
+    for f in frames:
+        xs = f - FRAME_ROOM / 2.0 + step * (np.arange(int(round(FRAME_ROOM / step))) + 0.5)
+        width = np.array([2.0 * plan_half_breadth(x, strakes) for x in xs])
+        if keelson:
+            width -= np.where((xs > KEELSON_X[0]) & (xs < KEELSON_X[1]), 2.0 * KEELSON_HALF, 0.0)
+        volumes.append(float(FRAME_MOULDED * width.sum() * step))
+    keel = KEELSON_HEIGHT * 2.0 * KEELSON_HALF * (KEELSON_X[1] - KEELSON_X[0]) if keelson else 0.0
+    return {"frames": [(float(f), FRAME_ROOM) for f in frames], "volumes": {"frames": volumes, "keelson": float(keel)},
+            "strake_widths": lambda x: strake_widths(x, strakes)}
