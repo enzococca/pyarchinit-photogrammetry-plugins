@@ -79,7 +79,7 @@ def done_files(plugin, title: str, paths, note: str = "") -> None:
     plugin._message("information", title + "\n" + "\n".join(lines))
 
 
-PLATE_FRAMES = (("features", ("l'area delle proposte e degli elementi", "the area of the proposals and features")),
+PLATE_FRAMES = (("features", ("l'area degli elementi accettati", "the area of the accepted features")),
                 ("drawn", ("l'area scelta (da disegnare sulla vista)", "the chosen area (to draw on the view)")),
                 ("face", ("tutta la faccia", "the whole face")))
 
