@@ -266,3 +266,42 @@ def test_loose_timbers_are_other(tmp_path):
     others = _of(prop, "other")
     assert len(others) == 4
     assert sorted(round(_centroid(o).x, 1) for o in others) == [3.4, 4.3, 5.2, 7.0]
+
+
+def _cut(seam, x0, x1):
+    """The piece of a seam between x0 and x1."""
+    xy = np.asarray(seam["ship_xy"])
+    xs = np.r_[x0, xy[(xy[:, 0] > x0) & (xy[:, 0] < x1), 0], x1]
+    return {**seam, "ship_xy": np.column_stack([xs, np.interp(xs, xy[:, 0], xy[:, 1])]).tolist(), "length": x1 - x0}
+
+
+@pytest.mark.parametrize("case", ["land 1 fore of 4 m", "land 1 fore of 6.5 m", "land 2 only at the ends"])
+def test_a_land_partly_lost_keeps_every_name(framed, case):
+    """A land under sediment over part of the hull: every piece keeps its land, the strakes beside the lost stretch
+    keep their names, and the strake whose seam is lost stops there."""
+    ch, frame, _prop = framed
+    z, tr = relief.load(ch, "height")
+    seam_list = proposals.seams(z, tr, frame.sign)
+    ranks = proposals.lands(seam_list)
+    port = {r: s for s, r in zip(seam_list, ranks) if s["side"] == "port"}
+    assert sorted(port) == [1, 2, 3, 4]
+    if case == "land 1 fore of 4 m":
+        pieces, truth = [_cut(port[1], 1.0, 4.0), port[2], port[3], port[4]], [1, 2, 3, 4]
+    elif case == "land 1 fore of 6.5 m":
+        pieces, truth = [_cut(port[1], 1.0, 6.5), port[2], port[3], port[4]], [1, 2, 3, 4]
+    else:
+        pieces, truth = [port[1], _cut(port[2], 1.0, 2.4), _cut(port[2], 9.6, 11.0), port[3], port[4]], [1, 2, 2, 3, 4]
+    assert proposals.lands(pieces) == truth
+    bands = proposals.strakes(pieces, frame.sign)
+    widths = strake_widths(8.0)
+    cut = shapely.LineString([(8.0, -5.0), (8.0, 5.0)])
+    at8 = {b["name"]: shapely.Polygon(b["ship_xy"]).intersection(cut).length for b in bands}
+    if case.startswith("land 1"):  # at x 8 land 1 is gone: no B1, no B2; B3, B4 where they were
+        assert at8.get("fascia B1", 0.0) == 0.0 and at8.get("fascia B2", 0.0) == 0.0
+        for k in (3, 4):
+            assert at8[f"fascia B{k}"] == pytest.approx(widths[k - 1], rel=0.05)
+    else:  # land 2 lost at x 8: no B2, no B3 there; B1 and B4 untouched; B2 and B3 at the ends
+        assert at8.get("fascia B2", 0.0) == 0.0 and at8.get("fascia B3", 0.0) == 0.0
+        assert at8["fascia B4"] == pytest.approx(widths[3], rel=0.05)
+        assert at8["fascia B1"] > 0.0
+        assert {b["name"] for b in bands} == {f"fascia B{k}" for k in range(1, 5)}

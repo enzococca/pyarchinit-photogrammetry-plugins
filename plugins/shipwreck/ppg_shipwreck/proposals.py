@@ -429,33 +429,38 @@ def _follow(grid: _Grid, cols, ys, steps, p: dict) -> list[dict]:
     return out
 
 
+def _tail(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
+    """End x, end y and the slope of the last 10 cm of a piece (0 with fewer than three crests there)."""
+    tail = x >= x[-1] - 0.1
+    slope = float(np.polyfit(x[tail], y[tail], 1)[0]) if tail.sum() >= 3 else 0.0
+    return float(x[-1]), float(y[-1]), slope
+
+
 def _merge(pieces: list[dict], p: dict) -> list[dict]:
-    """Pieces of one seam merged: the next piece of the same side starting less than ``gap`` after one ends, where the
-    first's line carried on meets it within :data:`COLLINEAR`."""
-    pieces = sorted(pieces, key=lambda q: q["x"][0])
-    merged = True
-    while merged:
-        merged = False
-        for i, a in enumerate(pieces):
-            best = None
-            for j, b in enumerate(pieces):
-                if j == i or (a["y"].mean() > 0) != (b["y"].mean() > 0):
-                    continue
-                dx = b["x"][0] - a["x"][-1]
-                if not 0 < dx < p["gap"]:
-                    continue
-                tail = a["x"] >= a["x"][-1] - 0.1
-                slope = np.polyfit(a["x"][tail], a["y"][tail], 1)[0] if tail.sum() >= 3 else 0.0
-                miss = abs(b["y"][0] - (a["y"][-1] + slope * dx))
-                if miss <= COLLINEAR and (best is None or miss < best[1]):
-                    best = (j, miss)
-            if best is not None:
-                b = pieces[best[0]]
-                pieces[i] = {k: np.r_[a[k], b[k]] for k in ("x", "y", "step")}
-                del pieces[best[0]]
-                merged = True
-                break
-    return pieces
+    """Pieces of one seam merged, in one pass along x: a piece continues the line of its side that ended less than
+    ``gap`` before it starts, when that line carried on (the slope of its last 10 cm) meets it within
+    :data:`COLLINEAR` (the closest such line)."""
+    chains: list[dict] = []
+    for q in sorted(pieces, key=lambda q: q["x"][0]):
+        port = bool(q["y"].mean() > 0)
+        best, miss_best = None, COLLINEAR
+        for c in chains:
+            if c["port"] != port:
+                continue
+            x_end, y_end, slope = c["tail"]
+            dx = q["x"][0] - x_end
+            if not 0 < dx < p["gap"]:
+                continue
+            miss = abs(q["y"][0] - (y_end + slope * dx))
+            if miss <= miss_best:
+                best, miss_best = c, miss
+        if best is None:
+            chains.append({"port": port, "parts": [q], "tail": _tail(q["x"], q["y"])})
+        else:
+            best["parts"].append(q)
+            best["tail"] = _tail(q["x"], q["y"]) if len(q["x"]) >= 3 else (float(q["x"][-1]), float(q["y"][-1]),
+                                                                           best["tail"][2])
+    return [{k: np.concatenate([q[k] for q in c["parts"]]) for k in ("x", "y", "step")} for c in chains]
 
 
 def _line(x: np.ndarray, y: np.ndarray) -> list:
@@ -507,43 +512,103 @@ CONFLICT = 0.1  # metres: two pieces of one land overlapping along x more than t
 BAND_STEP = 0.01  # metres along x between the points of a strake's outline (simplified after)
 
 
+def _longest_path(nodes: list[int], edges: dict) -> dict:
+    """1 + the longest chain of "nearer the keel" edges ``{(i, j): weight}`` (i nearer than j) ending at each node; a
+    cycle (pieces that cross each other) is broken at its weakest edge."""
+    edges = dict(edges)
+    while True:
+        incoming = {n: 0 for n in nodes}
+        after: dict[int, list[int]] = {n: [] for n in nodes}
+        for i, j in edges:
+            incoming[j] += 1
+            after[i].append(j)
+        rank = {n: 1 for n in nodes}
+        ready = [n for n in nodes if incoming[n] == 0]
+        done = 0
+        while ready:
+            i = ready.pop()
+            done += 1
+            for j in after[i]:
+                rank[j] = max(rank[j], rank[i] + 1)
+                incoming[j] -= 1
+                if incoming[j] == 0:
+                    ready.append(j)
+        if done == len(nodes):
+            return rank
+        stuck = {n for n in nodes if incoming[n] > 0}
+        weakest = min((e for e in edges if e[0] in stuck and e[1] in stuck), key=lambda e: edges[e])
+        del edges[weakest]
+
+
 def lands(seam_list: list[dict], params=None) -> list[int | None]:
-    """The land of each seam: its rank from the keel on its side, 1 the innermost, or None for a piece left out. The
-    rank of a piece is read where it is, against the pieces of its side present at the same x: the median over its x
-    range of how many lie nearer the keel, plus one. Pieces of one land are those of the same rank (fore and aft of a
-    hole, broken by noise); of two that overlap along x more than :data:`CONFLICT` the shorter is left out (a stray
-    piece between two lands), and the ranks are read again without it."""
+    """The land of each seam: its rank from the keel on its side, 1 the innermost, or None for a piece left out.
+
+    The pieces of a side are compared two by two where they overlap along x (sampled every :data:`LAND_SAMPLE`): one
+    within :data:`COLLINEAR` of a longer one over more than :data:`CONFLICT` is a duplicate and is left out; otherwise
+    the one nearer the keel there lies inside the other. The rank of a piece of at least ``2 * min_seam`` is one more
+    than the longest chain of pieces inside it: a land lost over part of the hull (sediment, a broken plank) keeps the
+    rank of its pieces, and so do the lands beyond it, as long as some piece of it overlaps them. Shorter pieces are
+    then placed, the longest first, between the ranked pieces they overlap: one that falls between two consecutive
+    lands is a stray (None), one in a free place takes it (the end of a land the long piece does not reach). Pieces of
+    one rank are one land (fore and aft of a hole, broken by noise)."""
+    p = _params(params)
     out: list[int | None] = [None] * len(seam_list)
     for side in ("port", "starboard"):
         live = [i for i, sm in enumerate(seam_list) if sm["side"] == side]
+        if not live:
+            continue
         lines = {i: np.asarray(seam_list[i]["ship_xy"], float) for i in live}
         span = {i: (float(lines[i][:, 0].min()), float(lines[i][:, 0].max())) for i in live}
-        while True:
-            rank = {}
-            for i in live:
-                x0, x1 = span[i]
-                xs = np.linspace(x0, x1, max(2, int((x1 - x0) / LAND_SAMPLE) + 1))
-                yi = np.abs(_y_on(lines[i], xs))
-                below = np.zeros(len(xs))
-                for j in live:
-                    if j != i:
-                        inside = (xs >= span[j][0]) & (xs <= span[j][1])
-                        below += inside & (np.abs(_y_on(lines[j], xs)) < yi)
-                rank[i] = int(round(float(np.median(below)))) + 1
-            kept: list[int] = []
-            dropped = None
-            for i in sorted(live, key=lambda i: -(span[i][1] - span[i][0])):
-                clash = any(rank[j] == rank[i] and min(span[i][1], span[j][1]) - max(span[i][0], span[j][0]) > CONFLICT
-                            for j in kept)
-                if clash:
-                    dropped = i
-                    break
-                kept.append(i)
-            if dropped is None:
-                break
-            live.remove(dropped)
+        x0, x1 = min(v[0] for v in span.values()), max(v[1] for v in span.values())
+        xs = np.linspace(x0, x1, max(2, int(round((x1 - x0) / LAND_SAMPLE)) + 1))
+        ys = {}
         for i in live:
-            out[i] = rank[i]
+            inside = (xs >= span[i][0]) & (xs <= span[i][1])
+            ys[i] = np.where(inside, np.abs(_y_on(lines[i], xs)), np.nan)
+        order = sorted(live, key=lambda i: (span[i][0], span[i][1]))
+        relation = {}  # (i, j) -> median of |y_j| - |y_i| on their overlap
+        for k, i in enumerate(order):
+            for j in order[k + 1:]:
+                if span[j][0] > span[i][1]:
+                    break
+                both = np.isfinite(ys[i]) & np.isfinite(ys[j])
+                if both.sum() >= 3:
+                    d = ys[j][both] - ys[i][both]
+                    relation[(i, j)] = (float(np.median(d)), float(np.median(np.abs(d))),
+                                        float(xs[both][-1] - xs[both][0]))
+        length = {i: span[i][1] - span[i][0] for i in live}
+        kept: list[int] = []
+        for i in sorted(live, key=lambda i: -length[i]):
+            duplicate = any(r[1] < COLLINEAR and r[2] > CONFLICT
+                            for j in kept for r in [relation.get((i, j)) or relation.get((j, i))] if r)
+            if not duplicate:
+                kept.append(i)
+
+        def nearer(i, j):  # +1 when i lies nearer the keel than j where they overlap, -1 farther, 0 not comparable
+            if (i, j) in relation:
+                return 1 if relation[(i, j)][0] > 0 else -1
+            if (j, i) in relation:
+                return -1 if relation[(j, i)][0] > 0 else 1
+            return 0
+
+        long_ones = [i for i in kept if length[i] >= 2.0 * p["min_seam"]]
+        edges = {}
+        for i in long_ones:
+            for j in long_ones:
+                if i != j and nearer(i, j) > 0:
+                    r = relation.get((i, j)) or relation.get((j, i))
+                    edges[(i, j)] = abs(r[0])
+        rank = _longest_path(long_ones, edges)
+        for i in sorted((i for i in kept if i not in rank), key=lambda i: -length[i]):
+            inner = [rank[j] for j in rank if nearer(j, i) > 0]
+            outer = [rank[j] for j in rank if nearer(j, i) < 0]
+            lo = max(inner, default=0)
+            hi = min(outer, default=None)
+            if hi is not None and hi <= lo + 1:
+                continue  # between two lands that lie side by side there: a stray
+            rank[i] = lo + 1
+        for i, r in rank.items():
+            out[i] = r
     return out
 
 
