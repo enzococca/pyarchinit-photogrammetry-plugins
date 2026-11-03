@@ -16,6 +16,9 @@ env:
   # masonry are ray cast by Open3D as in the app; without it the program falls back to trimesh's rays, which is far
   # slower and has twice brought the runner down
   PPG_APP_MASONRY: "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.0"
+  # conservation needs 1.7.1 (engine.elevation.bounds_of), with bim and mesh as masonry: from GitHub main until 1.7.1
+  # is on PyPI, then switch to "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
+  PPG_APP_CONSERVATION: "pyarchinit-photogrammetry[gui,postgis,bim,mesh] @ git+https://github.com/enzococca/pyarchinit-photogrammetry.git@main"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
@@ -42,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [plugins/architecture, plugins/blender-em, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/masonry, plugins/mesh-tools,
+        plugin: [plugins/architecture, plugins/blender-em, plugins/conservation, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/masonry, plugins/mesh-tools,
                  plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/landscape, plugins/sentinel2, plugins/shipwreck, plugins/spirula,
                  plugins/terrain, plugins/terrio, plugins/underwater, template]
     services:
@@ -67,8 +70,11 @@ jobs:
       - name: The program and the plugin
         run: |
           app="$PPG_APP"
+          extra=""
           if [ "${{ matrix.plugin }}" = "plugins/masonry" ]; then app="$PPG_APP_MASONRY"; fi
-          python -m pip install "$app" pytest -e "${{ matrix.plugin }}"
+          # conservation: masonry too, for the IFC test that hosts the features on the masonry wall
+          if [ "${{ matrix.plugin }}" = "plugins/conservation" ]; then app="$PPG_APP_CONSERVATION"; extra="-e plugins/masonry"; fi
+          python -m pip install "$app" pytest -e "${{ matrix.plugin }}" $extra
       - name: MeshLab for the tests of mesh-tools (its other tests run without it)
         if: matrix.plugin == 'plugins/mesh-tools'
         run: python -m pip install pymeshlab
