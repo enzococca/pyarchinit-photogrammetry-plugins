@@ -65,7 +65,7 @@ def feature_form(plugin, chunk, rec: dict) -> dict | None:
     from pyarchinit_photogrammetry.gui.dialogs import Field
 
     from . import assess, records, texts
-    from .vocabulary import load
+    from .vocabulary import UNNAMED, load
 
     lang = texts.lang()
     vocab = load(chunk)
@@ -76,6 +76,7 @@ def feature_form(plugin, chunk, rec: dict) -> dict | None:
         same = [tm for tm in vocab.terms() if tm.kind != "treatment"]
     else:
         same = [tm for tm in vocab.terms() if tm.kind == rec["kind"]]
+    same = [tm for tm in same if tm.code != UNNAMED or tm.code == rec["code"]]  # the working term only while carried
     terms = [(tm.code, vocab.name(tm.code, lang)) for tm in same]
     fields = [Field("code", t("Termine", "Term"), rec["code"], choices=terms),
               Field("intensity", t("Intensità", "Intensity"), rec.get("intensity"),
@@ -227,15 +228,15 @@ DETECTOR_TITLES = {"cracks": ("Lesioni (valli del rilievo e linee scure)", "Crac
                    "loss": ("Mancanze (depressioni sotto il piano del muro)", "Losses (depressions behind the wall's "
                             "plane)"),
                    "colours": ("Classi di colore (le nomini tu)", "Colour classes (you name them)"),
-                   "sam": ("Aree di SAM 2.1 (con il termine scelto)", "SAM 2.1 areas (with the chosen term)"),
+                   "sam": ("Aree di SAM 2.1 (da nominare)", "SAM 2.1 areas (to be named)"),
                    "like": ("Aree di SAM 2.1 come l'area scelta (Come questo)", "SAM 2.1 areas like the chosen area "
                             "(Like this)")}
 
 
 def proposals_form(plugin, selected: dict | None, term_name: str | None) -> dict | None:
     """The detector, the window (the area chosen in the table or the whole face) and the parameters of the
-    proposals. Returns ``{detector, window, thoroughness, resolution_mm, min_length_cm, min_depth_cm, min_area_m2,
-    k, radius}`` or None."""
+    proposals. Returns ``{detector, window, use_term, thoroughness, resolution_mm, min_length_cm, min_depth_cm,
+    min_area_m2, k, radius}`` or None (``use_term`` is never remembered: off at every opening)."""
     from pyarchinit_photogrammetry.gui.dialogs import Field
 
     s = plugin.context.settings.get("proposals") or {}
@@ -253,24 +254,32 @@ def proposals_form(plugin, selected: dict | None, term_name: str | None) -> dict
               Field("min_depth_cm", t("Profondità minima di una mancanza (cm)", "Least depth of a loss (cm)"),
                     float(s.get("min_depth_cm", 2.0)), minimum=0.1, maximum=100.0, decimals=1),
               Field("min_area_m2", t("Area minima di una mancanza (m²)", "Least area of a loss (m²)"),
-                    float(s.get("min_area_m2", 0.01)), minimum=0.0001, maximum=100.0, decimals=4),
+                    float(s.get("min_area_m2", 0.0025)), minimum=0.0001, maximum=100.0, decimals=4,
+                    tip=t("0,0025 m² = 5 x 5 cm, perché si vedano anche gli alveoli; il rilevatore da solo usa "
+                          "0,01 m²", "0.0025 m² = 5 x 5 cm, so that alveoli show too; the detector by itself uses "
+                          "0.01 m²")),
               Field("h_image", t("Colori e SAM", "Colours and SAM"), kind="heading"),
               Field("k", t("Classi di colore", "Colour classes"), int(s.get("k", 5)), minimum=2, maximum=12),
               Field("thoroughness", t("Accuratezza di SAM", "Thoroughness of SAM"), s.get("thoroughness", "normale"),
                     choices=th, tip=t("Sulle facce oltre 4 m² SAM lavora a 5 mm per pixel, salvo una risoluzione "
                                       "data", "On faces over 4 m² SAM works at 5 mm per pixel unless a "
                                       "resolution is given")),
+              Field("use_term", t("Usa il termine scelto per tutti i segmenti di SAM", "Use the chosen term for "
+                                  "all of SAM's segments"), False,
+                    tip=t("Spento: i segmenti restano da nominare (Modifica..., poi Come questo)",
+                          "Off: the segments stay to be named (Edit..., then Like this)")),
               Field("resolution_mm", t("Pixel di SAM (mm, vuoto: automatico)", "SAM's pixel (mm, empty: "
                                        "automatic)"), s.get("resolution_mm"), kind="optional_float"),
               Field("radius", t("Come questo: distanza massima (in dispersioni)", "Like this: largest distance "
                                 "(in spreads)"), float(s.get("radius", 1.0)), minimum=0.1, maximum=10.0,
                     decimals=2)]
+    chosen = t(f"Termine scelto nell'elenco: {term_name}.", f"Term chosen in the list: {term_name}.") if term_name \
+        else t("Nessun termine scelto nell'elenco.", "No term chosen in the list.")
     intro = t("Le proposte non entrano nella campagna finché non le accetti. Le aree di SAM e le mancanze senza "
-              "termine prendono il termine scelto nell'elenco" + (f" ({term_name})." if term_name else
-                                                                   ": ora non ne è scelto nessuno."),
-              "The proposals do not join the campaign until you accept them. SAM's areas and the losses with no "
-              "term take the term chosen in the list" + (f" ({term_name})." if term_name else
-                                                         ": none is chosen now."))
+              "termine restano \"da nominare\": dai un termine a una con Modifica... e Come questo lo dà alle "
+              "simili. ", "The proposals do not join the campaign until you accept them. SAM's areas and the losses "
+              "with no term stay \"to be named\": give one a term with Edit... and Like this gives it to the "
+              "similar ones. ") + chosen
     v = plugin._ask(t("Proposte", "Proposals"), fields, intro=intro)
     if v is None:
         return None
@@ -278,7 +287,7 @@ def proposals_form(plugin, selected: dict | None, term_name: str | None) -> dict
                                   "resolution_mm", "radius")}
     plugin.context.settings["proposals"] = keep
     plugin.context.save_settings()
-    return {**keep, "window": v.get("window")}
+    return {**keep, "window": v.get("window"), "use_term": bool(v.get("use_term"))}
 
 
 def colour_classes_form(plugin, chunk, classes: list[dict]) -> dict | None:
@@ -288,11 +297,11 @@ def colour_classes_form(plugin, chunk, classes: list[dict]) -> dict | None:
     from pyarchinit_photogrammetry.gui.dialogs import Field
 
     from . import texts
-    from .vocabulary import load
+    from .vocabulary import UNNAMED, load
 
     vocab = load(chunk)
     lang = texts.lang()
-    decay = [term for term in vocab.terms("decay") if term.geometry in ("area", None)] or vocab.terms("decay")
+    decay = [term for term in vocab.terms("decay") if term.code != UNNAMED]
     looks = {"green": ("verde", "green"), "bright": ("chiara", "bright"), "dark": ("scura", "dark")}
     fields = []
     for c in classes:

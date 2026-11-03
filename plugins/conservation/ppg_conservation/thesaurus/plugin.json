@@ -1,0 +1,20 @@
+{
+  "standard": "plugin",
+  "url": "",
+  "note": "The plugin's own working terms, in no glossary: a proposal not named yet. Never accepted into a campaign, never counted, never exported.",
+  "terms": [
+    {
+      "code": "PPG.UNNAMED",
+      "family": "general",
+      "kind": "decay",
+      "geometry": "area",
+      "local": false,
+      "deterioration": false,
+      "names": {"en": "To be named", "fr": "À nommer", "it": "da nominare"},
+      "definition": {"en": "an area proposed by a detector that the user has not named yet", "it": "un'area proposta da un rilevatore automatico che l'utente non ha ancora nominato"},
+      "source": "pyarchinit-photogrammetry conservation plugin (a working term, in no glossary)",
+      "colour": "#9e9e9e",
+      "hatch": {"mpl": "..", "dxf": "DOTS"}
+    }
+  ]
+}

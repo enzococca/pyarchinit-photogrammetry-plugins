@@ -7,7 +7,9 @@ project.
 * ``uni11182.json`` - the 27 terms of UNI 11182:2006, each mapped onto the ICOMOS-ISCS term or terms it corresponds
   to (the mapping is the plugin's: no official table exists), the Italian face of the codes;
 * ``masonry.json`` - masonry and structural symptoms, in neither glossary: ``LOCAL`` terms, flagged as such;
-* ``interventions.json`` - the kinds of intervention after the families of EN 15898.
+* ``interventions.json`` - the kinds of intervention after the families of EN 15898;
+* ``plugin.json`` - the plugin's working term ``PPG.UNNAMED`` ("da nominare"): an area a detector proposed and the
+  user has not named yet (never accepted, counted nor exported).
 
 Names are the glossaries' own; definitions are the plugin's one-line paraphrases with the source cited; colours and
 hatches are the plugin's defaults (no standard prescribes them), changed per project in
@@ -25,7 +27,8 @@ from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
 THESAURUS = Path(__file__).resolve().parent / "thesaurus"
-FILES = ("iscs.json", "uni11182.json", "masonry.json", "interventions.json")
+FILES = ("iscs.json", "uni11182.json", "masonry.json", "interventions.json", "plugin.json")
+UNNAMED = "PPG.UNNAMED"  # the plugin's working term of a proposal not named yet: never accepted, counted or exported
 FAMILIES = {
     "general": ("Termini generali", "General terms"),
     "crack_deformation": ("Fessurazione e deformazione", "Crack and deformation"),
@@ -391,5 +394,5 @@ def write_qml(path, codes, legend: dict, geometry: str = "area", labels: dict | 
     return path
 
 
-__all__ = ["Term", "Vocabulary", "load", "legend", "set_legend", "add_local", "write_qml", "FAMILIES", "KINDS",
-           "GEOMETRIES", "THESAURUS"]
+__all__ = ["UNNAMED", "Term", "Vocabulary", "load", "legend", "set_legend", "add_local", "write_qml", "FAMILIES",
+           "KINDS", "GEOMETRIES", "THESAURUS"]

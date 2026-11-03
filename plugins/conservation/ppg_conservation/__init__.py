@@ -28,6 +28,7 @@ from .texts import NAME, num, t
 __version__ = "0.1.0"
 
 from .layers import FILL_ALPHA, LAYERS, PROPOSED_ALPHA  # noqa: F401 - the plugin's layers, named here too
+from .vocabulary import UNNAMED  # noqa: E402 - the working term of a proposal not named yet
 
 RECENT = 10  # the last terms used, at the top of the chooser
 
@@ -327,7 +328,7 @@ class ConservationPlugin(Plugin):
             return {"code": term.code, "label": vocab.name(term.code, lang), "tip": tip,
                     "search": " ".join(fold(n) for n in names), "children": list(children)}
 
-        mappable = [tm for tm in vocab.terms() if tm.kind in ("decay", "crack")]
+        mappable = [tm for tm in vocab.terms() if tm.kind in ("decay", "crack") and tm.code != UNNAMED]
         known = {tm.code for tm in mappable}
         favs = [c for c in self._settings_list("favourites") if c in known]
         recent = [c for c in self._settings_list("recent") if c in known]
@@ -678,18 +679,20 @@ class ConservationPlugin(Plugin):
         if v is None:
             return
         name = v["detector"]
-        default = term.code if term is not None and term.kind == "decay" else None
+        # what a proposal with no term of its own gets: the working term "da nominare", or - for SAM's segments only,
+        # when the user asked for it - the term chosen in the list
+        default = UNNAMED
+        if name == "sam" and v.get("use_term") and term is not None and term.kind == "decay":
+            default = term.code
         reference = None
         if name == "like":
             if selected is None:
                 raise NotReady(t("Come questo: scegli nella tabella l'area che fa da esempio.",
                                  "Like this: choose in the table the area that is the example."))
+            if selected["code"] == UNNAMED:
+                raise NotReady(t("Come questo: l'area d'esempio è ancora da nominare; dalle prima un termine.",
+                                 "Like this: the example area is still to be named; give it a term first."))
             reference, default = wkt.loads(selected["geometry"]), selected["code"]
-        elif name == "sam" and default is None:
-            raise NotReady(t("Le aree di SAM prendono il termine scelto nell'elenco: scegli un termine di degrado "
-                             "(un'area), oppure usa Come questo con un'area già nominata.",
-                             "SAM's areas take the term chosen in the list: choose a decay term (an area), or use "
-                             "Like this with an area already named."))
         area = None
         if v["window"] == "selected" and selected is not None and name != "like":  # like: the example is inside
             area = wkt.loads(selected["geometry"])
@@ -724,9 +727,17 @@ class ConservationPlugin(Plugin):
         self.context.run(t("Conservazione: proposte", "Conservation: proposals"), work,
                          lambda result: self._guarded(self._proposed, chunk, c, name, area, default, result))
 
-    def _proposed(self, chunk, c: dict, name: str, area, default: str | None, result) -> None:
+    def _restore(self, chunk, before) -> None:
+        """The records as they were before a change that failed half-way."""
+        if before is None:
+            chunk.meta.pop("conservation", None)
+        else:
+            chunk.meta["conservation"] = copy.deepcopy(before)
+
+    def _proposed(self, chunk, c: dict, name: str, area, default: str, result) -> None:
         """The detector's results as proposals of the campaign ``c``: clipped to the window ``area``, those with no
-        term given ``default`` (left out without it), the colour classes named by the user first."""
+        term given ``default`` (the working term "da nominare" unless the user chose otherwise), the colour classes
+        named by the user first. A failure half-way leaves the records as they were."""
         from . import forms, records
 
         if result is None:
@@ -743,63 +754,83 @@ class ConservationPlugin(Plugin):
                       "notes": cl["notes"], "coverage": cl["coverage"]}
                      for cl in result if cl["class"] in named for g in cl["polygons"]]
         before = self._snapshot(chunk)
-        added, untermed = 0, 0
-        for p in found:
-            geom = p["geometry"] if area is None else _parts(p["geometry"].intersection(area), p["kind"])
-            if geom is None:
-                continue
-            code = p["code"] or default
-            if code is None:
-                untermed += 1
-                continue
-            cover = float(p.get("coverage") or 0.0)
-            notes = p["notes"] + t(f"; rilievo sul {num(cover * 100, 0)} % della finestra",
-                                   f"; relief on {num(cover * 100, 0)} % of the window")
-            records.add_feature(chunk, c["id"], p["kind"], code, geom, status="proposed", source=source,
-                                width_mm=None if p.get("width_mm") is None else round(float(p["width_mm"]), 1),
-                                depth_mm=p.get("depth_mm"), notes=notes)
-            added += 1
+        added, unnamed = 0, 0
+        try:
+            for p in found:
+                geom = p["geometry"] if area is None else _parts(p["geometry"].intersection(area), p["kind"])
+                if geom is None:
+                    continue
+                code = p["code"] or default
+                unnamed += code == UNNAMED
+                cover = float(p.get("coverage") or 0.0)
+                notes = p["notes"] + t(f"; rilievo sul {num(cover * 100, 0)} % della finestra",
+                                       f"; relief on {num(cover * 100, 0)} % of the window")
+                records.add_feature(chunk, c["id"], p["kind"], code, geom, status="proposed", source=source,
+                                    width_mm=None if p.get("width_mm") is None else round(float(p["width_mm"]), 1),
+                                    depth_mm=p.get("depth_mm"), notes=notes)
+                added += 1
+        except Exception:
+            self._restore(chunk, before)
+            raise
         if added:
             self._changed(chunk, before, t("proposte aggiunte", "proposals added"))
         text = t(f"{added} proposte aggiunte alla campagna (layer Proposte): Accetta o Scarta.",
                  f"{added} proposals added to the campaign (layer Proposte): Accept or Discard.") if added else \
             t("Nessuna proposta nella finestra.", "No proposal in the window.")
-        if untermed:
-            text += " " + t(f"{untermed} senza termine lasciate fuori: scegli un termine di degrado nell'elenco e "
-                            "riprova.", f"{untermed} with no term left out: choose a decay term in the list and try "
-                            "again.")
+        if unnamed:
+            text += " " + t(f"{unnamed} sono da nominare: scegline una, dalle un termine con Modifica... e usa Come "
+                            "questo per le simili.", f"{unnamed} are to be named: choose one, give it a term with "
+                            "Edit... and use Like this for the similar ones.")
         self._message("information", text)
 
     def _do_like(self) -> None:
-        """*Come questo*: the campaign's areas proposed by SAM that look like the area chosen in the table take its
-        term (:func:`.detect.like_this`)."""
+        """*Come questo*: the campaign's proposed areas from SAM (and those still to be named) that look like the
+        area chosen in the table take its term (:func:`.detect.like_this`, in the background; one entry of the
+        undo)."""
         from shapely import wkt
 
         from . import detect, records
 
         chunk, entry, c = self._need_campaign()
         ref = self._chosen_area(chunk)
-        if ref is None:
+        if ref is None or ref["code"] == UNNAMED:
             raise records.NotReady(t("Come questo: scegli nella tabella un'area con il termine giusto.",
                                      "Like this: choose in the table an area with the right term."))
         others = [f for f in records.features(chunk, c["id"], status="proposed")
-                  if f["id"] != ref["id"] and str(f.get("source", "")).startswith("proposed:sam")]
+                  if f["id"] != ref["id"] and f["kind"] == "decay"
+                  and (str(f.get("source", "")).startswith("proposed:sam") or f["code"] == UNNAMED)]
         if not others:
-            raise records.NotReady(t("La campagna non ha aree proposte da SAM: usa prima Proposte... con SAM.",
-                                     "The campaign has no area proposed by SAM: use Proposals... with SAM first."))
+            raise records.NotReady(t("La campagna non ha aree proposte da SAM o da nominare: usa prima Proposte...",
+                                     "The campaign has no area proposed by SAM or to be named: use Proposals... "
+                                     "first."))
         radius = float((self.context.settings.get("proposals") or {}).get("radius", 1.0))
-        keep = detect.like_this(chunk, entry, [wkt.loads(f["geometry"]) for f in others], wkt.loads(ref["geometry"]),
-                                radius)
-        changed = [others[i] for i in keep if others[i]["code"] != ref["code"]]
+        shapes = [wkt.loads(f["geometry"]) for f in others]
+        reference = wkt.loads(ref["geometry"])
+
+        def work(_progress):
+            return detect.like_this(chunk, entry, shapes, reference, radius)
+
+        self.context.run(t("Conservazione: come questo", "Conservation: like this"), work,
+                         lambda keep: self._guarded(self._liked, chunk, ref, others, keep, radius))
+
+    def _liked(self, chunk, ref: dict, others: list, keep: list, radius: float) -> None:
+        from . import records
+
+        known = {f["id"] for f in records.features(chunk)}
+        changed = [others[i] for i in keep if others[i]["code"] != ref["code"] and others[i]["id"] in known]
         if not changed:
             self._message("information", t("Nessun'altra area proposta somiglia a quella scelta.",
                                            "No other proposed area looks like the chosen one."))
             return
         before = self._snapshot(chunk)
-        for f in changed:
-            records.update_feature(chunk, f["id"], code=ref["code"], notes=(f.get("notes") or "") + t(
-                f"; termine come l'area {ref['id']} (distanza massima {num(radius, 2)})",
-                f"; term as the area {ref['id']} (largest distance {num(radius, 2)})"))
+        try:
+            for f in changed:
+                records.update_feature(chunk, f["id"], code=ref["code"], notes=(f.get("notes") or "") + t(
+                    f"; termine come l'area {ref['id']} (distanza massima {num(radius, 2)})",
+                    f"; term as the area {ref['id']} (largest distance {num(radius, 2)})"))
+        except Exception:
+            self._restore(chunk, before)
+            raise
         self._changed(chunk, before, t("termine come questo", "term like this"))
         self._message("information", t(f"{len(changed)} aree proposte prendono il termine dell'area scelta.",
                                        f"{len(changed)} proposed areas take the term of the chosen area."))

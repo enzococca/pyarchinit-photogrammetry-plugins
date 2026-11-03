@@ -293,8 +293,17 @@ def remove_feature(chunk, fid: str) -> None:
 
 
 def accept(chunk, fids) -> int:
-    """Proposed features accepted into their campaign (their ``source`` still says what proposed them)."""
+    """Proposed features accepted into their campaign (their ``source`` still says what proposed them). NotReady,
+    with nothing accepted, when one of them still carries the working term ``PPG.UNNAMED``."""
+    from .texts import t
+    from .vocabulary import UNNAMED
+
     fids = set(fids)
+    unnamed = [f for f in features(chunk) if f["id"] in fids and f["code"] == UNNAMED]
+    if unnamed:
+        raise NotReady(t(f"{len(unnamed)} elementi sono ancora da nominare: dai un termine prima di accettare "
+                         "(Modifica..., o Come questo).", f"{len(unnamed)} features are still to be named: give "
+                         "them a term before accepting (Edit..., or Like this)."))
     n = 0
     for f in features(chunk):
         if f["id"] in fids:
@@ -370,7 +379,7 @@ def totals(chunk, cid: str) -> dict:
 
     from pyarchinit_photogrammetry.engine.elevation import bounds_of
 
-    from .vocabulary import deteriorates, load
+    from .vocabulary import UNNAMED, deteriorates, load
 
     rec = campaign(chunk, cid)
     vocab = load(chunk)
@@ -383,6 +392,8 @@ def totals(chunk, cid: str) -> dict:
         out[table][key] = out[table].get(key, 0.0) + float(value)
 
     for f in features(chunk, cid, status="accepted"):
+        if f["code"] == UNNAMED:  # a proposal never named: not part of the survey
+            continue
         out["features"] += 1
         g = wkt.loads(f["geometry"])
         polygon = g.geom_type in ("Polygon", "MultiPolygon")

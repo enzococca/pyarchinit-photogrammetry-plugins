@@ -92,6 +92,7 @@ def read_window(chunk, entry, bounds=None) -> Window | None:
     """The window ``bounds`` (None: the whole face) of the elevation's orthophoto and relief, or None when it lies
     outside the rasters."""
     import rasterio
+    import rasterio.errors
     from rasterio.windows import Window as RWindow
     from rasterio.windows import from_bounds
 
@@ -125,7 +126,7 @@ def read_window(chunk, entry, bounds=None) -> Window | None:
 
             d = cv2.resize(d, (opaque.shape[1], opaque.shape[0]), interpolation=cv2.INTER_NEAREST)
         relief = d
-    except Exception:  # noqa: BLE001 - an elevation without relief: the image detectors still work
+    except (FileNotFoundError, rasterio.errors.RasterioIOError):  # no relief: the image detectors still work
         pass
     out = (transform.c, transform.f + transform.e * opaque.shape[0], transform.c + transform.a * opaque.shape[1],
            transform.f)
@@ -163,10 +164,29 @@ def _proposal(kind, code, geometry, notes, coverage, width_mm=None, depth_mm=Non
 # ---------------------------------------------------------------- SAM
 
 
+SAM_TILE, SAM_OVERLAP, SAM_MAX_TILES = 1024, 128, 400
+
+
+def sam_pixel(win: Window, resolution: float | None = None) -> float:
+    """The pixel (m) SAM gets on the window: ``resolution`` when given (never finer than the raster); else on a
+    window over ``BIG_FACE`` m2 ``BIG_FACE_RESOLUTION`` at the finest; else the finest that keeps at most
+    ``SAM_MAX_TILES`` tiles, as the program's ``auto_units`` chooses it."""
+    bx = win.bounds
+    if resolution is None:
+        area = (bx[2] - bx[0]) * (bx[3] - bx[1])
+        if area > BIG_FACE:
+            resolution = BIG_FACE_RESOLUTION
+        else:
+            side = max(bx[2] - bx[0], bx[3] - bx[1])
+            per_axis = max(1, int(np.floor(np.sqrt(SAM_MAX_TILES))))
+            resolution = side / (per_axis * (SAM_TILE - SAM_OVERLAP) + SAM_OVERLAP)
+    return max(float(resolution), win.res)
+
+
 def sam_areas(chunk, entry, bounds=None, thoroughness: str = "normale", resolution: float | None = None,
               progress=None, segmenter=None) -> list[dict]:
-    """The segments of SAM 2.1 in the window, with no term (``code`` None). On a window over ``BIG_FACE`` m2 the
-    pixel SAM gets is ``BIG_FACE_RESOLUTION`` at the finest unless ``resolution`` is given. ``segmenter``: the
+    """The segments of SAM 2.1 in the window, with no term (``code`` None), at the pixel of :func:`sam_pixel` (the
+    notes say which). ``segmenter``: the
     program's SAM worker (``ai.sam_env.make_segmenter()`` when None)."""
     from pyarchinit_photogrammetry.ai.sam import auto_units
 
@@ -175,16 +195,15 @@ def sam_areas(chunk, entry, bounds=None, thoroughness: str = "normale", resoluti
     if win is None or win.empty:
         return []
     bx = win.bounds
-    area = (bx[2] - bx[0]) * (bx[3] - bx[1])
-    if resolution is None and area > BIG_FACE:
-        resolution = max(win.res, BIG_FACE_RESOLUTION)
+    resolution = sam_pixel(win, resolution)
     if segmenter is None:
         from pyarchinit_photogrammetry.ai.sam_env import make_segmenter
 
         segmenter = make_segmenter()
     units = auto_units(None, segmenter, path=win.ortho, bounds=bx, resolution=resolution, thoroughness=thoroughness,
-                       exclusive=True, max_tiles=400, progress=progress.sub(0, 0.95))
-    res = resolution or win.res
+                       tile=SAM_TILE, overlap=SAM_OVERLAP, exclusive=True, max_tiles=SAM_MAX_TILES,
+                       progress=progress.sub(0, 0.95))
+    res = resolution
     notes = _t(f"proposto da SAM 2.1: accuratezza {thoroughness}, pixel {_num(res * 1000, 1)} mm",
                f"proposed by SAM 2.1: thoroughness {thoroughness}, pixel {_num(res * 1000, 1)} mm")
     out = [_proposal("decay", None, u.geometry, notes, win.coverage) for u in units
@@ -193,16 +212,15 @@ def sam_areas(chunk, entry, bounds=None, thoroughness: str = "normale", resoluti
     return out
 
 
-def _descriptor(L, a, b, valid) -> np.ndarray | None:
-    """Lab mean and standard deviation, gradient energy of L, an 8-bin histogram of the neighbours brighter than
-    each pixel (LBP-like) of the pixels ``valid``."""
+def _feature_images(rgb: np.ndarray) -> np.ndarray:
+    """The per-pixel quantities of the descriptor, computed once for a window: ``(H, W, 5)`` float64 = L, a, b,
+    squared Sobel gradient of L, and the number of the 8 neighbours brighter than the pixel."""
     import cv2
 
-    if valid.sum() < 4:
-        return None
+    labimg = lab(rgb)
+    L = labimg[..., 0]
     gx = cv2.Sobel(L, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(L, cv2.CV_32F, 0, 1, ksize=3)
-    energy = float(np.sqrt(np.mean((gx * gx + gy * gy)[valid])))
     pad = np.pad(L, 1, mode="edge")
     h, w = L.shape
     brighter = np.zeros(L.shape, np.int32)
@@ -210,10 +228,35 @@ def _descriptor(L, a, b, valid) -> np.ndarray | None:
         for dx in (-1, 0, 1):
             if dy or dx:
                 brighter += pad[1 + dy:1 + dy + h, 1 + dx:1 + dx + w] > L
-    hist = np.bincount(np.clip(brighter[valid] - 1, 0, 7), minlength=8).astype(float)
-    hist /= hist.sum()
-    stats = [float(c[valid].mean()) for c in (L, a, b)] + [float(c[valid].std()) for c in (L, a, b)]
-    return np.array(stats + [energy] + list(hist))
+    return np.dstack([labimg.astype(np.float64), (gx * gx + gy * gy).astype(np.float64), brighter.astype(np.float64)])
+
+
+def _descriptors(images: np.ndarray, index: np.ndarray, n: int) -> np.ndarray:
+    """The descriptors of the regions ``1..n`` of the index image (0 = none) in one pass: ``(n, 15)`` = Lab mean and
+    standard deviation, gradient energy of L, an 8-bin histogram of the neighbours brighter than each pixel
+    (LBP-like); NaN rows for regions under 4 pixels."""
+    flat = index.ravel()
+    keep = flat > 0
+    idx = flat[keep]
+    vals = images.reshape(-1, images.shape[2])[keep]
+    count = np.bincount(idx, minlength=n + 1)[1:].astype(np.float64)
+    out = np.full((n, 15), np.nan)
+    ok = count >= 4
+    if not ok.any():
+        return out
+    c = np.where(ok, count, 1.0)
+    for k in range(3):
+        s = np.bincount(idx, weights=vals[:, k], minlength=n + 1)[1:]
+        s2 = np.bincount(idx, weights=vals[:, k] ** 2, minlength=n + 1)[1:]
+        mean = s / c
+        out[:, k] = mean
+        out[:, 3 + k] = np.sqrt(np.maximum(s2 / c - mean * mean, 0.0))
+    out[:, 6] = np.sqrt(np.bincount(idx, weights=vals[:, 3], minlength=n + 1)[1:] / c)
+    bins = np.clip(vals[:, 4].astype(np.int64) - 1, 0, 7)
+    hist = np.bincount(idx * 8 + bins, minlength=(n + 1) * 8).reshape(n + 1, 8)[1:].astype(np.float64)
+    out[:, 7:] = hist / c[:, None]
+    out[~ok] = np.nan
+    return out
 
 
 # the least spread of each component of the descriptor: Lab mean, Lab spread, gradient energy, the 8 bins (a share)
@@ -225,8 +268,10 @@ def like_this(chunk, entry, segments: list, reference, radius: float = 1.0) -> l
     Sobel gradient energy, an 8-bin LBP-like histogram, from the orthophoto inside each polygon) within ``radius``
     of the reference's, each component standardised by its spread over the segments (Euclidean distance), never by
     less than its ``SPREAD_FLOORS`` (a component that hardly changes between the segments - the histogram of a
-    uniform texture - would else turn its noise into distance)."""
-    from rasterio.features import geometry_mask
+    uniform texture - would else turn its noise into distance). The window is read and its per-pixel quantities
+    computed once; the segments are rasterised once into an index image (where they overlap, the later one), the
+    reference into its own mask."""
+    from rasterio.features import rasterize
     from shapely.ops import unary_union
 
     from .geometry import as_geometry
@@ -239,20 +284,21 @@ def like_this(chunk, entry, segments: list, reference, radius: float = 1.0) -> l
     win = read_window(chunk, entry, (u0, v0, u1, v1))
     if win is None:
         return []
-    L, a, b = np.moveaxis(lab(win.rgb), -1, 0)
-
-    def describe(g):
-        inside = ~geometry_mask([g], out_shape=win.opaque.shape, transform=win.transform, all_touched=False)
-        return _descriptor(L, a, b, inside & win.opaque)
-
-    ref = describe(reference)
-    found = [describe(g) for g in segments]
-    if ref is None:
+    images = _feature_images(win.rgb)
+    shape = win.opaque.shape
+    index = rasterize([(g, i + 1) for i, g in enumerate(segments) if not g.is_empty], out_shape=shape,
+                      transform=win.transform, fill=0, dtype="int32")
+    index[~win.opaque] = 0
+    ref_index = rasterize([(reference, 1)], out_shape=shape, transform=win.transform, fill=0, dtype="int32")
+    ref_index[~win.opaque] = 0
+    ref = _descriptors(images, ref_index, 1)[0]
+    if np.isnan(ref).any():
         return []
-    have = [i for i, f in enumerate(found) if f is not None]
+    table = _descriptors(images, index, len(segments))
+    have = [i for i in range(len(segments)) if not np.isnan(table[i]).any()]
     if not have:
         return []
-    table = np.array([found[i] for i in have])
+    table = table[have]
     spread = np.maximum(table.std(axis=0), SPREAD_FLOORS)
     dist = np.sqrt((((table - ref) / spread) ** 2).sum(axis=1))
     return [i for i, d in zip(have, dist) if d <= radius]
@@ -592,15 +638,22 @@ def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: 
     progress(0.5, _t("mancanze: depressioni", "losses: depressions"))
     deep = np.nan_to_num(resid, nan=0.0) < -min_depth
     n, labels, stats, _c = cv2.connectedComponentsWithStats(deep.astype(np.uint8), connectivity=8)
+    from rasterio.features import shapes
+    from scipy import ndimage
+    from shapely.geometry import shape
+
     cell = win.res * win.res
-    comps = []
-    for k in range(1, n):
-        if stats[k, cv2.CC_STAT_AREA] * cell < min_area:
-            continue
-        m = labels == k
-        depth = float(np.median(-resid[m])) * 1000.0
-        for g in _polygons(m, win):
-            comps.append((g, depth))
+    big = np.zeros(n, bool)
+    big[1:] = stats[1:, cv2.CC_STAT_AREA] * cell >= min_area
+    labels = np.where(big[labels], labels, 0).astype(np.int32)
+    ks = np.nonzero(big)[0]
+    depths = dict(zip(ks.tolist(), (np.asarray(ndimage.median(-np.nan_to_num(resid), labels, ks)) * 1000.0
+                                    ).reshape(-1).tolist())) if len(ks) else {}
+    comps = []  # one vectorisation of all the components
+    for geom, value in shapes(labels, mask=labels > 0, transform=win.transform, connectivity=8):
+        g = shape(geom).buffer(0)
+        if not g.is_empty:
+            comps.append((g, float(depths[int(value)])))
     small = [g.area < 0.02 for g, _ in comps]
     alveoli = sum(small) >= 5
     found = []
@@ -654,9 +707,10 @@ def colour_classes(chunk, entry, bounds=None, k: int = 5, progress=None, min_are
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.2)
     progress(0.1, _t("colori: k-means", "colours: k-means"))
     _c, _l, centres = cv2.kmeans(sample, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
-    dist = ((data[:, None, :] - centres[None]) ** 2).sum(axis=2)
+    # nearest centre by ||c||^2 - 2 x.c (the ||x||^2 term is the same for every centre): N x k, never N x k x 3
+    score = (centres * centres).sum(axis=1)[None, :] - 2.0 * (data @ centres.T)
     label = np.full(win.opaque.shape, -1, np.int32)
-    label[win.opaque] = dist.argmin(axis=1)
+    label[win.opaque] = score.argmin(axis=1)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     total = float(win.opaque.sum())
     out = []
@@ -680,5 +734,5 @@ def colour_classes(chunk, entry, bounds=None, k: int = 5, progress=None, min_are
 DETECTORS = ("sam", "cracks", "loss", "colours")
 
 __all__ = ["CRACK", "MISSING_PART", "ALVEOLIZATION", "BIG_FACE", "BIG_FACE_RESOLUTION", "SUGGESTIONS", "DETECTORS",
-           "Window", "read_window", "lab", "sam_areas", "like_this", "cracks", "material_loss", "plane_fit", "looks",
-           "colour_classes"]
+           "Window", "read_window", "lab", "sam_pixel", "sam_areas", "like_this", "cracks", "material_loss",
+           "plane_fit", "looks", "colour_classes"]

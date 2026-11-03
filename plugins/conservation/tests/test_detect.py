@@ -46,6 +46,37 @@ def test_cracks_find_the_groove(face):
     assert near[0]["coverage"] == 1.0
 
 
+def test_a_wider_crack_gives_its_opening(face):
+    """A crack 3 px (3 cm) wide and 5 mm deep, painted dark and carved, on a clean part of the face."""
+    import rasterio
+    from shapely.geometry import LineString
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    doc, ch, entry = face
+    line = LineString([(3.25, Z0 + 0.8), (3.65, Z0 + 1.7)])
+    width, depth = 0.03, 0.005
+    band = line.buffer(width / 2, cap_style="flat")
+    ortho, relief = elevation_paths(ch, entry)
+    for path in (ortho, relief):
+        with rasterio.open(path, "r+") as dst:
+            u, v = S._cells(dst)
+            m = S._inside(u, v, band)
+            if path == ortho:
+                rgb = dst.read()
+                rgb[:3, m] = np.array(S.CRACK_RGB, np.uint8)[:, None]
+                dst.write(rgb)
+            else:
+                d = dst.read(1)
+                d[m] -= depth
+                dst.write(d, 1)
+    u0, v0, u1, v1 = line.bounds
+    found = detect.cracks(ch, entry, bounds=(u0 - 0.2, v0 - 0.2, u1 + 0.2, v1 + 0.2))
+    assert len(found) == 1
+    assert abs(found[0]["geometry"].length - line.length) <= 0.05 * line.length
+    assert abs(found[0]["width_mm"] - width * 1000) <= 1.0, found[0]["width_mm"]
+
+
 def test_a_crack_on_a_joint_between_drawn_stones_is_dropped(face):
     doc, ch, entry = face
     line = S.groove()
@@ -133,7 +164,7 @@ def test_sam_areas_with_the_fake_sam(face, fake_sam):
     from shapely.geometry import box
 
     assert all(box(*window).buffer(0.02).contains(f["geometry"]) for f in found)
-    assert "SAM 2.1" in found[0]["notes"]
+    assert "SAM 2.1" in found[0]["notes"] and "pixel 10,0 mm" in found[0]["notes"]
 
 
 def test_sam_on_a_big_face_is_coarser_and_normal(face, monkeypatch):
@@ -150,10 +181,12 @@ def test_sam_on_a_big_face_is_coarser_and_normal(face, monkeypatch):
     detect.sam_areas(ch, entry, segmenter=object())  # 18 m2
     assert seen["resolution"] == max(entry["resolution"], detect.BIG_FACE_RESOLUTION)
     assert seen["thoroughness"] == "normale"
-    detect.sam_areas(ch, entry, bounds=(0, Z0, 1, Z0 + 1), segmenter=object())  # 1 m2: SAM chooses
-    assert seen["resolution"] is None
-    detect.sam_areas(ch, entry, resolution=0.002, thoroughness="alta", segmenter=object())  # asked
-    assert seen["resolution"] == 0.002 and seen["thoroughness"] == "alta"
+    detect.sam_areas(ch, entry, bounds=(0, Z0, 1, Z0 + 1), segmenter=object())  # 1 m2: as auto_units chooses
+    assert seen["resolution"] == entry["resolution"]  # 1 m on 400 tiles: finer than the raster, so the raster's
+    detect.sam_areas(ch, entry, resolution=0.002, thoroughness="alta", segmenter=object())  # asked: never finer
+    assert seen["resolution"] == entry["resolution"] and seen["thoroughness"] == "alta"
+    detect.sam_areas(ch, entry, resolution=0.02, thoroughness="alta", segmenter=object())  # asked
+    assert seen["resolution"] == 0.02 and seen["thoroughness"] == "alta"
 
 
 def test_like_this_picks_the_same_colour(face):
@@ -170,6 +203,30 @@ def test_like_this_picks_the_same_colour(face):
     assert detect.like_this(ch, entry, segments, reference) == [0, 2]
     black = S.box((b[0] + 0.2, b[1] + 0.2, b[0] + 0.5, b[1] + 0.5))
     assert detect.like_this(ch, entry, segments, black) == [1, 5]
+
+
+def test_like_this_reads_the_window_once(face, monkeypatch):
+    """The per-pixel quantities are computed once per call, whatever the number of segments, and the segments are
+    described from one index image."""
+    doc, ch, entry = face
+    calls = {"images": 0, "regions": []}
+    images, descriptors = detect._feature_images, detect._descriptors
+
+    def count_images(rgb):
+        calls["images"] += 1
+        return images(rgb)
+
+    def count_regions(imgs, index, n):
+        calls["regions"].append(n)
+        return descriptors(imgs, index, n)
+
+    monkeypatch.setattr(detect, "_feature_images", count_images)
+    monkeypatch.setattr(detect, "_descriptors", count_regions)
+    g = S.GREEN_PATCH
+    segments = [S.box((g[0] + 0.2 * k + 0.01, g[1] + 0.05, g[0] + 0.2 * k + 0.19, g[1] + 0.5)) for k in range(5)]
+    found = detect.like_this(ch, entry, segments, S.box((g[0] + 0.3, g[1] + 0.1, g[0] + 0.6, g[1] + 0.4)))
+    assert calls["images"] == 1 and calls["regions"] == [1, 5]
+    assert found == list(range(5))
 
 
 def test_a_window_with_no_surface_gives_nothing(face, fake_sam):

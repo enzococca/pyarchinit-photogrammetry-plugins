@@ -576,29 +576,45 @@ def test_the_proposals_dialog(tmp_path, monkeypatch):
         assert named and {f["code"] for f in named} == {"ISCS.BIOLOGICAL_COLONIZATION"}
         green = sum(wkt.loads(f["geometry"]).area for f in named)
         assert abs(green - S.box(S.GREEN_PATCH).area) <= 0.05 * S.box(S.GREEN_PATCH).area
-        # SAM: refused without a term, then with the term chosen
+        # SAM with no term: the segments stay "to be named", and cannot be accepted so
         out = propose(detector="sam", window="face")
-        assert "termine scelto" in out[-1]
-        assert pane.choose_term("ISCS.ALGA")
-        propose(detector="sam", window="face")
         sam = [f for f in records.features(ch, cid) if f["source"] == "proposed:sam"]
-        assert sam and {f["code"] for f in sam} == {"ISCS.ALGA"} and "SAM 2.1" in sam[0]["notes"]
+        assert sam and {f["code"] for f in sam} == {"PPG.UNNAMED"} and "da nominare" in out[-1]
+        assert "SAM 2.1" in sam[0]["notes"]
         assert sorted(_fids(view, "Proposte")) == sorted(f["id"] for f in records.features(ch, cid,
                                                                                            status="proposed"))
-        # Come questo: SAM's proposals like the chosen area take its term
-        records.discard(ch, [f["id"] for f in sam])
+        pane.select(sam[0]["id"])
+        plugin._requested("accept")
+        assert "dai un termine prima di accettare" in said[-1]
+        assert records.feature(ch, sam[0]["id"])["status"] == "proposed"
+        plugin._requested("accept_all")
+        assert "dai un termine prima di accettare" in said[-1]
+        assert records.features(ch, cid, status="accepted") == []
+        # with a term chosen in the list it is used only when asked for
+        assert pane.choose_term("ISCS.ALGA")
+        propose(detector="sam", window="face")
+        assert {f["code"] for f in records.features(ch, cid) if f["source"] == "proposed:sam"} == {"PPG.UNNAMED"}
+        propose(detector="sam", window="face", use_term=True)
+        named = [f for f in records.features(ch, cid) if f["source"] == "proposed:sam" and f["code"] == "ISCS.ALGA"]
+        assert len(named) == len(sam)
+        # Come questo (in the background): the unnamed proposals like the chosen area take its term, one undo entry
+        records.discard(ch, [f["id"] for f in records.features(ch, cid) if f["source"] == "proposed:sam"])
         g, b = S.GREEN_PATCH, S.BLACK_CRUST
         boxes = [(g[0] + 0.05, g[1] + 0.05, 4.65, g[3] - 0.05), (4.75, g[1] + 0.05, g[2] - 0.05, g[3] - 0.05),
                  (b[0] + 0.05, b[1] + 0.05, 0.95, b[3] - 0.05), (3.2, Z0 + 0.2, 3.8, Z0 + 0.8)]
-        segs = [records.add_feature(ch, cid, "decay", "ISCS.ALTERATION", S.box(x), status="proposed",
+        segs = [records.add_feature(ch, cid, "decay", "PPG.UNNAMED", S.box(x), status="proposed",
                                     source="proposed:sam") for x in boxes]
         ref = records.add_feature(ch, cid, "decay", "ISCS.ALGA", S.box((4.4, g[1] + 0.1, 4.7, g[1] + 0.4)))
         plugin.refresh_pane()
         pane.select(ref["id"])
+        n_undo = len(w.history.entries)
         plugin._requested("like")
-        assert [records.feature(ch, s["id"])["code"] for s in segs] == ["ISCS.ALGA", "ISCS.ALGA", "ISCS.ALTERATION",
-                                                                         "ISCS.ALTERATION"]
-        assert "2 aree proposte" in said[-1]
+        w.runner.wait()
+        assert [records.feature(ch, s["id"])["code"] for s in segs] == ["ISCS.ALGA", "ISCS.ALGA", "PPG.UNNAMED",
+                                                                         "PPG.UNNAMED"]
+        assert "2 aree proposte" in said[-1] and len(w.history.entries) == n_undo + 1
+        assert records.totals(ch, cid)["area_by_code"].get("PPG.UNNAMED") is None
+        records.discard(ch, [s["id"] for s in segs[2:]])
         # a window with no surface: an area outside the face chosen as the window
         away = records.add_feature(ch, cid, "decay", "ISCS.ALGA", S.box((7.0, Z0, 8.0, Z0 + 1.0)))
         plugin.refresh_pane()
