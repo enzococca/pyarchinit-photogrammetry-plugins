@@ -79,6 +79,17 @@ plugin](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main
 - **IFC 4.3 (ISO 16739-1:2024)**: `IfcSurfaceFeature` (DEFECT, TREATMENT) attaccato al muro con
   `IfcRelAdheresToElement`.
 
+Le classi della EN 16096 come le mostra il plugin. **Le diciture inglesi vengono da una fonte secondaria** (una tesi
+che cita la norma, il cui testo non è liberamente disponibile); quelle italiane sono una traduzione del plugin:
+controllale sulla tua copia della norma prima di stamparle in un rapporto.
+
+| Classe | Condizione (CC) | Urgenza (UC) | Raccomandazione (RC) |
+|---|---|---|---|
+| 0 | Nessun sintomo | Lungo termine | Nessuna misura |
+| 1 | Sintomi lievi | Medio termine | Manutenzione / conservazione preventiva |
+| 2 | Sintomi moderatamente forti | Breve termine | Riparazione moderata e/o ulteriori indagini |
+| 3 | Sintomi gravi | Urgente e immediato | Interventi importanti basati sulla diagnosi |
+
 I nomi dei termini sono quelli dei glossari. Le definizioni di una riga sono parafrasi del plugin, con la pagina o la
 sezione della fonte: per il testo vero leggi i glossari.
 
@@ -361,14 +372,17 @@ paramento:
   verifica);
 - **in un altro chunk**: un rilievo successivo. Il suo prospetto deve stare sullo stesso piano, con la stessa
   risoluzione e gli stessi limiti: quando l'altro chunk non lo ha, il plugin lo costruisce con lo strumento dei
-  prospetti del programma sullo stesso piano, così le due griglie coincidono. Uno sviluppo misurato sul muro (*scala
+  prospetti del programma sullo stesso piano e con le stesse impostazioni (fusione, correzione del colore, angolo,
+  filtro dei fantasmi, buchi riempiti), così le due griglie coincidono. Quando un prospetto trovato lì è stato
+  dipinto in altro modo, il riepilogo del confronto dice quali impostazioni sono diverse: cambiano anche il colore. Uno sviluppo misurato sul muro (*scala
   sul muro*) non si rifà uguale: fai il secondo sul cilindro, o confronta campagne dello stesso prospetto.
 
 **I due chunk devono essere già nello stesso sistema.** Lo fa il programma con *Flusso di lavoro > Allinea chunk*
 (marker, camere o punti), non il plugin. Prima del confronto il plugin lo verifica:
 
-- i **marker** dei due chunk che stanno sul paramento, abbinati per nome: allineati quando la coppia più lontana è
-  entro **1 cm**;
+- i **marker** del primo chunk che stanno sul paramento, abbinati per nome ai marker del secondo ovunque siano (un
+  marker finito fuori dal paramento è un rifiuto, non un marker lasciato fuori): allineati quando la coppia più
+  lontana è entro **1 cm**;
 - senza marker in comune, lo spostamento fra le due **ortofoto** per correlazione di fase della loro luminosità sulle
   celle dipinte in entrambe: allineati sotto **2 px** della griglia del prospetto.
 

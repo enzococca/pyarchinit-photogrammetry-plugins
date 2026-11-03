@@ -2,7 +2,10 @@
 that carry a term accepted, the plate, the tables, the drawings, the IFC 4.3 file, and a ``LEGGIMI.md`` with the
 numbers and the times. Nothing is copied anywhere else.
 
-Work on a COPY of the project: the run adds a campaign to the project's records and writes under the chunk's data.
+The project given is never written: it is copied first (the ``.ppg`` file and its ``.ppg.files`` folder, cloned
+on APFS when possible) into ``FOLDER/progetto/``, and the run adds its campaign to the copy and writes under the
+copy's data. ``--out`` inside the project's data folder is refused, and so is a ``FOLDER/progetto/`` that is
+already there (choose another folder or remove it).
 
     python run_proof.py PROJECT.ppg --elevation "NAME" --window U0 V0 U1 V1 --out FOLDER
         [--chunk LABEL] [--sam] [--min-depth-cm 2] [--min-area-m2 0.0025] [--min-length-cm 10] [--colours 5]
@@ -27,6 +30,31 @@ def _elevation(chunk, name: str) -> dict:
     return found[0]
 
 
+def copy_project(project: Path, out: Path) -> Path:
+    """``project`` and its data folder copied into ``out/progetto/``; the path of the copy's ``.ppg``."""
+    import shutil
+    import subprocess
+
+    project = project.resolve()
+    files = project.with_name(project.name + ".files")
+    out = out.resolve()
+    if files == out or files in out.parents:
+        raise SystemExit(f"--out {out} is inside the project's data folder {files}: choose a folder outside it")
+    target = out / "progetto"
+    if target.exists():
+        raise SystemExit(f"{target} is already there: choose another --out or remove it")
+    target.mkdir(parents=True)
+    shutil.copy2(project, target / project.name)
+    if files.is_dir():
+        dest = target / files.name
+        cloned = sys.platform == "darwin" and subprocess.run(
+            ["cp", "-cRp", str(files), str(dest)], capture_output=True).returncode == 0
+        if not cloned:
+            shutil.rmtree(dest, ignore_errors=True)
+            shutil.copytree(files, dest)
+    return target / project.name
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("project")
@@ -48,15 +76,16 @@ def main(argv=None) -> int:
     from ppg_conservation.vocabulary import UNNAMED
 
     out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
     times, lines = {}, []
     t0 = time.perf_counter()
-    doc = ppg.Document.open(a.project)
+    project = copy_project(Path(a.project), out)  # the project given is never written
+    times["copia del progetto"] = time.perf_counter() - t0
+    doc = ppg.Document.open(project)
     chunk = doc.chunk if a.chunk is None else next((c for c in doc.chunks if c.label == a.chunk), None)
     if chunk is None:
         raise SystemExit(f"no chunk {a.chunk!r}")
     entry = _elevation(chunk, a.elevation)
-    times["apertura"] = time.perf_counter() - t0
+    times["apertura"] = time.perf_counter() - t0 - times["copia del progetto"]
     bounds = tuple(a.window)
     c = records.new_campaign(chunk, entry["id"], name="Prova del plugin", method="proposte automatiche (prova)")
 
@@ -104,7 +133,8 @@ def main(argv=None) -> int:
     median_width = f"{widths[len(widths) // 2]:.1f}" if widths else "-"
     deepest = f"{depths[-1]:.0f}" if depths else "-"
     lines += ["# Prova del plugin Conservazione", "",
-              f"Progetto: `{Path(a.project).name}`, chunk «{chunk.label}», prospetto «{entry['name']}» "
+              f"Progetto: una copia di `{Path(a.project).name}` in `{project.parent.relative_to(out.resolve())}/` "
+              f"(l'originale non è stato toccato), chunk «{chunk.label}», prospetto «{entry['name']}» "
               f"({entry['id']}, {entry['resolution'] * 1000:.1f} mm/px).",
               f"Finestra (u, v): {bounds[0]:.2f} {bounds[1]:.2f} - {bounds[2]:.2f} {bounds[3]:.2f} m "
               f"({(bounds[2] - bounds[0]) * (bounds[3] - bounds[1]):.2f} m²).", "",

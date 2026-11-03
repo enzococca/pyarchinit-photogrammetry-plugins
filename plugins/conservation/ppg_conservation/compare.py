@@ -73,21 +73,43 @@ def _close(a, b) -> bool:
     return a == b
 
 
-def same_frame(entry_a: dict, entry_b: dict) -> bool:
-    """Whether two elevations lie on the same grid: frame, resolution, bounds, depth band and kind."""
-    return (_close(entry_a.get("frame"), entry_b.get("frame")) and _close(entry_a.get("resolution"),
-                                                                           entry_b.get("resolution"))
+SETTINGS = ("blending", "colour_correction", "max_angle", "ghosting", "fill_holes")  # how an orthophoto is painted
+
+
+def settings_of(entry: dict) -> dict:
+    """How the orthophoto of an elevation was painted (the keys of :data:`SETTINGS`): the program's
+    ``entry_settings`` (entries made before the settings were stored take the values used then)."""
+    try:
+        from pyarchinit_photogrammetry.engine.elevation import entry_settings
+    except ImportError:  # a program without it: the entry's keys with build_elevation's defaults
+        defaults = {"blending": "mosaic", "colour_correction": False, "max_angle": 80.0, "ghosting": False,
+                    "fill_holes": True}
+        return {k: entry.get(k, defaults[k]) for k in SETTINGS}
+    found = entry_settings(entry)
+    return {k: found[k] for k in SETTINGS}
+
+
+def settings_differ(entry_a: dict, entry_b: dict) -> list[str]:
+    """The settings of the orthophoto in which two elevations differ, as ``name A -> B``."""
+    a, b = settings_of(entry_a), settings_of(entry_b)
+    return [f"{k} {a[k]} -> {b[k]}" for k in SETTINGS if not _close(a[k], b[k])]
+
+
+def same_frame(entry_a: dict, entry_b: dict, settings: bool = False) -> bool:
+    """Whether two elevations lie on the same grid: frame, resolution, bounds, depth band and kind; with
+    ``settings`` also painted the same way (:data:`SETTINGS`)."""
+    grid = (_close(entry_a.get("frame"), entry_b.get("frame")) and _close(entry_a.get("resolution"),
+                                                                          entry_b.get("resolution"))
             and entry_a.get("bounds") is not None and _close(entry_a.get("bounds"), entry_b.get("bounds"))
             and _close(entry_a.get("depth"), entry_b.get("depth"))
             and entry_a.get("kind", "elevation") == entry_b.get("kind", "elevation"))
+    return grid and (not settings or not settings_differ(entry_a, entry_b))
 
 
 def find_elevation(other, entry: dict) -> dict | None:
-    """The elevation of ``other`` on the same grid as ``entry``, or None."""
-    for e in other.meta.get("elevations") or []:
-        if same_frame(entry, e):
-            return e
-    return None
+    """The elevation of ``other`` on the same grid as ``entry`` (one painted the same way first), or None."""
+    found = [e for e in other.meta.get("elevations") or [] if same_frame(entry, e)]
+    return next((e for e in found if not settings_differ(entry, e)), found[0] if found else None)
 
 
 def ensure_elevation(other, entry: dict, progress=None) -> dict:
@@ -110,9 +132,12 @@ def ensure_elevation(other, entry: dict, progress=None) -> dict:
     if other.product_path("model") is None:
         raise NotReady(t(f"Il chunk «{other.label}» non ha un modello: il prospetto si fa sul modello.",
                          f"The chunk «{other.label}» has no model: an elevation is made on the model."))
+    how = settings_of(entry)  # painted as A was, so that the colour change is the wall's, not the settings'
     return build_elevation(other, frame_from_dict(entry["frame"]), resolution=float(entry["resolution"]),
                            name=entry.get("name"), depth=tuple(entry["depth"]), bounds=tuple(entry["bounds"]),
-                           kind=entry.get("kind", "elevation"), progress=progress)
+                           kind=entry.get("kind", "elevation"), blending=how["blending"],
+                           colour_correction=bool(how["colour_correction"]), max_angle=float(how["max_angle"]),
+                           ghosting=bool(how["ghosting"]), fill_holes=bool(how["fill_holes"]), progress=progress)
 
 
 def _grid(chunk, entry: dict):
@@ -158,6 +183,18 @@ def _read_lightness(chunk, entry: dict, factor: int):
     return lab[..., 0], valid
 
 
+def _markers_uvd(chunk, entry: dict, labels: set) -> dict:
+    """``{label: (u, v, d)}`` on the frame of ``entry`` of the markers of ``chunk`` named in ``labels`` that have a
+    position, wherever they lie (not only on the face)."""
+    from pyarchinit_photogrammetry.engine.elevation import frame_from_dict
+
+    ms = [m for m in chunk.markers if m.position is not None and m.label in labels]
+    if not ms:
+        return {}
+    uvd = frame_from_dict(entry["frame"]).coords(chunk.to_world(np.array([m.position for m in ms], np.float64)))
+    return {m.label: np.asarray(p, np.float64) for m, p in zip(ms, uvd)}
+
+
 def _result(ok, method, shift_px, shift_m, markers, message, **more) -> dict:
     out = {"ok": bool(ok), "method": method, "shift_px": None if shift_px is None else float(shift_px),
            "shift_m": None if shift_m is None else float(shift_m), "markers": int(markers), "message": message}
@@ -170,8 +207,9 @@ def check_alignment(chunk, entry: dict, other, other_entry: dict | None = None) 
     "same" | "markers" | "phase" | "system", "shift_px", "shift_m", "markers", "message"}`` (+ ``shift_uv`` in
     metres, where B's content lies with respect to A's, and ``response`` of the phase correlation).
 
-    The markers of both chunks on the face (the program's ``markers_on``), matched by label, decide when there are
-    any: ok when the farthest pair is within 1 cm. Without markers in common, the shift of the orthophoto of the
+    The markers of this chunk on the face (the program's ``markers_on``) and the markers of ``other`` with the same
+    labels, wherever they lie (a marker moved off the face is a refusal, not a marker dropped), decide when there
+    are any: ok when the farthest pair is within 1 cm. Without markers in common, the shift of the orthophoto of the
     other chunk's elevation on the same frame (``other_entry``, found when not given) against this one, by phase
     correlation of their lightness on the cells both painted: ok under 2 px. Refused otherwise, with the shift
     measured and the pointer to *Allinea chunk*."""
@@ -189,7 +227,7 @@ def check_alignment(chunk, entry: dict, other, other_entry: dict | None = None) 
                          f"The two surveys are in different systems ({chunk.crs or 'LOCAL'}, "
                          f"{other.crs or 'LOCAL'}). ") + _tr(ALIGN_POINTER))
     mine = {label: np.array([u, v, d]) for label, u, v, d in markers_on(chunk, entry)}
-    theirs = {label: np.array([u, v, d]) for label, u, v, d in markers_on(other, entry)}
+    theirs = _markers_uvd(other, entry, set(mine))  # wherever they are: one moved off the face is a refusal
     common = sorted(set(mine) & set(theirs))
     if common:
         gaps = {label: float(np.linalg.norm(theirs[label] - mine[label])) for label in common}
@@ -318,25 +356,31 @@ def _terms(vocab, fa: list[dict], fb: list[dict]) -> list[dict]:
 
 
 def _cracks(fa: list[dict], fb: list[dict]) -> list[dict]:
+    """Each crack of B against the cracks of A within ``CRACK_NEAR``: *new* when less than ``CRACK_SAME_SHARE`` of
+    its length lies near them (its row names no crack of A); else *longer* / *wider* / both / *same*, the length of
+    A being that of each crack of A inside the band of B (a long crack of A crossed by a short one of B is not
+    "shorter"). The cracks of A in no such row are *gone*, also when a new crack of B crosses them."""
     from shapely import wkt
 
     ca = [(f, wkt.loads(f["geometry"])) for f in fa if f["kind"] == "crack"]
     cb = [(f, wkt.loads(f["geometry"])) for f in fb if f["kind"] == "crack"]
     rows, seen = [], set()
     for f, g in cb:
+        band = g.buffer(CRACK_NEAR)
         near = [(fa_, ga) for fa_, ga in ca if ga.distance(g) <= CRACK_NEAR]
         zone = _union([ga.buffer(CRACK_NEAR) for _f, ga in near])
         share = (g.intersection(zone).length / g.length) if zone is not None and g.length > 0 else 0.0
-        near = [(fa_, ga) for fa_, ga in near if g.buffer(CRACK_NEAR).intersection(ga).length > 0.0]
+        inside = [(fa_, ga.intersection(band).length) for fa_, ga in near]
+        inside = [(fa_, length) for fa_, length in inside if length > 0.0]
         wb = f.get("width_mm")
-        row = {"id_b": f["id"], "id_a": [fa_["id"] for fa_, _g in near], "length_b": float(g.length),
-               "width_b": None if wb is None else float(wb)}
-        if share < CRACK_SAME_SHARE or not near:
-            row.update(length_a=None, width_a=None, state="new")
+        row = {"id_b": f["id"], "length_b": float(g.length), "width_b": None if wb is None else float(wb)}
+        if share < CRACK_SAME_SHARE or not inside:
+            row.update(id_a=[], length_a=None, width_a=None, state="new")
         else:
+            row["id_a"] = [fa_["id"] for fa_, _l in inside]
             seen.update(row["id_a"])
-            la = float(sum(ga.length for _f, ga in near))
-            widths = [float(fa_["width_mm"]) for fa_, _g in near if fa_.get("width_mm") is not None]
+            la = float(sum(length for _f, length in inside))
+            widths = [float(fa_["width_mm"]) for fa_, _l in inside if fa_.get("width_mm") is not None]
             wa = max(widths) if widths else None
             longer = g.length - la > max(CRACK_LONGER, 0.05 * la)
             wider = wa is not None and wb is not None and float(wb) - wa > CRACK_WIDER
@@ -344,7 +388,7 @@ def _cracks(fa: list[dict], fb: list[dict]) -> list[dict]:
             row.update(length_a=la, width_a=wa, state=state)
         rows.append(row)
     for f, g in ca:
-        if f["id"] not in seen and not any(f["id"] in r["id_a"] for r in rows):
+        if f["id"] not in seen:
             rows.append({"id_b": None, "id_a": [f["id"]], "length_a": float(g.length), "length_b": None,
                          "width_a": None if f.get("width_mm") is None else float(f["width_mm"]), "width_b": None,
                          "state": "gone"})
@@ -533,6 +577,11 @@ def _sheets(r: dict) -> dict:
 def _summary_lines(r: dict, ca: dict, cb: dict) -> list[str]:
     lines = [t(f"A: {ca['name']} ({ca['date']}) - B: {cb['name']} ({cb['date']})",
                f"A: {ca['name']} ({ca['date']}) - B: {cb['name']} ({cb['date']})"), r["alignment"]["message"]]
+    if r.get("settings_differ"):
+        lines.append(t(f"Prospetto B costruito con impostazioni diverse: {', '.join(r['settings_differ'])} (il "
+                       f"cambiamento di colore ne risente).",
+                       f"Elevation B built with different settings: {', '.join(r['settings_differ'])} (the colour "
+                       f"change is affected)."))
     gained = sum(x["gained"] for x in r["terms"])
     lost = sum(x["lost"] for x in r["terms"])
     lines.append(t(f"Degrado: {num(gained, 2)} m² in più, {num(lost, 2)} m² in meno.",
@@ -652,7 +701,8 @@ def compare(chunk, cid_a: str, cid_b: str, folder=None, progress=None, other=Non
     fa, fb = _mapped(chunk, cid_a), _mapped(other, cid_b)
     progress(0.1, t("Aree, lesioni e interventi", "Areas, cracks and interventions"))
     result = {"alignment": alignment, "terms": _terms(vocab, fa, fb), "cracks": _cracks(fa, fb),
-              "treatments": _treatments(vocab, fa, fb)}
+              "treatments": _treatments(vocab, fa, fb),
+              "settings_differ": [] if entry_b is entry_a else settings_differ(entry_a, entry_b)}
     folder = Path(folder) if folder is not None else compare_folder(chunk, entry_a["id"], cid_a, cid_b)
     folder.mkdir(parents=True, exist_ok=True)
     result["folder"] = folder
@@ -660,7 +710,7 @@ def compare(chunk, cid_a: str, cid_b: str, folder=None, progress=None, other=Non
     result["change_stats"] = _write_change(chunk, entry_a, other, entry_b, _mask_shapes(fa, fb), result["change"],
                                            progress)
     result["relief_change"], result["relief"] = None, None
-    if other is not chunk and chunk.product_path("model") is not None and other.product_path("model") is not None:
+    if other is not chunk and other.product_path("model") is not None:  # A's surface is its relief.tif
         path = folder / "relief_change.tif"
         stats = _write_relief_change(chunk, entry_a, other, path, progress)
         if stats is not None:
@@ -675,6 +725,7 @@ def compare(chunk, cid_a: str, cid_b: str, folder=None, progress=None, other=Non
                "a": {"chunk": chunk.label, "campaign": cid_a, "date": ca["date"], "elevation": entry_a["id"]},
                "b": {"chunk": other.label, "campaign": cid_b, "date": cb["date"], "elevation": entry_b["id"]},
                "alignment": {k: v for k, v in alignment.items() if k != "gaps"}, "terms": result["terms"],
+               "settings_differ": result["settings_differ"],
                "cracks": result["cracks"], "treatments": result["treatments"], "change": result["change_stats"],
                "relief": result["relief"], "lines": lines,
                "files": {k: result[k].name for k in ("change", "relief_change", "xlsx", "pdf", "png")

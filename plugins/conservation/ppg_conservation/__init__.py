@@ -986,142 +986,25 @@ class ConservationPlugin(Plugin):
         records.set_assessment(chunk, c["date"], v["rc"], reason=v["reason"], surveyor=v["surveyor"])
         self._changed(chunk, before, t("raccomandazione", "recommendation"))
 
-    # ------------------------------------------------------------------ comparison
-    def _document(self):
-        window = self.context.window
-        return getattr(window, "doc", None) or self.context.app.document
-
-    def _chunk_by_key(self, key: str):
-        from .records import NotReady
-
-        for ch in getattr(self._document(), "chunks", None) or []:
-            if str(ch.key) == key:
-                return ch
-        raise NotReady(t("Il chunk scelto non è più nel progetto.", "The chunk chosen is no longer in the project."))
-
-    def _compare_choices(self, chunk, entry: dict, c: dict) -> list[tuple[str, str]]:
-        """What campaign A can be compared with: ``c:<chunk key>:<campaign id>`` for the other campaigns of the face
-        (this elevation, or another chunk's elevation on the same frame), ``b:<chunk key>:`` to build that elevation
-        in a chunk with a model that has none."""
-        from . import compare, records
-
-        out = [(f"c:{chunk.key}:{x['id']}", t(f"{x['date']}  {x['name']} (stesso prospetto)",
-                                             f"{x['date']}  {x['name']} (same elevation)"))
-               for x in records.campaigns(chunk, entry["id"]) if x["id"] != c["id"]]
-        for other in getattr(self._document(), "chunks", None) or []:
-            if other is chunk:
-                continue
-            found = compare.find_elevation(other, entry)
-            if found is not None:
-                out += [(f"c:{other.key}:{x['id']}", f"«{other.label}»: {x['date']}  {x['name']}")
-                        for x in records.campaigns(other, found["id"])]
-            elif other.product_path("model") is not None:
-                out.append((f"b:{other.key}:", t(f"«{other.label}»: costruisci il prospetto sullo stesso piano",
-                                                 f"«{other.label}»: build the elevation on the same plane")))
-        return out
-
+    # ------------------------------------------------------------------ comparison (:mod:`.compare_ui`)
     def _do_compare(self) -> None:
-        """*Confronta*: campaign A (the one chosen) against another campaign of the same face - of this elevation, or
-        of another chunk's elevation on the same frame (built here when the chunk has none) - after the check that
-        the two chunks are aligned; the tables, the PDF page and the overlays."""
-        from pyarchinit_photogrammetry.gui.dialogs import Field
+        from . import compare_ui
 
-        from . import compare, records
-
-        chunk, entry, c = self._need_campaign()
-        options = self._compare_choices(chunk, entry, c)
-        if not options:
-            raise records.NotReady(t(
-                "Nessun'altra campagna di questa faccia e nessun altro chunk con un modello: fai una seconda campagna, "
-                "o aggiungi il rilievo successivo come chunk allineato (Allinea chunk).",
-                "No other campaign of this face and no other chunk with a model: make a second campaign, or add the "
-                "later survey as an aligned chunk (Align chunks)."))
-        v = self._ask(t("Confronta due campagne", "Compare two campaigns"), [
-            Field("other", t("Campagna B", "Campaign B"), options[0][0], choices=options),
-            Field("folder", t("Cartella (vuota: quella del confronto)", "Folder (empty: the comparison's own)"), "",
-                  kind="dir")],
-            intro=t(f"A: {c['date']}  {c['name']}. Un rilievo in un altro chunk deve essere già allineato a questo "
-                    f"(Flusso di lavoro > Allinea chunk): il plugin lo verifica con i marker sulla faccia (entro 1 cm) "
-                    f"o con lo spostamento delle ortofoto (sotto 2 px) e rifiuta altrimenti.",
-                    f"A: {c['date']}  {c['name']}. A survey in another chunk must already be aligned with this one "
-                    f"(Workflow > Align chunks): the plugin checks it with the markers on the face (within 1 cm) or "
-                    f"with the shift of the orthophotos (under 2 px) and refuses otherwise."))
-        if v is None:
-            return
-        kind, key, cid_b = str(v["other"]).split(":", 2)
-        other = self._chunk_by_key(key)
-        if kind == "b":
-            def built(found):
-                self.context.mark_modified()
-                self.context.refresh_tree()
-                self._message("information", t(
-                    f"Prospetto «{found.get('name')}» costruito in «{other.label}» sullo stesso piano: fai lì la "
-                    f"campagna B (scegli quel chunk), poi Confronta.",
-                    f"Elevation «{found.get('name')}» built in «{other.label}» on the same plane: make campaign B "
-                    f"there (choose that chunk), then Compare."))
-
-            self.context.run(t("Conservazione: prospetto sullo stesso piano", "Conservation: elevation on the same "
-                               "plane"), lambda progress: compare.ensure_elevation(other, entry, progress), built)
-            return
-        folder = Path(v["folder"]) if v.get("folder") else None
-
-        def work(progress):
-            try:
-                return compare.compare(chunk, c["id"], cid_b, folder=folder, progress=progress, other=other)
-            except records.NotReady as exc:  # the alignment refused, the grids differ: said, nothing written
-                return {"refused": str(exc)}
-
-        self.context.run(t("Conservazione: confronto", "Conservation: comparison"), work,
-                         lambda r: self._guarded(self._compared, chunk, entry, r))
-
-    def _compared(self, chunk, entry: dict, r: dict) -> None:
-        if r.get("refused"):
-            self._message("warning", r["refused"])
-            return
-        self.comparison = {"chunk": str(chunk.key), "eid": entry["id"], "colour": r["change"],
-                           "relief": r.get("relief_change"), "folder": r["folder"]}
-        available = ["colour"] + (["relief"] if r.get("relief_change") else [])
-        if self.pane is not None:
-            self.pane.set_comparison(available, "colour")
-        self._show(entry)
-        self._show_overlay("colour")
-        files = [r[k] for k in ("xlsx", "pdf", "png", "change", "relief_change", "json") if r.get(k)]
-        self._done_files(t("Confronto:", "Comparison:"), files, "\n".join(r.get("lines") or []))
+        compare_ui.do_compare(self)
 
     def _comparison_shown(self) -> bool:
-        chunk = self._chunk()
-        return bool(self.comparison) and chunk is not None and str(chunk.key) == self.comparison["chunk"] and \
-            self._shown_eid() == self.comparison["eid"]
+        from . import compare_ui
+
+        return compare_ui.comparison_shown(self)
+
+    def _show_overlay(self, kind: str) -> None:
+        from . import compare_ui
+
+        compare_ui.show_overlay(self, kind)
 
     def _drop_overlay(self) -> None:
         if self.overlay is not None:
             self.overlay.remove()
-
-    def _show_overlay(self, kind: str) -> None:
-        """The raster ``kind`` (``colour``, ``relief``) of the last comparison over its elevation; none for ``""``."""
-        from .overlay import Overlay
-        from .records import NotReady
-
-        window = self.context.window
-        view = getattr(window, "ortho_view", None) if window is not None else None
-        if view is None:
-            return
-        if self.overlay is None or self.overlay.view is not view:
-            self.overlay = Overlay(view)
-        if not kind:
-            self.overlay.remove()
-            return
-        if not self.comparison or not self.comparison.get(kind):
-            raise NotReady(t("Nessun confronto con questo strato: Confronta...",
-                             "No comparison with this layer: Compare..."))
-        if not self._comparison_shown():
-            chunk = self._chunk()
-            if chunk is None or str(chunk.key) != self.comparison["chunk"]:
-                raise NotReady(t("Il confronto è di un altro chunk: torna a quel chunk.",
-                                 "The comparison is of another chunk: go back to that chunk."))
-            self._show(self._entry(chunk, self.comparison["eid"]))  # its raster_loaded shows the overlay
-        opacity = self.pane.opacity_value() if self.pane is not None else 0.6
-        self.overlay.show(self.comparison[kind], f"{self.comparison['eid']}:{kind}", kind, opacity=opacity)
 
     def _opacity_changed(self, value: float) -> None:
         if self.overlay is not None:

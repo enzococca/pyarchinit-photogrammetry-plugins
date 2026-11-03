@@ -2,7 +2,10 @@
 in the program's raster view: a diverging palette symmetric around zero, the opacity of the pane's slider and a legend
 in the corner of the view - the masonry plugin's overlay, for the conservation plugin's two rasters. It is not one of
 the view's drawings: it goes with the raster when another one is shown, and the plugin shows it again when the face
-comes back."""
+comes back.
+
+Adapted from the masonry plugin's ``ppg_masonry/overlay.py`` (the same palette, resampling and placement in the
+view); kept here so that the conservation plugin does not need the masonry plugin installed."""
 from __future__ import annotations
 
 import numpy as np

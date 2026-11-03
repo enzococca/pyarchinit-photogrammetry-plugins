@@ -68,8 +68,12 @@ def test_two_campaigns_of_one_face(tmp_path):
 
 def test_second_survey_on_the_same_grid_and_its_relief(tmp_path):
     doc, ch, entry = S.face(tmp_path)
+    entry.update(max_angle=70.0, ghosting=True, fill_holes=False)  # A painted otherwise than the defaults
     other = S.second_chunk(doc, offset=0.02)
     built = compare.ensure_elevation(other, entry)
+    for key in compare.SETTINGS:  # B painted as A was
+        assert built[key] == compare.settings_of(entry)[key], key
+    assert compare.settings_differ(entry, built) == []
     import rasterio
 
     with rasterio.open(ch.data_dir / entry["orthophoto"]) as a, \
@@ -89,6 +93,11 @@ def test_second_survey_on_the_same_grid_and_its_relief(tmp_path):
         d = src.read(1)
     assert np.nanmedian(d) == pytest.approx(2.0, abs=0.5)  # cm, B minus A, towards the viewer
     assert r["relief"]["median_cm"] == pytest.approx(2.0, abs=0.5)
+    assert not any("impostazioni diverse" in line for line in r["lines"])
+    built["max_angle"] = 60.0  # an elevation found, painted otherwise: compared, and said
+    r = compare.compare(ch, a["id"], b["id"], other=other)
+    assert r["settings_differ"] == ["max_angle 70.0 -> 60.0"]
+    assert any("impostazioni diverse: max_angle 70.0 -> 60.0" in line for line in r["lines"])
 
 
 def test_a_survey_not_aligned_is_refused_and_nothing_is_written(tmp_path):
@@ -130,6 +139,44 @@ def test_markers_on_both_faces_decide(tmp_path):
     assert check["shift_m"] == pytest.approx(0.05, abs=1e-3)
     assert "Allinea chunk" in check["message"]
     assert built["id"] != entry["id"] or other is not ch
+    # a marker of the other survey moved off the face (0.6 m in front: outside the depth band) is a refusal,
+    # not a marker left out
+    off = S.second_chunk(doc, label="Muro 2029")
+    compare.ensure_elevation(off, entry)
+    S.put_marker(off, "T1", 1.0, Z0 + 0.5, d=0.6)
+    S.put_marker(off, "T2", 5.0, Z0 + 2.5)
+    check = compare.check_alignment(ch, entry, off)
+    assert not check["ok"] and check["method"] == "markers" and check["markers"] == 2
+    assert check["shift_m"] == pytest.approx(0.6, abs=1e-3)
+
+
+def _crack(fid, coords, width):
+    from shapely.geometry import LineString
+
+    return {"id": fid, "kind": "crack", "geometry": LineString(coords).wkt, "width_mm": width}
+
+
+def test_cracks_longer_wider_both_gone_and_crossed():
+    fa = [_crack("a1", [(0, 0), (1, 0)], 1.0), _crack("a2", [(0, 1), (1, 1)], 1.0),
+          _crack("a3", [(0, 2), (1, 2)], 1.0), _crack("a4", [(0, 3), (1, 3)], 1.0),
+          _crack("a5", [(0, 4), (3, 4)], 1.0), _crack("a6", [(0, 5), (1, 5)], 1.0)]
+    fb = [_crack("b1", [(0, 0), (1.3, 0)], 1.0),  # longer
+          _crack("b2", [(0, 1), (1, 1)], 2.0),  # wider
+          _crack("b3", [(0, 2), (1.5, 2)], 3.0),  # longer and wider
+          _crack("b5", [(0.5, 3.5), (0.5, 4.5)], 0.5),  # new, crossing a5 (which b6 matches)
+          _crack("b6", [(2.0, 4), (2.4, 4)], 1.0),  # on a part of a5: the length of a5 inside its band, not longer
+          _crack("b7", [(0.5, 4.6), (0.5, 5.4)], 0.5)]  # new, crossing a6: a6 is gone all the same
+    rows = compare._cracks(fa, fb)
+    by_b = {r["id_b"]: r for r in rows if r["id_b"]}
+    assert by_b["b1"]["state"] == "longer" and by_b["b1"]["id_a"] == ["a1"]
+    assert by_b["b2"]["state"] == "wider"
+    assert by_b["b3"]["state"] == "longer_wider"
+    assert by_b["b5"]["state"] == "new" and by_b["b5"]["id_a"] == []
+    assert by_b["b6"]["state"] == "same" and by_b["b6"]["length_a"] == pytest.approx(0.44, abs=0.01)
+    gone = {r["id_a"][0] for r in rows if r["state"] == "gone"}
+    assert by_b["b7"]["state"] == "new" and by_b["b7"]["id_a"] == []
+    assert gone == {"a4", "a6"}
+    assert all(r["state_text"] for r in rows)
 
 
 def _surveys(tmp_path):

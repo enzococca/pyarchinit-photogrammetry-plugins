@@ -354,7 +354,8 @@ def _compare(doc, chunk, a) -> int:
         other = next((x for x in doc.chunks if x.label == a.chunk_b), None)
         if other is None:
             raise NotReady(t(f"Nessun chunk {a.chunk_b!r}.", f"No chunk {a.chunk_b!r}."))
-    found = [x for x in records.campaigns(other) if a.other in (x["id"], x["name"]) and x["id"] != c["id"]]
+    found = [x for x in records.campaigns(other) if a.other in (x["id"], x["name"])
+             and (other is not chunk or x["id"] != c["id"])]  # a campaign is (chunk, id): A itself only here
     if other is chunk:  # the same face first
         found.sort(key=lambda x: x["elevation"] != c["elevation"])
     if not found:

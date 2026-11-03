@@ -30,7 +30,8 @@ la mappatura del degrado sui prospetti del programma.
 La guida: [Conservazione](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/conservation/) (il sorgente
 è in `docs/` qui finché non passa nella documentazione del programma; la tabella della legenda la genera
 `scripts/legend_table.py`). `proof/run_proof.py` fa girare i rilevatori, una campagna, gli esiti e l'IFC su un
-prospetto vero e scrive un `LEGGIMI.md` con i numeri e i tempi (su una copia del progetto).
+prospetto vero e scrive un `LEGGIMI.md` con i numeri e i tempi; copia prima il progetto e non scrive mai
+l'originale.
 
 Il plugin scrive solo `chunk.meta["conservation"]` e i file sotto `<dati del chunk>/conservation/<prospetto>/`.
 

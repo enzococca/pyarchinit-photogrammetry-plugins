@@ -76,6 +76,17 @@ repository](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/
 - **IFC 4.3 (ISO 16739-1:2024)**: `IfcSurfaceFeature` (DEFECT, TREATMENT) attached to the wall with
   `IfcRelAdheresToElement`.
 
+The classes of EN 16096, as the plugin shows them. **These wordings come from a secondary source**, a thesis that
+quotes the standard, because the standard's text is not freely available: check them against your copy of the
+standard before you print them in a report.
+
+| Class | Condition (CC) | Urgency (UC) | Recommendation (RC) |
+|---|---|---|---|
+| 0 | No symptoms | Long term | No measures |
+| 1 | Minor symptoms | Intermediate term | Maintenance / preventive conservation |
+| 2 | Moderately strong symptoms | Short term | Moderate repair and/or further investigation |
+| 3 | Major symptoms | Urgent and immediate | Major interventions based on diagnosis |
+
 The names of the terms are the glossaries' own. The one-line definitions are the plugin's paraphrases, with the page
 or section of their source: read the glossaries for the real text.
 
@@ -352,15 +363,18 @@ Viewers support surface features poorly: most show the shells as ordinary elemen
 
 - **in the same chunk**: another campaign of the same elevation (a second visit on the same photos, or a check);
 - **in another chunk**: a later survey. Its elevation must lie on the same frame, with the same resolution and bounds:
-  when the other chunk has none, the plugin builds it with the program's elevation tool on the same plane, so the two
-  grids coincide. A development measured on the wall (*scala sul muro*) cannot be rebuilt the same way: make the
+  when the other chunk has none, the plugin builds it with the program's elevation tool on the same plane, painted
+  with the same settings (blending, colour correction, angle, ghosting filter, filled holes), so the two grids
+  coincide. When an elevation found there was painted otherwise, the comparison's summary says which settings
+  differ: they change the colour too. A development measured on the wall (*scala sul muro*) cannot be rebuilt the same way: make the
   second one on the cylinder, or compare campaigns of the same elevation.
 
 **The two chunks must already be in the same system.** The program does that with *Workflow > Align chunks*
 (markers, cameras or points), not the plugin. Before comparing, the plugin checks it:
 
-- the **markers** of both chunks that lie on the face, matched by label: aligned when the farthest pair is within
-  **1 cm**;
+- the **markers** of the first chunk that lie on the face, matched by label with the second chunk's markers wherever
+  they are (a marker moved off the face is a refusal, not a marker left out): aligned when the farthest pair is
+  within **1 cm**;
 - without markers in common, the shift between the two **orthophotos** by phase correlation of their lightness on the
   cells both painted: aligned under **2 px** of the elevation's grid.
 

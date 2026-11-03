@@ -197,6 +197,7 @@ class ConservationPane(QWidget):
         self.overlay = QComboBox()
         self.overlay.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.overlay.setMinimumContentsLength(10)
+        self.overlay.setProperty("ppg_no_translate", True)  # the plugin's own texts, already in the language
         for key, text in OVERLAYS:
             self.overlay.addItem(t(*text), key)
         self.overlay.currentIndexChanged.connect(lambda _i: self.overlay_changed.emit(self.overlay_kind()))
