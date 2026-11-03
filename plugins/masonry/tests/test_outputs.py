@@ -126,3 +126,77 @@ def test_ifc_of_a_wall_between_two_faces(tmp_path):
         shape.face_shape(ch, w["id"], e["id"])
     r = ifc.export_wall(ch, w["id"], tmp_path / "w.ifc")
     assert abs(r["thickness"] - 0.5) < 0.005 and "misurato fra le facce" in r["source"]
+
+
+@pytest.mark.skipif(not HAS_IFC, reason="the program's bim extra (ifcopenshell)")
+def test_ifc_under_an_italian_numeric_locale(tmp_path):
+    """With LC_NUMERIC Italian (a decimal comma, as Qt sets it) the wall still gets a thickness of 0.65 m, read back
+    from the file; the locale is the caller's again afterwards."""
+    import locale
+
+    import ifcopenshell
+
+    from ppg_masonry import ifc
+
+    doc, ch, w, entry, _polys = _face(tmp_path)
+    old = locale.setlocale(locale.LC_NUMERIC)
+    try:
+        locale.setlocale(locale.LC_NUMERIC, "it_IT.UTF-8")
+    except locale.Error:
+        pytest.skip("no it_IT.UTF-8 locale here")
+    try:
+        r = ifc.export_wall(ch, w["id"], tmp_path / "w.ifc", thickness=0.65)
+        assert locale.setlocale(locale.LC_NUMERIC) == "it_IT.UTF-8"
+    finally:
+        locale.setlocale(locale.LC_NUMERIC, old)
+    model = ifcopenshell.open(r["path"])
+    depths = [s.Depth for s in model.by_type("IfcExtrudedAreaSolid")]
+    assert depths and depths[0] == pytest.approx(0.65)
+
+
+@pytest.mark.skipif(not HAS_IFC, reason="the program's bim extra (ifcopenshell)")
+def test_ifc_global_ids_are_stable(tmp_path):
+    """The GlobalIds of the wall and of its USM follow the plugin suite's rule (the conservation plugin attaches its
+    surface features to the same wall): export after export the same."""
+    import uuid
+
+    import ifcopenshell
+    import ifcopenshell.guid
+
+    from ppg_masonry import ifc
+
+    assert ifc.SUITE_NAMESPACE == uuid.UUID("6f1c2b0e-5a1d-4c8e-9b7a-3d2e1f0c9b8a")
+    assert ifc.stable_global_id(0, "w1", "e1") == ifcopenshell.guid.compress(
+        uuid.uuid5(ifc.SUITE_NAMESPACE, "0/w1/e1").hex)
+    doc, ch, w, entry, _polys = _face(tmp_path)
+    ids = []
+    for n in (1, 2):
+        model = ifcopenshell.open(ifc.export_wall(ch, w["id"], tmp_path / f"w{n}.ifc", thickness=0.6)["path"])
+        walls_ = model.by_type("IfcWall")
+        parts = {p.Name: p.GlobalId for p in model.by_type("IfcBuildingElementPart")}
+        ids.append(([x.GlobalId for x in walls_], parts))
+    assert ids[0] == ids[1]
+    assert ids[0][0] == [ifc.stable_global_id(ch.key, w["id"], entry["id"])]
+    assert ids[0][1]["USM 10"] == ifc.stable_global_id(ch.key, w["id"], entry["id"], "usm", "10")
+    assert len(set(ids[0][1].values())) == 4
+
+
+@pytest.mark.skipif(not HAS_IFC, reason="the program's bim extra (ifcopenshell)")
+def test_ifc_global_id_of_one_slab_for_the_whole_wall(tmp_path):
+    import ifcopenshell
+
+    from ppg_masonry import ifc
+
+    front = S.wall(lean=False, bulge=False)
+    back = S.wall(base=S.WORLD + [0.0, 0.5, 0.0], lean=False, bulge=False)
+    mesh = (np.vstack([front[0], back[0]]), np.vstack([front[1], back[1] + len(front[0])]))
+    doc, ch = S.project(tmp_path, mesh)
+    w = walls.new_wall(ch, "Muro")
+    a = faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [6.0, 0.0], side=S.WORLD[:2] + [3, -5],
+                         resolution=0.04, back=0.2, front=0.2)
+    b = faces.plane_face(ch, w["id"], S.WORLD[:2] + [0, 0.5], S.WORLD[:2] + [6.0, 0.5], side=S.WORLD[:2] + [3, 5],
+                         resolution=0.04, back=0.2, front=0.2)
+    model = ifcopenshell.open(ifc.export_wall(ch, w["id"], tmp_path / "w.ifc")["path"])
+    assert [x.GlobalId for x in model.by_type("IfcWall")] == [ifc.stable_global_id(ch.key, w["id"])]
+    assert {ifc.slab_global_id(ch, w["id"], e["id"], thickness=None) for e in (a, b)} == \
+        {ifc.stable_global_id(ch.key, w["id"])}

@@ -1,0 +1,479 @@
+{
+ "standard": "EN 15898:2019, Conservation of cultural heritage - Main general terms and definitions",
+ "url": "",
+ "note": "Definitions are the plugin's own one-line paraphrases, not the text of the standard; names as the glossary gives them. Colours and hatches are the plugin's defaults: no standard prescribes them.",
+ "usual_treatments": {
+  "note": "The plugin's table of the usual interventions per pattern (a suggestion, never filled by itself): the code of a term, else its parent, else its first ICOMOS-ISCS code, else its family.",
+  "by_code": {
+   "ISCS.CRACK": [
+    "INT.GROUTING",
+    "INT.FILLING"
+   ],
+   "ISCS.CRACK.CRAQUELE": [
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.DEFORMATION": [
+    "INT.CONSOLIDATION",
+    "INT.REMEDIAL"
+   ],
+   "ISCS.BLISTERING": [
+    "INT.CONSOLIDATION",
+    "INT.GROUTING"
+   ],
+   "ISCS.BURSTING": [
+    "INT.CONSOLIDATION",
+    "INT.FILLING"
+   ],
+   "ISCS.DELAMINATION": [
+    "INT.GROUTING",
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.DISINTEGRATION": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.FRAGMENTATION": [
+    "INT.CONSOLIDATION",
+    "INT.FILLING"
+   ],
+   "ISCS.PEELING": [
+    "INT.REMOVAL",
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.SCALING": [
+    "INT.CONSOLIDATION",
+    "INT.GROUTING"
+   ],
+   "ISCS.ALVEOLIZATION": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.EROSION": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.MECHANICAL_DAMAGE": [
+    "INT.FILLING",
+    "INT.REINTEGRATION"
+   ],
+   "ISCS.MICROKARST": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.MISSING_PART": [
+    "INT.REINTEGRATION",
+    "INT.FILLING"
+   ],
+   "ISCS.PERFORATION": [
+    "INT.FILLING"
+   ],
+   "ISCS.PITTING": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.CRUST": [
+    "INT.CLEANING"
+   ],
+   "ISCS.CRUST.SALT_CRUST": [
+    "INT.DESALINATION",
+    "INT.CLEANING"
+   ],
+   "ISCS.DEPOSIT": [
+    "INT.CLEANING"
+   ],
+   "ISCS.DISCOLOURATION": [
+    "INT.CLEANING"
+   ],
+   "ISCS.DISCOLOURATION.MOIST_AREA": [
+    "INT.PREVENTIVE"
+   ],
+   "ISCS.EFFLORESCENCE": [
+    "INT.DESALINATION",
+    "INT.CLEANING"
+   ],
+   "ISCS.SUBFLORESCENCE": [
+    "INT.DESALINATION",
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.ENCRUSTATION": [
+    "INT.CLEANING"
+   ],
+   "ISCS.FILM": [
+    "INT.REMOVAL",
+    "INT.CLEANING"
+   ],
+   "ISCS.GLOSSY_ASPECT": [
+    "INT.CLEANING"
+   ],
+   "ISCS.GRAFFITI": [
+    "INT.CLEANING",
+    "INT.PROTECTION"
+   ],
+   "ISCS.PATINA": [
+    "INT.PREVENTIVE"
+   ],
+   "ISCS.SOILING": [
+    "INT.CLEANING"
+   ],
+   "ISCS.BIOLOGICAL_COLONIZATION": [
+    "INT.BIOCIDE",
+    "INT.CLEANING"
+   ],
+   "ISCS.PLANT": [
+    "INT.BIOCIDE",
+    "INT.FILLING"
+   ],
+   "LOCAL.OUT_OF_PLUMB": [
+    "INT.REMEDIAL"
+   ],
+   "LOCAL.BULGING": [
+    "INT.GROUTING",
+    "INT.REMEDIAL"
+   ],
+   "LOCAL.LOSS_OF_MORTAR": [
+    "INT.REPOINTING"
+   ],
+   "LOCAL.DISPLACED_STONES": [
+    "INT.REINTEGRATION",
+    "INT.REPOINTING"
+   ],
+   "LOCAL.OPEN_JOINT": [
+    "INT.REPOINTING"
+   ]
+  },
+  "by_family": {
+   "crack_deformation": [
+    "INT.GROUTING",
+    "INT.FILLING"
+   ],
+   "detachment": [
+    "INT.CONSOLIDATION"
+   ],
+   "material_loss": [
+    "INT.CONSOLIDATION",
+    "INT.FILLING"
+   ],
+   "discoloration_deposit": [
+    "INT.CLEANING"
+   ],
+   "biological": [
+    "INT.BIOCIDE",
+    "INT.CLEANING"
+   ],
+   "masonry": [
+    "INT.REMEDIAL"
+   ],
+   "general": []
+  }
+ },
+ "terms": [
+  {
+   "code": "INT.PREVENTIVE",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "preventive",
+   "names": {
+    "en": "Preventive conservation",
+    "fr": "Conservation préventive",
+    "it": "conservazione preventiva"
+   },
+   "definition": {
+    "en": "measures that avoid or reduce future decay without acting on the material",
+    "it": "misure che evitano o riducono il degrado futuro senza agire sul materiale"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#17becf",
+   "hatch": {
+    "mpl": "|",
+    "dxf": "ANSI33"
+   }
+  },
+  {
+   "code": "INT.REMEDIAL",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Remedial conservation",
+    "fr": "Conservation curative",
+    "it": "conservazione curativa"
+   },
+   "definition": {
+    "en": "actions on the object that stop or slow decay or limit damage",
+    "it": "azioni sull'oggetto che arrestano o rallentano il degrado o ne limitano il danno"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#00a0b0",
+   "hatch": {
+    "mpl": "-",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "INT.CLEANING",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Cleaning",
+    "fr": "Nettoyage",
+    "it": "pulitura"
+   },
+   "definition": {
+    "en": "removal of deposits, crusts or soiling from the surface",
+    "it": "rimozione di depositi, croste o sporco dalla superficie"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#0e7c86",
+   "hatch": {
+    "mpl": "+",
+    "dxf": "NET"
+   }
+  },
+  {
+   "code": "INT.CONSOLIDATION",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Consolidation",
+    "fr": "Consolidation",
+    "it": "consolidamento"
+   },
+   "definition": {
+    "en": "restoring the cohesion of a material that lost it",
+    "it": "ripristino della coesione di un materiale che l'ha persa"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#5fd3d6",
+   "hatch": {
+    "mpl": "x",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "INT.DESALINATION",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Desalination",
+    "fr": "Dessalement",
+    "it": "desalinizzazione"
+   },
+   "definition": {
+    "en": "extraction of soluble salts from the material",
+    "it": "estrazione dei sali solubili dal materiale"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#007a87",
+   "hatch": {
+    "mpl": "o",
+    "dxf": "GRAVEL"
+   }
+  },
+  {
+   "code": "INT.BIOCIDE",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Biocide treatment",
+    "fr": "Traitement biocide",
+    "it": "trattamento biocida"
+   },
+   "definition": {
+    "en": "removal and prevention of biological colonization",
+    "it": "rimozione e prevenzione della colonizzazione biologica"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#2ec4b6",
+   "hatch": {
+    "mpl": ".",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "INT.FILLING",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Filling",
+    "fr": "Comblement",
+    "it": "stuccatura"
+   },
+   "definition": {
+    "en": "filling of cracks, gaps and lacunae",
+    "it": "riempimento di fessure, lacune e mancanze"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#00b4d8",
+   "hatch": {
+    "mpl": "/",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "INT.GROUTING",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Grouting",
+    "fr": "Injection",
+    "it": "iniezione"
+   },
+   "definition": {
+    "en": "injection of a binder into voids and detachments",
+    "it": "iniezione di un legante in vuoti e distacchi"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#0096c7",
+   "hatch": {
+    "mpl": "\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "INT.REPOINTING",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Repointing",
+    "fr": "Rejointoiement",
+    "it": "ristilatura dei giunti"
+   },
+   "definition": {
+    "en": "renewal of the mortar of the joints",
+    "it": "rinnovo della malta dei giunti"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#48cae4",
+   "hatch": {
+    "mpl": "*",
+    "dxf": "TRIANG"
+   }
+  },
+  {
+   "code": "INT.PROTECTION",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Protection, coating",
+    "fr": "Protection, revêtement",
+    "it": "protezione"
+   },
+   "definition": {
+    "en": "a protective layer or treatment applied on the surface",
+    "it": "strato o trattamento protettivo applicato sulla superficie"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#03045e",
+   "hatch": {
+    "mpl": "O",
+    "dxf": "HONEY"
+   }
+  },
+  {
+   "code": "INT.REINTEGRATION",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Reintegration",
+    "fr": "Réintégration",
+    "it": "reintegrazione"
+   },
+   "definition": {
+    "en": "completion of missing parts with new material",
+    "it": "completamento delle parti mancanti con materiale nuovo"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#00838f",
+   "hatch": {
+    "mpl": "||",
+    "dxf": "BRICK"
+   }
+  },
+  {
+   "code": "INT.REPLACEMENT",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Replacement",
+    "fr": "Remplacement",
+    "it": "sostituzione"
+   },
+   "definition": {
+    "en": "an element too decayed replaced by a new one",
+    "it": "elemento troppo degradato sostituito da uno nuovo"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#26a69a",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "DASH"
+   }
+  },
+  {
+   "code": "INT.REMOVAL",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "remedial",
+   "names": {
+    "en": "Removal of earlier materials",
+    "fr": "Retrait de matériaux antérieurs",
+    "it": "rimozione di materiali precedenti"
+   },
+   "definition": {
+    "en": "removal of materials of earlier interventions that do harm",
+    "it": "rimozione di materiali di interventi precedenti che arrecano danno"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#4dd0e1",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "INT.RESTORATION",
+   "family": "intervention",
+   "kind": "treatment",
+   "geometry": "area",
+   "group": "restoration",
+   "names": {
+    "en": "Restoration",
+    "fr": "Restauration",
+    "it": "restauro"
+   },
+   "definition": {
+    "en": "actions on a stable object to make it easier to appreciate, understand and use",
+    "it": "azioni su un oggetto stabile per renderne più facile l'apprezzamento, la comprensione e l'uso"
+   },
+   "source": "EN 15898:2019 (families of interventions)",
+   "colour": "#006064",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "SQUARE"
+   }
+  }
+ ]
+}

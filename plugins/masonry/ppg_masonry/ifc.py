@@ -10,9 +10,17 @@ area drawn on it, else its bounds) extruded into the wall (``IfcExtrudedAreaSoli
 suggest, the counts, the thickness and how it was found); the USM drawn on the face are ``IfcBuildingElementPart`` of
 the wall (``IfcRelAggregates``), the outline of each extruded across the same thickness, with ``Pset_PyArchInit_US``,
 and the relationships accepted by the user as ``IfcRelConnectsElements``. Only plane faces: the developed face of a
-round tower is not a slab."""
+round tower is not a slab.
+
+The GlobalIds are stable, by the rule of the plugin suite (:func:`stable_global_id`): the slab of a face is
+``(chunk key, wall id, face id)``, a single slab made of all the wall's faces ``(chunk key, wall id)``, a USM of it
+``(chunk key, wall id, face id, "usm", us)`` - the conservation plugin attaches its surface features to the same
+wall, and a new export replaces the old one in a BIM model instead of adding a second wall."""
 from __future__ import annotations
 
+import contextlib
+import locale
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +28,54 @@ import numpy as np
 from . import walls
 from .texts import num, t
 from .walls import NotReady
+
+
+SUITE_NAMESPACE = uuid.UUID("6f1c2b0e-5a1d-4c8e-9b7a-3d2e1f0c9b8a")  # the plugin suite's: the same in every plugin
+
+
+@contextlib.contextmanager
+def c_numbers():
+    """Numbers read and written with a decimal point while IfcOpenShell works: Qt sets the system's ``LC_NUMERIC``
+    (a decimal comma in Italian) and IfcOpenShell then reads "1.5" as 1 (the program's launcher puts "C" back at
+    start; a window opened later, or a script, may not have)."""
+    try:
+        old = locale.setlocale(locale.LC_NUMERIC)
+    except locale.Error:  # pragma: no cover
+        old = None
+    try:
+        locale.setlocale(locale.LC_NUMERIC, "C")
+        yield
+    finally:
+        if old is not None:
+            try:
+                locale.setlocale(locale.LC_NUMERIC, old)
+            except locale.Error:  # pragma: no cover
+                pass
+
+
+def stable_global_id(*parts) -> str:
+    """The IFC GlobalId of the parts joined by ``/`` (a UUID 5 in the suite's namespace, compressed)."""
+    import ifcopenshell.guid
+
+    return ifcopenshell.guid.compress(uuid.uuid5(SUITE_NAMESPACE, "/".join(str(p) for p in parts)).hex)
+
+
+def solid_global_id(chunk, wid: str, solid: dict, count: int) -> str:
+    """The GlobalId of the slab ``solid`` of the wall ``wid``, one of ``count``: the wall's own when one slab between
+    two faces is the whole wall, else its face's."""
+    if count == 1 and solid.get("other") is not None:
+        return stable_global_id(chunk.key, wid)
+    return stable_global_id(chunk.key, wid, solid["entry"]["id"])
+
+
+def slab_global_id(chunk, wid: str, eid: str, thickness: float | None = None) -> str | None:
+    """The GlobalId of the slab holding the face ``eid`` (either of its two faces), as :func:`export_wall` writes it
+    with this ``thickness``; None when no slab holds it."""
+    solids = wall_solids(chunk, wid, thickness)
+    for solid in solids:
+        if eid in (solid["entry"]["id"], (solid.get("other") or {}).get("id")):
+            return solid_global_id(chunk, wid, solid, len(solids))
+    return None
 
 
 def _plane_of(chunk, wid: str, entry: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -241,8 +297,15 @@ def _pset(chunk, w: dict, solid: dict) -> dict:
 
 def export_wall(chunk, wid: str, path, thickness: float | None = None, project: str | None = None,
                 site: str | None = None) -> dict:
-    """The wall's IFC in ``path``: an ``IfcWall`` per slab of :func:`wall_solids`. Returns ``{"path", "thickness",
-    "source" (of the first slab), "parts", "relations", "walls", "sources"}``."""
+    """The wall's IFC in ``path``: an ``IfcWall`` per slab of :func:`wall_solids`, written with a decimal point
+    whatever the numeric locale (:func:`c_numbers`). Returns ``{"path", "thickness", "source" (of the first slab),
+    "parts", "relations", "walls", "sources"}``."""
+    with c_numbers():
+        return _export_wall(chunk, wid, path, thickness, project, site)
+
+
+def _export_wall(chunk, wid: str, path, thickness: float | None = None, project: str | None = None,
+                 site: str | None = None) -> dict:
     import ifcopenshell
     import ifcopenshell.api.aggregate
     import ifcopenshell.api.context
@@ -310,6 +373,9 @@ def export_wall(chunk, wid: str, path, thickness: float | None = None, project: 
         name = w["name"] if len(solids) == 1 else f"{w['name']} - {solid['entry'].get('name', '')}"
         wall_e = ifcopenshell.api.root.create_entity(model, ifc_class="IfcWall", name=name,
                                                      predefined_type="SOLIDWALL")
+        wall_e.GlobalId = solid_global_id(chunk, w["id"], solid, len(solids))
+        eid = solid["entry"]["id"]
+        seen: dict = {}
         ifcopenshell.api.spatial.assign_container(model, products=[wall_e], relating_structure=site_e)
         wall_e.ObjectPlacement = placement(solid)
         wall_e.Representation = extrusion(solid["outline"], solid["thickness"])
@@ -320,6 +386,10 @@ def export_wall(chunk, wid: str, path, thickness: float | None = None, project: 
             poly = g if g.geom_type == "Polygon" else max(g.geoms, key=lambda x: x.area)
             part = ifcopenshell.api.root.create_entity(model, ifc_class="IfcBuildingElementPart",
                                                        name=unit_label(rec))
+            us = rec.get("us")
+            seen[us] = seen.get(us, 0) + 1  # a USM drawn in two pieces: the second one numbered
+            part.GlobalId = stable_global_id(chunk.key, w["id"], eid, "usm", us,
+                                             *((seen[us],) if seen[us] > 1 else ()))
             part.ObjectPlacement = placement(solid)
             part.Representation = extrusion(poly, solid["thickness"])
             ps = ifcopenshell.api.pset.add_pset(model, product=part, name="Pset_PyArchInit_US")

@@ -1,0 +1,1734 @@
+{
+ "standard": "ICOMOS-ISCS, Illustrated glossary on stone deterioration patterns (2008)",
+ "url": "https://www.icomos.org/public/publications/monuments_and_sites/15/pdf/Monuments_and_Sites_15_ISCS_Glossary_Stone.pdf",
+ "note": "Definitions are the plugin's own one-line paraphrases, not the text of the standard; names as the glossary gives them. Colours and hatches are the plugin's defaults: no standard prescribes them.",
+ "terms": [
+  {
+   "code": "ISCS.ALTERATION",
+   "family": "general",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Alteration",
+    "fr": "Altération",
+    "it": "alterazione"
+   },
+   "definition": {
+    "en": "a change of the material that does not necessarily mean a worsening of its condition",
+    "it": "modifica del materiale che non comporta necessariamente un peggioramento del suo stato"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 8",
+   "uni": null,
+   "colour": "#7f7f7f",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   },
+   "deterioration": false
+  },
+  {
+   "code": "ISCS.DAMAGE",
+   "family": "general",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Damage",
+    "fr": "Dégradation",
+    "it": "danno"
+   },
+   "definition": {
+    "en": "the loss of value perceived by people as the result of decay",
+    "it": "perdita di valore percepita dalle persone come effetto del degrado"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 8",
+   "uni": null,
+   "colour": "#999999",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "ISCS.DECAY",
+   "family": "general",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Decay",
+    "fr": "Dégradation",
+    "it": "degrado"
+   },
+   "definition": {
+    "en": "a chemical or physical change of the stone's own properties that lowers its value or use",
+    "it": "modifica chimica o fisica delle proprietà della pietra che ne riduce il valore o l'uso"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 8",
+   "uni": null,
+   "colour": "#666666",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "ISCS.DEGRADATION",
+   "family": "general",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Degradation",
+    "fr": "Dégradation",
+    "it": "degradazione"
+   },
+   "definition": {
+    "en": "a decline in condition, quality or capacity to function",
+    "it": "calo dello stato, della qualità o della capacità di funzionare"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 8",
+   "uni": null,
+   "colour": "#b3b3b3",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "ISCS.DETERIORATION",
+   "family": "general",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Deterioration",
+    "fr": "Dégradation",
+    "it": "deterioramento"
+   },
+   "definition": {
+    "en": "the process of becoming worse in quality, value or character",
+    "it": "processo per cui qualità, valore o carattere peggiorano"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 8",
+   "uni": null,
+   "colour": "#4d4d4d",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "ISCS.WEATHERING",
+   "family": "general",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Weathering",
+    "fr": "Altération météorique",
+    "it": "alterazione meteorica"
+   },
+   "definition": {
+    "en": "the chemical or mechanical change of stone exposed to the weather",
+    "it": "modifica chimica o meccanica della pietra esposta agli agenti atmosferici"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 8",
+   "uni": null,
+   "colour": "#8c8c8c",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "ISCS.CRACK",
+   "family": "crack_deformation",
+   "kind": "crack",
+   "geometry": "line",
+   "parent": null,
+   "names": {
+    "en": "Crack",
+    "fr": "Fissure",
+    "it": "fessura"
+   },
+   "definition": {
+    "en": "a single fissure visible to the naked eye where one part separates from another",
+    "it": "singola fessura visibile a occhio nudo, dove una parte si separa da un'altra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 10",
+   "uni": "UNI.FESSURAZIONE",
+   "colour": "#d62728",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "ISCS.CRACK.FRACTURE",
+   "family": "crack_deformation",
+   "kind": "crack",
+   "geometry": "line",
+   "parent": "ISCS.CRACK",
+   "names": {
+    "en": "Fracture",
+    "fr": "Fracture",
+    "it": "frattura"
+   },
+   "definition": {
+    "en": "a crack that crosses the stone piece from side to side",
+    "it": "fessura che attraversa da parte a parte l'elemento lapideo"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 10",
+   "uni": "UNI.FESSURAZIONE",
+   "colour": "#e8505b",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "ISCS.CRACK.STAR_CRACK",
+   "family": "crack_deformation",
+   "kind": "crack",
+   "geometry": "line",
+   "parent": "ISCS.CRACK",
+   "names": {
+    "en": "Star crack",
+    "fr": "Fissuration en étoile",
+    "it": "fessurazione a stella"
+   },
+   "definition": {
+    "en": "cracks radiating from a point",
+    "it": "fessure che si irradiano da un punto"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 10",
+   "uni": null,
+   "colour": "#b2182b",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "ISCS.CRACK.HAIR_CRACK",
+   "family": "crack_deformation",
+   "kind": "crack",
+   "geometry": "line",
+   "parent": "ISCS.CRACK",
+   "names": {
+    "en": "Hair crack",
+    "fr": "Microfissure",
+    "it": "microfessura"
+   },
+   "definition": {
+    "en": "a very thin crack, under about 0.1 mm wide",
+    "it": "fessura sottilissima, larga meno di circa 0,1 mm"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 10",
+   "uni": null,
+   "colour": "#ff6f61",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "ISCS.CRACK.CRAQUELE",
+   "family": "crack_deformation",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.CRACK",
+   "names": {
+    "en": "Craquele",
+    "fr": "Craquellement",
+    "it": "craquelure"
+   },
+   "definition": {
+    "en": "a network of minor cracks on the surface",
+    "it": "rete di piccole fessure sulla superficie"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 10",
+   "uni": null,
+   "colour": "#c51b7d",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "ISCS.CRACK.SPLITTING",
+   "family": "crack_deformation",
+   "kind": "crack",
+   "geometry": "line",
+   "parent": "ISCS.CRACK",
+   "names": {
+    "en": "Splitting",
+    "fr": "Clivage",
+    "it": "clivaggio"
+   },
+   "definition": {
+    "en": "a fracture along planes of weakness, mostly vertical",
+    "it": "frattura lungo piani di debolezza, per lo più verticali"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 10",
+   "uni": null,
+   "colour": "#8b0000",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "ISCS.DEFORMATION",
+   "family": "crack_deformation",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Deformation",
+    "fr": "Déformation",
+    "it": "deformazione"
+   },
+   "definition": {
+    "en": "a change of shape without loss of integrity (bending, buckling, twisting)",
+    "it": "cambiamento di forma senza perdita di integrità (flessione, imbarcamento, torsione)"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 12",
+   "uni": "UNI.DEFORMAZIONE",
+   "colour": "#ff3355",
+   "hatch": {
+    "mpl": "||",
+    "dxf": "ANSI33"
+   }
+  },
+  {
+   "code": "ISCS.BLISTERING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Blistering",
+    "fr": "Boursouflure",
+    "it": "rigonfiamento"
+   },
+   "definition": {
+    "en": "raised, air-filled bulges where an outer layer separates, not following the stone's structure",
+    "it": "sollevamenti pieni d'aria dove uno strato esterno si separa, indipendenti dalla struttura della pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 14",
+   "uni": "UNI.RIGONFIAMENTO",
+   "colour": "#ff7f0e",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "ISCS.BURSTING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Bursting",
+    "fr": "Eclatement",
+    "it": "scoppio"
+   },
+   "definition": {
+    "en": "a local loss of surface from a pressure inside, leaving an irregular crater",
+    "it": "perdita locale della superficie per una pressione interna, con un cratere irregolare"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 16",
+   "uni": null,
+   "colour": "#fdae61",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "ISCS.DELAMINATION",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Delamination",
+    "fr": "Délitage",
+    "it": "delaminazione"
+   },
+   "definition": {
+    "en": "detachment in layers that follow the laminae of the stone",
+    "it": "distacco in strati che seguono le lamine della pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 18",
+   "uni": "UNI.DISTACCO",
+   "colour": "#e6550d",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "ISCS.DELAMINATION.EXFOLIATION",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DELAMINATION",
+   "names": {
+    "en": "Exfoliation",
+    "fr": "Exfoliation",
+    "it": "esfoliazione"
+   },
+   "definition": {
+    "en": "many thin layers, centimetre-scale, nearly parallel to the surface",
+    "it": "molti strati sottili, centimetrici, quasi paralleli alla superficie"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 18",
+   "uni": "UNI.ESFOLIAZIONE",
+   "colour": "#fd8d3c",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "ISCS.DISINTEGRATION",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Disintegration",
+    "fr": "Désagrégation",
+    "it": "disgregazione"
+   },
+   "definition": {
+    "en": "detachment of single grains or of aggregates of grains",
+    "it": "distacco di singoli granuli o di aggregati di granuli"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 20",
+   "uni": "UNI.DISGREGAZIONE",
+   "colour": "#d95f0e",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "ISCS.DISINTEGRATION.CRUMBLING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISINTEGRATION",
+   "names": {
+    "en": "Crumbling",
+    "fr": "Emiettement",
+    "it": "sbriciolamento"
+   },
+   "definition": {
+    "en": "detachment of aggregates under about 2 cm",
+    "it": "distacco di aggregati più piccoli di circa 2 cm"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 20",
+   "uni": null,
+   "colour": "#f16913",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "ISCS.DISINTEGRATION.GRANULAR_DISINTEGRATION",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISINTEGRATION",
+   "names": {
+    "en": "Granular disintegration",
+    "fr": "Désagrégation granulaire",
+    "it": "disgregazione granulare"
+   },
+   "definition": {
+    "en": "detachment of single grains",
+    "it": "distacco di singoli granuli"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 20",
+   "uni": "UNI.DISGREGAZIONE",
+   "colour": "#feb24c",
+   "hatch": {
+    "mpl": "||",
+    "dxf": "ANSI33"
+   }
+  },
+  {
+   "code": "ISCS.DISINTEGRATION.POWDERING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISINTEGRATION",
+   "names": {
+    "en": "Powdering, chalking",
+    "fr": "Pulvérulence, farinage",
+    "it": "polverizzazione"
+   },
+   "definition": {
+    "en": "the surface falls as a fine powder",
+    "it": "la superficie cade come polvere fine"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 20",
+   "uni": "UNI.DISGREGAZIONE",
+   "colour": "#cc4c02",
+   "hatch": {
+    "mpl": "oo",
+    "dxf": "HONEY"
+   }
+  },
+  {
+   "code": "ISCS.DISINTEGRATION.SANDING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISINTEGRATION",
+   "names": {
+    "en": "Sanding",
+    "fr": "Désagrégation sableuse",
+    "it": "disgregazione sabbiosa"
+   },
+   "definition": {
+    "en": "granular disintegration of sandstone or granite into sand",
+    "it": "disgregazione in sabbia di arenarie o graniti"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 20",
+   "uni": null,
+   "colour": "#ffa64d",
+   "hatch": {
+    "mpl": "**",
+    "dxf": "STARS"
+   }
+  },
+  {
+   "code": "ISCS.DISINTEGRATION.SUGARING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISINTEGRATION",
+   "names": {
+    "en": "Sugaring",
+    "fr": "Désagrégation saccharoïde",
+    "it": "disgregazione saccaroide"
+   },
+   "definition": {
+    "en": "granular disintegration of crystalline marble",
+    "it": "disgregazione granulare del marmo cristallino"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 20",
+   "uni": null,
+   "colour": "#e08214",
+   "hatch": {
+    "mpl": "///",
+    "dxf": "ANSI34"
+   }
+  },
+  {
+   "code": "ISCS.FRAGMENTATION",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Fragmentation",
+    "fr": "Fragmentation",
+    "it": "frammentazione"
+   },
+   "definition": {
+    "en": "breaking up, complete or partial, into irregular pieces",
+    "it": "rottura, completa o parziale, in pezzi irregolari"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 22",
+   "uni": null,
+   "colour": "#b35806",
+   "hatch": {
+    "mpl": "\\\\\\",
+    "dxf": "ANSI35"
+   }
+  },
+  {
+   "code": "ISCS.FRAGMENTATION.SPLINTERING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.FRAGMENTATION",
+   "names": {
+    "en": "Splintering",
+    "fr": "Fragmentation en esquilles",
+    "it": "frammentazione in schegge"
+   },
+   "definition": {
+    "en": "fragmentation into sharp, elongated splinters",
+    "it": "frammentazione in schegge allungate e taglienti"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 22",
+   "uni": null,
+   "colour": "#f4a582",
+   "hatch": {
+    "mpl": "x",
+    "dxf": "ANSI38"
+   }
+  },
+  {
+   "code": "ISCS.FRAGMENTATION.CHIPPING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.FRAGMENTATION",
+   "names": {
+    "en": "Chipping",
+    "fr": "Epaufrure",
+    "it": "scheggiatura degli spigoli"
+   },
+   "definition": {
+    "en": "chips broken off the edges of a block",
+    "it": "schegge staccate dagli spigoli di un blocco"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 22",
+   "uni": null,
+   "colour": "#ff9933",
+   "hatch": {
+    "mpl": "...",
+    "dxf": "AR-SAND"
+   }
+  },
+  {
+   "code": "ISCS.PEELING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Peeling",
+    "fr": "Pelage",
+    "it": "spellatura"
+   },
+   "definition": {
+    "en": "partial detachment of a thin, film-like layer applied on the stone",
+    "it": "distacco parziale di uno strato sottile, simile a una pellicola, steso sulla pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 24",
+   "uni": null,
+   "colour": "#d94801",
+   "hatch": {
+    "mpl": "O",
+    "dxf": "ESCHER"
+   }
+  },
+  {
+   "code": "ISCS.SCALING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Scaling",
+    "fr": "Desquamation",
+    "it": "scagliatura"
+   },
+   "definition": {
+    "en": "detachment as scales millimetres to centimetres thick, not following the stone's structure",
+    "it": "distacco in scaglie spesse da millimetri a centimetri, indipendente dalla struttura della pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 26",
+   "uni": "UNI.SCAGLIATURA",
+   "colour": "#fdd0a2",
+   "hatch": {
+    "mpl": "-",
+    "dxf": "DASH"
+   }
+  },
+  {
+   "code": "ISCS.SCALING.FLAKING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.SCALING",
+   "names": {
+    "en": "Flaking",
+    "fr": "Ecaillage",
+    "it": "squamatura"
+   },
+   "definition": {
+    "en": "scaling in thin flat flakes",
+    "it": "scagliatura in squame sottili e piatte"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 26",
+   "uni": "UNI.SCAGLIATURA",
+   "colour": "#a63603",
+   "hatch": {
+    "mpl": "|",
+    "dxf": "BRICK"
+   }
+  },
+  {
+   "code": "ISCS.SCALING.CONTOUR_SCALING",
+   "family": "detachment",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.SCALING",
+   "names": {
+    "en": "Contour scaling",
+    "fr": "Desquamation en plaque",
+    "it": "scagliatura a placca"
+   },
+   "definition": {
+    "en": "scaling parallel to the surface, independent of the structure (spalling on flat surfaces)",
+    "it": "scagliatura parallela alla superficie, indipendente dalla struttura (su superfici piane: spalling)"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 26",
+   "uni": "UNI.SCAGLIATURA",
+   "colour": "#ffb366",
+   "hatch": {
+    "mpl": "+",
+    "dxf": "NET"
+   }
+  },
+  {
+   "code": "ISCS.ALVEOLIZATION",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Alveolization",
+    "fr": "Alvéolisation",
+    "it": "alveolizzazione"
+   },
+   "definition": {
+    "en": "cavities of centimetre size, often connected to one another",
+    "it": "cavità di dimensioni centimetriche, spesso comunicanti"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 28",
+   "uni": "UNI.ALVEOLIZZAZIONE",
+   "colour": "#9467bd",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "ISCS.ALVEOLIZATION.COVING",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.ALVEOLIZATION",
+   "names": {
+    "en": "Coving",
+    "fr": "Creusement",
+    "it": "incavo"
+   },
+   "definition": {
+    "en": "a single cavity starting from the edge of a block",
+    "it": "singola cavità che parte dallo spigolo di un blocco"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 28",
+   "uni": null,
+   "colour": "#6a3d9a",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "ISCS.EROSION",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Erosion",
+    "fr": "Erosion",
+    "it": "erosione"
+   },
+   "definition": {
+    "en": "loss of the original surface leaving smoothed shapes",
+    "it": "perdita della superficie originale con forme smussate"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 30",
+   "uni": "UNI.EROSIONE",
+   "colour": "#b39ddb",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "ISCS.EROSION.DIFFERENTIAL_EROSION",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.EROSION",
+   "names": {
+    "en": "Differential erosion",
+    "fr": "Erosion différentielle",
+    "it": "erosione differenziale"
+   },
+   "definition": {
+    "en": "erosion at different rates that brings out the stone's heterogeneity",
+    "it": "erosione a velocità diverse che mette in evidenza l'eterogeneità della pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 30",
+   "uni": "UNI.DEGRADAZIONE_DIFFERENZIALE",
+   "colour": "#7b4fa0",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "ISCS.EROSION.LOSS_OF_COMPONENTS",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.EROSION.DIFFERENTIAL_EROSION",
+   "names": {
+    "en": "Loss of components",
+    "fr": "Perte de constituants",
+    "it": "perdita di componenti"
+   },
+   "definition": {
+    "en": "differential erosion that removes some components of the stone",
+    "it": "erosione differenziale che asporta alcuni componenti della pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 30",
+   "uni": null,
+   "colour": "#cab2d6",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "ISCS.EROSION.LOSS_OF_MATRIX",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.EROSION.DIFFERENTIAL_EROSION",
+   "names": {
+    "en": "Loss of matrix",
+    "fr": "Perte de matrice",
+    "it": "perdita di matrice"
+   },
+   "definition": {
+    "en": "differential erosion that removes the matrix around the grains",
+    "it": "erosione differenziale che asporta la matrice attorno ai granuli"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 30",
+   "uni": null,
+   "colour": "#542788",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "ISCS.EROSION.ROUNDING",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.EROSION",
+   "names": {
+    "en": "Rounding",
+    "fr": "Erosion en boule",
+    "it": "arrotondamento"
+   },
+   "definition": {
+    "en": "erosion that rounds edges and corners",
+    "it": "erosione che arrotonda spigoli e angoli"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 30",
+   "uni": null,
+   "colour": "#8073ac",
+   "hatch": {
+    "mpl": "||",
+    "dxf": "ANSI33"
+   }
+  },
+  {
+   "code": "ISCS.EROSION.ROUGHENING",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.EROSION",
+   "names": {
+    "en": "Roughening",
+    "fr": "Augmentation de rugosité",
+    "it": "irruvidimento"
+   },
+   "definition": {
+    "en": "erosion that makes a smooth surface rough",
+    "it": "erosione che rende ruvida una superficie liscia"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 30",
+   "uni": null,
+   "colour": "#5e3c99",
+   "hatch": {
+    "mpl": "oo",
+    "dxf": "HONEY"
+   }
+  },
+  {
+   "code": "ISCS.MECHANICAL_DAMAGE",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Mechanical damage",
+    "fr": "Dégât mécanique",
+    "it": "danno meccanico"
+   },
+   "definition": {
+    "en": "loss of material clearly due to a mechanical action",
+    "it": "perdita di materiale chiaramente dovuta a un'azione meccanica"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 32",
+   "uni": null,
+   "colour": "#a68cc4",
+   "hatch": {
+    "mpl": "**",
+    "dxf": "STARS"
+   }
+  },
+  {
+   "code": "ISCS.MECHANICAL_DAMAGE.IMPACT_DAMAGE",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.MECHANICAL_DAMAGE",
+   "names": {
+    "en": "Impact damage",
+    "fr": "Trace d'impact",
+    "it": "danno da impatto"
+   },
+   "definition": {
+    "en": "damage from the blow of a heavy object or a projectile",
+    "it": "danno dal colpo di un oggetto pesante o di un proiettile"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 32",
+   "uni": null,
+   "colour": "#3f007d",
+   "hatch": {
+    "mpl": "///",
+    "dxf": "ANSI34"
+   }
+  },
+  {
+   "code": "ISCS.MECHANICAL_DAMAGE.CUT",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.MECHANICAL_DAMAGE",
+   "names": {
+    "en": "Cut",
+    "fr": "Incision",
+    "it": "taglio"
+   },
+   "definition": {
+    "en": "a loss made by a sharp tool",
+    "it": "perdita prodotta da uno strumento affilato"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 32",
+   "uni": null,
+   "colour": "#bcbddc",
+   "hatch": {
+    "mpl": "\\\\\\",
+    "dxf": "ANSI35"
+   }
+  },
+  {
+   "code": "ISCS.MECHANICAL_DAMAGE.SCRATCH",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.MECHANICAL_DAMAGE",
+   "names": {
+    "en": "Scratch",
+    "fr": "Rayure",
+    "it": "graffio"
+   },
+   "definition": {
+    "en": "a shallow mark made by a pointed object",
+    "it": "segno poco profondo fatto da un oggetto appuntito"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 32",
+   "uni": null,
+   "colour": "#756bb1",
+   "hatch": {
+    "mpl": "x",
+    "dxf": "ANSI38"
+   }
+  },
+  {
+   "code": "ISCS.MECHANICAL_DAMAGE.ABRASION",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.MECHANICAL_DAMAGE",
+   "names": {
+    "en": "Abrasion",
+    "fr": "Abrasion",
+    "it": "abrasione"
+   },
+   "definition": {
+    "en": "erosion by friction or by particles",
+    "it": "erosione per attrito o per particelle"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 32",
+   "uni": null,
+   "colour": "#9e9ac8",
+   "hatch": {
+    "mpl": "...",
+    "dxf": "AR-SAND"
+   }
+  },
+  {
+   "code": "ISCS.MECHANICAL_DAMAGE.KEYING",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.MECHANICAL_DAMAGE",
+   "names": {
+    "en": "Keying",
+    "fr": "Bûchage",
+    "it": "picchettatura"
+   },
+   "definition": {
+    "en": "deliberate pecking of a surface to key a new layer",
+    "it": "picchiettatura voluta della superficie per far aderire un nuovo strato"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 32",
+   "uni": null,
+   "colour": "#4a1486",
+   "hatch": {
+    "mpl": "O",
+    "dxf": "ESCHER"
+   }
+  },
+  {
+   "code": "ISCS.MICROKARST",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Microkarst",
+    "fr": "Microkarst",
+    "it": "microcarsismo"
+   },
+   "definition": {
+    "en": "a network of small connected hollows from the dissolution of calcareous stone by running water",
+    "it": "rete di piccole depressioni comunicanti dovuta alla dissoluzione della pietra calcarea da parte dell'acqua"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 34",
+   "uni": null,
+   "colour": "#dadaeb",
+   "hatch": {
+    "mpl": "-",
+    "dxf": "DASH"
+   }
+  },
+  {
+   "code": "ISCS.MISSING_PART",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Missing part",
+    "fr": "Partie manquante",
+    "it": "parte mancante"
+   },
+   "definition": {
+    "en": "an empty space where a part of the stone used to be",
+    "it": "spazio vuoto dove prima c'era una parte della pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 36",
+   "uni": "UNI.MANCANZA",
+   "colour": "#6950a1",
+   "hatch": {
+    "mpl": "|",
+    "dxf": "BRICK"
+   }
+  },
+  {
+   "code": "ISCS.MISSING_PART.GAP",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.MISSING_PART",
+   "names": {
+    "en": "Gap",
+    "fr": "Trou",
+    "it": "lacuna"
+   },
+   "definition": {
+    "en": "a hole left in a surface by a missing part",
+    "it": "foro lasciato in una superficie da una parte mancante"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 36",
+   "uni": "UNI.LACUNA",
+   "colour": "#8e6cbf",
+   "hatch": {
+    "mpl": "+",
+    "dxf": "NET"
+   }
+  },
+  {
+   "code": "ISCS.PERFORATION",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Perforation",
+    "fr": "Perforation",
+    "it": "perforazione"
+   },
+   "definition": {
+    "en": "holes deeper than they are wide, made by a tool or by animals",
+    "it": "fori più profondi che larghi, fatti da uno strumento o da animali"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 38",
+   "uni": null,
+   "colour": "#2d004b",
+   "hatch": {
+    "mpl": "o",
+    "dxf": "GRAVEL"
+   }
+  },
+  {
+   "code": "ISCS.PITTING",
+   "family": "material_loss",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Pitting",
+    "fr": "Pitting",
+    "it": "pitting"
+   },
+   "definition": {
+    "en": "small shallow cavities, point-like and not connected",
+    "it": "piccole cavità poco profonde, puntiformi e non comunicanti"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 40",
+   "uni": "UNI.PITTING",
+   "colour": "#c2a5cf",
+   "hatch": {
+    "mpl": "*",
+    "dxf": "TRIANG"
+   }
+  },
+  {
+   "code": "ISCS.CRUST",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Crust",
+    "fr": "Croûte",
+    "it": "crosta"
+   },
+   "definition": {
+    "en": "a coherent layer accumulated on the surface, possibly with material from the stone",
+    "it": "strato coerente accumulato sulla superficie, anche con materiale della pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 42",
+   "uni": "UNI.CROSTA",
+   "colour": "#1f77b4",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "ISCS.CRUST.BLACK_CRUST",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.CRUST",
+   "names": {
+    "en": "Black crust",
+    "fr": "Croûte noire",
+    "it": "crosta nera"
+   },
+   "definition": {
+    "en": "a dark crust, mostly in places sheltered from rain",
+    "it": "crosta scura, per lo più nelle zone riparate dalla pioggia"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 42",
+   "uni": "UNI.CROSTA",
+   "colour": "#08519c",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "ISCS.CRUST.SALT_CRUST",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.CRUST",
+   "names": {
+    "en": "Salt crust",
+    "fr": "Croûte saline",
+    "it": "crosta salina"
+   },
+   "definition": {
+    "en": "a crust made of soluble salts",
+    "it": "crosta formata da sali solubili"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 42",
+   "uni": "UNI.CROSTA",
+   "colour": "#6baed6",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "ISCS.DEPOSIT",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Deposit",
+    "fr": "Dépôt",
+    "it": "deposito"
+   },
+   "definition": {
+    "en": "foreign material accumulated with little adhesion (dust, soot, paint splashes)",
+    "it": "materiale estraneo accumulato e poco aderente (polvere, fuliggine, schizzi di pittura)"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 44",
+   "uni": "UNI.DEPOSITO_SUPERFICIALE",
+   "colour": "#3182bd",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "ISCS.DISCOLOURATION",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Discolouration",
+    "fr": "Altération chromatique",
+    "it": "alterazione cromatica"
+   },
+   "definition": {
+    "en": "a change of hue, value or chroma of the surface",
+    "it": "variazione di tinta, chiarezza o saturazione della superficie"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 46",
+   "uni": "UNI.ALTERAZIONE_CROMATICA",
+   "colour": "#2c7fb8",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "ISCS.DISCOLOURATION.COLOURATION",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISCOLOURATION",
+   "names": {
+    "en": "Colouration",
+    "fr": "Coloration",
+    "it": "colorazione"
+   },
+   "definition": {
+    "en": "the surface takes a colour it did not have",
+    "it": "la superficie assume un colore che non aveva"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 46",
+   "uni": "UNI.ALTERAZIONE_CROMATICA",
+   "colour": "#253494",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  },
+  {
+   "code": "ISCS.DISCOLOURATION.BLEACHING",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISCOLOURATION",
+   "names": {
+    "en": "Bleaching",
+    "fr": "Décoloration",
+    "it": "decolorazione"
+   },
+   "definition": {
+    "en": "the surface loses colour and becomes lighter",
+    "it": "la superficie perde colore e si schiarisce"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 46",
+   "uni": "UNI.ALTERAZIONE_CROMATICA",
+   "colour": "#41b6c4",
+   "hatch": {
+    "mpl": "||",
+    "dxf": "ANSI33"
+   }
+  },
+  {
+   "code": "ISCS.DISCOLOURATION.MOIST_AREA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISCOLOURATION",
+   "names": {
+    "en": "Moist area",
+    "fr": "Assombrissement dû à l'humidité",
+    "it": "zona umida"
+   },
+   "definition": {
+    "en": "the surface darkens where it is wet",
+    "it": "la superficie si scurisce dove è bagnata"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 46",
+   "uni": null,
+   "colour": "#225ea8",
+   "hatch": {
+    "mpl": "oo",
+    "dxf": "HONEY"
+   }
+  },
+  {
+   "code": "ISCS.DISCOLOURATION.STAINING",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.DISCOLOURATION",
+   "names": {
+    "en": "Staining",
+    "fr": "Tache",
+    "it": "macchia"
+   },
+   "definition": {
+    "en": "a local discolouration of limited extent",
+    "it": "alterazione cromatica locale di estensione limitata"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 46",
+   "uni": "UNI.MACCHIA",
+   "colour": "#9ecae1",
+   "hatch": {
+    "mpl": "**",
+    "dxf": "STARS"
+   }
+  },
+  {
+   "code": "ISCS.EFFLORESCENCE",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Efflorescence",
+    "fr": "Efflorescence",
+    "it": "efflorescenza"
+   },
+   "definition": {
+    "en": "whitish crystals of soluble salts on the surface, powdery or in whiskers",
+    "it": "cristalli biancastri di sali solubili sulla superficie, polverulenti o filiformi"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 48",
+   "uni": "UNI.EFFLORESCENZA",
+   "colour": "#0868ac",
+   "hatch": {
+    "mpl": "///",
+    "dxf": "ANSI34"
+   }
+  },
+  {
+   "code": "ISCS.ENCRUSTATION",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Encrustation",
+    "fr": "Encroûtement",
+    "it": "incrostazione"
+   },
+   "definition": {
+    "en": "a compact, hard mineral layer firmly adhering to the surface",
+    "it": "strato minerale compatto e duro, ben aderente alla superficie"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 50",
+   "uni": "UNI.INCROSTAZIONE",
+   "colour": "#4eb3d3",
+   "hatch": {
+    "mpl": "\\\\\\",
+    "dxf": "ANSI35"
+   }
+  },
+  {
+   "code": "ISCS.ENCRUSTATION.CONCRETION",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.ENCRUSTATION",
+   "names": {
+    "en": "Concretion",
+    "fr": "Concrétion",
+    "it": "concrezione"
+   },
+   "definition": {
+    "en": "an encrustation with a definite shape (stalactite-like)",
+    "it": "incrostazione di forma definita (simile a stalattiti)"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 50",
+   "uni": "UNI.INCROSTAZIONE",
+   "colour": "#084081",
+   "hatch": {
+    "mpl": "x",
+    "dxf": "ANSI38"
+   }
+  },
+  {
+   "code": "ISCS.FILM",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Film",
+    "fr": "Film",
+    "it": "film"
+   },
+   "definition": {
+    "en": "a thin coating, mostly organic, that follows the surface",
+    "it": "rivestimento sottile, per lo più organico, che segue la superficie"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 52",
+   "uni": "UNI.PELLICOLA",
+   "colour": "#7bccc4",
+   "hatch": {
+    "mpl": "...",
+    "dxf": "AR-SAND"
+   }
+  },
+  {
+   "code": "ISCS.GLOSSY_ASPECT",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Glossy aspect",
+    "fr": "Aspect luisant",
+    "it": "aspetto lucido"
+   },
+   "definition": {
+    "en": "a surface that partly reflects like a mirror",
+    "it": "superficie che riflette in parte come uno specchio"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 54",
+   "uni": null,
+   "colour": "#2b8cbe",
+   "hatch": {
+    "mpl": "O",
+    "dxf": "ESCHER"
+   }
+  },
+  {
+   "code": "ISCS.GRAFFITI",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Graffiti",
+    "fr": "Graffiti",
+    "it": "graffiti"
+   },
+   "definition": {
+    "en": "engraving, scratching or paint and ink applied on the surface",
+    "it": "incisioni, graffi o vernici e inchiostri applicati sulla superficie"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 56",
+   "uni": "UNI.GRAFFITO_VANDALICO",
+   "colour": "#a6bddb",
+   "hatch": {
+    "mpl": "-",
+    "dxf": "DASH"
+   }
+  },
+  {
+   "code": "ISCS.PATINA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Patina",
+    "fr": "Patine",
+    "it": "patina"
+   },
+   "definition": {
+    "en": "a change of colour from ageing, natural or artificial, without visible decay",
+    "it": "variazione di colore dovuta all'invecchiamento, naturale o artificiale, senza degrado visibile"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 58",
+   "uni": "UNI.PATINA",
+   "colour": "#045a8d",
+   "hatch": {
+    "mpl": "|",
+    "dxf": "BRICK"
+   },
+   "deterioration": false
+  },
+  {
+   "code": "ISCS.PATINA.IRON_RICH_PATINA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.PATINA",
+   "names": {
+    "en": "Iron rich patina",
+    "fr": "Patine ferrugineuse",
+    "it": "patina ferruginosa"
+   },
+   "definition": {
+    "en": "a patina coloured by iron compounds",
+    "it": "patina colorata da composti del ferro"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 58",
+   "uni": null,
+   "colour": "#74a9cf",
+   "hatch": {
+    "mpl": "+",
+    "dxf": "NET"
+   }
+  },
+  {
+   "code": "ISCS.PATINA.OXALATE_PATINA",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": "ISCS.PATINA",
+   "names": {
+    "en": "Oxalate patina",
+    "fr": "Patine d'oxalates",
+    "it": "patina a ossalati"
+   },
+   "definition": {
+    "en": "a patina of calcium oxalates",
+    "it": "patina di ossalati di calcio"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 58",
+   "uni": null,
+   "colour": "#0570b0",
+   "hatch": {
+    "mpl": "o",
+    "dxf": "GRAVEL"
+   }
+  },
+  {
+   "code": "ISCS.SOILING",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Soiling",
+    "fr": "Encrassement",
+    "it": "imbrattamento"
+   },
+   "definition": {
+    "en": "a very thin layer of foreign particles that leaves the stone unaffected",
+    "it": "strato sottilissimo di particelle estranee che non altera la pietra"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 60",
+   "uni": "UNI.DEPOSITO_SUPERFICIALE",
+   "colour": "#c6dbef",
+   "hatch": {
+    "mpl": "*",
+    "dxf": "TRIANG"
+   }
+  },
+  {
+   "code": "ISCS.SUBFLORESCENCE",
+   "family": "discoloration_deposit",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Subflorescence",
+    "fr": "Subflorescence",
+    "it": "subflorescenza"
+   },
+   "definition": {
+    "en": "poorly adhering soluble salts under the surface",
+    "it": "sali solubili poco aderenti sotto la superficie"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 62",
+   "uni": null,
+   "colour": "#3690c0",
+   "hatch": {
+    "mpl": "xxx",
+    "dxf": "SQUARE"
+   }
+  },
+  {
+   "code": "ISCS.BIOLOGICAL_COLONIZATION",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Biological colonization",
+    "fr": "Colonisation biologique",
+    "it": "colonizzazione biologica"
+   },
+   "definition": {
+    "en": "the stone colonized by living organisms (bacteria, algae, fungi, lichens, plants)",
+    "it": "pietra colonizzata da organismi viventi (batteri, alghe, funghi, licheni, piante)"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 64",
+   "uni": "UNI.COLONIZZAZIONE_BIOLOGICA",
+   "colour": "#2ca02c",
+   "hatch": {
+    "mpl": "//",
+    "dxf": "ANSI31"
+   }
+  },
+  {
+   "code": "ISCS.ALGA",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Alga",
+    "fr": "Algue",
+    "it": "alga"
+   },
+   "definition": {
+    "en": "green, red or brown films or patches of algae, mostly on wet surfaces",
+    "it": "pellicole o macchie di alghe verdi, rosse o brune, per lo più su superfici umide"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 66",
+   "uni": "UNI.PATINA_BIOLOGICA",
+   "colour": "#1b7837",
+   "hatch": {
+    "mpl": "\\\\",
+    "dxf": "ANSI32"
+   }
+  },
+  {
+   "code": "ISCS.LICHEN",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Lichen",
+    "fr": "Lichen",
+    "it": "lichene"
+   },
+   "definition": {
+    "en": "rounded growths of lichens, crusty or leaf-like, of many colours",
+    "it": "colonie tondeggianti di licheni, crostose o fogliose, di vari colori"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 68",
+   "uni": null,
+   "colour": "#7fbc41",
+   "hatch": {
+    "mpl": "xx",
+    "dxf": "ANSI37"
+   }
+  },
+  {
+   "code": "ISCS.MOSS",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Moss",
+    "fr": "Mousse",
+    "it": "muschio"
+   },
+   "definition": {
+    "en": "small soft green cushions of moss, mostly in wet, shaded places",
+    "it": "piccoli cuscinetti verdi e morbidi di muschio, per lo più in zone umide e ombrose"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 70",
+   "uni": null,
+   "colour": "#4d9221",
+   "hatch": {
+    "mpl": "..",
+    "dxf": "DOTS"
+   }
+  },
+  {
+   "code": "ISCS.MOULD",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Mould",
+    "fr": "Moisissure",
+    "it": "muffa"
+   },
+   "definition": {
+    "en": "microscopic fungi forming a downy, coloured layer",
+    "it": "funghi microscopici che formano uno strato lanuginoso colorato"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 72",
+   "uni": "UNI.PATINA_BIOLOGICA",
+   "colour": "#a6d96a",
+   "hatch": {
+    "mpl": "++",
+    "dxf": "CROSS"
+   }
+  },
+  {
+   "code": "ISCS.PLANT",
+   "family": "biological",
+   "kind": "decay",
+   "geometry": "area",
+   "parent": null,
+   "names": {
+    "en": "Plant",
+    "fr": "Plante",
+    "it": "pianta"
+   },
+   "definition": {
+    "en": "vascular plants (herbs, shrubs, trees) growing on or in the masonry",
+    "it": "piante vascolari (erbe, arbusti, alberi) cresciute sopra o dentro la muratura"
+   },
+   "source": "ICOMOS-ISCS 2008, p. 74",
+   "uni": "UNI.PRESENZA_DI_VEGETAZIONE",
+   "colour": "#006837",
+   "hatch": {
+    "mpl": "--",
+    "dxf": "LINE"
+   }
+  }
+ ]
+}

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-conservation"
+version = "0.1.0"
+description = """\
+pyarchinit-photogrammetry plugin: decay mapping on elevations - the ICOMOS-ISCS glossary as the codes, UNI 11182 as \
+their Italian face, local masonry terms and EN 15898 interventions; campaigns of a face with the EN 16096 classes \
+chosen by the surveyor; areas, cracks and treatments with their extent, photos and stratigraphic units"""
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/conservation"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+conservation = "ppg_conservation:ConservationPlugin"
+
+[tool.setuptools]
+packages = ["ppg_conservation"]
+
+[tool.setuptools.package-data]
+ppg_conservation = ["thesaurus/*.json"]
