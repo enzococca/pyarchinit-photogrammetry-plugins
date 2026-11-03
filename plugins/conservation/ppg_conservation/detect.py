@@ -34,6 +34,9 @@ JOINT_SHARE = 0.6  # a crack longer than this share on a joint is dropped
 MAX_CRACK_WIDTH_MM = 12.0  # mm: a wider dark or hollow line is a joint between stones, not a crack
 REFERENCE_SCALE = 1.0  # m: the scale of the local reference of the losses (its gaussian sigma is half of it)
 WIDE_SHARE = 0.2  # a depression over this share of the window is no loss of its own: maybe the shape of the wall
+EDGE_MARGIN = 0.01  # m (at least 2 pixels): a depression this near the relief's edge is an artefact of the reference
+ALVEOLI_MAX_DEPTH = 0.10  # m: alveolization is a honeycomb of centimetres; deeper is a missing part
+MISSING_MAX_DEPTH = 0.50  # m: a missing part deeper than this is to check, not a term
 PIXEL_BUDGET = 30_000_000  # pixels of the working resolution a detector reads at once; beyond: by tiles
 TILE_OVERLAP = 0.2  # m: the overlap of two tiles
 VALLEY_DEPTH = 0.0005  # m: the least depth of a valley of the relief (scale-normalised curvature and both sides)
@@ -742,15 +745,21 @@ def loss_residual(win: Window, min_depth: float, scale: float = REFERENCE_SCALE)
 
 
 def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: float = 0.01,
-                  progress=None, scale: float = REFERENCE_SCALE, stats: dict | None = None) -> list[dict]:
+                  progress=None, scale: float = REFERENCE_SCALE, stats: dict | None = None,
+                  outer=None) -> list[dict]:
     """Losses of material proposed in the window: the relief against the wall's reference around it
     (:func:`loss_residual`: a robust surface over the window, then a local one at the scale ``scale`` m with the
     depressions left out), depressions deeper than ``min_depth`` m as connected components of at least ``min_area``
     m2, polygons with ``depth_mm`` = their median depth. ``ISCS.MISSING_PART`` over 0.05 m2; ``ISCS.ALVEOLIZATION``
     for the components under 0.02 m2 when the window holds at least five of them; the others with no term. A
     component larger than a quarter of ``scale²`` or than ``WIDE_SHARE`` of the window gets no term and the note
-    "da verificare" (``check`` True): at that size the reference cannot tell a loss from the shape of the wall.
-    ``stats`` (a dict, when given) gets ``check``, the number of those."""
+    "da verificare" (``check`` True, ``reason`` "shape"): at that size the reference cannot tell a loss from the
+    shape of the wall. So does a component within ``EDGE_MARGIN`` (at least 2 pixels) of the relief's nodata or of
+    the window's border (``reason`` "edge": beyond the edge there is no wall to refer to; ``outer``, the bounds of the
+    whole window when this one is a tile of it, so that the inner edges of a tile do not count), and a missing part
+    deeper than ``MISSING_MAX_DEPTH`` (``reason`` "depth"). Alveolization only up to ``ALVEOLI_MAX_DEPTH``; deeper it
+    is a missing part. ``stats`` (a dict, when given) gets ``check`` (all of those) and ``edge``, ``depth``,
+    ``shape`` (by reason)."""
     import cv2
 
     progress = _progress(progress)
@@ -776,33 +785,56 @@ def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: 
     ks = np.nonzero(big)[0]
     depths = dict(zip(ks.tolist(), (np.asarray(ndimage.median(-np.nan_to_num(resid), labels, ks)) * 1000.0
                                     ).reshape(-1).tolist())) if len(ks) else {}
+    # the components near the relief's nodata or the window's (outer) border
+    margin = max(2, int(math.ceil(EDGE_MARGIN / win.res)))
+    edge = ndimage.binary_dilation(~ok, iterations=margin) if (~ok).any() else np.zeros(ok.shape, bool)
+    ob = win.bounds if outer is None else outer
+    tol = win.res / 2.0
+    if abs(win.bounds[0] - ob[0]) <= tol:
+        edge[:, :margin] = True
+    if abs(win.bounds[2] - ob[2]) <= tol:
+        edge[:, -margin:] = True
+    if abs(win.bounds[3] - ob[3]) <= tol:  # the top row is v1
+        edge[:margin, :] = True
+    if abs(win.bounds[1] - ob[1]) <= tol:
+        edge[-margin:, :] = True
+    at_edge = set(np.unique(labels[edge & (labels > 0)]).tolist())
     comps = []  # one vectorisation of all the components
     for geom, value in shapes(labels, mask=labels > 0, transform=win.transform, connectivity=8):
         g = shape(geom).buffer(0)
         if not g.is_empty:
-            comps.append((g, float(depths[int(value)])))
+            comps.append((g, float(depths[int(value)]), int(value) in at_edge))
     too_big = min(scale * scale / 4.0, WIDE_SHARE * float(ok.sum()) * cell)
-    small = [g.area < 0.02 for g, _ in comps]
-    alveoli = sum(small) >= 5
+    small = [g.area < 0.02 for g, _d, _e in comps]
+    alveoli = sum(1 for (g, d, e), s in zip(comps, small) if s and not e) >= 5
     found = []
-    for (g, depth), is_small in zip(comps, small):
-        check = ""
-        if g.area > too_big:
-            code = None
+    for (g, depth, near_edge), is_small in zip(comps, small):
+        check, reason = "", None
+        if near_edge:
+            code, reason = None, "edge"
+            check = _t("; da verificare: al bordo del rilievo", "; to check: at the edge of the relief")
+        elif g.area > too_big:
+            code, reason = None, "shape"
             check = _t("; da verificare: può essere la forma del muro", "; to check: it may be the shape of the wall")
-        elif g.area > 0.05:
+        elif g.area > 0.05 or (alveoli and is_small and depth > ALVEOLI_MAX_DEPTH * 1000.0):
             code = MISSING_PART
         elif alveoli and is_small:
             code = ALVEOLIZATION
         else:
             code = None
+        if code == MISSING_PART and depth > MISSING_MAX_DEPTH * 1000.0:
+            code, reason = None, "depth"
+            check = _t(f"; da verificare: profondità {_num(depth / 10.0, 1)} cm",
+                       f"; to check: depth {_num(depth / 10.0, 1)} cm")
         notes = _t(f"mancanza proposta: più di {_num(min_depth * 100, 1)} cm sotto il muro intorno ({words}), "
                    f"area minima {_num(min_area, 3)} m²", f"loss proposed: more than {_num(min_depth * 100, 1)} cm "
                    f"behind the wall around it ({words}), least area {_num(min_area, 3)} m²") + check
         found.append({**_proposal("decay", code, g, notes, win.coverage, depth_mm=round(depth, 1)),
-                      "check": bool(check)})
+                      "check": bool(check), "reason": reason})
     if stats is not None:
         stats["check"] = sum(1 for f in found if f["check"])
+        for key in ("edge", "depth", "shape"):
+            stats[key] = sum(1 for f in found if f["reason"] == key)
     progress(1.0, _t(f"mancanze: {len(found)} proposte", f"losses: {len(found)} proposals"))
     return found
 
@@ -940,7 +972,8 @@ def _merge(pieces: list[dict], res: float) -> list[dict]:
             check = [p for p in mine if p.get("check")]
             code = None if check else first["code"]
             notes = check[0]["notes"] if check else first["notes"]
-            out.append({**first, "code": code, "geometry": g, "depth_mm": depth, "notes": notes})
+            out.append({**first, "code": code, "geometry": g, "depth_mm": depth, "notes": notes,
+                        "check": bool(check), "reason": check[0].get("reason") if check else first.get("reason")})
     for code in sorted({str(p["code"]) for p in lines}):
         group = [p for p in lines if str(p["code"]) == code]
         joined = unary_union([p["geometry"] for p in group])
@@ -979,6 +1012,8 @@ def tiled(detector, chunk, entry, bounds=None, budget: int = PIXEL_BUDGET, overl
     for k, (core, win) in enumerate(parts):
         mine = {} if stats is not None else None
         extra = {"stats": mine} if stats is not None else {}
+        if detector is material_loss:
+            extra["outer"] = bx  # the inner edges of a tile are no edge of the relief
         found = detector(chunk, entry, win, progress=progress.sub(k / len(parts), 0.95 / len(parts)),
                          **kwargs, **extra)
         if stats is not None:
@@ -995,6 +1030,10 @@ def tiled(detector, chunk, entry, bounds=None, budget: int = PIXEL_BUDGET, overl
     out = _merge(pieces, res)
     if stats is not None:
         stats["tiles"] = len(parts)
+        if detector is material_loss:  # counted again on the merged proposals
+            stats["check"] = sum(1 for f in out if f.get("check"))
+            for key in ("edge", "depth", "shape"):
+                stats[key] = sum(1 for f in out if f.get("reason") == key)
     progress(1.0, _t(f"{len(parts)} tasselli: {len(out)} proposte", f"{len(parts)} tiles: {len(out)} proposals"))
     return out
 

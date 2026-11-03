@@ -159,6 +159,62 @@ def test_a_loss_too_big_for_its_reference_gets_no_term(face):
     assert any(f["code"] == "ISCS.MISSING_PART" and f["geometry"].intersects(S.box(S.HOLE)) for f in found)
 
 
+def _carve(chunk, entry, carve):
+    import rasterio
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    _o, relief = elevation_paths(chunk, entry)
+    with rasterio.open(relief, "r+") as dst:
+        u, v = S._cells(dst)
+        d = dst.read(1)
+        carve(u, v, d)
+        dst.write(d, 1)
+
+
+def test_losses_at_the_relief_edge_and_too_deep_get_no_term(face):
+    """A depression touching a band with no relief, and a hole 60 cm deep, come with no term and their reason; a
+    hole 20 cm deep stays a missing part."""
+    doc, ch, entry = face
+    edge_dip = S.box((5.2, Z0 + 1.0, 5.62, Z0 + 1.4))
+    deep = S.box((1.0, Z0 + 0.6, 1.4, Z0 + 1.0))
+
+    def carve(u, v, d):
+        d[S._inside(u, v, S.box((5.6, Z0, 6.0, Z0 + 3.0)))] = np.nan  # no relief along the right edge
+        d[S._inside(u, v, edge_dip)] -= 0.03
+        d[S._inside(u, v, S.box(S.HOLE))] -= 0.17  # the hole now 20 cm deep
+        d[S._inside(u, v, deep)] -= 0.60
+
+    _carve(ch, entry, carve)
+    stats = {}
+    found = detect.material_loss(ch, entry, stats=stats)
+    at = {name: [f for f in found if f["geometry"].intersects(g)]
+          for name, g in (("edge", edge_dip), ("hole", S.box(S.HOLE)), ("deep", deep))}
+    assert len(at["edge"]) == 1 and at["edge"][0]["code"] is None and at["edge"][0]["reason"] == "edge"
+    assert "al bordo del rilievo" in at["edge"][0]["notes"]
+    assert len(at["hole"]) == 1 and at["hole"][0]["code"] == "ISCS.MISSING_PART"
+    assert abs(at["hole"][0]["depth_mm"] - 200.0) <= 5.0
+    assert len(at["deep"]) == 1 and at["deep"][0]["code"] is None and at["deep"][0]["reason"] == "depth"
+    assert "profondità" in at["deep"][0]["notes"]
+    assert stats["edge"] == 1 and stats["depth"] == 1
+
+
+def test_alveolization_is_shallow(face):
+    """Six cavities 2 cm deep are alveolization; six 15 cm deep are missing parts."""
+    doc, ch, entry = face
+
+    def carve(u, v, d):
+        for k in range(6):
+            d[S._inside(u, v, S.box((0.3 + 0.25 * k, Z0 + 2.78, 0.42 + 0.25 * k, Z0 + 2.9)))] -= 0.02
+            d[S._inside(u, v, S.box((3.3 + 0.25 * k, Z0 + 2.78, 3.42 + 0.25 * k, Z0 + 2.9)))] -= 0.15
+
+    _carve(ch, entry, carve)
+    shallow = detect.material_loss(ch, entry, bounds=(0.0, Z0 + 2.6, 2.0, Z0 + 3.0), min_depth=0.01)
+    assert len(shallow) == 6 and {f["code"] for f in shallow} == {"ISCS.ALVEOLIZATION"}
+    deep = detect.material_loss(ch, entry, bounds=(3.0, Z0 + 2.6, 5.0, Z0 + 3.0), min_depth=0.01)
+    assert len(deep) == 6 and {f["code"] for f in deep} == {"ISCS.MISSING_PART"}
+
+
 def test_wide_dark_bands_are_joints_not_cracks(face):
     """A dark band 4 cm wide (a mortar joint) is dropped and counted; the groove (1 cm) stays."""
     import rasterio

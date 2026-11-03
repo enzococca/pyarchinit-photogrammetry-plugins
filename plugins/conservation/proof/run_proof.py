@@ -152,7 +152,9 @@ def main(argv=None) -> int:
               f"(mancanza {n(found['material_loss'], code=detect.MISSING_PART)}, "
               f"alveolizzazione {n(found['material_loss'], code=detect.ALVEOLIZATION)}, da nominare "
               f"{n(found['material_loss'], code=None)}, di cui da verificare "
-              f"{n(found['material_loss'], check=True)}; profondità massima {deepest} mm)",
+              f"{n(found['material_loss'], check=True)}: al bordo del rilievo "
+              f"{n(found['material_loss'], reason='edge')}, troppo profonde {n(found['material_loss'], reason='depth')}, "
+              f"molto estese {n(found['material_loss'], reason='shape')}; profondità massima {deepest} mm)",
               f"- Classi di colore: {len(classes)} (" + ", ".join(
                   f"{cl['class'] + 1}: {cl['share'] * 100:.0f} %{' ' + cl['looks'] if cl['looks'] else ''}"
                   for cl in classes) + "), non accettate: le nomina il restauratore"]

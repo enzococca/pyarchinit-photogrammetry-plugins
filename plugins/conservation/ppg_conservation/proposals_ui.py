@@ -232,7 +232,8 @@ def proposed(plugin, chunk, c: dict, name: str, area, default: str, result, stat
                   "notes": cl["notes"], "coverage": cl["coverage"]}
                  for cl in result if cl["class"] in named for g in cl["polygons"]]
     before = plugin._snapshot(chunk)
-    added, unnamed, check = 0, 0, 0
+    added, unnamed = 0, 0
+    reasons = {"edge": 0, "depth": 0, "shape": 0}
     try:
         for p in found:
             geom = p["geometry"] if area is None else parts(p["geometry"].intersection(area), p["kind"])
@@ -240,7 +241,8 @@ def proposed(plugin, chunk, c: dict, name: str, area, default: str, result, stat
                 continue
             code = p["code"] or default
             unnamed += code == UNNAMED
-            check += bool(p.get("check"))
+            if p.get("check") and p.get("reason") in reasons:
+                reasons[p["reason"]] += 1
             cover = float(p.get("coverage") or 0.0)
             notes = p["notes"] + t(f"; rilievo sul {num(cover * 100, 0)} % della finestra",
                                    f"; relief on {num(cover * 100, 0)} % of the window")
@@ -266,9 +268,14 @@ def proposed(plugin, chunk, c: dict, name: str, area, default: str, result, stat
     if stats.get("tiles"):
         text += " " + t(f"La finestra è stata letta in {stats['tiles']} tasselli.",
                         f"The window was read in {stats['tiles']} tiles.")
-    if check:
-        text += " " + t(f"{check} depressioni molto estese sono da verificare: possono essere la forma del muro.",
-                        f"{check} very wide depressions are to check: they may be the shape of the wall.")
+    said = [(reasons["edge"], ("al bordo del rilievo", "at the edge of the relief")),
+            (reasons["depth"], ("troppo profonde per una mancanza", "too deep for a missing part")),
+            (reasons["shape"], ("molto estese (possono essere la forma del muro)",
+                                "very wide (they may be the shape of the wall)"))]
+    said = [(n, words) for n, words in said if n]
+    if said:
+        text += " " + t("Da verificare, senza termine: ", "To check, with no term: ") + ", ".join(
+            f"{n} {t(*words)}" for n, words in said) + "."
     if unnamed:
         text += " " + t(f"{unnamed} sono da nominare: scegline una, dalle un termine con Modifica... e usa Come "
                         "questo per le simili.", f"{unnamed} are to be named: choose one, give it a term with "
