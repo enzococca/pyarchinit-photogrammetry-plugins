@@ -57,7 +57,9 @@ def test_frames_found_with_room_and_space(framed):
 
 
 def test_seams_follow_the_lands(framed):
-    _ch, _frame, prop = framed
+    ch, frame, prop = framed
+    z, tr = relief.load(ch, "height")
+    assert all(s["sign"] == -1 for s in proposals.seams(z, tr, frame.sign))  # from inside, a drop going outward
     seams = _of(prop, "seam")
     grid = np.round(np.arange(0.2, 11.81, 0.02), 2)
     truth = {x: seam_y(x) for x in grid}
@@ -321,18 +323,71 @@ def test_a_land_partly_lost_keeps_every_name(framed, case):
         assert {b["name"] for b in bands} == {f"fascia B{k}" for k in range(1, 5)}
 
 
-def test_a_loose_plank_in_the_outermost_strake_renames_nothing(tmp_path):
-    """A loose plank 1.5 x 0.08 x 0.02 m along x in the outermost strake, near the sheer: its edges are strays and the
-    band from the outermost land to the model's edge runs the whole hull."""
-    ch, _frame = _setup(tmp_path, loose=[(6.075, -0.85, 0.0, 1.5, 0.08, 0.02)])  # hull y < 0: port
+def _seam(side, y, sign=-1, x0=0.5, x1=11.5):
+    """A straight seam piece along x at plan ``y`` (signed by the side), with the sign of its step going outward."""
+    return {"side": side, "ship_xy": [[x0, y], [x1, y]], "step_mm": 15.0, "length": x1 - x0, "score": 1.0,
+            "sign": sign}
+
+
+@pytest.mark.parametrize("widths", [(0.17, 0.20, 0.22), (0.18,) * 6, (0.20, 0.17, 0.14), (0.20, 0.16, 0.12, 0.10),
+                                    (0.20, 0.20, 0.15, 0.20), (0.25, 0.12, 0.20)])
+def test_clean_lands_rank_in_order_whatever_the_widths_of_the_strakes(widths):
+    """Full-length lands with these plan widths of the strakes between them (widening, equal, narrowing outward, one
+    narrow strake among wide ones), the first land 0.14 m from the keel line: ranks 1..n on both sides, nothing a
+    stray (the reviewer's probe A: round 4's gap rule made a land whose strake was narrower than the one inside it a
+    stray and renamed every land beyond)."""
+    ys = 0.14 + np.r_[0.0, np.cumsum(widths)]
+    seam_list = [_seam(side, s * y) for side, s in (("port", 1.0), ("starboard", -1.0)) for y in ys]
+    assert proposals.lands(seam_list) == list(range(1, len(ys) + 1)) * 2
+
+
+def test_the_edges_of_a_loose_timber_are_told_by_the_sign_of_the_step():
+    """Seen from inside, a land is a drop going outward. A rising piece is a stray wherever it lies; a falling piece
+    with a rising one within 0.3 m inside it, nothing between them, along most of its length is the outer edge of the
+    same loose timber: a stray too. A falling piece farther out, or beside a rise over a short part of its length,
+    is a land. Seen from outside the signs are the other way round; a piece without a sign is ranked by its place."""
+    lands = [_seam("port", y) for y in (0.14, 0.31, 0.51, 0.73)]
+    plank = [_seam("port", 0.84, sign=1, x0=5.3, x1=6.8), _seam("port", 0.92, sign=-1, x0=5.3, x1=6.8)]
+    assert proposals.lands(lands + plank) == [1, 2, 3, 4, 0, 0]
+    inside = [_seam("port", 0.37, sign=1, x0=5.3, x1=6.8), _seam("port", 0.45, sign=-1, x0=5.3, x1=6.8)]
+    assert proposals.lands(lands + inside) == [1, 2, 3, 4, 0, 0]  # in strake 3: land 3 is not its outer edge
+    long = [_seam("port", 0.37, sign=1, x0=1.0, x1=10.0), _seam("port", 0.45, sign=-1, x0=1.0, x1=10.0)]
+    assert proposals.lands(lands + long) == [1, 2, 3, 4, 0, 0]  # a timber along most of the hull: land 3 stays
+    assert proposals.lands(lands + [_seam("port", 0.40, sign=1, x0=2.0, x1=4.0)]) == [1, 2, 3, 4, 0]  # a rise alone
+    assert proposals.lands(lands + [_seam("port", 1.10, sign=1, x0=2.0, x1=4.0)]) == [1, 2, 3, 4, 0]
+    far = [_seam("port", 1.10, sign=-1), _seam("port", 0.78, sign=1, x0=2.0, x1=4.0)]
+    assert proposals.lands(lands + far) == [1, 2, 3, 4, 5, 0]  # a drop beyond land 4 with the rise 0.32 m inside
+    short = [_seam("port", 0.95, sign=-1), _seam("port", 0.84, sign=1, x0=2.0, x1=4.0)]
+    assert proposals.lands(lands + short) == [1, 2, 3, 4, 5, 0]  # the rise lies along 18 % of its length only
+    both = lands + plank + [_seam("starboard", -y) for y in (0.14, 0.31, 0.51, 0.73)]
+    assert proposals.lands(both) == [1, 2, 3, 4, 0, 0, 1, 2, 3, 4]
+    outside = [{**s, "sign": -s["sign"]} for s in lands] + plank  # a timber on the outside: a rise then a drop too
+    assert proposals.lands(outside, {"view": "outside"}) == [1, 2, 3, 4, 0, 0]
+    assert proposals.lands(lands, {"view": "outside"}) == [0, 0, 0, 0]
+    unsigned = [{k: v for k, v in s.items() if k != "sign"} for s in lands + plank]
+    assert proposals.lands(unsigned) == [1, 2, 3, 4, 5, 6]
+    with pytest.raises(ValueError):
+        proposals.lands(lands, {"view": "above"})
+
+
+@pytest.mark.parametrize("x", [2.025, 6.075, 10.125])  # the plank's ends between the frames
+@pytest.mark.parametrize("beyond", [0.08, 0.15])
+@pytest.mark.parametrize("thickness", [0.015, 0.03])
+def test_a_loose_plank_by_the_sheer_renames_nothing(tmp_path, x, beyond, thickness):
+    """A loose plank 1.5 x 0.08 m lying along x in the outermost strake, its centre ``beyond`` land 4 in plan: its
+    edges are a rise and a drop going outward, not lands (proposed as ``comento B?``, or not at all where a crest is
+    crowded with land 4 or masked); lands 1-4 keep their ranks and B5, from land 4 to the model's edge, runs the
+    whole hull."""
+    y = seam_y(x)[3] + beyond
+    ch, _frame = _setup(tmp_path, loose=[(x, -y, 0.0, 1.5, 0.08, thickness)])  # hull y < 0: port
     prop = proposals.build(ch)
     port = [s for s in _of(prop, "seam") if s["side"] == "port"]
-    assert sorted(s["name"] for s in port if not s["name"].endswith("?")) == [f"comento B{k}" for k in range(1, 5)]
-    assert any(s["name"] == "comento B?" for s in port)
+    assert sorted({s["name"] for s in port if not s["name"].endswith("?")}) == [f"comento B{k}" for k in range(1, 5)]
+    assert all(s["name"] == "comento B?" and s["score"] <= 0.1 for s in port if s["name"].endswith("?"))
     assert sorted({b["name"] for b in _planks(prop, "port")}) == [f"fascia B{k}" for k in range(1, 6)]
-    for x in (4.0, 9.0):
-        widths = strake_widths(x)
-        cut = shapely.LineString([(x, -5.0), (x, 5.0)])
+    for at in (4.0, 9.0):
+        widths = strake_widths(at)
+        cut = shapely.LineString([(at, -5.0), (at, 5.0)])
         for k in range(2, 6):
             width = sum(shapely.Polygon(b["ship_xy"]).intersection(cut).length
                         for b in _planks(prop, "port") if b["name"] == f"fascia B{k}")

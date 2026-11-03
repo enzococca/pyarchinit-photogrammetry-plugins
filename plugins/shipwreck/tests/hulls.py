@@ -217,11 +217,11 @@ KEELSON_HALF, KEELSON_X, KEELSON_HEIGHT = 0.06, (1.0, 11.0), 0.12  # the keelson
 _WALL = 5e-5  # half the run of a timber's side: two copies of the edge 0.1 mm apart, the inner one raised
 
 
-def _columns(cell: float, frames, keelson: bool):
-    """The x of the hull's columns: the regular grid and both copies of every edge of a frame or of the keelson;
-    for each column whether it lies inside a frame and inside the keelson's x."""
+def _columns(cell: float, frames, keelson: bool, walls=()):
+    """The x of the hull's columns: the regular grid and both copies of every edge of a frame, of the keelson or of
+    ``walls`` (the ends of the planks); for each column whether it lies inside a frame and inside the keelson's x."""
     xs = list(np.linspace(0.2, L - 0.2, int((L - 0.4) / cell) + 1))
-    edges = [e for f in frames for e in (f - FRAME_ROOM / 2.0, f + FRAME_ROOM / 2.0)]
+    edges = [e for f in frames for e in (f - FRAME_ROOM / 2.0, f + FRAME_ROOM / 2.0)] + list(walls)
     if keelson:
         edges += list(KEELSON_X)
     for e in edges:
@@ -239,31 +239,31 @@ LOOSE = (0.3, 0.08, 0.05)  # a loose timber lying on the hull: length, width, he
 
 def _boxes(vertices: np.ndarray, loose) -> tuple[np.ndarray, np.ndarray]:
     """Closed boxes lying on the hull, ``loose`` = [(x, y, degrees from x)] in the hull's coordinates: :data:`LOOSE`
-    boxes with a level top :data:`LOOSE` [2] above the hull's highest vertex within 2 cm of the centre; or
-    [(x, y, degrees, length, width, thickness)]: a plank whose top follows the hull, each corner ``thickness`` above
-    the hull's highest vertex within 2 cm of it. The bottoms are sunk 0.1 m."""
+    boxes with a level top :data:`LOOSE` [2] above the hull's highest vertex within 2 cm of the centre. The bottoms
+    are sunk 0.1 m."""
     out_v, out_f = [], []
     quad = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
                      [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
-
-    def top_at(px, py):
-        near = np.hypot(vertices[:, 0] - px, vertices[:, 1] - py) < 0.02
-        return float(vertices[near, 2].max())
-
-    for item in loose:
-        x, y, deg = item[:3]
-        length, width, height = item[3:] if len(item) == 6 else LOOSE
+    for x, y, deg in loose:
+        length, width, height = LOOSE
         a = np.radians(deg)
         corners = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) * [length / 2.0, width / 2.0]
         plan = corners @ np.array([[np.cos(a), np.sin(a)], [-np.sin(a), np.cos(a)]]) + [x, y]
-        if len(item) == 6:
-            tops = np.array([top_at(*c) for c in plan]) + height
-        else:
-            tops = np.full(4, top_at(x, y) + height)
+        near = np.hypot(vertices[:, 0] - x, vertices[:, 1] - y) < 0.02
+        tops = np.full(4, float(vertices[near, 2].max()) + height)
         box = np.vstack([np.column_stack([plan, tops - height - 0.1]), np.column_stack([plan, tops])])
         out_f.append(quad + len(vertices) + sum(len(v) for v in out_v))
         out_v.append(box)
     return np.vstack(out_v), np.vstack(out_f)
+
+
+def _plank_arcs(x, s, off, y0: float, y1: float) -> tuple[float, float]:
+    """The arcs of the section at ``x`` where the plan |y| is ``y0`` and ``y1`` (the edges of a plank lying along x),
+    kept inside the girth (a plank wider than the hull is at this x ends at the sheer)."""
+    fine = np.linspace(0.0, float(s[-1]), 4001)
+    ya = _section_points(x, fine, np.interp(fine, s, off), 1.0)[0]
+    lo, hi = 3.0 * _WALL, float(s[-1]) - 3.0 * _WALL
+    return tuple(float(min(max(v, lo), hi)) for v in np.interp([y0, y1], ya, fine))
 
 
 def framed_hull(cell: float = 0.02, strakes: int = 5, frames=FRAMES, keelson: bool = True, missing=None,
@@ -273,23 +273,43 @@ def framed_hull(cell: float = 0.02, strakes: int = 5, frames=FRAMES, keelson: bo
     the whole girth) and, with ``keelson``, the keelson (|y| < :data:`KEELSON_HALF`, x in :data:`KEELSON_X`,
     :data:`KEELSON_HEIGHT` above the planking, over the frames it crosses). ``missing=(x0, x1, side)``: the faces of
     ``side`` ("port" or "starboard" of the frame the tests set, bow at the start: port = the hull's y < 0) between
-    those x taken away; ``x_range=(x0, x1)``: only the part of the hull between those x is kept; ``loose``: boxes
-    lying on the hull (:func:`_boxes`)."""
-    xs, in_frame, in_keel = _columns(cell, frames, keelson)
+    those x taken away; ``x_range=(x0, x1)``: only the part of the hull between those x is kept; ``loose``: level
+    boxes ``(x, y, degrees)`` lying on the hull (:func:`_boxes`) and planks ``(x, y, 0, length, width, thickness)``
+    lying along x on the planking (centre, length and width in plan, in the hull's coordinates): the planking of the
+    footprint raised by ``thickness`` with sides 0.1 mm wide, so that each edge is a step of ``thickness`` whatever
+    the hull does under it (a box with a planar top would stand off this hull by decimetres near the ends); a frame
+    the plank crosses stands through it."""
+    planks = [p for p in (loose or []) if len(p) == 6]
+    if any(p[2] for p in planks):
+        raise ValueError("a plank lies along x: degrees 0")
+    walls = [e for px, _py, _deg, length, _w, _t in planks for e in (px - length / 2.0, px + length / 2.0)]
+    xs, in_frame, in_keel = _columns(cell, frames, keelson, walls)
     rows = []
     for x, framed, keeled in zip(xs, in_frame, in_keel):
         s, off = _side(x, cell, strakes, land, lap, None)
         b = float(half_breadth(x))
         wall = float(_arc(KEELSON_HALF, 2.0 * D / b**2))
-        s_all = np.unique(np.r_[s, wall - _WALL, wall + _WALL]) if keelson else s
+        s_all = np.r_[s, wall - _WALL, wall + _WALL] if keelson else s
+        spans = []
+        for px, py, _deg, length, width, thickness in planks:  # the wall points in every column: one row length
+            s0, s1 = _plank_arcs(x, s, off, abs(py) - width / 2.0, abs(py) + width / 2.0)
+            s_all = np.r_[s_all, s0 - _WALL, s0 + _WALL, s1 - _WALL, s1 + _WALL]
+            if abs(x - px) < length / 2.0:
+                spans.append((py, s0, s1, thickness))
+        s_all = np.sort(s_all)
         off_all = np.interp(s_all, s, off)
         raise_ = np.full(len(s_all), FRAME_MOULDED if framed else 0.0)
         if keelson and keeled:
             raise_ = np.where(s_all < wall, np.maximum(raise_, KEELSON_HEIGHT), raise_)
+        raise_pos, raise_neg = raise_.copy(), raise_.copy()
+        for py, s0, s1, thickness in spans:
+            inside = (s_all > s0) & (s_all < s1)
+            side = raise_pos if py > 0 else raise_neg
+            side[inside] = np.maximum(side[inside], thickness)
         yp, zp = _section_points(x, s_all, off_all, 1.0)
         ys, zs = _section_points(x, s_all[1:], off_all[1:], -1.0)
         y = np.concatenate([ys[::-1], yp])
-        z = np.concatenate([(zs + raise_[1:])[::-1], zp + raise_])
+        z = np.concatenate([(zs + raise_neg[1:])[::-1], zp + raise_pos])
         rows.append(np.column_stack([np.full(len(y), x), y, z]))
     m, n = len(rows[0]), len(rows)
     i, j = np.meshgrid(np.arange(n - 1), np.arange(m - 1), indexing="ij")
@@ -306,8 +326,9 @@ def framed_hull(cell: float = 0.02, strakes: int = 5, frames=FRAMES, keelson: bo
     if x_range is not None:
         keep &= (centre[:, 0] > x_range[0]) & (centre[:, 0] < x_range[1])
     faces = faces[keep]
-    if loose:
-        bv, bf = _boxes(vertices, loose)
+    boxes = [p for p in (loose or []) if len(p) != 6]
+    if boxes:
+        bv, bf = _boxes(vertices, boxes)
         vertices, faces = np.vstack([vertices, bv]), np.vstack([faces, bf])
     return vertices, faces
 

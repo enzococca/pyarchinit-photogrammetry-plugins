@@ -9,7 +9,10 @@ height raster turned so (its v is ``sign`` * y).
 - Seams: a land of lapped planking is a step of 1-2.5 cm across the hull. The transverse gradient ``g = dz/dy`` minus
   its running median over ``trend`` on either side (the hull's own slope taken out) has a ridge there; ``|g|`` smoothed over
   ``sigma_cells`` across gives its crest in each column (sub-cell, on a parabola), the step of a crest is ``g``
-  integrated across its ridge. Two crests of a side closer than ``trend`` cannot be told apart (the ends of a hull,
+  integrated across its ridge, with its sign: going outward (away from the keel) a land seen from INSIDE the hull is
+  always a drop of the height (the next strake's inner face is one thickness farther out), seen from outside a rise;
+  a loose timber lying on the planking is a rise at its inner edge and a drop at its outer edge from either side.
+  Two crests of a side closer than ``trend`` cannot be told apart (the ends of a hull,
   where the strakes seen from above are a few centimetres wide): neither is kept. Crests are followed along x, each
   line along its own course, with hysteresis (a line starts where the step reaches
   ``min_step`` and goes on while it keeps ``low_step``); pieces closer than ``gap`` along x and collinear within 2 cm
@@ -27,9 +30,10 @@ height raster turned so (its v is ``sign`` * y).
   longitudinal shorter than ``min_longitudinal`` (a loose timber) is ``other``, as anything else is (the residues of
   one loose timber in both openings are one item).
 - Strakes: per side, each seam's land is its rank from the keel (:func:`lands`: the pieces of one land, fore and aft of
-  a hole, share it; a land lost over part of the hull keeps its rank; a piece between two consecutive lands in a band
-  of a strake's width - the edge of a loose plank, noise - is a stray, proposed as ``comento B?`` / ``T?`` with a low
-  score and renaming nothing; a duplicate is left out); per x, a band between consecutive lands where both are there; the first from the keel line offset by
+  a hole, share it; a land lost over part of the hull keeps its rank; a piece whose step has the wrong sign for the
+  ``view``, or the other edge of the same loose timber, is a stray, as is a piece between two consecutive lands in a
+  band of a strake's width - proposed as ``comento B?`` / ``T?`` with a low score and renaming nothing; a duplicate
+  is left out); per x, a band between consecutive lands where both are there; the first from the keel line offset by
   ``clinker.DEFAULTS["keel_half_width"]``, the last to the model's edge. Names ``fascia B1..`` (port) and ``fascia
   T1..`` (starboard) from the keel, ``comento B1..`` for the lands; a strake broken by a hole keeps its name. The
   bands run under the frames (the outline is not cut by them).
@@ -47,8 +51,15 @@ from .texts import num, plural, t
 
 DEFAULTS = {"sigma_cells": 1.5, "trend": 0.05, "min_step": 0.008, "low_step": 0.004, "min_seam": 0.5, "gap": 0.3,
             "opening": 0.3, "top_hat": 0.02, "elongation": 3.0, "frame_deg": 30.0, "keel_band": 0.15, "min_area": 0.002,
-            "max_step": 0.04, "along_cells": 3.0, "min_frame": 0.5, "min_longitudinal": 1.0}
+            "max_step": 0.04, "along_cells": 3.0, "min_frame": 0.5, "min_longitudinal": 1.0, "view": "inside"}
 """The parameters of the reading, metres unless said.
+
+- ``view``: which face of the planking the model shows, ``inside`` (an excavated wreck lying on its bottom, the
+  planking under the frames: the normal case) or ``outside`` (a lifted hull, a model of the outer face). It decides
+  the sign a land's step has going outward (a drop from inside, a rise from outside: ``outside`` inverts the signs);
+  a seam piece with the other sign is not a land but the edge of a loose timber lying on the planking (a rise at its
+  inner edge, a drop at its outer edge from either face), and so is the piece with a land's sign lying within
+  :data:`PLANK_WIDTH` of it on the right side along :data:`PLANK_SHARE` of its length: both are strays.
 
 - ``sigma_cells``: the smoothing of ``|dz/dy|`` across the hull, in cells; ``along_cells``: the smoothing of ``dz/dy``
   along x before the crests, in cells (the lands are long along x: it keeps a seam whole under the noise of a scan).
@@ -71,7 +82,10 @@ tried; the seams stay whole under 2 mm of white noise on the heights; with 2 mm 
 they break into pieces, which the strakes still take as pieces of their lands (:func:`lands`: same names, widths
 within 2 %); with 4 mm of white noise stray pieces beyond the last land can add a strake (B6) and should be rejected.
 A remnant of a land whose neighbours run on as consecutive lands with a band of a strake's width over the same x is
-taken for a stray (``comento B?``): accept it by hand and the strake beside it splits in two there."""
+taken for a stray (``comento B?``): accept it by hand and the strake beside it splits in two there. Of a loose timber
+only one edge may be read (the other masked as a longitudinal's side - a timber 3 cm thick or more by the sheer -
+or lost among the crowded crests at the hull's ends): a rise alone is still a stray, a drop alone (a land's sign)
+is judged by its place, as a stray between consecutive lands or as a piece of the land beside it."""
 
 KINDS = ("seam", "frame", "keelson", "stringer", "plank", "other")
 COLLINEAR = 0.02  # metres: two pieces of a seam continue each other within this across
@@ -82,6 +96,7 @@ SIMPLIFY = 0.002  # metres: the tolerance of the lines kept
 SMOOTH_ALONG = 5  # cells: the running mean along x of a seam's y
 OVERLAP = 0.5  # a new item more than this inside an accepted record or a rejected geometry is not proposed
 LINE_BUFFER = 0.02  # metres around a line when it is compared with others
+LAND_SIGN = {"inside": -1, "outside": 1}  # the sign of a land's step going outward, per ``view``
 
 
 # ----------------------------------------------------------------------------- the grid in the ship plan
@@ -126,13 +141,18 @@ class _Grid:
         return out
 
 
+VIEWS = ("inside", "outside")
+
+
 def _params(params) -> dict:
     out = dict(DEFAULTS)
     if params:
         unknown = set(params) - set(DEFAULTS)
         if unknown:
             raise ValueError(f"unknown parameters: {', '.join(sorted(unknown))}")
-        out.update({k: float(v) for k, v in params.items()})
+        out.update({k: str(v) if k == "view" else float(v) for k, v in params.items()})
+    if out["view"] not in VIEWS:
+        raise ValueError(f"view must be one of {', '.join(VIEWS)}, not {out['view']!r}")
     return out
 
 
@@ -349,7 +369,8 @@ def _trend(g: np.ndarray, size: int) -> np.ndarray:
 
 
 def _crests(grid: _Grid, p: dict, exclude: np.ndarray):
-    """The crests of the transverse step in each column: arrays of column, sub-cell y, step (metres)."""
+    """The crests of the transverse step in each column: arrays of column, sub-cell y, step (metres) and the sign of
+    ``dz/dy`` across the crest (+1: the height rises with y)."""
     g = np.gradient(grid.z, grid.cell, axis=0)
     g[~np.isfinite(g) | exclude] = np.nan  # a timber's side would fill the trend's window and the smoothing
     if p["along_cells"] > 0:  # the lands run along x: the noise of a scan does not
@@ -366,35 +387,47 @@ def _crests(grid: _Grid, p: dict, exclude: np.ndarray):
     change[1:] = sgn[1:] != sgn[:-1]
     runs = np.cumsum(change.ravel(order="F")).reshape(sgn.shape, order="F")
     sums = np.bincount(runs.ravel(), weights=np.nan_to_num(r, nan=0.0).ravel())
-    step = np.abs(sums[runs]) * grid.cell
+    signed = sums[runs] * grid.cell
     rows, cols = np.nonzero(peak)
     a, b, c = up[rows, cols], s0[rows, cols], down[rows, cols]
     denom = a - 2.0 * b + c
     shift = np.where(np.abs(denom) > 1e-12, 0.5 * (a - c) / np.where(np.abs(denom) > 1e-12, denom, 1.0), 0.0)
     y = grid.y[rows] + np.clip(shift, -0.5, 0.5) * grid.cell
-    st = step[rows, cols]
+    st = np.abs(signed[rows, cols])
+    sg = np.sign(signed[rows, cols]).astype(np.int8)
     keep = (st >= p["low_step"]) & (st <= p["max_step"])
-    cols, y, st = cols[keep], y[keep], st[keep]
+    cols, y, st, sg = cols[keep], y[keep], st[keep], sg[keep]
     if len(cols) < 2:
-        return cols, y, st
+        return cols, y, st, sg
     # two crests of one side closer than ``trend`` share the window of the trend and cannot be told apart (the ends of a
-    # hull, where the strakes are a few centimetres wide seen from above): neither is a land
+    # hull, where the strakes are a few centimetres wide seen from above): neither is a land, nor is a crest squeezed
+    # between two of the other sign (the slope between two such lands comes out as a rise). The one pair kept is a
+    # crest with a land's sign and, outward of it, one with the other sign (sorted by y the inner crest comes first on
+    # port, second on starboard, and the signs of dz/dy follow suit: the condition reads the same on both sides): a
+    # land with a loose timber's inner edge beside it.
+    land = LAND_SIGN[p["view"]]
     order = np.lexsort((y, np.sign(y), cols))
-    cols, y, st = cols[order], y[order], st[order]
-    near = (np.diff(cols) == 0) & (np.sign(y[1:]) == np.sign(y[:-1])) & (np.diff(y) < p["trend"])
+    cols, y, st, sg = cols[order], y[order], st[order], sg[order]
+    close = (np.diff(cols) == 0) & (np.sign(y[1:]) == np.sign(y[:-1])) & (np.diff(y) < p["trend"])
+    opposite = close & (sg[1:] != sg[:-1])
+    squeezed = np.zeros(len(cols), bool)
+    squeezed[1:-1] = opposite[:-1] & opposite[1:]
+    near = close & ~((sg[:-1] == land) & (sg[1:] == -land))
+    near |= squeezed[:-1] | squeezed[1:]  # a squeezed crest and both its neighbours go
     crowded = np.r_[near, False] | np.r_[False, near]
-    return cols[~crowded], y[~crowded], st[~crowded]
+    return cols[~crowded], y[~crowded], st[~crowded], sg[~crowded]
 
 
-def _follow(grid: _Grid, cols, ys, steps, p: dict) -> list[dict]:
+def _follow(grid: _Grid, cols, ys, steps, signs, p: dict) -> list[dict]:
     """Crests linked along x into pieces: a crest continues the line of its side whose last crest is in the column
     before (or the one before that) and whose course - a straight line through its last :data:`PREDICT` crests - passes
     within :data:`LINK_CELLS` cells (at least 1 cm) of it, the closest pairs first (where the lands come close together
     at the ends of the hull, a line goes on along its own course, not to the nearest crest); pieces whose step never
-    reaches ``min_step`` are dropped (the hysteresis: ``low_step`` keeps a line, ``min_step`` starts it)."""
+    reaches ``min_step`` are dropped (the hysteresis: ``low_step`` keeps a line, ``min_step`` starts it). Each piece
+    carries its crests' steps and signs."""
     tol = max(LINK_CELLS * grid.cell, 0.01)
     order = np.lexsort((ys, cols))
-    cols, ys, steps = cols[order], ys[order], steps[order]
+    cols, ys, steps, signs = cols[order], ys[order], steps[order], signs[order]
     active: list[dict] = []
     done: list[dict] = []
     bounds = np.searchsorted(cols, np.arange(len(grid.x) + 1))
@@ -419,16 +452,18 @@ def _follow(grid: _Grid, cols, ys, steps, p: dict) -> list[dict]:
             active[i]["cols"].append(j)
             active[i]["ys"].append(ys[k])
             active[i]["steps"].append(steps[k])
+            active[i]["signs"].append(signs[k])
         for k in range(lo, hi):
             if k not in used_crests:
-                active.append({"cols": [j], "ys": [ys[k]], "steps": [steps[k]]})
+                active.append({"cols": [j], "ys": [ys[k]], "steps": [steps[k]], "signs": [signs[k]]})
     done += active
     out = []
     for tr in done:
         st = np.asarray(tr["steps"])
         if st.max() < p["min_step"] or len(tr["cols"]) < 2:
             continue
-        out.append({"x": grid.x[np.asarray(tr["cols"])], "y": np.asarray(tr["ys"]), "step": st})
+        out.append({"x": grid.x[np.asarray(tr["cols"])], "y": np.asarray(tr["ys"]), "step": st,
+                    "sign": np.asarray(tr["signs"])})
     return out
 
 
@@ -463,7 +498,7 @@ def _merge(pieces: list[dict], p: dict) -> list[dict]:
             best["parts"].append(q)
             best["tail"] = _tail(q["x"], q["y"]) if len(q["x"]) >= 3 else (float(q["x"][-1]), float(q["y"][-1]),
                                                                            best["tail"][2])
-    return [{k: np.concatenate([q[k] for q in c["parts"]]) for k in ("x", "y", "step")} for c in chains]
+    return [{k: np.concatenate([q[k] for q in c["parts"]]) for k in ("x", "y", "step", "sign")} for c in chains]
 
 
 def _line(x: np.ndarray, y: np.ndarray) -> list:
@@ -479,8 +514,10 @@ def _line(x: np.ndarray, y: np.ndarray) -> list:
 
 def seams(z, transform, sign: int, params=None, exclude=None) -> list[dict]:
     """The seams of the planking on the height raster ``z`` (relief (u, v) with ``transform``; v = ``sign`` * y): dicts
-    with ``side``, ``ship_xy`` (the line along x in the ship plan), ``step_mm`` (the median step), ``length`` and
-    ``score`` (the share of the line whose step reaches ``min_step``). ``exclude``: a boolean grid in the ship plan
+    with ``side``, ``ship_xy`` (the line along x in the ship plan), ``step_mm`` (the median step), ``sign`` (of the
+    step going outward, away from the keel: -1 the height drops, +1 it rises, the median over the line's crests; 0
+    when they do not say), ``length`` and ``score`` (the share of the line whose step reaches ``min_step``).
+    ``exclude``: a boolean grid in the ship plan
     (rows along increasing y, as :class:`_Grid`) of cells that are not lands (a longitudinal timber's sides); by
     default the cells within :data:`SIDE_MASK_CELLS` of a longitudinal top-hat residue over ``top_hat``."""
     from scipy import ndimage
@@ -492,15 +529,17 @@ def seams(z, transform, sign: int, params=None, exclude=None) -> list[dict]:
     if exclude is None:
         along = np.nan_to_num(_top_hat(grid, p["opening"], axis=0), nan=0.0) > p["top_hat"]
         exclude = ndimage.binary_dilation(along, structure=np.ones((2 * SIDE_MASK_CELLS + 1, 1), bool))
-    cols, ys, steps = _crests(grid, p, exclude)
+    cols, ys, steps, signs = _crests(grid, p, exclude)
     out = []
-    for piece in _merge(_follow(grid, cols, ys, steps, p), p):
+    for piece in _merge(_follow(grid, cols, ys, steps, signs, p), p):
         length = float(np.hypot(np.diff(piece["x"]), np.diff(piece["y"])).sum())
         if length < p["min_seam"]:
             continue
-        out.append({"side": "port" if piece["y"].mean() > 0 else "starboard", "ship_xy": _line(piece["x"], piece["y"]),
-                    "step_mm": float(np.median(piece["step"]) * 1000.0), "length": length,
-                    "score": float((piece["step"] >= p["min_step"]).mean())})
+        port = piece["y"].mean() > 0
+        outward = piece["sign"] * piece["step"] * (1.0 if port else -1.0)  # positive: the height rises going outward
+        out.append({"side": "port" if port else "starboard", "ship_xy": _line(piece["x"], piece["y"]),
+                    "step_mm": float(np.median(piece["step"]) * 1000.0), "sign": int(np.sign(np.median(outward))),
+                    "length": length, "score": float((piece["step"] >= p["min_step"]).mean())})
     return sorted(out, key=lambda s: (s["side"], float(np.mean(np.abs(np.asarray(s["ship_xy"])[:, 1])))))
 
 
@@ -545,9 +584,8 @@ def _longest_path(nodes: list[int], edges: dict) -> dict:
 
 STRAY_SCORE = 0.1  # the score of a stray seam piece proposed as ``comento ?``
 WIDE_BAND = 1.5  # a band this many times as wide as the side's others there has lost a land: a piece in it is one
-
-
-NEXT_LAND = 0.85  # a piece beyond the outermost land is a land when it lies at least this share of the last band away
+PLANK_WIDTH = 0.3  # metres: the two edges of a loose timber lying on the planking are within this across
+PLANK_SHARE = 0.6  # the share of a piece's length along which the timber's other edge must lie beside it
 
 
 def _land_at(r: int, where: np.ndarray, placed: list[int], rank: dict, ys: dict) -> np.ndarray:
@@ -559,22 +597,33 @@ def _land_at(r: int, where: np.ndarray, placed: list[int], rank: dict, ys: dict)
     return np.where(where, y, np.nan)
 
 
-def _next_land(i: int, lo: int, placed: list[int], rank: dict, ys: dict) -> bool:
-    """Whether the piece ``i``, beyond the outermost land ``lo``, lies a strake's width from it: at least
-    :data:`NEXT_LAND` times the band between the lands ``lo - 1`` and ``lo`` there (medians over its samples; True when
-    that band is not there; both read at the x where both are). Pieces beyond the outermost land are judged after
-    every other piece is placed, so that the last band is a land's, not two strakes' where a land is lost. The band
-    from the outermost land to the model's edge cannot say it: the last strake there
-    may be as wide as the rest of the side (the top strake running to the sheer), with or without a land lost in it; a
-    loose plank or a stray of noise lying in it is a few centimetres from the land, a lost land a strake's width."""
-    where = np.isfinite(ys[i])
-    outer = _land_at(lo, where, placed, rank, ys)
-    inner = _land_at(lo - 1, where, placed, rank, ys)
-    gap, band = ys[i] - outer, outer - inner
-    both = np.isfinite(gap) & np.isfinite(band)  # compared at the same x: the strakes narrow toward the ends
-    if not both.any():
-        return True
-    return float(np.median(gap[both])) >= NEXT_LAND * float(np.median(band[both]))
+def _timber_edges(kept: list[int], ys: dict, seam_list: list[dict], land_sign: int) -> set[int]:
+    """The pieces of a side that are the edges of a loose timber lying on the planking, by the sign of their step
+    going outward: a timber is a rise at its inner edge and a drop at its outer edge, the two within
+    :data:`PLANK_WIDTH` across with no other piece between them. A piece with the wrong sign for a land
+    (``-land_sign``) is one; so is a piece with a land's sign that has such an other edge beside it along
+    :data:`PLANK_SHARE` of its length. Pieces without a sign (``sign`` missing or 0) are not judged."""
+    sign = {i: int(seam_list[i].get("sign") or 0) for i in kept}
+    wrong = {i for i in kept if sign[i] == -land_sign}
+    out = set(wrong)
+    for i in kept:
+        if sign[i] != land_sign:
+            continue
+        beside = np.zeros(len(ys[i]), bool)
+        for w in wrong:
+            rise, drop = (w, i) if land_sign < 0 else (i, w)
+            d = ys[drop] - ys[rise]
+            near = np.isfinite(d) & (d > 0) & (d <= PLANK_WIDTH)
+            if not near.any():
+                continue
+            for k in kept:
+                if k not in (rise, drop):
+                    near &= ~((ys[k] > ys[rise]) & (ys[k] < ys[drop]))
+            beside |= near
+        where = np.isfinite(ys[i])
+        if where.any() and beside.sum() >= PLANK_SHARE * where.sum():
+            out.add(i)
+    return out
 
 
 def _wide_band(i: int, lo: int, hi: int, placed: list[int], rank: dict, ys: dict) -> bool:
@@ -599,19 +648,25 @@ def lands(seam_list: list[dict], params=None) -> list[int | None]:
 
     The pieces of a side are compared two by two where they overlap along x (sampled every :data:`LAND_SAMPLE`): one
     within :data:`COLLINEAR` of a longer one over more than :data:`CONFLICT` is a duplicate; otherwise the one nearer
-    the keel there lies inside the other. The pieces are then placed one by one, the longest first, among those
-    already placed, ranked by the longest chain of placed pieces inside them (a land lost over part of the hull - under
-    sediment, a broken plank - keeps the rank of its pieces, and so do the lands beyond it). A piece is placed when it
-    lies inside the innermost land, beyond the outermost a strake's width from it (:func:`_next_land`; a piece a few
-    centimetres beyond it - a loose plank or noise near the sheer - is a stray), between two lands that are not
-    consecutive, or between two consecutive lands whose band is at least :data:`WIDE_BAND` times as wide there as the
-    other bands of the side (a land lost over the rest of the hull, its remnant here). Otherwise - between two consecutive lands, in a band of a
-    strake's width - it is a stray: the edge of a loose plank lying along the hull, a stray of noise, but also the
-    remnant of a land whose neighbours run on as consecutive lands elsewhere with a band of normal width; it is
-    proposed as ``comento ?`` with a low score and never counts in the ranks, so it renames nothing. Pieces of one rank
-    are one land (fore and aft of a hole, broken by noise). A stray in a free place (a piece of noise at an end of the
-    hull where the innermost land is not seen) takes that place's rank."""
-    _params(params)  # checked: the reading has no parameter of its own
+    the keel there lies inside the other. The sign of the step then tells the edges of a loose timber lying on the
+    planking from the lands (:func:`_timber_edges`; ``view`` in the parameters says which sign a land has: a drop
+    going outward seen from inside, a rise from outside): a piece with the other sign is a stray, and so is the piece
+    with a land's sign that lies within :data:`PLANK_WIDTH` of it on the timber's other side, nothing between them,
+    along :data:`PLANK_SHARE` of its length (the timber's other edge). The remaining pieces are placed one by one, the
+    longest first, among those already placed, ranked by the longest chain of placed pieces inside them (a land lost
+    over part of the hull - under sediment, a broken plank - keeps the rank of its pieces, and so do the lands beyond
+    it). A piece is placed when it lies inside the innermost land, beyond the outermost, between two lands that are
+    not consecutive, or between two consecutive lands whose band is at least :data:`WIDE_BAND` times as wide there as
+    the other bands of the side (a land lost over the rest of the hull, its remnant here). Otherwise - between two
+    consecutive lands, in a band of a strake's width - it is a stray: a stray of noise, the edge of a loose timber
+    whose other edge was not read, but also the remnant of a land whose neighbours run on as consecutive lands
+    elsewhere with a band of normal width. A stray is proposed as ``comento ?`` with a low score and never counts in
+    the ranks, so it renames nothing. Pieces of one rank are one land (fore and aft of a hole, broken by noise). A
+    stray in a free place (a piece of noise at an end of the hull where the innermost land is not seen, the outer
+    edge of a timber beside the outermost land whose inner edge is too close to it to be read) takes that place's
+    rank."""
+    p = _params(params)
+    land_sign = LAND_SIGN[p["view"]]
     out: list[int | None] = [None] * len(seam_list)  # None: a duplicate
     for side in ("port", "starboard"):
         live = [i for i, sm in enumerate(seam_list) if sm["side"] == side]
@@ -651,29 +706,26 @@ def lands(seam_list: list[dict], params=None) -> list[int | None]:
                 return -1 if relation[(j, i)][0] > 0 else 1
             return 0
 
+        strays = _timber_edges(kept, ys, seam_list, land_sign)
         rank: dict[int, int] = {}
         placed: list[int] = []
         edges: dict = {}
-        deferred: list[int] = []
-        for final in (False, True):
-            for i in deferred if final else sorted(kept, key=lambda i: -length[i]):
-                inner = [rank[j] for j in placed if nearer(j, i) > 0]
-                outer = [rank[j] for j in placed if nearer(j, i) < 0]
-                lo, hi = max(inner, default=0), min(outer, default=None)
-                if hi is None and lo >= 2 and not final:
-                    deferred.append(i)  # beyond the outermost land: judged once every other piece is placed
-                    continue
-                between = hi is not None and lo >= 1 and hi <= lo + 1 and not _wide_band(i, lo, hi, placed, rank, ys)
-                beyond = hi is None and lo >= 2 and not _next_land(i, lo, placed, rank, ys)
-                if between or beyond:
-                    out[i] = 0
-                    continue
-                for j in placed:
-                    r = relation.get((i, j)) or relation.get((j, i))
-                    if r is not None:
-                        edges[(i, j) if nearer(i, j) > 0 else (j, i)] = abs(r[0])
-                placed.append(i)
-                rank = _longest_path(placed, edges)
+        for i in sorted(kept, key=lambda i: -length[i]):
+            if i in strays:
+                out[i] = 0
+                continue
+            inner = [rank[j] for j in placed if nearer(j, i) > 0]
+            outer = [rank[j] for j in placed if nearer(j, i) < 0]
+            lo, hi = max(inner, default=0), min(outer, default=None)
+            if hi is not None and lo >= 1 and hi <= lo + 1 and not _wide_band(i, lo, hi, placed, rank, ys):
+                out[i] = 0
+                continue
+            for j in placed:
+                r = relation.get((i, j)) or relation.get((j, i))
+                if r is not None:
+                    edges[(i, j) if nearer(i, j) > 0 else (j, i)] = abs(r[0])
+            placed.append(i)
+            rank = _longest_path(placed, edges)
         for i, r in rank.items():
             out[i] = r
     return out
