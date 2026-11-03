@@ -5,8 +5,12 @@
   water (a level, the refraction taken out where the user says so), the drawings (body plan, half-breadth plan, profile,
   plan over the orthophoto; SVG, PDF, PNG, DXF), the catalogue of the timbers with their measures, the clinker
   strakes (the lands found on the sections, the land lines, a strake model labelled a hypothesis, the file link with
-  Fröhlich & Nielsen's Clinker Boat Tool for Houdini);
-* the products in the workspace tree, the timbers and the land lines in layers of the raster view;
+  Fröhlich & Nielsen's Clinker Boat Tool for Houdini), the relief of the hull from above (an elevation of the
+  program in the ship frame, its hillshade or local relief in grey over it) and the tracing on it (the proposals
+  accepted, rejected, corrected, added by hand, named from a table, flagged loose; each change a step of *Modifica >
+  Annulla*);
+* the products in the workspace tree, the timbers and the land lines in layers of the raster view on the plan, the
+  proposals and the traced timbers in layers of the relief while it is shown;
 * *File > Esporta > Relitto: catalogo dei legni*;
 * ``ppg plugin shipwreck frame|stations|sections|water|drawings|timbers|export|status`` and
   ``ppg plugin shipwreck clinker detect|strakes|export|import|status``.
@@ -17,6 +21,7 @@ the chunk are never changed, and nothing is written outside ``<chunk data>/shipw
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from pathlib import Path
 
@@ -31,6 +36,38 @@ NEGATIVE_VALUES = ("--start", "--end", "--longitudinals", "--horizontals")  # ma
 LAYER = "Legni del relitto"
 CLINKER_LAYER = "Fasce"  # the land lines, in the chunk's x, y
 SIDE_COLOURS = {"port": "#e04040", "starboard": "#30a040", "centre": "#ffd000"}
+PROPOSALS_LAYER = "Proposte (relitto)"  # on the relief, in its (u, v): dashed
+TRACED_LAYER = "Legni ricalcati"  # on the relief, in its (u, v): solid, labelled with the name
+KIND_COLOURS = {"seam": "#00e5ff", "frame": "#ff8c00", "keelson": "#d040ff", "keel": "#8d6e63", "stringer": "#ffd000",
+                "plank": "#30c060", "ceiling": "#9ccc65", "fastening": "#ff3030", "other": "#b0b0b0"}
+UNDO_KEYS = ("timbers", "proposals")  # what a step of the tracing changes, kept for *Modifica > Annulla*
+OVERLAY_TITLES = {"height": ("Altezze", "Heights"), "hillshade": ("Ombreggiatura", "Hillshade"),
+                  "slrm": ("Rilievo locale", "Local relief")}
+
+
+class _Step:
+    """One change of the catalogue or the proposals as an entry of the window's *Modifica > Annulla*: both before and
+    after (the program's undo takes no snapshot of a plugin's meta by itself)."""
+
+    def __init__(self, plugin, chunk, before: dict, after: dict):
+        self.plugin, self.chunk, self.before, self.after = plugin, chunk, before, after
+
+    def _put(self, state: dict) -> None:
+        from . import ship
+
+        st = ship.state(self.chunk)
+        for key, value in state.items():
+            if value is None:
+                st.pop(key, None)
+            else:
+                st[key] = copy.deepcopy(value)
+        self.plugin._changed()
+
+    def undo(self) -> None:
+        self._put(self.before)
+
+    def redo(self) -> None:
+        self._put(self.after)
 
 
 class ShipwreckPlugin(Plugin):
@@ -44,6 +81,8 @@ class ShipwreckPlugin(Plugin):
                              "strakes")
         self.context = None
         self.pane = None
+        self.overlay = None  # the grey raster over the relief (:class:`overlay.Overlay`)
+        self.overlay_kind = "hillshade"  # which one: a kind of :data:`relief.KINDS`, or "photo" for none
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
@@ -66,10 +105,15 @@ class ShipwreckPlugin(Plugin):
             context.on_refresh(self.refresh_pane)
             context.on_raster_loaded(self.draw_layer)
             context.on_features_deleted(LAYER, self._features_deleted)
+            context.on_features_deleted(PROPOSALS_LAYER, self._proposals_deleted)
+            context.on_features_deleted(TRACED_LAYER, self._features_deleted)
             context.add_tree_items(self._tree_items)
             self.refresh_pane()
 
     def deactivate(self) -> None:
+        if self.overlay is not None:
+            self.overlay.remove()
+        self.overlay = None
         self.pane = None
 
     def show_pane(self) -> None:
@@ -106,6 +150,24 @@ class ShipwreckPlugin(Plugin):
         self.context.refresh_tree()
         self.refresh_pane()
         self.draw_layer()
+
+    @staticmethod
+    def _snapshot(chunk) -> dict:
+        from . import ship
+
+        st = chunk.meta.get(ship.KEY) or {}
+        return copy.deepcopy({key: st.get(key) for key in UNDO_KEYS})
+
+    def _step(self, chunk, before: dict, text: str) -> None:
+        """After a change of the catalogue or the proposals: an entry of *Modifica > Annulla* (``text``), then the
+        project modified and the pane, the tree and the layers shown again."""
+        window = self.context.window
+        history = getattr(window, "history", None) if window is not None else None
+        scripted = bool(getattr(window, "_script_running", False))  # a script's own entry covers it
+        after = self._snapshot(chunk)
+        if history is not None and not scripted and before != after and chunk is getattr(window, "chunk", None):
+            history.push(t(f"Relitto: {text}", f"Shipwreck: {text}"), _Step(self, chunk, before, after), document=False)
+        self._changed()
 
     def _guarded(self, function, *args) -> None:
         """A step of the user: what it needs and is missing is said, not raised."""
@@ -155,7 +217,7 @@ class ShipwreckPlugin(Plugin):
         out = {"frame": t("Non impostato.", "Not set."), "stations": t("Nessuna stazione.", "No stations."),
                "sections": t("Non calcolate.", "Not computed."), "water": t("Correzione spenta.", "Correction off."),
                "drawings": t("Nessun disegno.", "No drawings."), "timbers": t("Catalogo vuoto.", "The catalogue is empty."),
-               "clinker": clinker_state(chunk)}
+               "clinker": clinker_state(chunk), "relief": relief_state(chunk)}
         if frame is not None:
             bow = t(f"prua a x = {num(frame.bow_x)}", f"bow at x = {num(frame.bow_x)}")
             out["frame"] = t(f"Chiglia {num(frame.length)} m, rotta {num(frame.heading, 1)}°, pendenza "
@@ -425,7 +487,8 @@ class ShipwreckPlugin(Plugin):
 
         chunk = self._chunk()
         v = self._ask(t("Legno", "Timber"), [
-            Field("kind", t("Tipo", "Kind"), "frame", choices=[(k, timbers.kind_title(k)) for k in timbers.KINDS]),
+            Field("kind", t("Tipo", "Kind"), "frame",
+                  choices=[(k, timbers.kind_title(k)) for k in timbers.KINDS if k != "seam"]),  # seams: proposals
             Field("side", t("Lato", "Side"), "port", choices=[(k, timbers.side_title(k)) for k in timbers.SIDES]),
             Field("name", t("Nome", "Name"), "", kind="text", tip=t("Il nome del cantiere (F36)", "The name of the field (F36)")),
             Field("station", t("Stazione", "Station"), "", kind="text"), Field("notes", t("Note", "Notes"), "", kind="text")])
@@ -487,13 +550,20 @@ class ShipwreckPlugin(Plugin):
         return timbers.export_any(chunk, path)
 
     def _features_deleted(self, features) -> None:
-        from . import timbers
+        """Timbers deleted on the view (on the plan or on the relief): out of the catalogue, one undo step."""
+        from . import ship, timbers, tracing
 
         chunk = self._chunk()
-        if chunk is not None and timbers.remove(chunk, [f.get("id") for f in features]):
-            self.context.mark_modified()
-            self.context.refresh_tree()
-            self.refresh_pane()
+        if chunk is None:
+            return
+        ids = [f.get("ppg_id") or f.get("id") for f in features]
+        before = self._snapshot(chunk)
+        if timbers.remove(chunk, [i for i in ids if i]):
+            try:
+                tracing.update_visible(chunk)
+            except ship.NotReady:
+                pass
+            self._step(chunk, before, t("legni eliminati", "timbers deleted"))
 
     # ------------------------------------------------------------------ 7 the clinker strakes
     def _do_clinker_detect(self) -> None:
@@ -658,6 +728,390 @@ class ShipwreckPlugin(Plugin):
         folder.mkdir(parents=True, exist_ok=True)
         self._open(folder)
 
+
+    # ------------------------------------------------------------------ 8 the relief and the tracing
+    def _relief_entry(self, chunk) -> dict:
+        from . import relief, ship
+
+        e = relief.entry(chunk)
+        if e is None:
+            raise ship.NotReady(t("Costruisci prima il rilievo dello scafo.", "Build the relief of the hull first."))
+        return e
+
+    def _relief_shown(self, chunk) -> bool:
+        from . import relief
+
+        window = self.context.window if self.context else None
+        e = relief.entry(chunk) if chunk is not None else None
+        view = getattr(window, "ortho_view", None)
+        return (e is not None and view is not None and view.tr is not None
+                and getattr(window, "drawings_frame", None) == e["id"])
+
+    def _leave_relief(self, chunk) -> None:
+        """The plan in the view when the relief is shown: the drawings made on it stored first (a new relief carries
+        them over to its new entry, so none may stay under the old one in the window's memory)."""
+        if not self._relief_shown(chunk):
+            return
+        self.context.store_drawings()
+        self._need_view(chunk)
+
+    def _show_relief(self, chunk, kind: str | None = None) -> None:
+        """The relief of the hull in the raster view (the program's elevation), with the grey raster ``kind`` over it
+        (None: the one chosen last; "photo": none)."""
+        from . import relief
+
+        e = self._relief_entry(chunk)
+        if kind is not None:
+            self.overlay_kind = kind
+        if not self._relief_shown(chunk):
+            self.context.window.show_elevation(e)  # the layers and the overlay follow (on_raster_loaded)
+        else:
+            self.draw_layer()
+        if relief.is_stale(chunk):
+            self._status(t("Il rilievo dello scafo è di un altro sistema della nave o di un altro modello: rifallo.",
+                           "The relief of the hull is of another ship frame or another model: build it again."))
+
+    def _need_relief_view(self, chunk) -> None:
+        if not self._relief_shown(chunk):
+            self._show_relief(chunk)
+
+    def _apply_overlay(self, chunk) -> None:
+        from . import relief
+        from .overlay import Overlay
+
+        view = self.context.window.ortho_view
+        if self.overlay is None or self.overlay.view is not view:
+            self.overlay = Overlay(view)
+        if self.overlay_kind not in relief.KINDS:
+            self.overlay.remove()
+            return
+        self.overlay.show(relief._path(chunk, self.overlay_kind), self.overlay_kind, t(*OVERLAY_TITLES[self.overlay_kind]))
+
+    def _do_relief_build(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import relief, ship
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        ship.check_metric(chunk)
+        old = (ship.state(chunk).get("relief") or {}).get("cell")
+        cell = float(old or relief.default_cell(chunk))
+        v = self._ask(t("Rilievo dello scafo", "Relief of the hull"), [
+            Field("cell", t("Cella (mm)", "Cell (mm)"), round(cell * 1000.0, 1), minimum=0.5, maximum=1000.0, decimals=1,
+                  tip=t("Dalla densità del modello; più piccola, più fine e più pesante",
+                        "From the model's density; smaller, finer and heavier"))],
+            intro=t("Lo scafo visto dall'alto nel sistema della nave (u = x, v = y verso sinistra), come un prospetto "
+                    "del programma: le sue altezze, l'ombreggiatura e il rilievo locale. Si disegna sopra con gli "
+                    "strumenti del programma; i disegni restano con il rilievo anche quando lo rifai.",
+                    "The hull seen from above in the ship frame (u = x, v = y to the left), as an elevation of the "
+                    "program: its heights, hillshade and local relief. Draw on it with the program's tools; the "
+                    "drawings stay with the relief when you build it again."))
+        if v:
+            self.build_relief(chunk, float(v["cell"]) / 1000.0)
+
+    def build_relief(self, chunk, cell=None) -> None:
+        from . import relief
+
+        if cell:
+            relief.check_size(chunk, cell)  # too many cells: said before the work starts
+        self._leave_relief(chunk)
+
+        def done(st):
+            self._status(t(f"Rilievo dello scafo: celle di {num(st['cell'] * 1000.0, 1)} mm",
+                           f"Relief of the hull: cells of {num(st['cell'] * 1000.0, 1)} mm"))
+            self._changed()
+            self._guarded(self._show_relief, chunk)  # the NEW entry: the old one is gone
+
+        self._run(t("Rilievo dello scafo", "Relief of the hull"), lambda p: relief.build(chunk, cell, progress=p), done)
+
+    def _do_relief_show(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        chunk = self._need_chunk()
+        self._relief_entry(chunk)
+        kinds = [("photo", t("Solo l'immagine del rilievo", "The relief's image alone")),
+                 ("height", t("Altezze", "Heights")), ("hillshade", t("Ombreggiatura", "Hillshade")),
+                 ("slrm", t("Rilievo locale", "Local relief"))]
+        v = self._ask(t("Mostra il rilievo", "Show the relief"), [
+            Field("kind", t("Sopra", "Over it"), self.overlay_kind, choices=kinds)],
+            intro=t("In grigio, dal 2 al 98 percentile, sopra l'immagine del rilievo e sotto i disegni.",
+                    "In grey, from the 2nd to the 98th percentile, over the relief's image and under the drawings."))
+        if v:
+            self._show_relief(chunk, v["kind"])
+
+    def _do_proposals_build(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import proposals, relief, ship
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        self._relief_entry(chunk)
+        if relief.is_stale(chunk):
+            raise ship.NotReady(t("Il rilievo dello scafo è di un altro sistema della nave o di un altro modello: "
+                                  "costruiscilo di nuovo.",
+                                  "The relief of the hull is of another ship frame or another model: build it again."))
+        p = {**proposals.DEFAULTS, **((ship.state(chunk).get("proposals") or {}).get("params") or {})}
+        v = self._ask(t("Proponi", "Propose"), [
+            Field("view", t("Il modello mostra", "The model shows"), p["view"], choices=[
+                ("inside", t("L'interno dello scafo (relitto sul fondo)", "The inside of the hull (a wreck on its bottom)")),
+                ("outside", t("L'esterno dello scafo (scafo sollevato)", "The outside of the hull (a lifted hull)"))],
+                tip=t("Decide il verso del gradino di un comento: con il lato sbagliato ogni comento è un dubbio",
+                      "It decides the sign of a land's step: with the wrong face every land is a stray")),
+            Field("min_step", t("Gradino minimo dei comenti (mm)", "Least step of a seam (mm)"), p["min_step"] * 1000.0,
+                  minimum=0.5, maximum=100.0, decimals=1),
+            Field("opening", t("Apertura (m)", "Opening (m)"), p["opening"], minimum=0.02, maximum=5.0, decimals=2,
+                  tip=t("Più lunga del vano fra due ordinate, più corta del fasciame fra due ordinate",
+                        "Longer than the room between two frames, shorter than the planking between two frames")),
+            Field("top_hat", t("Altezza minima di un legno sopra il fasciame (mm)", "Least height of a timber over the "
+                               "planking (mm)"), p["top_hat"] * 1000.0, minimum=1.0, maximum=500.0, decimals=1)],
+            intro=t("Comenti, ordinate, paramezzale, serrette e fasce letti sul rilievo: proposte da accettare, "
+                    "correggere o scartare. Una nuova lettura non tocca i legni del catalogo e non ripropone ciò che "
+                    "è stato accettato o scartato.",
+                    "Seams, frames, keelson, stringers and strakes read on the relief: proposals to accept, correct "
+                    "or reject. A new reading never touches the catalogue's timbers and never proposes again what "
+                    "was accepted or rejected."))
+        if not v:
+            return
+        params = {"view": v["view"], "min_step": float(v["min_step"]) / 1000.0, "opening": float(v["opening"]),
+                  "top_hat": float(v["top_hat"]) / 1000.0}
+        self.propose(chunk, params)
+
+    def propose(self, chunk, params=None) -> None:
+        from . import proposals
+
+        before = self._snapshot(chunk)
+
+        def done(_prop):
+            self._status(proposals.summary(chunk))
+            self._step(chunk, before, t("proposte lette", "proposals read"))
+            self._guarded(self._need_relief_view, chunk)
+
+        self._run(t("Proposte dal rilievo", "Proposals from the relief"),
+                  lambda p: proposals.build(chunk, params, progress=p), done)
+
+    def _selected(self, *layers) -> list[str]:
+        """The ids of the features selected on the view in ``layers`` (``ppg_id``, the plan's ``id``)."""
+        view = getattr(self.context.window, "ortho_view", None)
+        if view is None:
+            return []
+        out = []
+        for layer, _idx, attrs in view.selected_features():
+            key = attrs.get("ppg_id") or attrs.get("id")
+            if layer in layers and key and key not in out:
+                out.append(key)
+        return out
+
+    def _selected_timbers(self) -> list[str]:
+        ids = self._selected(TRACED_LAYER, LAYER)
+        return ids + [i for i in (self.pane.selected_ids() if self.pane is not None else []) if i not in ids]
+
+    def _do_trace_accept(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import proposals, ship, timbers, tracing
+
+        chunk = self._need_chunk()
+        prop = ship.state(chunk).get("proposals") or {}
+        if not prop.get("items"):
+            raise ship.NotReady(t("Nessuna proposta da accettare: leggi prima le proposte sul rilievo.",
+                                  "No proposal to accept: read the proposals on the relief first."))
+        ids = self._selected(PROPOSALS_LAYER)
+        if not ids:
+            kinds = [("all", t("Tutte", "All"))] + [(k, timbers.kind_title(k)) for k in proposals.KINDS]
+            v = self._ask(t("Accetta le proposte", "Accept the proposals"), [
+                Field("kind", t("Tipo", "Kind"), "all", choices=kinds),
+                Field("score", t("Punteggio minimo", "Least score"), 0.5, minimum=0.0, maximum=1.0, decimals=2,
+                      tip=t("I comenti dubbi (comento B?, T?) hanno 0,1 o meno", "The doubtful seams (B?, T?) have "
+                            "0.1 or less"))],
+                intro=t("Nessuna proposta selezionata sulla vista: quali accettare?",
+                        "No proposal selected on the view: which ones to accept?"))
+            if not v:
+                return
+            ids = [i["id"] for i in prop["items"] if v["kind"] in ("all", i["kind"])
+                   and float(i.get("score") or 0.0) >= float(v["score"])]
+            if not ids:
+                raise ship.NotReady(t("Nessuna proposta così.", "No such proposal."))
+        before = self._snapshot(chunk)
+        records = tracing.accept(chunk, ids)
+        tracing.update_visible(chunk)
+        self._status(plural(len(records), ("legno accettato", "legni accettati"), ("timber accepted", "timbers accepted")))
+        self._step(chunk, before, t("proposte accettate", "proposals accepted"))
+
+    def _do_trace_reject(self) -> None:
+        from . import ship
+
+        chunk = self._need_chunk()
+        ids = self._selected(PROPOSALS_LAYER)
+        if not ids:
+            raise ship.NotReady(t("Seleziona sulla vista le proposte da scartare (strumento Seleziona).",
+                                  "Select on the view the proposals to reject (the Select tool)."))
+        self.reject(chunk, ids)
+
+    def reject(self, chunk, ids) -> None:
+        from . import tracing
+
+        before = self._snapshot(chunk)
+        count = tracing.reject(chunk, ids)
+        self._status(plural(count, ("proposta scartata", "proposte scartate"), ("proposal rejected", "proposals rejected")))
+        self._step(chunk, before, t("proposte scartate", "proposals rejected"))
+
+    def _proposals_deleted(self, features) -> None:
+        """Proposals deleted on the view: rejected (a stale relief or frame refuses it: said, and they come back)."""
+        from . import ship
+
+        chunk = self._chunk()
+        ids = [f.get("ppg_id") for f in features if f.get("ppg_id")]
+        if chunk is None or not ids:
+            return
+        known = {i["id"] for i in (ship.state(chunk).get("proposals") or {}).get("items", [])}
+        ids = [i for i in ids if i in known]
+        try:
+            if ids:
+                self.reject(chunk, ids)
+        except ship.NotReady as exc:
+            self._message("warning", str(exc))
+            self.draw_layer()
+
+    def _request(self, geometry: str):
+        return {"polygon": self.context.request_polygon, "line": self.context.request_line,
+                "point": self.context.request_point}[geometry]
+
+    def _do_trace_correct(self) -> None:
+        from . import ship, tracing
+
+        chunk = self._need_chunk()
+        ids = self._selected_timbers()
+        if len(ids) != 1:
+            raise ship.NotReady(t("Seleziona un legno (sulla vista o nella tabella) da ridisegnare.",
+                                  "Select one timber (on the view or in the table) to trace again."))
+        record = tracing._record(chunk, ids[0])
+        tracing._need_fresh_relief(chunk)
+        self._need_relief_view(chunk)
+        gtype = record["geometry"]["type"]
+
+        def finished(uv):
+            before = self._snapshot(chunk)
+            tracing.correct(chunk, record["id"], uv)
+            self._step(chunk, before, t(f"{record['name'] or record['id']} corretto",
+                                        f"{record['name'] or record['id']} corrected"))
+
+        name = record["name"] or record["id"]
+        self._request(gtype)(lambda uv: self._guarded(finished, uv),
+                             hint=t(f"Ridisegna {name} sul rilievo", f"Trace {name} again on the relief"))
+
+    def _do_trace_add(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import ship, timbers, tracing
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        self._relief_entry(chunk)
+        tracing._need_fresh_relief(chunk)
+        v = self._ask(t("Legno ricalcato", "Traced timber"), [
+            Field("kind", t("Tipo", "Kind"), "frame", choices=[(k, timbers.kind_title(k)) for k in timbers.KINDS]),
+            Field("side", t("Lato", "Side"), "auto", choices=[("auto", t("Dalla posizione", "From where it lies"))]
+                  + [(k, timbers.side_title(k)) for k in timbers.SIDES]),
+            Field("name", t("Nome", "Name"), "", kind="text", tip=t("Il nome del cantiere (F36)", "The name of the field (F36)")),
+            Field("geometry", t("Disegno", "Drawing"), "polygon", choices=[
+                ("polygon", t("Poligono", "Polygon")), ("line", t("Linea", "Line")), ("point", t("Punto", "Point"))],
+                tip=t("Un comento è sempre una linea", "A seam is always a line"))])
+        if not v:
+            return
+        gtype = "line" if v["kind"] == "seam" else v["geometry"]
+        self._need_relief_view(chunk)
+
+        def finished(uv):
+            before = self._snapshot(chunk)
+            record = tracing.add_traced(chunk, v["kind"], v["side"], v["name"], uv, gtype)
+            tracing.update_visible(chunk)
+            self._step(chunk, before, t(f"{record['name'] or record['id']} ricalcato",
+                                        f"{record['name'] or record['id']} traced"))
+
+        self._request(gtype)(lambda uv: self._guarded(finished, uv),
+                             hint=t("Disegna il legno sul rilievo", "Trace the timber on the relief"))
+
+    def _do_trace_names(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from . import tracing
+
+        chunk = self._need_chunk()
+        path, _ = QFileDialog.getOpenFileName(self.context.window, t("Nomi delle ordinate", "Names of the frames"), "",
+                                              "CSV (*.csv *.txt *.tsv)")
+        if not path:
+            return
+        before = self._snapshot(chunk)
+        named, unmatched = tracing.rename_frames(chunk, path)
+        self._status(t(f"Ordinate rinominate: {named}; righe senza ordinata: {unmatched}",
+                       f"Frames renamed: {named}; rows matching no frame: {unmatched}"))
+        self._step(chunk, before, t("nomi delle ordinate", "names of the frames"))
+
+    def _do_trace_loose(self) -> None:
+        from . import ship, timbers, tracing
+
+        chunk = self._need_chunk()
+        ids = self._selected_timbers()
+        if not ids:
+            raise ship.NotReady(t("Seleziona i legni (sulla vista o nella tabella).",
+                                  "Select the timbers (on the view or in the table)."))
+        records = [r for r in timbers.timbers_of(chunk) if r["id"] in set(ids)]
+        flag = not all(r.get("loose") for r in records)
+        before = self._snapshot(chunk)
+        tracing.loose(chunk, ids, flag)
+        tracing.update_visible(chunk)
+        self._step(chunk, before, t("legni sciolti", "loose timbers") if flag else
+                   t("legni non più sciolti", "timbers no longer loose"))
+
+    def _draw_relief(self, view, chunk) -> None:
+        """The proposals (dashed, a colour per kind) and the traced timbers (solid, labelled) in the relief's (u, v):
+        through the frame each was read in to the chunk's coordinates, then into the frame the relief was built in,
+        so that they lie where the relief shows them even when the frame changed since."""
+        from PySide6.QtCore import Qt
+
+        from . import relief, ship, timbers
+
+        st = ship.state(chunk)
+        built_in = ship.Frame.from_dict(st["relief"]["frame"])
+
+        def uv_of(world_xy):
+            w = np.asarray(world_xy, float).reshape(-1, 2)
+            return relief.uv_of_ship(built_in.to_ship(np.column_stack([w, np.zeros(len(w))]))[:, :2], built_in.sign)
+
+        prop = st.get("proposals") or {}
+        read_in = ship.Frame.from_dict(prop["frame"]) if prop.get("frame") else ship.frame_of(chunk)
+        with view.batch():
+            for item in prop.get("items", []) if read_in is not None else []:
+                xy = np.asarray(item["ship_xy"], float).reshape(-1, 2)
+                uv = uv_of(read_in.to_world(np.column_stack([xy, np.zeros(len(xy))]))[:, :2])
+                colour = KIND_COLOURS.get(item["kind"], KIND_COLOURS["other"])
+                attrs = {"ppg_id": item["id"], "kind": item["kind"], "side": item["side"], "name": item["name"],
+                         "score": round(float(item.get("score") or 0.0), 3)}
+                if item["kind"] == "seam" or len(uv) < 3:
+                    view.add_line(uv, colour, "", layer=PROPOSALS_LAYER, attrs=attrs, width=1.5, dash=True)
+                else:
+                    shape = view.add_polygon(uv, "", colour, fill_alpha=25, layer=PROPOSALS_LAYER, attrs=attrs)
+                    pen = shape.pen()
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                    shape.setPen(pen)
+            for r in timbers.timbers_of(chunk):
+                geom = r.get("geometry") or {}
+                if not geom.get("xy") or not timbers.is_measured(r):
+                    continue
+                uv = uv_of(geom["xy"])
+                colour = KIND_COLOURS.get(r["kind"], KIND_COLOURS["other"])
+                attrs = {"ppg_id": r["id"], "kind": r["kind"], "side": r["side"], "name": r["name"],
+                         "loose": int(bool(r.get("loose")))}
+                label = r["name"] or r["id"]
+                if geom["type"] == "point":
+                    view.add_point(uv[0, 0], uv[0, 1], colour, label, layer=TRACED_LAYER, attrs=attrs)
+                elif geom["type"] == "polygon":
+                    view.add_polygon(uv, label, colour, fill_alpha=60, layer=TRACED_LAYER, attrs=attrs)
+                else:
+                    view.add_line(uv, colour, label, layer=TRACED_LAYER, attrs=attrs)
+
     # ------------------------------------------------------------------ the view
     def _need_chunk(self):
         from . import ship
@@ -670,7 +1124,8 @@ class ShipwreckPlugin(Plugin):
     def _need_view(self, chunk) -> None:
         """Something to draw on: the orthophoto or the DEM, else an empty frame around the model."""
         view = getattr(self.context.window, "ortho_view", None)
-        if view is not None and view.tr is not None:
+        on_plan = getattr(self.context.window, "drawings_frame", None) is None  # an elevation has (u, v), not x, y
+        if view is not None and view.tr is not None and on_plan:
             return
         if self.context.show_raster(None):
             return
@@ -681,14 +1136,33 @@ class ShipwreckPlugin(Plugin):
         self.context.show_frame((lo[0], lo[1], hi[0], hi[1]), max(hi - lo) / 1500.0, t(*NAME))
 
     def draw_layer(self) -> None:
-        """The timbers of the chunk as a layer of the raster view."""
-        from . import timbers
+        """The layers of the plugin on the raster view: on the plan the timbers and the land lines in the chunk's
+        x, y; on the relief of the hull the proposals and the traced timbers in its (u, v), and the grey raster over
+        it; on anything else none."""
+        from . import ship
 
         view = getattr(self.context.window, "ortho_view", None) if self.context else None
         chunk = self._chunk()
-        if view is None or chunk is None or view.tr is None:
+        if view is None:
             return
-        view.remove_layer(LAYER)
+        for name in (LAYER, CLINKER_LAYER, PROPOSALS_LAYER, TRACED_LAYER):
+            view.remove_layer(name)
+        if chunk is None or view.tr is None:
+            return
+        shown = getattr(self.context.window, "drawings_frame", None)
+        if shown is None:
+            self._draw_plan(view, chunk)
+        elif self._relief_shown(chunk):
+            self._draw_relief(view, chunk)
+            try:
+                self._apply_overlay(chunk)
+            except (RuntimeError, ship.NotReady) as exc:  # a raster of the relief missing: said, the view stays as it is
+                self._status(str(exc))
+
+    def _draw_plan(self, view, chunk) -> None:
+        """The timbers of the chunk and the land lines on the plan."""
+        from . import timbers
+
         for r in timbers.timbers_of(chunk):
             xy = np.asarray(r["geometry"]["xy"], float)
             colour = SIDE_COLOURS.get(r["side"], "#ffd000")
@@ -741,10 +1215,15 @@ class ShipwreckPlugin(Plugin):
             kids = [{"label": t(*KIND_TITLES[k]) + (t(" (da rifare)", " (to make again)") if k in old else ""), "icon": "plugin",
                      "activate": lambda f=folder / f"{k}.pdf": self._open(f)} for k in made]
             children.append({"label": t("Disegni", "Drawings"), "icon": "plugin", "children": kids})
+        children += self._relief_items(chunk)
         records = timbers.timbers_of(chunk)
         if records:
-            children.append({"label": t(f"Legni ({len(records)})", f"Timbers ({len(records)})"), "icon": "plugin",
-                             "activate": self.show_pane})
+            count: dict[str, int] = {}
+            for r in records:
+                count[r["kind"]] = count.get(r["kind"], 0) + 1
+            kinds = ", ".join(f"{timbers.kind_title(k)} {n}" for k, n in sorted(count.items(), key=lambda kv: -kv[1]))
+            children.append({"label": t(f"Legni ({len(records)}): {kinds}", f"Timbers ({len(records)}): {kinds}"),
+                             "icon": "plugin", "activate": self.show_pane})
         strakes = strake_counts(chunk)
         if strakes:
             if len(set(strakes.values())) == 1 and len(strakes) == 2:
@@ -758,6 +1237,27 @@ class ShipwreckPlugin(Plugin):
         if not children:
             return []
         return [{"label": t(*NAME), "icon": "plugin", "children": children}]
+
+    def _relief_items(self, chunk) -> list:
+        """"Relitto: rilievo" (shows it) and "Proposte (n)" in the workspace tree."""
+        from . import relief, ship
+
+        if relief.entry(chunk) is None:
+            return []
+
+        def show():
+            self._guarded(self._show_relief, self._need_chunk())
+
+        label = t("Relitto: rilievo", "Shipwreck: relief")
+        if relief.is_stale(chunk):
+            label += t(" (da rifare)", " (to build again)")
+        out = [{"label": label, "icon": "plugin", "activate": show,
+                "tooltip": t("Lo scafo dall'alto nel sistema della nave", "The hull from above in the ship frame")}]
+        prop = ship.state(chunk).get("proposals")
+        if prop:
+            n = len(prop.get("items", []))
+            out.append({"label": t(f"Proposte ({n})", f"Proposals ({n})"), "icon": "plugin", "activate": show})
+        return out
 
     def _open(self, path) -> None:
         from PySide6.QtCore import QUrl
@@ -962,6 +1462,32 @@ def clinker_state(chunk) -> str:
         far = (t(f", distanza dalla scansione mediana {num(median(medians), 1)} mm",
                  f", distance from the scan median {num(median(medians), 1)} mm") if medians else "")
         text += " " + t(f"Da Houdini, {name}: {count}{far}.", f"From Houdini, {name}: {count}{far}.")
+    return text
+
+
+def relief_state(chunk) -> str:
+    """The relief and tracing step's state in words: the relief (cell, size, stale), the proposals, the traced timbers."""
+    from . import proposals, relief, ship, timbers
+
+    st = (chunk.meta.get(ship.KEY) or {}).get("relief")
+    e = relief.entry(chunk)
+    if not st or e is None:
+        text = t("Non costruito.", "Not built.")
+        if st:
+            text = t("Il rilievo è stato tolto nel programma: costruiscilo di nuovo.",
+                     "The relief was removed in the program: build it again.")
+        return text
+    size = e.get("size") or ("?", "?")
+    text = t(f"Rilievo: {size[0]} x {size[1]} celle di {num(st['cell'] * 1000.0, 1)} mm.",
+             f"Relief: {size[0]} x {size[1]} cells of {num(st['cell'] * 1000.0, 1)} mm.")
+    if relief.is_stale(chunk):
+        text += " " + t("Di un altro sistema della nave o di un altro modello: rifallo.",
+                        "Of another ship frame or another model: build it again.")
+    if (chunk.meta.get(ship.KEY) or {}).get("proposals"):
+        text += " " + proposals.summary(chunk)
+    traced = [r for r in timbers.timbers_of(chunk) if r.get("elevation") or r.get("source")]
+    if traced:
+        text += " " + t("Ricalcati: ", "Traced: ") + plural(len(traced), ("legno", "legni"), ("timber", "timbers")) + "."
     return text
 
 
