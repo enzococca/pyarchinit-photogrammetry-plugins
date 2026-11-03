@@ -5,7 +5,8 @@ Method (the design's B1, after Fröhlich & Nielsen's description of a clinker hu
 leave to future work): per station, per side (``port``: y > 0 in ship coordinates, ``starboard``: y < 0, split at the
 keel = the section's lowest point within 5 cm of y = 0), the raw section (never the water-corrected one) as a
 polyline from the keel outward with its arc length ``s``, ended where it turns back (round the sheer onto the inner
-face, or over the plank tops down into the trench or the seabed); pieces that do not continue it (a loose timber)
+face, or where it bends back into sediment, a trench or the seabed: a rule on the direction of the smoothed
+profile, never on heights); pieces that do not continue it (a loose timber)
 are left apart and counted, a piece that goes on beyond a gap makes the side unreadable. A moving average over
 ``window`` metres of arc, applied twice, is the hull "without planks"; the signed offset ``d(s)`` of the raw profile
 from it, along its outward normal, is a saw tooth on a clinker hull: walking from the sheer down to the keel ``d``
@@ -44,8 +45,11 @@ SIDES = ("port", "starboard")
 SIDE_SIGN = {"port": 1.0, "starboard": -1.0}
 MIN_VERTICES = 10
 JOIN = 0.02  # pieces of a side's line farther apart than this: the model is missing there
-KEEL_BAND = 0.05  # the keel: the section's lowest point within 5 cm of y = 0
-TURN = 0.10  # the profile turned back: 10 cm lower, or nearer the centreline, than reached before
+KEEL_BAND = 0.05  # the keel: the hull's lowest point within 5 cm of y = 0
+KEEL_FLAT = 0.002  # ... the middle of the bottom within 2 mm of that height (a flat keel, a keel off the centreline)
+KEEL_REACH = 1.5  # the hull among the pieces near y = 0: the one that rises most within 1.5 m of it
+TURN_DEG = 150.0  # the profile has turned round the sheer onto the inner face
+BEND_DEG = 45.0  # ... or bends back this much below the steepest it reached, for ``min_strake``: sediment, a trench
 SAMPLE = 0.002  # the profile resampled every 2 mm of arc
 FLAT = 0.005  # the flats' samples beside a land, 5 mm apart
 LAYERS = {"port": "FASCE_BABORDO", "starboard": "FASCE_TRIBORDO"}
@@ -87,11 +91,38 @@ def _runs(p: np.ndarray, sign: float) -> list[np.ndarray]:
 
 
 def _keel(polylines: list[np.ndarray]) -> np.ndarray | None:
-    """The keel of a section: its lowest point within ``KEEL_BAND`` of y = 0 (a hull lying a few cm off the
-    centreline is read from its own keel); None when the section does not come near y = 0."""
-    p = np.vstack(polylines)
-    near = p[np.abs(p[:, 0]) <= KEEL_BAND]
-    return None if not len(near) else near[np.argmin(near[:, 1])]
+    """The keel of a section: on the hull's piece (of the pieces that cross or come within ``KEEL_BAND`` of y = 0,
+    the one that rises most within ``KEEL_REACH`` of it: a trench floor under a raised hull or a loose timber does
+    not), its lowest point near y = 0, moved to the middle of the bottom that lies within ``KEEL_FLAT`` of that
+    height (a flat keel is read at its middle, a hull lying a few cm off the centreline from its own keel). None
+    when no piece comes near y = 0."""
+    best, score = None, -np.inf
+    for p in polylines:
+        near = np.abs(p[:, 0]) <= KEEL_BAND
+        if not near.any() and not (np.sign(p[:-1, 0]) * np.sign(p[1:, 0]) < 0).any():
+            continue
+        low = float(p[near, 1].min()) if near.any() else float(np.interp(0.0, *p[np.argsort(p[:, 0])].T))
+        rise = float(p[np.abs(p[:, 0]) <= KEEL_REACH, 1].max()) - low
+        if rise > score:
+            best, score = p, rise
+    if best is None:
+        return None
+    p = best
+    near = np.flatnonzero(np.abs(p[:, 0]) <= KEEL_BAND)
+    if not len(near):  # the piece crosses y = 0 between two vertices
+        i = int(np.flatnonzero(np.sign(p[:-1, 0]) * np.sign(p[1:, 0]) < 0)[0])
+        f = p[i, 0] / (p[i, 0] - p[i + 1, 0])
+        return p[i] + f * (p[i + 1] - p[i])
+    i0 = int(near[np.argmin(p[near, 1])])
+    flat = p[:, 1] <= p[i0, 1] + KEEL_FLAT
+    lo, hi = i0, i0
+    while lo > 0 and flat[lo - 1]:
+        lo -= 1
+    while hi < len(p) - 1 and flat[hi + 1]:
+        hi += 1
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(p[lo:hi + 1], axis=0).T))]
+    mid = s[-1] / 2.0
+    return np.array([np.interp(mid, s, p[lo:hi + 1, 0]), np.interp(mid, s, p[lo:hi + 1, 1])])
 
 
 def _resample(points: np.ndarray, s: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -99,33 +130,50 @@ def _resample(points: np.ndarray, s: np.ndarray) -> tuple[np.ndarray, np.ndarray
     return su, np.column_stack([np.interp(su, s, points[:, 0]), np.interp(su, s, points[:, 1])])
 
 
-def _turn(points: np.ndarray, s: np.ndarray, sign: float) -> float | None:
-    """The arc where the profile turns back - round the sheer onto the inner face, or over the plank tops down into
-    the trench or the seabed: on the profile smoothed over ``window``, the first place where the height falls, or
-    the distance from the keel shrinks, by more than ``TURN`` below the highest reached so far; the profile ends at
-    that highest point. None when it never turns back. The smoothing takes the steps of the lands out (a land
-    steps outward, down near the keel)."""
+def _end(points: np.ndarray, s: np.ndarray, sign: float, params: dict) -> tuple[float, str] | None:
+    """Where the hull's profile ends before the line does, and why: the direction of the profile smoothed over
+    ``window`` (0 degrees along a level bottom, 90 up a vertical side, a little more with tumblehome) ``turn``s past
+    ``TURN_DEG`` round the sheer onto the inner face, or ``bend``s back more than ``BEND_DEG`` below the steepest it
+    reached, for ``min_strake`` of arc (sediment at any height, a trench wall, the seabed). The end is the sharpest
+    point of that turn or bend; nothing is in metres of height, so a level bottom stepping down by its lands, or a
+    side with tumblehome, is read whole. None when the line ends first."""
     if s[-1] < 4 * SAMPLE:
         return None
     su, p = _resample(points, s)
-    n = int(round(DEFAULTS["window"] / (su[1] - su[0])))
-    if len(p) > n + 2:
-        p = _smooth(p, n)
-    u, z = sign * (p[:, 0] - p[0, 0]), p[:, 1]
-    fall_z = np.maximum.accumulate(z) - z > TURN
-    fall_u = np.maximum.accumulate(u) - u > TURN
-    first = [int(np.argmax(f)) for f in (fall_z, fall_u) if f.any()]
-    if not first:
+    h = su[1] - su[0]
+    n = int(round(params["window"] / h))
+    if len(p) <= n + 2:
         return None
-    i = min(first)
-    j = int(np.argmax(z[:i])) if fall_z.any() and int(np.argmax(fall_z)) == i else int(np.argmax(u[:i]))
-    return float(su[j])
+    p = _smooth(_smooth(p, n), n)
+    d = np.gradient(p, h, axis=0)
+    angle = np.degrees(np.unwrap(np.arctan2(d[:, 1], sign * d[:, 0])))
+    rate = np.gradient(angle, h)
+    events = []
+    turned = np.flatnonzero(angle > TURN_DEG)
+    if len(turned):
+        i = int(turned[0])
+        lo, hi = max(0, i - n), min(len(angle), i + n + 1)
+        events.append((i, lo + int(np.argmax(rate[lo:hi])), "turn"))
+    back = np.maximum.accumulate(angle) - angle > BEND_DEG
+    held = max(1, int(round(params["min_strake"] / h)))
+    run = 0
+    for i, b in enumerate(back):
+        run = run + 1 if b else 0
+        if run == held:
+            start = i - held + 1
+            top = int(np.argmax(angle[:start + 1]))
+            events.append((start, top + int(np.argmin(rate[top:start + 1])), "bend"))
+            break
+    if not events:
+        return None
+    _i, j, reason = min(events)
+    return float(su[j]), reason
 
 
-def _profile(section: dict, side: str):
-    """``(points, s, info)`` of the side from the keel outward (``info``: ``end`` "turn" when the profile turned back
-    and was ended there, else "line"; ``stray``: pieces left apart; ``keel``: the keel's y), or the reason why not:
-    ``empty``, ``keel``, ``gap``, ``few``."""
+def _profile(section: dict, side: str, params: dict | None = None):
+    """``(points, s, info)`` of the side from the keel outward, or the reason why not: ``empty``, ``keel``, ``gap``,
+    ``few``. ``info``: ``end`` "turn" or "bend" when the profile was ended there (:func:`_end`; a piece beyond that
+    end is a stray, never a gap), else "line"; ``stray``: pieces left apart; ``keel``: the keel's y."""
     sign = SIDE_SIGN[side]
     polylines = [np.asarray(line, float).reshape(-1, 2) for line in section.get("lines") or []]
     polylines = [p for p in polylines if len(p) > 1]
@@ -152,30 +200,31 @@ def _profile(section: dict, side: str):
             break
         r = rest.pop(i)
         chain.append(r if np.hypot(*(r[0] - end)) <= np.hypot(*(r[-1] - end)) else r[::-1])
-    end = chain[-1][-1]
-    for r in rest:  # a piece farther out and higher than the chain's end: the side goes on there, the model is missing
-        if ((sign * (r[:, 0] - end[0]) > JOIN) & (r[:, 1] > end[1])).any():
-            return "gap"
     points = np.vstack(chain)
     points = points[np.r_[True, np.hypot(*np.diff(points, axis=0).T) > 1e-9]]
     if len(points) < MIN_VERTICES:
         return "few"
     s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(points, axis=0).T))]
     info = {"end": "line", "stray": len(rest), "keel": round(float(keel[0]), 5)}
-    cut = _turn(points, s, sign)
-    if cut is not None:
+    ended = _end(points, s, sign, DEFAULTS if params is None else {**DEFAULTS, **params})
+    if ended is not None:
+        cut, info["end"] = ended
         keep = s < cut
         points = np.vstack([points[keep], [np.interp(cut, s, points[:, 0]), np.interp(cut, s, points[:, 1])]])
         s = np.r_[s[keep], cut]
-        info["end"] = "turn"
         if len(points) < MIN_VERTICES:
             return "few"
+    else:  # the line ends by itself: a piece farther out and higher goes on beyond a gap, the model is missing there
+        end = points[-1]
+        for r in rest:
+            if ((sign * (r[:, 0] - end[0]) > JOIN) & (r[:, 1] > end[1])).any():
+                return "gap"
     return points, s, info
 
 
 def profile(section: dict, side: str) -> tuple[np.ndarray, np.ndarray] | None:
     """The side's polyline of a station's section from the keel (its lowest point near y = 0) outward, ``(N, 2)``
-    (y, z), and its arc length ``s`` ``(N,)``, ended where it turns back (round the sheer, down into the seabed);
+    (y, z), and its arc length ``s`` ``(N,)``, ended where it turns round the sheer or bends back (sediment, a trench);
     None when the side has fewer than 10 vertices, does not reach the keel, or goes on beyond a gap of more than
     2 cm (the model is missing there). Pieces that do not continue it (a loose timber) are left apart."""
     out = _profile(section, side)
@@ -295,7 +344,7 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
     for n, section in enumerate(sections):
         progress(0.05 + 0.85 * n / len(sections), t(f"Gradini: {section['name']}", f"Lands: {section['name']}"))
         for side in SIDES:
-            prof = _profile(section, side)
+            prof = _profile(section, side, p)
             if isinstance(prof, str):
                 skipped.append({"station": section["name"], "x": float(section["value"]), "side": side, "reason": prof})
                 continue
@@ -409,8 +458,8 @@ def _why(st: dict) -> str:
     if st.get("dropped_at_ends"):
         notes.append(t(f"{st['dropped_at_ends']} vicino a un'estremità del profilo, non misurabile",
                        f"{st['dropped_at_ends']} too near an end of the profile to measure"))
-    if st.get("end") == "turn":
-        notes.append(t("profilo chiuso dove torna indietro", "profile ended where it turns back"))
+    if st.get("end") in ("turn", "bend"):
+        notes.append(t("profilo chiuso dove gira o piega", "profile ended where it turns or bends back"))
     return f"{st['name']} ({'; '.join(notes)})"
 
 

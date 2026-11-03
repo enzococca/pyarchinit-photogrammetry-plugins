@@ -225,7 +225,7 @@ def test_a_section_running_into_the_seabed_ends_at_the_sheer(tmp_path):
     result = clinker.detect_lands(ch)
     for side in ("port", "starboard"):
         _check_four_lands(result, side)
-        assert next(st for st in result["stations"] if st["side"] == side)["end"] == "turn"
+        assert next(st for st in result["stations"] if st["side"] == side)["end"] == "bend"
 
 
 def test_a_stray_piece_and_a_keel_off_the_centreline(tmp_path):
@@ -249,3 +249,109 @@ def test_a_stray_piece_and_a_keel_off_the_centreline(tmp_path):
     (tmp_path / "gap").mkdir()
     ch = _one_station(tmp_path / "gap", [lower, upper])
     assert [(d["side"], d["reason"]) for d in clinker.detect_lands(ch)["skipped"]] == [("port", "gap")]
+
+
+# ------------------------------------------------------------------------- fix round 2
+def _built(segments, lands, land=0.015, lap=0.02, step=0.002):
+    """A section built by hand, both sides alike: a base curve from the keel (``segments``: (length, curvature)
+    from a level start), each land a step of ``land`` outward over ``lap`` at the arcs ``lands``. Returns the
+    polyline (starboard sheer to port sheer) and the truth: the arcs of the lands along the stepped profile."""
+    angle, u, z, base = 0.0, 0.0, 0.0, [(0.0, 0.0, 0.0)]
+    for length, curvature in segments:
+        for _ in range(int(round(length / step))):
+            angle += curvature * step
+            u, z = u + step * np.cos(angle - curvature * step / 2), z + step * np.sin(angle - curvature * step / 2)
+            base.append((u, z, angle))
+    base = np.array(base)
+    s = np.arange(len(base)) * step
+    offset = land * np.clip((s[:, None] - np.asarray(lands)[None]) / lap + 0.5, 0.0, 1.0).sum(axis=1)
+    side = base[:, :2] + offset[:, None] * np.column_stack([np.sin(base[:, 2]), -np.cos(base[:, 2])])
+    arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(side, axis=0).T))]
+    polyline = np.vstack([side[:0:-1] * [-1.0, 1.0], side])
+    return polyline, np.interp(lands, s, arc)
+
+
+def _lands_on(ch, side):
+    return sorted((d for d in ch.meta["shipwreck"]["clinker"]["lands"] if d["side"] == side), key=lambda d: d["s"])
+
+
+@pytest.mark.parametrize("level", [0.0, 0.05, -0.05])
+def test_sediment_at_the_sheer_ends_the_profile(tmp_path, level):
+    """Sediment level with the sheer, 5 cm above or below it, with 3 mm of noise: the four lands, none beyond."""
+    from hulls import clinker_section
+
+    hull = clinker_section(6.01)
+    b, top = hull[-1]
+    rng = np.random.default_rng(7)
+    y = np.arange(b + 0.05, b + 1.5, 0.02)
+    port = np.vstack([[b + 0.03, top + level], np.column_stack([y, top + level + rng.normal(0.0, 0.003, len(y))])])
+    starboard = port * [-1.0, 1.0]
+    ch = _one_station(tmp_path, [np.vstack([starboard[::-1], hull, port])])
+    result = clinker.detect_lands(ch)
+    for side in ("port", "starboard"):
+        _check_four_lands(result, side)
+        assert next(st for st in result["stations"] if st["side"] == side)["end"] == "bend"
+
+
+def test_a_level_bottom_stepping_down_is_read_whole(tmp_path):
+    """A level floor with 8 outward lands (the bottom 12 cm below the keel at the bilge), then the bilge and a
+    side: nothing ends it early."""
+    lands = [0.12 * k for k in range(1, 9)]
+    section, truth = _built([(1.0, 0.0), (0.3 * np.pi / 2, 1 / 0.3), (0.5, 0.0)], lands)
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    assert not result["skipped"]
+    for side in ("port", "starboard"):
+        found = _lands_on(ch, side)
+        assert len(found) == 8 and np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
+        assert next(st for st in result["stations"] if st["side"] == side)["end"] == "line"
+
+
+def test_tumblehome_is_read_whole(tmp_path):
+    """15 cm of tumblehome over the top strake: the side leans in, the profile goes on to its end."""
+    lands = [0.2, 0.5, 0.8, 1.1]
+    section, truth = _built([(0.3, 0.0), (0.3 * np.pi / 2, 1 / 0.3), (0.5, 0.0), (0.5, 1.2)], lands)
+    side_u = section[-1, 0]
+    assert section[:, 0].max() - side_u > 0.14  # the tumblehome is there
+    ch = _one_station(tmp_path, [section])
+    result = clinker.detect_lands(ch)
+    for side in ("port", "starboard"):
+        found = _lands_on(ch, side)
+        assert len(found) == 4 and np.abs(np.array([d["s"] for d in found]) - truth).max() < 0.005
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert record["end"] == "line"
+
+
+def test_the_keel_is_the_hulls_not_a_trench_floor_below(tmp_path):
+    from hulls import clinker_section
+
+    hull = clinker_section(6.01)
+    floor = np.column_stack([np.linspace(-3.0, 3.0, 301), np.full(301, hull[:, 1].min() - 0.3)])
+    ch = _one_station(tmp_path, [floor, hull])
+    result = clinker.detect_lands(ch)
+    assert not result["skipped"]
+    for side in ("port", "starboard"):
+        _check_four_lands(result, side)
+        record = next(st for st in result["stations"] if st["side"] == side)
+        assert record["keel"] == pytest.approx(0.0, abs=0.005) and record["stray"] == 1
+
+
+def test_a_trench_wall_beyond_an_eroded_sheer_is_a_stray(tmp_path):
+    """The hull eroded below its sheer, sediment out from there, the trench wall cut as its own polyline farther
+    out and higher: the side is read (its 4 lands), the wall left apart."""
+    from hulls import clinker_section
+
+    hull = clinker_section(6.01)
+    port = hull[(hull[:, 0] >= 0) & (hull[:, 0] < 1.6)]
+    top = port[-1]
+    y = np.arange(top[0] + 0.02, top[0] + 0.6, 0.02)
+    sediment = np.column_stack([y, np.full(len(y), top[1])])
+    wall = np.column_stack([np.full(30, y[-1] + 0.03), top[1] + np.linspace(0.0, 0.6, 30)])
+    ch = _one_station(tmp_path, [np.vstack([hull[hull[:, 0] < 0], port, sediment]), wall])
+    result = clinker.detect_lands(ch)
+    assert not result["skipped"]
+    record = next(st for st in result["stations"] if st["side"] == "port")
+    assert record["end"] == "bend" and record["stray"] == 1
+    found = _lands_on(ch, "port")
+    assert len(found) == 4
+    assert np.abs(np.array([d["s"] for d in found]) - clinker_truth(6.01)).max() < 0.005
