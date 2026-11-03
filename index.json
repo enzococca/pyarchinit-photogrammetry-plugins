@@ -264,23 +264,23 @@
     },
     {
       "name": "shipwreck",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "title": "Shipwreck",
-      "description": "The technical drawing of an excavated hull from its 3D model: ship frame, stations, cross-sections, longitudinals and horizontals cut from the model, a stated water correction, body plan, half-breadth plan, profile, plan over the orthophoto, timber catalogue with measures. Measures, reconstructs nothing",
+      "description": "The technical drawing of an excavated hull from its 3D model: ship frame, stations, sections cut from the model, a stated water correction, body plan, plans, timber catalogue; clinker strakes found on the sections with a strake model labelled a hypothesis, and the file link with the Clinker Boat Tool for Houdini. Measures, reconstructs nothing",
       "i18n": {
         "it": {
           "title": "Relitto",
-          "description": "Il disegno tecnico di uno scafo scavato dal suo modello 3D: sistema della nave, stazioni, sezioni, longitudinali e orizzontali tagliate dal modello, correzione dell'acqua dichiarata, piano di costruzione, linee d'acqua, profilo, pianta sull'ortofoto, catalogo dei legni con le misure. Misura, non ricostruisce"
+          "description": "Il disegno tecnico di uno scafo scavato dal suo modello 3D: sistema della nave, stazioni, sezioni tagliate dal modello, correzione dell'acqua dichiarata, piani, catalogo dei legni; fasce a clinker trovate sulle sezioni con un modello delle fasce dichiarato ipotesi, e i file per il Clinker Boat Tool di Houdini. Misura, non ricostruisce"
         }
       },
       "author": "Enzo Cocca",
       "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/shipwreck",
       "license": "GPL-2.0-or-later",
       "api": 1,
-      "min_app": "1.3.4",
+      "min_app": "1.7.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/shipwreck-v0.1.0/ppg_shipwreck-0.1.0-py3-none-any.whl",
-      "sha256": "ba551d8f5ff4e1af16a48136eee5e4281dba93b254222e09314e935eee48c0a5"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/shipwreck-v0.2.0/ppg_shipwreck-0.2.0-py3-none-any.whl",
+      "sha256": "6581da0d34a0092bf7ae74e56728a620a3ae6d0cf364ad8dea61f6ac1b37ad84"
     },
     {
       "name": "spirula",
