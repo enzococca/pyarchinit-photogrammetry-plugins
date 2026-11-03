@@ -271,3 +271,49 @@ def tower(folder: Path, resolution: float = 0.02):
                             bounds=(0.0, Z0 + 1.0, 3.0, Z0 + 3.0))
     doc.save()
     return doc, ch, entry
+
+
+# ------------------------------------------------------------------ a second survey of the same face (another chunk)
+def second_chunk(doc, label: str = "Muro 2027", offset: float = 0.0, shift_u: float = 0.0, date: str = "2027-05-14"):
+    """A chunk of ``doc`` holding the wall again, moved ``offset`` metres towards the viewer (-y) and ``shift_u``
+    metres along it (+x): in the same system as the first chunk (the program's *Allinea chunk* done) when
+    ``shift_u`` is 0."""
+    from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
+
+    ch = doc.add_chunk(label)
+    ch.crs = CRS
+    ch.transform = transform()
+    verts, faces = wall_mesh(base=WORLD + np.array([shift_u, -offset, 0.0]))
+    internal = ch.to_internal(np.asarray(verts, np.float64))
+    path = write_mesh_ply(ch.data_dir / "model.ply", internal, np.asarray(faces), double=True)
+    ch._set_product("model", path)
+    ch.meta["metric"] = True
+    ch.meta["date"] = date
+    return ch
+
+
+def copy_orthophoto(chunk_a, entry_a, chunk_b, entry_b, shift_u: float = 0.0) -> None:
+    """The painted orthophoto of ``entry_a`` written into ``entry_b`` (the same grid), its content moved ``shift_u``
+    metres along u (the photos of a survey that was not aligned): the cells uncovered stay transparent."""
+    import rasterio
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    with rasterio.open(elevation_paths(chunk_a, entry_a)[0]) as src:
+        data = src.read()
+    n = int(round(shift_u / float(entry_a["resolution"])))
+    if n:
+        moved = np.zeros_like(data)
+        if n > 0:
+            moved[:, :, n:] = data[:, :, :-n]
+        else:
+            moved[:, :, :n] = data[:, :, -n:]
+        data = moved
+    with rasterio.open(elevation_paths(chunk_b, entry_b)[0], "r+") as dst:
+        dst.write(data)
+
+
+def put_marker(chunk, label: str, u: float, v: float, d: float = 0.0, du: float = 0.0) -> None:
+    """A marker of ``chunk`` on the face of the wall at ``(u + du, v)`` of the elevation (``d`` towards the viewer)."""
+    world = WORLD + np.array([u + du, -d, v - Z0])
+    chunk.add_marker(label, position=chunk.to_internal(world[None])[0])

@@ -19,6 +19,19 @@ la mappatura del degrado sui prospetti del programma.
   nei suoi metri (u, v), con estensione, intensità, le foto che li vedono e le unità stratigrafiche su cui stanno; nel
   mondo vengono adagiati sulla superficie attraverso il rilievo del prospetto.
 
+* **Confronto**: due campagne della stessa faccia - nello stesso chunk, o un rilievo successivo in un altro chunk il
+  cui prospetto è costruito sullo stesso piano (`compare.ensure_elevation`) - per termine l'area guadagnata e persa,
+  le lesioni nuove, più lunghe o più larghe, le aree trattate che mostrano di nuovo degrado, il cambiamento di colore
+  dell'ortofoto in CIELAB (`change.tif`) e, con due rilievi, il cambiamento del rilievo (`relief_change.tif`, cm);
+  tabelle e una pagina PDF in `<prospetto>/compare_<A>_<B>/`. I due chunk devono essere già allineati dal programma
+  (*Allinea chunk*): il plugin lo verifica (marker sulle due facce entro 1 cm, altrimenti uno spostamento delle
+  ortofoto per correlazione di fase sotto 2 px) e altrimenti rifiuta, senza scrivere niente.
+
+La guida: [Conservazione](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/conservation/) (il sorgente
+è in `docs/` qui finché non passa nella documentazione del programma; la tabella della legenda la genera
+`scripts/legend_table.py`). `proof/run_proof.py` fa girare i rilevatori, una campagna, gli esiti e l'IFC su un
+prospetto vero e scrive un `LEGGIMI.md` con i numeri e i tempi (su una copia del progetto).
+
 Il plugin scrive solo `chunk.meta["conservation"]` e i file sotto `<dati del chunk>/conservation/<prospetto>/`.
 
 Licenza: GPL-2.0-or-later.
