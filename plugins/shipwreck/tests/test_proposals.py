@@ -276,7 +276,7 @@ def _cut(seam, x0, x1):
 
 
 @pytest.mark.parametrize("case", ["land 1 fore of 4 m", "land 1 fore of 6.5 m", "land 2 only at the ends",
-                                  "land 2 only 0.8 m", "land 2 only 0.5 m at each end"])
+                                  "land 2 only 0.8 m", "land 2 only 0.5 m at each end", "land 4 only 6-7 m"])
 def test_a_land_partly_lost_keeps_every_name(framed, case):
     """A land under sediment over part of the hull: every piece keeps its land, the strakes beside the lost stretch
     keep their names, and the strake whose seam is lost stops there."""
@@ -292,6 +292,8 @@ def test_a_land_partly_lost_keeps_every_name(framed, case):
         pieces, truth = [_cut(port[1], 1.0, 6.5), port[2], port[3], port[4]], [1, 2, 3, 4]
     elif case == "land 2 only at the ends":
         pieces, truth = [port[1], _cut(port[2], 1.0, 2.4), _cut(port[2], 9.6, 11.0), port[3], port[4]], [1, 2, 2, 3, 4]
+    elif case == "land 4 only 6-7 m":
+        pieces, truth = [port[1], port[2], port[3], _cut(port[4], 6.0, 7.0)], [1, 2, 3, 4]
     elif case == "land 2 only 0.8 m":
         pieces, truth = [port[1], _cut(port[2], 2.0, 2.8), port[3], port[4]], [1, 2, 3, 4]
     else:
@@ -301,7 +303,14 @@ def test_a_land_partly_lost_keeps_every_name(framed, case):
     widths = strake_widths(8.0)
     cut = shapely.LineString([(8.0, -5.0), (8.0, 5.0)])
     at8 = {b["name"]: shapely.Polygon(b["ship_xy"]).intersection(cut).length for b in bands}
-    if case.startswith("land 1"):  # at x 8 land 1 is gone: no B1, no B2; B3, B4 where they were
+    if case.startswith("land 4"):  # land 4 only at 6-7: B4 there, B1-B3 at x 8, nothing beyond land 3 at x 8
+        at65 = {b["name"]: shapely.Polygon(b["ship_xy"]).intersection(
+            shapely.LineString([(6.5, -5.0), (6.5, 5.0)])).length for b in bands}
+        assert at65["fascia B4"] == pytest.approx(strake_widths(6.5)[3], rel=0.05)
+        assert at8.get("fascia B4", 0.0) == 0.0
+        for k in (2, 3):
+            assert at8[f"fascia B{k}"] == pytest.approx(widths[k - 1], rel=0.05)
+    elif case.startswith("land 1"):  # at x 8 land 1 is gone: no B1, no B2; B3, B4 where they were
         assert at8.get("fascia B1", 0.0) == 0.0 and at8.get("fascia B2", 0.0) == 0.0
         for k in (3, 4):
             assert at8[f"fascia B{k}"] == pytest.approx(widths[k - 1], rel=0.05)
@@ -310,6 +319,24 @@ def test_a_land_partly_lost_keeps_every_name(framed, case):
         assert at8["fascia B4"] == pytest.approx(widths[3], rel=0.05)
         assert at8["fascia B1"] > 0.0
         assert {b["name"] for b in bands} == {f"fascia B{k}" for k in range(1, 5)}
+
+
+def test_a_loose_plank_in_the_outermost_strake_renames_nothing(tmp_path):
+    """A loose plank 1.5 x 0.08 x 0.02 m along x in the outermost strake, near the sheer: its edges are strays and the
+    band from the outermost land to the model's edge runs the whole hull."""
+    ch, _frame = _setup(tmp_path, loose=[(6.075, -0.85, 0.0, 1.5, 0.08, 0.02)])  # hull y < 0: port
+    prop = proposals.build(ch)
+    port = [s for s in _of(prop, "seam") if s["side"] == "port"]
+    assert sorted(s["name"] for s in port if not s["name"].endswith("?")) == [f"comento B{k}" for k in range(1, 5)]
+    assert any(s["name"] == "comento B?" for s in port)
+    assert sorted({b["name"] for b in _planks(prop, "port")}) == [f"fascia B{k}" for k in range(1, 6)]
+    for x in (4.0, 9.0):
+        widths = strake_widths(x)
+        cut = shapely.LineString([(x, -5.0), (x, 5.0)])
+        for k in range(2, 6):
+            width = sum(shapely.Polygon(b["ship_xy"]).intersection(cut).length
+                        for b in _planks(prop, "port") if b["name"] == f"fascia B{k}")
+            assert width == pytest.approx(widths[k - 1], rel=0.05)
 
 
 def test_a_loose_plank_along_the_hull_renames_nothing(tmp_path):

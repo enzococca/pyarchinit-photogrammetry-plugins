@@ -547,21 +547,43 @@ STRAY_SCORE = 0.1  # the score of a stray seam piece proposed as ``comento ?``
 WIDE_BAND = 1.5  # a band this many times as wide as the side's others there has lost a land: a piece in it is one
 
 
+NEXT_LAND = 0.85  # a piece beyond the outermost land is a land when it lies at least this share of the last band away
+
+
+def _land_at(r: int, where: np.ndarray, placed: list[int], rank: dict, ys: dict) -> np.ndarray:
+    """|y| of the land ``r`` (any of its pieces) on the samples ``where``, NaN elsewhere."""
+    y = np.full(len(where), np.nan)
+    for j in placed:
+        if rank[j] == r:
+            y = np.where(np.isfinite(y), y, ys[j])
+    return np.where(where, y, np.nan)
+
+
+def _next_land(i: int, lo: int, placed: list[int], rank: dict, ys: dict) -> bool:
+    """Whether the piece ``i``, beyond the outermost land ``lo``, lies a strake's width from it: at least
+    :data:`NEXT_LAND` times the band between the lands ``lo - 1`` and ``lo`` there (medians over its samples; True when
+    that band is not there; both read at the x where both are). Pieces beyond the outermost land are judged after
+    every other piece is placed, so that the last band is a land's, not two strakes' where a land is lost. The band
+    from the outermost land to the model's edge cannot say it: the last strake there
+    may be as wide as the rest of the side (the top strake running to the sheer), with or without a land lost in it; a
+    loose plank or a stray of noise lying in it is a few centimetres from the land, a lost land a strake's width."""
+    where = np.isfinite(ys[i])
+    outer = _land_at(lo, where, placed, rank, ys)
+    inner = _land_at(lo - 1, where, placed, rank, ys)
+    gap, band = ys[i] - outer, outer - inner
+    both = np.isfinite(gap) & np.isfinite(band)  # compared at the same x: the strakes narrow toward the ends
+    if not both.any():
+        return True
+    return float(np.median(gap[both])) >= NEXT_LAND * float(np.median(band[both]))
+
+
 def _wide_band(i: int, lo: int, hi: int, placed: list[int], rank: dict, ys: dict) -> bool:
     """Whether the band between the lands ``lo`` and ``hi`` is at least :data:`WIDE_BAND` times as wide as the other
     bands between consecutive lands of the side, where the piece ``i`` is (medians over its samples); True when there
     is no other band to compare with."""
     where = np.isfinite(ys[i])
-
-    def land(r):
-        y = np.full(len(where), np.nan)
-        for j in placed:
-            if rank[j] == r:
-                y = np.where(np.isfinite(y), y, ys[j])
-        return np.where(where, y, np.nan)
-
     present = sorted({rank[j] for j in placed})
-    lines = {r: land(r) for r in present}
+    lines = {r: _land_at(r, where, placed, rank, ys) for r in present}
     band = lines[hi] - lines[lo]
     others = [lines[b] - lines[a] for a, b in zip(present, present[1:]) if b == a + 1 and (a, b) != (lo, hi)]
     ref = np.concatenate([o[np.isfinite(o)] for o in others]) if others else np.array([])
@@ -580,9 +602,10 @@ def lands(seam_list: list[dict], params=None) -> list[int | None]:
     the keel there lies inside the other. The pieces are then placed one by one, the longest first, among those
     already placed, ranked by the longest chain of placed pieces inside them (a land lost over part of the hull - under
     sediment, a broken plank - keeps the rank of its pieces, and so do the lands beyond it). A piece is placed when it
-    lies inside the innermost land, beyond the outermost, between two lands that are not consecutive, or between two
-    consecutive lands whose band is at least :data:`WIDE_BAND` times as wide there as the other bands of the side (a
-    land lost over the rest of the hull, its remnant here). Otherwise - between two consecutive lands, in a band of a
+    lies inside the innermost land, beyond the outermost a strake's width from it (:func:`_next_land`; a piece a few
+    centimetres beyond it - a loose plank or noise near the sheer - is a stray), between two lands that are not
+    consecutive, or between two consecutive lands whose band is at least :data:`WIDE_BAND` times as wide there as the
+    other bands of the side (a land lost over the rest of the hull, its remnant here). Otherwise - between two consecutive lands, in a band of a
     strake's width - it is a stray: the edge of a loose plank lying along the hull, a stray of noise, but also the
     remnant of a land whose neighbours run on as consecutive lands elsewhere with a band of normal width; it is
     proposed as ``comento ?`` with a low score and never counts in the ranks, so it renames nothing. Pieces of one rank
@@ -631,19 +654,26 @@ def lands(seam_list: list[dict], params=None) -> list[int | None]:
         rank: dict[int, int] = {}
         placed: list[int] = []
         edges: dict = {}
-        for i in sorted(kept, key=lambda i: -length[i]):
-            inner = [rank[j] for j in placed if nearer(j, i) > 0]
-            outer = [rank[j] for j in placed if nearer(j, i) < 0]
-            lo, hi = max(inner, default=0), min(outer, default=None)
-            if hi is not None and lo >= 1 and hi <= lo + 1 and not _wide_band(i, lo, hi, placed, rank, ys):
-                out[i] = 0
-                continue
-            for j in placed:
-                r = relation.get((i, j)) or relation.get((j, i))
-                if r is not None:
-                    edges[(i, j) if nearer(i, j) > 0 else (j, i)] = abs(r[0])
-            placed.append(i)
-            rank = _longest_path(placed, edges)
+        deferred: list[int] = []
+        for final in (False, True):
+            for i in deferred if final else sorted(kept, key=lambda i: -length[i]):
+                inner = [rank[j] for j in placed if nearer(j, i) > 0]
+                outer = [rank[j] for j in placed if nearer(j, i) < 0]
+                lo, hi = max(inner, default=0), min(outer, default=None)
+                if hi is None and lo >= 2 and not final:
+                    deferred.append(i)  # beyond the outermost land: judged once every other piece is placed
+                    continue
+                between = hi is not None and lo >= 1 and hi <= lo + 1 and not _wide_band(i, lo, hi, placed, rank, ys)
+                beyond = hi is None and lo >= 2 and not _next_land(i, lo, placed, rank, ys)
+                if between or beyond:
+                    out[i] = 0
+                    continue
+                for j in placed:
+                    r = relation.get((i, j)) or relation.get((j, i))
+                    if r is not None:
+                        edges[(i, j) if nearer(i, j) > 0 else (j, i)] = abs(r[0])
+                placed.append(i)
+                rank = _longest_path(placed, edges)
         for i, r in rank.items():
             out[i] = r
     return out
