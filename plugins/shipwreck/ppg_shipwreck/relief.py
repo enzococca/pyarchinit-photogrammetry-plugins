@@ -173,7 +173,7 @@ def load(chunk, kind: str):
         return arr, src.transform
 
 
-# ----------------------------------------------------------------------------- building
+# ----------------------------------------------------------------------------- the derived rasters
 def _tags(frame: ship.Frame, kind: str) -> dict:
     return {"ppg_ship_frame": json.dumps(frame.to_dict()), "ppg_v": "sign*y", "ppg_sign": str(frame.sign),
             "ppg_kind": kind, "ppg_units": "ship metres (u = x, v = sign*y)"}
@@ -213,7 +213,8 @@ def _derive(height: Path, out: Path, kind: str, cell: float, frame: ship.Frame, 
 
 
 def remove(chunk) -> bool:
-    """Take the relief away: its elevation entry, its rasters and its record."""
+    """Take the relief away: its elevation entry, its rasters and its record (the drawings made on it go with the
+    elevation, as the program does for any elevation removed)."""
     from pyarchinit_photogrammetry.engine.elevation import remove_elevation
 
     st = ship.state(chunk).pop("relief", None)
@@ -221,10 +222,105 @@ def remove(chunk) -> bool:
     return bool(st) and remove_elevation(chunk, st.get("elevation", ""))
 
 
+# ----------------------------------------------------------------------------- the drawings made on the relief
+DRAWING_KEYS = ("units", "quote", "points", "lines", "stones")
+
+
+def _move_drawings(data: dict, old_id: str, new_id: str, mapping=None) -> tuple[dict, int]:
+    """The drawings of an elevation (``chunk.meta["drawings"]["frames"][old_id]``, records in ``(u, v)``) for the
+    elevation ``new_id``: the stones keyed by the new id, the coordinates through ``mapping`` (``(N, 2) -> (N, 2)``)
+    when given. Returns them and how many records they hold. Keys the plugin does not know are kept as they are."""
+    import shapely
+
+    def geom(text: str) -> str:
+        g = shapely.from_wkt(text)
+        if mapping is not None:
+            g = shapely.transform(g, mapping)
+        return shapely.to_wkt(g, rounding_precision=-1)
+
+    def pair(a, b):
+        return mapping(np.array([[float(a), float(b)]]))[0] if mapping is not None else (a, b)
+
+    out, count = dict(data), 0
+    if data.get("units"):
+        out["units"] = []
+        for rec in data["units"]:
+            rec = dict(rec)
+            if rec.get("wkt"):
+                try:
+                    rec["wkt"] = geom(rec["wkt"])
+                except Exception:  # noqa: BLE001 - a broken record goes on as it was
+                    pass
+            out["units"].append(rec)
+        count += len(out["units"])
+    for key in ("quote", "points"):
+        if data.get(key):
+            out[key] = []
+            for rec in data[key]:
+                rec = dict(rec)
+                for a, b in (("u", "v"), ("x", "y")):
+                    if a in rec and b in rec:
+                        u, v = pair(rec[a], rec[b])
+                        rec[a], rec[b] = float(u), float(v)
+                        break
+                out[key].append(rec)
+            count += len(out[key])
+    if data.get("lines"):
+        out["lines"] = []
+        for rec in data["lines"]:
+            rec = dict(rec)
+            if rec.get("coords") and mapping is not None:
+                c = [list(map(float, q)) for q in rec["coords"]]
+                uv = mapping(np.array([q[:2] for q in c]))
+                rec["coords"] = [[float(a), float(b), *q[2:]] for (a, b), q in zip(uv, c)]
+            out["lines"].append(rec)
+        count += len(out["lines"])
+    stones = dict(data.get("stones") or {})
+    if old_id in stones:
+        polys = []
+        for text in stones.pop(old_id) or []:
+            try:
+                polys.append(geom(text))
+            except Exception:  # noqa: BLE001
+                polys.append(text)
+        stones[new_id] = polys
+        count += len(polys)
+    if "stones" in data:
+        out["stones"] = stones
+    return out, count
+
+
+def _carry_drawings(chunk, old_entry: dict | None, new_entry: dict) -> dict:
+    """The drawings made on the previous relief carried over to the new one, so that saving does not prune them with
+    the old elevation: as they are when the plane is the same (u, v are ship metres, whatever the cell), else through
+    the old plane to the world and into the new one."""
+    from pyarchinit_photogrammetry.engine.elevation import frame_from_dict
+
+    frames = (chunk.meta.get("drawings") or {}).get("frames") or {}
+    if old_entry is None or old_entry["id"] not in frames:
+        return {"records": 0, "moved": False}
+    old_plane, new_plane = frame_from_dict(old_entry["frame"]), frame_from_dict(new_entry["frame"])
+    same = all(np.allclose(getattr(old_plane, k), getattr(new_plane, k), rtol=0, atol=1e-9)
+               for k in ("origin", "u_axis", "v_axis"))
+
+    def mapping(uv):
+        uv = np.asarray(uv, float).reshape(-1, 2)
+        world = old_plane.point(uv[:, 0], uv[:, 1], np.zeros(len(uv)))
+        return new_plane.coords(world)[:, :2]
+
+    data, count = _move_drawings(frames.pop(old_entry["id"]), old_entry["id"], new_entry["id"],
+                                 None if same else mapping)
+    frames[new_entry["id"]] = data
+    return {"records": count, "moved": not same}
+
+
+# ----------------------------------------------------------------------------- building
 def build(chunk, cell: float | None = None, progress=None) -> dict:
     """Build (again) the relief of the hull: the elevation on :func:`plane_of`, then its hillshade and local relief
-    model. Returns ``state["relief"]``."""
-    from pyarchinit_photogrammetry.engine.elevation import build_elevation, elevation_paths
+    model. The previous relief is replaced only once the new one is complete (a failure or a cancel keeps it), and the
+    drawings made on it go over to the new one (``state["relief"]["drawings"]``: how many, and whether they were moved
+    because the frame changed). Returns ``state["relief"]``."""
+    from pyarchinit_photogrammetry.engine.elevation import build_elevation, elevation_paths, remove_elevation
 
     progress = as_progress(progress)
     frame = ship.need_frame(chunk)
@@ -234,22 +330,33 @@ def build(chunk, cell: float | None = None, progress=None) -> dict:
         raise ValueError("the cell must be positive")
     check_size(chunk, cell)
     bounds, (zmin, zmax) = _extent(chunk, frame)
-    remove(chunk)
+    old_entry = entry(chunk)
     progress(0.0, t("Rilievo dello scafo dall'alto", "Relief of the hull from above"))
     e = build_elevation(chunk, plane_of(frame), cell, t(*NAME), depth=(zmin - DEPTH_MARGIN, zmax + DEPTH_MARGIN),
                         bounds=(bounds[0] - cell, bounds[1] - cell, bounds[2] + cell, bounds[3] + cell),
                         progress=progress.sub(0.0, 0.8))
     height = elevation_paths(chunk, e)[1]
-    out = ship.folder(chunk) / "relief"
-    out.mkdir(parents=True, exist_ok=True)
-    files = {}
-    for k, kind in enumerate(("hillshade", "slrm")):
-        path = out / f"{kind}.tif"
-        _derive(height, path, kind, cell, frame, progress.sub(0.8 + 0.1 * k, 0.1))
-        files[kind] = str(path.relative_to(chunk.data_dir))
+    final = ship.folder(chunk) / "relief"
+    work = ship.folder(chunk) / "relief.new"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    try:
+        for k, kind in enumerate(("hillshade", "slrm")):
+            _derive(height, work / f"{kind}.tif", kind, cell, frame, progress.sub(0.8 + 0.1 * k, 0.1))
+    except BaseException:
+        remove_elevation(chunk, e["id"])
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    drawings = _carry_drawings(chunk, old_entry, e)
+    old_id = (_relief_state(chunk) or {}).get("elevation")
+    if old_id:
+        remove_elevation(chunk, old_id)
+    shutil.rmtree(final, ignore_errors=True)
+    work.rename(final)
+    files = {kind: str((final / f"{kind}.tif").relative_to(chunk.data_dir)) for kind in ("hillshade", "slrm")}
     st = {"elevation": e["id"], "cell": cell, "files": files,
           "built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "frame": frame.to_dict(),
-          "model": _model_key(chunk)}
+          "model": _model_key(chunk), "drawings": drawings}
     ship.state(chunk)["relief"] = st
     progress(1.0, t(f"Rilievo dello scafo: {e['size'][0]} x {e['size'][1]} celle di {num(cell * 1000.0, 1)} mm",
                     f"Relief of the hull: {e['size'][0]} x {e['size'][1]} cells of {num(cell * 1000.0, 1)} mm"))
@@ -286,7 +393,8 @@ def _rasterio_crs(chunk):
 
 def export_world(chunk, kind: str, path) -> Path:
     """The raster ``kind`` north-up in the chunk's system (same cell, NaN off the model), warped from the rotated
-    (u, v) -> world affine; the values as they are (heights: ship z, the datum ``z0`` in the tags)."""
+    (u, v) -> world affine. Heights are the chunk's (ship z + ``z0``, tag ``ppg_heights = "world"``); the hillshade and
+    the local relief model are relative and stay as they are."""
     import rasterio
     from rasterio.crs import CRS
     from rasterio.enums import Resampling
@@ -322,7 +430,8 @@ def export_world(chunk, kind: str, path) -> Path:
         nodata = src.nodata if src.nodata is not None else float("nan")
         back = ~world
         with rasterio.open(path, "w", **profile) as dst:
-            dst.update_tags(**_tags(frame, kind), ppg_z0=str(frame.z0), ppg_chunk_crs=str(chunk.crs))
+            dst.update_tags(**_tags(frame, kind), ppg_z0=str(frame.z0), ppg_chunk_crs=str(chunk.crs),
+                            ppg_heights="world" if kind == "height" else "relative")
             for r in range(0, h, TILE):
                 for c in range(0, w, TILE):
                     th, tw = min(TILE, h - r), min(TILE, w - c)
@@ -337,5 +446,7 @@ def export_world(chunk, kind: str, path) -> Path:
                         reproject(block, out, src_transform=world @ Affine.translation(c0, r0), src_crs=work_crs,
                                   src_nodata=nodata, dst_transform=tile_t, dst_crs=work_crs,
                                   dst_nodata=float("nan"), resampling=Resampling.bilinear)
+                    if kind == "height":  # the chunk's heights: ship z + the datum
+                        out = (out.astype(np.float64) + frame.z0).astype(np.float32)
                     dst.write(out, 1, window=Window(c, r, tw, th))
     return path

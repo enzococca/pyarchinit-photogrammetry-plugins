@@ -2,6 +2,8 @@
 v = sign * y, d = ship z), its hillshade and local relief model, the copy north-up in the world."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 import rasterio
@@ -97,12 +99,18 @@ def test_world_copy_is_north_up(tmp_path):
         t, arr = src.transform, src.read(1)
         assert t.b == 0 and t.d == 0 and t.a == pytest.approx(0.02) and t.e == pytest.approx(-0.02)
         assert src.crs.to_epsg() == 32633
+        assert src.tags()["ppg_heights"] == "world"
     point = np.array([[6.0, 0.8, 0.0]])
     world = frame.to_world(point)[0]
     z, tr = relief.load(ch, "height")
-    expected = _value(z, tr, relief.uv_of_ship(point[:, :2], frame.sign)[0])
+    d = _value(z, tr, relief.uv_of_ship(point[:, :2], frame.sign)[0])
+    expected = frame.to_world(np.array([[6.0, 0.8, d]]))[0, 2]  # the chunk's height of the surface there
+    assert expected == pytest.approx(d + frame.z0)
     slope = 0.6  # dz/dy of the hull there: 2 D y / b^2
     assert abs(_value(arr, t, world[:2]) - expected) < (slope + 0.2) * 0.02 * 1.5
+    relief.export_world(ch, "slrm", tmp_path / "slrm.tif")
+    with rasterio.open(tmp_path / "slrm.tif") as src:
+        assert src.tags()["ppg_heights"] == "relative" and abs(np.nanmedian(src.read(1))) < 0.05
     ship_copy = tmp_path / "ship.tif"
     relief.export_ship(ch, "slrm", ship_copy)
     with rasterio.open(ship_copy) as src:
@@ -117,6 +125,79 @@ def test_stale_after_a_new_frame(tmp_path):
     assert not relief.is_stale(ch)
     ship.set_frame(ch, frame.flipped())
     assert relief.is_stale(ch)
+
+
+def test_stale_after_a_new_model(tmp_path):
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=35)
+    _set(ch, ends)
+    relief.build(ch, cell=0.02)
+    model = ch.product_path("model")
+    st = model.stat()
+    os.utime(model, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert relief.is_stale(ch)
+
+
+def _draw(ch, eid):
+    """Drawings on the elevation ``eid`` as the window keeps them, in (u, v)."""
+    ch.meta.setdefault("drawings", {}).setdefault("frames", {})[eid] = {
+        "units": [{"us": "1", "wkt": "POLYGON ((5 0.5, 6 0.5, 6 1, 5 1, 5 0.5))"}],
+        "points": [{"u": 6.0, "v": 0.8, "name": "p"}],
+        "lines": [{"coords": [[4.0, -0.5], [7.0, -0.5]]}],
+        "stones": {eid: ["POLYGON ((3 0, 3.2 0, 3.2 0.2, 3 0))"]}}
+
+
+def test_drawings_survive_a_rebuild(tmp_path):
+    from shapely import wkt
+
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=35)
+    _set(ch, ends)
+    old = relief.build(ch, cell=0.02)["elevation"]
+    _draw(ch, old)
+    st = relief.build(ch, cell=0.03)
+    new = st["elevation"]
+    assert new != old and st["drawings"] == {"records": 4, "moved": False}
+    frames = ch.meta["drawings"]["frames"]
+    assert old not in frames and old not in [e["id"] for e in ch.meta["elevations"]]
+    data = frames[new]
+    assert data["points"][0]["u"] == 6.0 and data["points"][0]["v"] == 0.8
+    assert wkt.loads(data["units"][0]["wkt"]).equals(wkt.loads("POLYGON ((5 0.5, 6 0.5, 6 1, 5 1, 5 0.5))"))
+    assert list(data["stones"]) == [new]
+
+
+def test_drawings_follow_a_new_frame(tmp_path):
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=35)
+    frame = _set(ch, ends)
+    old = relief.build(ch, cell=0.02)["elevation"]
+    _draw(ch, old)
+    world = relief.plane_of(frame).point(np.array([6.0]), np.array([0.8]), np.array([0.0]))[0]
+    moved = ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start", z0=frame.z0 + 0.5, x0=2.0))
+    st = relief.build(ch, cell=0.02)
+    assert st["drawings"] == {"records": 4, "moved": True}
+    p = ch.meta["drawings"]["frames"][st["elevation"]]["points"][0]
+    again = relief.plane_of(moved).point(np.array([p["u"]]), np.array([p["v"]]), np.array([0.0]))[0]
+    assert np.abs(again[:2] - world[:2]).max() < 1e-9
+    assert p["u"] == pytest.approx(8.0)
+    line = ch.meta["drawings"]["frames"][st["elevation"]]["lines"][0]["coords"]
+    assert line[0] == pytest.approx([6.0, -0.5])
+
+
+def test_a_failed_rebuild_keeps_the_relief(tmp_path, monkeypatch):
+    _doc, ch, ends = clinker_project(tmp_path, heading_deg=35)
+    _set(ch, ends)
+    old = relief.build(ch, cell=0.02)
+    _draw(ch, old["elevation"])
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("cancelled")
+
+    monkeypatch.setattr(relief, "_derive", broken)
+    with pytest.raises(RuntimeError):
+        relief.build(ch, cell=0.03)
+    assert relief.entry(ch)["id"] == old["elevation"]
+    assert [e["id"] for e in ch.meta["elevations"]] == [old["elevation"]]
+    assert old["elevation"] in ch.meta["drawings"]["frames"]
+    assert relief.load(ch, "slrm")[0].shape == relief.load(ch, "height")[0].shape
+    assert not (ch.data_dir / "shipwreck" / "relief.new").exists()
 
 
 def test_tiles_give_the_whole_raster_result(tmp_path, monkeypatch):
