@@ -607,6 +607,29 @@ def _point_to_polyline(p, line):
     return np.hypot(*(p[:, None] - q).transpose(2, 0, 1)).min(axis=1)
 
 
+def _outward(xyz, faces, inside):
+    """The share of the faces whose normal points away from ``inside(centroids)``, a point within the hull."""
+    v = xyz[faces]
+    normal = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+    centre = v.mean(axis=1)
+    return float(((normal * (centre - inside(centre))).sum(axis=1) > 0).mean())
+
+
+def _faces_point_outward(result, frame):
+    """The PLY's faces (world) and the OBJ's (ship coordinates) point away from the keel line, on both sides."""
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
+
+    mesh = read_mesh(result["ply"])
+    on_axis = lambda c: frame.to_world(np.column_stack([frame.to_ship(c)[:, 0], np.zeros((len(c), 2))]))  # noqa: E731
+    for s in (0, 1):
+        mine = mesh.faces[(mesh.field("side")[mesh.faces] == s).all(axis=1)]
+        assert len(mine) and _outward(mesh.xyz, mine, on_axis) == 1.0, s
+    text = result["obj"].read_text().splitlines()
+    v = np.array([[float(a) for a in ln.split()[1:]] for ln in text if ln.startswith("v ")])
+    f = np.array([[int(a) - 1 for a in ln.split()[1:]] for ln in text if ln.startswith("f ")])
+    assert _outward(v, f, lambda c: np.column_stack([c[:, 0], np.zeros((len(c), 2))])) == 1.0
+
+
 def _objects(path):
     return [ln.split()[1] for ln in path.read_text().splitlines() if ln.startswith("o ")]
 
@@ -649,6 +672,7 @@ def test_the_strake_model_of_a_clinker_hull(tmp_path):
         p = xyz[np.abs(xyz[:, 0] - x) < 1e-6][:, 1:]
         worst = max(worst, _point_to_polyline(p, clinker_section(x, cell=0.005)).max())
     assert worst < 0.01, worst
+    _faces_point_outward(result, frame)
 
 
 def test_the_other_bow_swaps_the_names_of_the_sides_and_nothing_else(tmp_path):
@@ -675,6 +699,7 @@ def test_the_other_bow_swaps_the_names_of_the_sides_and_nothing_else(tmp_path):
             assert a.shape == b.shape and np.abs(a - b).max() < 1e-4
     names = _objects(second["obj"])
     assert sorted(names) == sorted(_objects(first["obj"]))
+    _faces_point_outward(second, ship.need_frame(ch))
 
 
 def test_the_strakes_in_the_catalogue(tmp_path):
@@ -793,3 +818,55 @@ def test_widths_carry_their_uncertainty(tmp_path):
             w, u = d["widths"][name], d["uncertainty_mm"][name]
             assert u >= 2 * 0.4 + 0.5 * 13.0
             assert abs(w - clinker_widths(x)[d["k"] - 1]) * 1000.0 <= u, (d["side"], d["k"], name, w, u)
+
+
+def _rocker(c, jump_at=None, count=7):
+    """``count`` sections 1 m apart, the same keel hull raised along z = c (x - xm)^2 (a keel's rocker), the station
+    ``jump_at`` (its index) 3 cm higher still."""
+    lands = [0.15, 0.32, 0.5, 0.7]
+    plain, _truth = _built(_KEEL_HULL, lands)
+    xs = np.asarray(STATIONS[:count])
+    rise = c * (xs - xs.mean()) ** 2
+    if jump_at is not None:
+        rise[jump_at] += 0.03
+    return [plain + [0.0, r] for r in rise]
+
+
+def test_a_curved_rabbet_is_not_a_jump(tmp_path):
+    """A keel with rocker (9 cm over 3 m, a radius of 50 m) along seven stations 1 m apart: no station jumps,
+    every width measured."""
+    ch = _stations(tmp_path, _rocker(0.01))
+    result = clinker.detect_lands(ch)
+    assert result["jumps"] == {"port": [], "starboard": []} and result["uncertain"] == {"port": [], "starboard": []}
+    for d in clinker.build_strakes(ch)["strakes"]:
+        assert all(w is not None for w in d["widths"].values())
+
+
+def test_a_jump_on_a_curved_rabbet_is_the_only_one(tmp_path):
+    ch = _stations(tmp_path, _rocker(0.01, jump_at=2))
+    result = clinker.detect_lands(ch)
+    assert result["jumps"] == {"port": ["S3"], "starboard": ["S3"]}
+
+
+def test_the_catalogue_follows_a_model_with_fewer_strakes(tmp_path):
+    """Five strakes a side in the catalogue, then the sections read again with one land fewer: the catalogue has
+    the four strakes a side of the new model, no orphan ``fascia B5``, and a second call keeps the count."""
+    from ppg_shipwreck import timbers
+
+    five, _ = _built(_KEEL_HULL, [0.15, 0.32, 0.5, 0.7])
+    four, _ = _built(_KEEL_HULL, [0.15, 0.32, 0.5])
+    ch = _stations(tmp_path, [five] * 4)
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    assert clinker.to_catalogue(ch) == 10
+    timbers.add(ch, "plank", "port", "fascia B9", timbers.geometry("point", [[0.0, 0.0]]), notes="misurata in campo")
+    data = lines.load(ch)
+    for section in data["sections"]:
+        section["lines"] = [np.round(four, 5).tolist()]
+    lines._save(ch, data)
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    for _ in range(2):
+        assert clinker.to_catalogue(ch) == 8
+        names = sorted(r["name"] for r in timbers.timbers_of(ch))
+        assert names == sorted([f"fascia {s}{k}" for s in "BT" for k in range(1, 5)] + ["fascia B9"])

@@ -100,10 +100,11 @@ SMOOTH = 0.006  # the working profile: the raw one averaged twice over this much
 FLAT = 0.005  # the flats' samples beside a land, 5 mm apart
 LAYERS = {"port": "FASCE_BABORDO", "starboard": "FASCE_TRIBORDO"}
 TABLE = "fasce_linee"
-JUMP = 0.02  # a station whose rabbet or garboard lies farther than this from the line through its neighbours
+JUMP = 0.02  # a station whose rabbet or garboard lies farther than this from the curve through its neighbours
 NOISE_FACTOR = 4.0  # a width's uncertainty: this many times the section's noise, plus half the step (see build_strakes)
 MESH_STEP = 0.10  # the strakes' mesh: a row at every station and every 10 cm of x between them
 SIDE_CODES = {"port": ("B", 0), "starboard": ("T", 1)}  # babordo / tribordo: the letter of the name, the PLY's side
+CATALOGUE_NOTES = ("modello delle fasce (ipotesi)", "strake model (hypothesis)")  # the notes of the records it writes
 HYPOTHESIS = ("modello delle fasce: ipotesi dalle sezioni, non una misura",
               "strake model: a hypothesis from the sections, not a measure")
 
@@ -651,43 +652,60 @@ def _noise(vertices: np.ndarray) -> float:
     return float(1.4826 * np.median(np.abs(e - np.median(e))))
 
 
-def _residuals(x: np.ndarray, values: np.ndarray, keep: list[int]) -> dict[int, float]:
-    """For each item of ``keep``, its distance from the least-squares line along x through its neighbours among
-    ``keep``: the two nearest on each side, the nearest two at an end (none with fewer than two)."""
+def _neighbours(x: np.ndarray, i: int, keep: list[int], each: int = 2) -> list[int]:
+    """The ``2 * each`` items of ``keep`` nearest to ``i`` along x: ``each`` on each side, made up from the other
+    side where one side has fewer (at the ends the nearest four)."""
+    before = sorted((j for j in keep if x[j] < x[i]), key=lambda j: x[i] - x[j])
+    after = sorted((j for j in keep if x[j] > x[i]), key=lambda j: x[j] - x[i])
+    near = before[:each] + after[:each]
+    extra = sorted(before[each:] + after[each:], key=lambda j: abs(x[j] - x[i]))
+    return near + extra[:2 * each - len(near)]
+
+
+def _residuals(x: np.ndarray, values: np.ndarray, keep: list[int]) -> dict[int, tuple[float, float]]:
+    """For each item of ``keep``, ``(distance, limit)``: its distance from the least-squares curve along x through
+    its neighbours among ``keep`` (:func:`_neighbours`; a parabola through four of them, so that the smooth curve
+    of a keel's rocker, a rising forefoot or a hogged wreck is followed, a straight line through two or three;
+    none with fewer than two), and the limit it is judged by: ``JUMP``, or three times the robust scatter (1.4826
+    times the median distance) of the neighbours' own distances from that curve when that is larger (a station
+    is not a jump where its neighbours scatter as much)."""
     out = {}
     for i in keep:
-        before = [j for j in keep if x[j] < x[i]][-2:]
-        after = [j for j in keep if x[j] > x[i]][:2]
-        near = before + after
+        near = _neighbours(x, i, keep)
         if len(near) < 2:
             continue
-        a = np.column_stack([x[near] - x[i], np.ones(len(near))])
+        u = x[near] - x[i]
+        a = np.column_stack([u**2, u, np.ones(len(near))]) if len(near) >= 4 else np.column_stack([u, np.ones(len(near))])
         coef = np.linalg.lstsq(a, values[near], rcond=None)[0]
-        out[i] = float(np.linalg.norm(values[i] - coef[1]))  # the line's value at x[i]
+        scatter = 1.4826 * float(np.median(np.linalg.norm(values[near] - a @ coef, axis=1)))
+        out[i] = (float(np.linalg.norm(values[i] - coef[-1])), max(JUMP, 3.0 * scatter))  # the curve's value at x[i]
     return out
 
 
-def _outliers(x: np.ndarray, values: np.ndarray, limit: float = JUMP) -> dict[int, float]:
-    """The items whose ``values`` (N, d) lie farther than ``limit`` from the line through their neighbours
+def _outliers(x: np.ndarray, values: np.ndarray) -> dict[int, float]:
+    """The items whose ``values`` (N, d) lie beyond their limit from the curve through their neighbours
     (:func:`_residuals`), one at a time: of those beyond it, the one whose removal leaves the others nearest to
-    their lines (a jump at the third station also throws the first two off their lines, extrapolated across it:
-    taking it out explains them, taking them out does not), then again without it. ``{index: distance}``."""
+    their curves, measured in limits (a jump at the third station also throws its neighbours off their curves,
+    fitted across it: taking it out explains them, taking them out does not), then again without it; an item
+    found is never in another's fit. ``{index: distance}``."""
     out: dict[int, float] = {}
     while True:
         keep = [i for i in range(len(x)) if i not in out]
         r = _residuals(x, values, keep)
-        beyond = [i for i, v in r.items() if v > limit]
+        beyond = [i for i, (d, limit) in r.items() if d > limit]
         if not beyond:
             return out
-        scores = {i: (max(_residuals(x, values, [j for j in keep if j != i]).values(), default=0.0), -r[i])
-                  for i in beyond}
+        scores = {}
+        for i in beyond:
+            rest = _residuals(x, values, [j for j in keep if j != i]).values()
+            scores[i] = (max((d / limit for d, limit in rest), default=0.0), -r[i][0] / r[i][1])
         best = min(beyond, key=scores.__getitem__)
-        out[best] = r[best]
+        out[best] = r[best][0]
 
 
 def _jumps(rows: list[dict], lands: list[dict]) -> list[str]:
     """The stations of one side whose rabbet (y, z) or garboard (the arc to the first land) jumps more than ``JUMP``
-    from the line through the neighbouring stations (:func:`_outliers`): the count of lands is right but the
+    (or the neighbours' own scatter) from the curve through the neighbouring stations (:func:`_outliers`): the count of lands is right but the
     origin may be shifted. Each such station's record gets ``jump`` (what jumped, mm); names by x."""
     rows = sorted(rows, key=lambda st: st["x"])
     found: dict[str, dict] = {}
@@ -1010,7 +1028,7 @@ def build_strakes(chunk, lap: float = 0.02, thickness: float | None = None, prog
     the step, so half the step is how far the plank's edge may lie from it, and the noise moves the centre of a
     step by a few times its spread (on the test sections at 0.5 mm the lands lie within 1 mm of the truth; four
     times the noise covers them with a margin); ``length``, the 3D length of the strake's upper boundary (the
-    land line, the sheer for the top strake); ``thickness_mm``, the median step of the land where the strake laps
+    land line, the sheer for the top strake) as the polyline through its station points, not the spline of the mesh; ``thickness_mm``, the median step of the land where the strake laps
     over the one below (line k - 1; for the garboard, line 1), or ``thickness``; ``lap_mm``, ``lap`` as given.
 
     Mesh: the two boundaries resampled at every station and every 10 cm of x where both run, moved onto the
@@ -1077,11 +1095,20 @@ def build_strakes(chunk, lap: float = 0.02, thickness: float | None = None, prog
     return {"strakes": out, "obj": obj, "ply": ply}
 
 
-def _faces(n: int, start: int) -> np.ndarray:
-    """The triangles of a ruled strip of ``n`` rows, lower row's vertices first (``start``..), then the upper."""
+def _faces(lo: np.ndarray, hi: np.ndarray, side: str, start: int) -> np.ndarray:
+    """The triangles of a ruled strip between the rows ``lo`` and ``hi`` (ship coordinates; the lower row's
+    vertices numbered first from ``start``, then the upper), wound so that their normals point outward, away from
+    the centreline (the section's outward normal of the chord from the lower to the upper edge,
+    :func:`_outer_face`): the same on both sides, whichever way x runs."""
+    n = len(lo)
     i = np.arange(n - 1)
-    lo, hi = start + i, start + n + i
-    return np.vstack([np.column_stack([lo, lo + 1, hi]), np.column_stack([lo + 1, hi + 1, hi])])
+    a, b = start + i, start + n + i
+    f = np.vstack([np.column_stack([a, a + 1, b]), np.column_stack([a + 1, b + 1, b])])
+    v = np.vstack([lo, hi])
+    normal = np.cross(v[f[:, 1] - start] - v[f[:, 0] - start], v[f[:, 2] - start] - v[f[:, 0] - start])
+    chord = (hi - lo)[np.r_[i, i]]
+    outward = SIDE_SIGN[side] * np.column_stack([np.zeros(len(chord)), chord[:, 2], -chord[:, 1]])
+    return f if (normal * outward).sum() >= 0 else f[:, [0, 2, 1]]
 
 
 def _write_strakes(frame: ship.Frame, meshes: list, folder: Path) -> tuple[Path, Path]:
@@ -1094,7 +1121,7 @@ def _write_strakes(frame: ship.Frame, meshes: list, folder: Path) -> tuple[Path,
     xyz, faces, strake, sides, start = [], [], [], [], 0
     for side, k, lo, hi in meshes:
         v = np.vstack([lo, hi])
-        f = _faces(len(lo), start)
+        f = _faces(lo, hi, side, start)
         text.append(f"o fascia_{_strake_name(side, k)}")
         text += [f"v {a:.6f} {b:.6f} {c:.6f}" for a, b, c in v]
         text += [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in f]
@@ -1115,8 +1142,10 @@ def _write_strakes(frame: ship.Frame, meshes: list, folder: Path) -> tuple[Path,
     comments = ["strake model: a hypothesis from the sections, not a measure (modello delle fasce: ipotesi dalle "
                 "sezioni, non una misura)", "coordinates of the chunk (world), double precision",
                 "strake = k from the keel (1 = garboard); side = 0 port (B), 1 starboard (T)"]
-    ply = write_mesh(folder / "strakes.ply", MeshData(vertices, np.vstack(faces) if faces else np.zeros((0, 3), np.int64),
-                                                      comments=comments))
+    triangles = np.vstack(faces) if faces else np.zeros((0, 3), np.int64)
+    if frame.sign < 0:  # ship to world is a mirror there: the same winding would point inward
+        triangles = triangles[:, [0, 2, 1]]
+    ply = write_mesh(folder / "strakes.ply", MeshData(vertices, triangles, comments=comments))
     return obj, Path(ply)
 
 
@@ -1184,25 +1213,29 @@ def write_tables(chunk, folder=None) -> dict:
 def to_catalogue(chunk) -> int:
     """One ``plank`` record of the catalogue per strake: its outline in plan (its two boundaries, the land lines
     k - 1 and k, in the chunk's x, y, closed), named ``fascia B3``, no station, noted as a hypothesis. Records of
-    the same name are replaced, never doubled. Returns how many."""
+    the model are replaced, never doubled: every record an earlier call wrote goes first (by the ids kept in
+    ``["catalogue"]`` and by the hypothesis note, in either language), so the strakes of an earlier model with more
+    lands leave no orphans. The strakes are those of ``["strakes"]``, their outlines from the same boundaries.
+    Returns how many."""
     from . import timbers
 
     frame = ship.need_frame(chunk)
     state = _need_strakes(chunk)
-    added = 0
-    names = {f"fascia {d['name']}" for d in state["strakes"]}
-    timbers.remove(chunk, [r["id"] for r in timbers.timbers_of(chunk) if r["kind"] == "plank" and r["name"] in names])
-    for side in SIDES:
-        if not any(d["side"] == side for d in state["strakes"]):
+    ours = set(state.get("catalogue") or [])
+    timbers.remove(chunk, [r["id"] for r in timbers.timbers_of(chunk)
+                           if r["id"] in ours or (r["kind"] == "plank" and r.get("notes") in CATALOGUE_NOTES)])
+    written = []
+    bounds = {side: _boundaries(state, side) for side in SIDES if any(d["side"] == side for d in state["strakes"])}
+    for d in sorted(state["strakes"], key=lambda d: (SIDES.index(d["side"]), d["k"])):
+        rows, lines_ = bounds[d["side"]]
+        if d["k"] >= len(lines_):
             continue
-        rows, bounds = _boundaries(state, side)
-        xs = [st["x"] for st in rows]
-        for k in range(1, len(bounds)):
-            lo, hi = _rows_between(_polyline(bounds[k - 1]), _polyline(bounds[k]), xs)
-            if len(lo) < 2:
-                continue
-            outline = frame.to_world(np.vstack([lo, hi[::-1]]))[:, :2]
-            timbers.add(chunk, "plank", side, f"fascia {_strake_name(side, k)}", timbers.geometry("polygon", outline),
-                        station="", notes=t("modello delle fasce (ipotesi)", "strake model (hypothesis)"))
-            added += 1
-    return added
+        lo, hi = _rows_between(_polyline(lines_[d["k"] - 1]), _polyline(lines_[d["k"]]), [st["x"] for st in rows])
+        if len(lo) < 2:
+            continue
+        outline = frame.to_world(np.vstack([lo, hi[::-1]]))[:, :2]
+        record = timbers.add(chunk, "plank", d["side"], f"fascia {d['name']}", timbers.geometry("polygon", outline),
+                             station="", notes=t(*CATALOGUE_NOTES))
+        written.append(record["id"])
+    state["catalogue"] = written
+    return len(written)

@@ -119,9 +119,9 @@ def _notes(chunk, data: dict, frame: ship.Frame, kind: str) -> list[str]:
         notes.append(t("Sistema locale: l'alto è l'asse z del modello, non verificato come verticale.",
                        "Local frame: up is the z axis of the model, not verified as vertical."))
     if kind in ("body_plan", "profile", "plan") and _land_lines(chunk):
-        notes.append(t("Fasce: gradini rilevati sulle sezioni (croci sul piano di costruzione); linee delle fasce: "
+        notes.append(t("Fasce: gradini rilevati sulle sezioni (croci sul piano di costruzione: i gradini sulle linee); linee delle fasce: "
                        "ipotesi che unisce i gradini fra le stazioni, non una misura.",
-                       "Strakes: lands found on the sections (crosses on the body plan); land lines: a hypothesis "
+                       "Strakes: lands found on the sections (crosses on the body plan: the lands on the lines); land lines: a hypothesis "
                        "joining the lands between the stations, not a measure."))
     extra = title_fields(chunk)["notes"]
     return notes + ([extra] if extra else [])
