@@ -2,6 +2,170 @@
  "standard": "EN 15898:2019, Conservation of cultural heritage - Main general terms and definitions",
  "url": "",
  "note": "Definitions are the plugin's own one-line paraphrases, not the text of the standard; names as the glossary gives them. Colours and hatches are the plugin's defaults: no standard prescribes them.",
+ "usual_treatments": {
+  "note": "The plugin's table of the usual interventions per pattern (a suggestion, never filled by itself): the code of a term, else its parent, else its first ICOMOS-ISCS code, else its family.",
+  "by_code": {
+   "ISCS.CRACK": [
+    "INT.GROUTING",
+    "INT.FILLING"
+   ],
+   "ISCS.CRACK.CRAQUELE": [
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.DEFORMATION": [
+    "INT.CONSOLIDATION",
+    "INT.REMEDIAL"
+   ],
+   "ISCS.BLISTERING": [
+    "INT.CONSOLIDATION",
+    "INT.GROUTING"
+   ],
+   "ISCS.BURSTING": [
+    "INT.CONSOLIDATION",
+    "INT.FILLING"
+   ],
+   "ISCS.DELAMINATION": [
+    "INT.GROUTING",
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.DISINTEGRATION": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.FRAGMENTATION": [
+    "INT.CONSOLIDATION",
+    "INT.FILLING"
+   ],
+   "ISCS.PEELING": [
+    "INT.REMOVAL",
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.SCALING": [
+    "INT.CONSOLIDATION",
+    "INT.GROUTING"
+   ],
+   "ISCS.ALVEOLIZATION": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.EROSION": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.MECHANICAL_DAMAGE": [
+    "INT.FILLING",
+    "INT.REINTEGRATION"
+   ],
+   "ISCS.MICROKARST": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.MISSING_PART": [
+    "INT.REINTEGRATION",
+    "INT.FILLING"
+   ],
+   "ISCS.PERFORATION": [
+    "INT.FILLING"
+   ],
+   "ISCS.PITTING": [
+    "INT.CONSOLIDATION",
+    "INT.PROTECTION"
+   ],
+   "ISCS.CRUST": [
+    "INT.CLEANING"
+   ],
+   "ISCS.CRUST.SALT_CRUST": [
+    "INT.DESALINATION",
+    "INT.CLEANING"
+   ],
+   "ISCS.DEPOSIT": [
+    "INT.CLEANING"
+   ],
+   "ISCS.DISCOLOURATION": [
+    "INT.CLEANING"
+   ],
+   "ISCS.DISCOLOURATION.MOIST_AREA": [
+    "INT.PREVENTIVE"
+   ],
+   "ISCS.EFFLORESCENCE": [
+    "INT.DESALINATION",
+    "INT.CLEANING"
+   ],
+   "ISCS.SUBFLORESCENCE": [
+    "INT.DESALINATION",
+    "INT.CONSOLIDATION"
+   ],
+   "ISCS.ENCRUSTATION": [
+    "INT.CLEANING"
+   ],
+   "ISCS.FILM": [
+    "INT.REMOVAL",
+    "INT.CLEANING"
+   ],
+   "ISCS.GLOSSY_ASPECT": [
+    "INT.CLEANING"
+   ],
+   "ISCS.GRAFFITI": [
+    "INT.CLEANING",
+    "INT.PROTECTION"
+   ],
+   "ISCS.PATINA": [
+    "INT.PREVENTIVE"
+   ],
+   "ISCS.SOILING": [
+    "INT.CLEANING"
+   ],
+   "ISCS.BIOLOGICAL_COLONIZATION": [
+    "INT.BIOCIDE",
+    "INT.CLEANING"
+   ],
+   "ISCS.PLANT": [
+    "INT.BIOCIDE",
+    "INT.FILLING"
+   ],
+   "LOCAL.OUT_OF_PLUMB": [
+    "INT.REMEDIAL"
+   ],
+   "LOCAL.BULGING": [
+    "INT.GROUTING",
+    "INT.REMEDIAL"
+   ],
+   "LOCAL.LOSS_OF_MORTAR": [
+    "INT.REPOINTING"
+   ],
+   "LOCAL.DISPLACED_STONES": [
+    "INT.REINTEGRATION",
+    "INT.REPOINTING"
+   ],
+   "LOCAL.OPEN_JOINT": [
+    "INT.REPOINTING"
+   ]
+  },
+  "by_family": {
+   "crack_deformation": [
+    "INT.GROUTING",
+    "INT.FILLING"
+   ],
+   "detachment": [
+    "INT.CONSOLIDATION"
+   ],
+   "material_loss": [
+    "INT.CONSOLIDATION",
+    "INT.FILLING"
+   ],
+   "discoloration_deposit": [
+    "INT.CLEANING"
+   ],
+   "biological": [
+    "INT.BIOCIDE",
+    "INT.CLEANING"
+   ],
+   "masonry": [
+    "INT.REMEDIAL"
+   ],
+   "general": []
+  }
+ },
  "terms": [
   {
    "code": "INT.PREVENTIVE",
