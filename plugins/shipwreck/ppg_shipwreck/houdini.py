@@ -400,21 +400,31 @@ def _outline(world_xy: np.ndarray) -> dict:
 
 
 class Distance:
-    """The unsigned distance from points to a mesh (its closest point, Open3D's raycasting scene). ``mesh``: a trimesh
-    in the ship frame, whose coordinates are small enough for single precision."""
+    """The unsigned distance from points to a mesh, to its closest point. ``mesh``: a trimesh in the ship frame,
+    whose coordinates are small enough for single precision. ``backend``: ``"open3d"`` (Open3D's raycasting scene,
+    when the program has its ``mesh`` extra) or ``"trimesh"`` (``trimesh.proximity.closest_point`` on the R-tree of
+    the triangles, both core dependencies of the program: slower, the same distances)."""
 
     def __init__(self, mesh):
-        import open3d as o3d
-
+        try:
+            import open3d as o3d
+        except ImportError:
+            self.backend, self.mesh = "trimesh", mesh
+            return
+        self.backend, self.o3d = "open3d", o3d
         self.scene = o3d.t.geometry.RaycastingScene()
         self.scene.add_triangles(o3d.core.Tensor(np.asarray(mesh.vertices, np.float32)),
                                  o3d.core.Tensor(np.asarray(mesh.faces, np.uint32)))
 
     def to(self, xyz) -> np.ndarray:
-        import open3d as o3d
+        points = np.asarray(xyz, float).reshape(-1, 3)
+        if self.backend == "trimesh":
+            import trimesh
 
-        points = o3d.core.Tensor(np.asarray(xyz, np.float32).reshape(-1, 3))
-        return self.scene.compute_distance(points).numpy().astype(float)
+            if not len(points):
+                return np.zeros(0)
+            return np.asarray(trimesh.proximity.closest_point(self.mesh, points)[1], float)
+        return self.scene.compute_distance(self.o3d.core.Tensor(points.astype(np.float32))).numpy().astype(float)
 
 
 def _notes(name: str) -> set:
@@ -434,8 +444,9 @@ def import_planks(chunk, path, side_from: str = "y", deviation: bool = True, pro
     planking too); ``missing`` the vertices farther than ``MISSING`` (no model there), left out of the two. Rows
     (``COLUMNS``) in ``chunk.meta["shipwreck"]["houdini"]["planks"][<file name>]`` (one entry per file imported;
     ``["imports"][<file name>]`` says when) and in ``<data>/shipwreck/clinker/<file stem>_scostamenti.csv`` and
-    ``.xlsx``. Returns ``planks`` (how many),
-    ``replaced``, ``rows``, ``csv``, ``xlsx``."""
+    ``.xlsx``. The distance is computed with Open3D when the program has it, else with trimesh (:class:`Distance`);
+    which one ran is ``backend`` (``None`` without a distance) in the result and in ``["imports"][<file name>]``.
+    Returns ``planks`` (how many), ``replaced``, ``rows``, ``csv``, ``xlsx``, ``backend``."""
     progress = as_progress(progress)
     if side_from not in ("y", "name"):
         raise ValueError("side_from: 'y' or 'name'")
@@ -473,12 +484,14 @@ def import_planks(chunk, path, side_from: str = "y", deviation: bool = True, pro
         rows.append(row)
     store = _store(chunk)
     store.setdefault("planks", {})[path.name] = rows
+    backend = surface.backend if surface is not None else None
     store.setdefault("imports", {})[path.name] = {"imported": datetime.now().isoformat(timespec="seconds"),
-                                                  "y_up": Y_UP, "planks": len(rows), "deviation": bool(deviation)}
+                                                  "y_up": Y_UP, "planks": len(rows), "deviation": bool(deviation),
+                                                  "backend": backend}
     progress(0.92, t("Tabella degli scostamenti", "Table of the deviations"))
     files = _write_rows(chunk, rows, path.stem)
     progress(1.0, t("Fasce importate", "Planks imported"))
-    return {"planks": len(rows), "replaced": len(old), "rows": rows, **files}
+    return {"planks": len(rows), "replaced": len(old), "rows": rows, "backend": backend, **files}
 
 
 def _write_rows(chunk, rows: list[dict], stem: str) -> dict:

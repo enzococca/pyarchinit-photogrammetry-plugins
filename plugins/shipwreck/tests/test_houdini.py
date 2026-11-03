@@ -3,6 +3,7 @@ ship frame turned to Y up, and the HDA's planks read back as timber records with
 from __future__ import annotations
 
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -235,8 +236,14 @@ def test_the_side_from_the_name_and_the_vertices_off_the_model(tmp_path):
     assert rows["fascia_T2"]["missing"] == 0 and rows["fascia_T2"]["median_mm"] is not None
 
 
-def test_a_plank_off_a_steep_side_reports_its_distance(tmp_path):
-    """The distance to the scan, not a height: a plank 10 mm off the steep side of the hull reports 10 mm."""
+@pytest.mark.parametrize("backend", ["open3d", "trimesh"])
+def test_a_plank_off_a_steep_side_reports_its_distance(tmp_path, monkeypatch, backend):
+    """The distance to the scan, not a height: a plank 10 mm off the steep side of the hull reports 10 mm, with
+    Open3D's raycasting scene and without it (trimesh: Open3D is the program's optional ``mesh`` extra)."""
+    if backend == "open3d":
+        pytest.importorskip("open3d")
+    else:
+        monkeypatch.setitem(sys.modules, "open3d", None)  # ``import open3d`` raises ImportError
     _doc, ch, ends = project(tmp_path)
     _ready(ch, ends, STATIONS[:3])
     frame = ship.need_frame(ch)
@@ -252,6 +259,25 @@ def test_a_plank_off_a_steep_side_reports_its_distance(tmp_path):
     row = result["rows"][0]
     assert row["missing"] == 0
     assert row["median_mm"] == pytest.approx(10.0, abs=0.5) and row["p90_mm"] < 11.0, row
+    assert result["backend"] == backend
+    assert ship.state(ch)["houdini"]["imports"]["steep.obj"]["backend"] == backend
+
+
+def test_both_distance_backends_agree(monkeypatch):
+    pytest.importorskip("open3d")
+    import trimesh
+
+    from hulls import hull_vertices
+
+    v, f = hull_vertices()
+    mesh = trimesh.Trimesh(v, f, process=False)
+    rng = np.random.default_rng(3)
+    points = v[rng.choice(len(v), 300, replace=False)] + rng.normal(0.0, 0.05, (300, 3))
+    fast = houdini.Distance(mesh)
+    monkeypatch.setitem(sys.modules, "open3d", None)
+    slow = houdini.Distance(mesh)
+    assert (fast.backend, slow.backend) == ("open3d", "trimesh")
+    assert np.abs(fast.to(points) - slow.to(points)).max() < 0.001
 
 
 def _two_planks(sign):
