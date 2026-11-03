@@ -100,8 +100,8 @@ def _readme(files: list[str]) -> str:
         "strake table (strakes.csv and strakes.xlsx in this folder), when present.",
         "5. Bend and align the planks on the scan.",
         "6. Presets and export: export the planks as OBJ, one object or group per plank, and read them back in the "
-        "plugin (Import planks from the Clinker Boat Tool): each plank becomes a timber record with its deviation from "
-        "the scan.",
+        "plugin (step 7 of the Shipwreck pane, Planks from Houdini...): each plank becomes a timber record with its "
+        "deviation from the scan.",
         "",
         "IT - I sei passi dell'HDA con questi file:",
         "1. Importa la scansione: hull.obj (sections.obj, lands.obj e strakes.obj come riferimenti in più).",
@@ -112,8 +112,8 @@ def _readme(files: list[str]) -> str:
         "lands.obj e dalla tabella delle fasce (strakes.csv e strakes.xlsx in questa cartella), se presenti.",
         "5. Piega e allinea le fasce sulla scansione.",
         "6. Preset ed esportazione: esporta le fasce in OBJ, un oggetto o gruppo per fascia, e rileggile nel plugin "
-        "(Importa le fasce dal Clinker Boat Tool): ogni fascia diventa una scheda di legno con il suo scostamento "
-        "dalla scansione.",
+        "(passo 7 del pannello Relitto, Fasce da Houdini...): ogni fascia diventa una scheda di legno con il suo "
+        "scostamento dalla scansione.",
         "",
         "lands.obj and strakes.obj: a hypothesis from the sections, not a measure (ipotesi dalle sezioni, non una "
         "misura).",
@@ -127,12 +127,21 @@ def _readme(files: list[str]) -> str:
 
 
 def export(chunk, folder, progress=None) -> dict:
-    """The folder ``<folder>/clinker_boat_tool/`` for the Clinker Boat Tool: ``hull.obj``, ``sections.obj`` (an object
-    per station, its raw polylines as ``l``), ``stations.json``, ``frame.json``, ``lands.obj`` and ``strakes.obj`` when
-    the land lines and the strake model exist and are current, ``README.txt``; with the strake model also its table (``strakes.csv``, ``strakes.xlsx``, keys ``strake_table``,
-    ``strake_sheet``). Everything in the ship frame turned to Y
-    up (:data:`Y_UP`). Returns the paths by name (``hull``, ``sections``, ``stations``, ``frame``, ``lands``,
-    ``strakes``, ``readme``). Refused without the sections at the stations, or with sections cut on another frame."""
+    """The folder ``<folder>/clinker_boat_tool/`` for the Clinker Boat Tool, everything in the ship frame turned to Y
+    up (:data:`Y_UP`):
+
+    * ``hull.obj``, the chunk's model;
+    * ``sections.obj``, an object per station, its raw polylines as ``l``;
+    * ``stations.json`` and ``frame.json``;
+    * ``lands.obj`` when the land lines exist and are current;
+    * ``strakes.obj`` and its table ``strakes.csv``, ``strakes.xlsx`` when the strake model does;
+    * ``README.txt``, the HDA's steps and the citations.
+
+    The files of an earlier export that no longer hold are removed; the folder is kept in
+    ``meta["shipwreck"]["houdini"]["export"]`` (a new detection of the lands sets its strake files aside).
+    Returns the paths by name (``hull``, ``sections``, ``stations``, ``frame``, ``lands``, ``strakes``,
+    ``strake_table``, ``strake_sheet``, ``readme``). Refused without the sections at the stations, or with sections
+    cut on another frame."""
     progress = as_progress(progress)
     ship.check_metric(chunk)
     frame = ship.need_frame(chunk)
@@ -208,6 +217,7 @@ def export(chunk, folder, progress=None) -> dict:
     tmp.write_text(_readme(names), encoding="utf-8")
     os.replace(tmp, readme)
     out["readme"] = readme
+    _store(chunk)["export"] = str(out_dir)
     progress(1.0, t("File per il Clinker Boat Tool pronti", "Files for the Clinker Boat Tool ready"))
     return out
 
@@ -219,6 +229,22 @@ def _unsure(chunk) -> set:
         for value in group.values():
             names |= set(value or [])
     return names
+
+
+def _store(chunk) -> dict:
+    """``meta["shipwreck"]["houdini"]``; the rows of a single file kept by the development version at 489fcf4 (a
+    list under ``planks``, the file under ``file``) become the entry of that file."""
+    store = ship.state(chunk).setdefault("houdini", {})
+    if isinstance(store.get("planks"), list):
+        store["planks"] = {store.pop("file", "?"): store["planks"]}
+    return store
+
+
+def imports(chunk) -> dict:
+    """The rows of every OBJ imported, by file name (:func:`import_planks`); read only, the chunk is not touched."""
+    store = (chunk.meta.get(ship.KEY) or {}).get("houdini") or {}
+    planks = store.get("planks") or {}
+    return {store.get("file", "?"): planks} if isinstance(planks, list) else dict(planks)
 
 
 def _write_json(path: Path, data: dict) -> Path:
@@ -251,9 +277,10 @@ def _strakes(source: Path, path: Path, sign: int, head: list[str]) -> Path:
 def read_obj(path) -> dict[str, np.ndarray]:
     """The planks of an OBJ as name -> vertices ``(N, 3)``: its objects (``o``) or its groups (``g``), whichever level
     has more names (one ``o`` wrapping a group per plank gives the groups). A ``g`` line with several names puts what
-    follows in each of them (the OBJ convention, Houdini writes it), and a group holding every element of the file (a
-    catch-all such as "all") is left out when other groups remain. The vertices of a plank are those its faces, lines
-    and points use, or, when it has none, those written under it. Refused when the file has neither objects nor
+    follows in each of them (the OBJ convention, Houdini writes it), and a group holding every element of the other
+    groups (a catch-all such as "all", with or without the elements outside any group: :func:`_catch_all`) is left
+    out. The vertices of a plank are those its faces, lines and points use, or, when it has none, those written
+    under it. Refused when the file has neither objects nor
     groups, or a line cannot be read (its number is given)."""
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -280,7 +307,7 @@ def read_obj(path) -> dict[str, np.ndarray]:
             for name in names:
                 declared[key].setdefault(name, [])
                 used[key].setdefault(name, [])
-                elements[key].setdefault(name, 0)
+                elements[key].setdefault(name, set())
         elif key == "v":
             try:
                 xyz = [float(v) for v in rest.split()[:3]]
@@ -306,10 +333,10 @@ def read_obj(path) -> dict[str, np.ndarray]:
             for kind in ("o", "g"):
                 for name in current[kind]:
                     used[kind][name].extend(index)
-                    elements[kind][name] += 1
+                    elements[kind][name].add(total)
     groups = list(declared["g"])
     if len(groups) > 1 and total:
-        kept = [g for g in groups if elements["g"][g] < total]
+        kept = [g for g in groups if not _catch_all(g, groups, elements["g"])]
         groups = kept or groups
     if not declared["o"] and not groups:
         raise ship.NotReady(t("Il file non ha fasce da leggere: nessun oggetto o gruppo nel file (righe o / g). "
@@ -329,6 +356,13 @@ def read_obj(path) -> dict[str, np.ndarray]:
     if not out:
         raise ship.NotReady(t("Gli oggetti del file non hanno vertici.", "The objects of the file have no vertices."))
     return out
+
+
+def _catch_all(group: str, groups: list[str], elements: dict[str, set]) -> bool:
+    """A group holding every element of the other groups ("all", "planks"): it holds no plank of its own, whether
+    the file's loose elements (outside any group) are in it or not."""
+    others = set().union(*(elements[g] for g in groups if g != group))
+    return bool(others) and others <= elements[group]
 
 
 def _side(name: str, y: float, side_from: str) -> str:
@@ -429,7 +463,7 @@ def import_planks(chunk, path, side_from: str = "y", deviation: bool = True, pro
                 d = d[ok] * 1000.0
                 row["median_mm"], row["p90_mm"] = round(float(np.median(d)), 2), round(float(np.percentile(d, 90)), 2)
         rows.append(row)
-    store = ship.state(chunk).setdefault("houdini", {})
+    store = _store(chunk)
     store.setdefault("planks", {})[path.name] = rows
     store.setdefault("imports", {})[path.name] = {"imported": datetime.now().isoformat(timespec="seconds"),
                                                   "y_up": Y_UP, "planks": len(rows), "deviation": bool(deviation)}

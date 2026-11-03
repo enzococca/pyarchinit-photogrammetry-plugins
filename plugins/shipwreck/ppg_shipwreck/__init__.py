@@ -3,10 +3,13 @@
 * the *Relitto* pane (on the right), step by step: the ship frame (x along the keel, y to port, z up), the stations
   (regular, from a table with the field's names, from the frames of the catalogue), the lines cut from the model, the
   water (a level, the refraction taken out where the user says so), the drawings (body plan, half-breadth plan, profile,
-  plan over the orthophoto; SVG, PDF, PNG, DXF), the catalogue of the timbers with their measures;
-* the products in the workspace tree, the timbers in a layer of the raster view;
+  plan over the orthophoto; SVG, PDF, PNG, DXF), the catalogue of the timbers with their measures, the clinker
+  strakes (the lands found on the sections, the land lines, a strake model labelled a hypothesis, the file link with
+  Fröhlich & Nielsen's Clinker Boat Tool for Houdini);
+* the products in the workspace tree, the timbers and the land lines in layers of the raster view;
 * *File > Esporta > Relitto: catalogo dei legni*;
-* ``ppg plugin shipwreck frame|stations|sections|water|drawings|timbers|export|status``.
+* ``ppg plugin shipwreck frame|stations|sections|water|drawings|timbers|export|status`` and
+  ``ppg plugin shipwreck clinker detect|strakes|export|import|status``.
 
 It measures what is there and reconstructs nothing. It reads the model: the transform, the model and the products of
 the chunk are never changed, and nothing is written outside ``<chunk data>/shipwreck/`` but what the user exports.
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -22,9 +26,10 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, num, plural, t
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 NEGATIVE_VALUES = ("--start", "--end", "--longitudinals", "--horizontals")  # may begin with a minus: "-0.2;-0.5", "-1.5,2"
 LAYER = "Legni del relitto"
+CLINKER_LAYER = "Fasce"  # the land lines, in the chunk's x, y
 SIDE_COLOURS = {"port": "#e04040", "starboard": "#30a040", "centre": "#ffd000"}
 
 
@@ -34,8 +39,9 @@ class ShipwreckPlugin(Plugin):
     def __init__(self):
         self.title = t(*NAME)
         self.description = t("Il disegno tecnico di uno scafo scavato dal suo modello 3D: sistema della nave, sezioni, "
-                             "piani, catalogo dei legni", "The technical drawing of an excavated hull from its 3D model: "
-                             "ship frame, sections, plans, timber catalogue")
+                             "piani, catalogo dei legni, fasce del fasciame a clinker", "The technical drawing of an "
+                             "excavated hull from its 3D model: ship frame, sections, plans, timber catalogue, clinker "
+                             "strakes")
         self.context = None
         self.pane = None
 
@@ -46,7 +52,7 @@ class ShipwreckPlugin(Plugin):
                            tip=t("Il pannello del disegno dello scafo", "The pane of the drawing of the hull"))
         context.add_command("shipwreck", self.command,
                             help="the technical drawing of a hull: frame, stations, sections, water, drawings, "
-                                 "timbers, export, status")
+                                 "timbers, export, status, clinker")
         context.add_exporter(t("Relitto: catalogo dei legni (CSV)", "Shipwreck: timber catalogue (CSV)"), ".csv", self._export)
         context.add_exporter(t("Relitto: catalogo dei legni (Excel)", "Shipwreck: timber catalogue (Excel)"), ".xlsx", self._export)
         context.add_exporter(t("Relitto: catalogo dei legni (GeoPackage)", "Shipwreck: timber catalogue (GeoPackage)"), ".gpkg",
@@ -148,7 +154,8 @@ class ShipwreckPlugin(Plugin):
         data = lines.load(chunk) if frame is not None else None
         out = {"frame": t("Non impostato.", "Not set."), "stations": t("Nessuna stazione.", "No stations."),
                "sections": t("Non calcolate.", "Not computed."), "water": t("Correzione spenta.", "Correction off."),
-               "drawings": t("Nessun disegno.", "No drawings."), "timbers": t("Catalogo vuoto.", "The catalogue is empty.")}
+               "drawings": t("Nessun disegno.", "No drawings."), "timbers": t("Catalogo vuoto.", "The catalogue is empty."),
+               "clinker": clinker_state(chunk)}
         if frame is not None:
             bow = t(f"prua a x = {num(frame.bow_x)}", f"bow at x = {num(frame.bow_x)}")
             out["frame"] = t(f"Chiglia {num(frame.length)} m, rotta {num(frame.heading, 1)}°, pendenza "
@@ -488,6 +495,166 @@ class ShipwreckPlugin(Plugin):
             self.context.refresh_tree()
             self.refresh_pane()
 
+    # ------------------------------------------------------------------ 7 the clinker strakes
+    def _do_clinker_detect(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import clinker, ship
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        p = {**clinker.DEFAULTS, **(((chunk.meta.get(ship.KEY) or {}).get("clinker") or {}).get("params") or {})}
+        v = self._ask(t("Rileva i corsi", "Find the strakes"), [
+            Field("min_step", t("Gradino minimo (mm)", "Least step (mm)"), p["min_step"] * 1000.0, minimum=1.0,
+                  maximum=100.0, decimals=1, tip=t("Il salto più piccolo dove una fascia si sovrappone a quella sotto",
+                                                   "The smallest step where a strake laps over the one below")),
+            Field("min_strake", t("Larghezza minima di fascia (m)", "Least strake width (m)"), p["min_strake"],
+                  minimum=0.01, maximum=2.0, decimals=3, tip=t("Due gradini più vicini di così sono uno solo",
+                                                               "Two lands nearer than this are one")),
+            Field("keel_half_width", t("Metà larghezza della chiglia (m)", "Half width of the keel (m)"),
+                  p["keel_half_width"], minimum=0.01, maximum=1.0, decimals=3),
+            Field("sole_width", t("Larghezza minima della suola (m)", "Least width of the sole (m)"), p["sole_width"],
+                  minimum=0.001, maximum=0.5, decimals=3,
+                  tip=t("Abbassala se una chiglia stretta e consumata dà lati non letti a ogni stazione",
+                        "Lower it when a narrow worn keel leaves sides not read at every station"))],
+            intro=t("I gradini del fasciame letti sulle sezioni alle stazioni (quelle grezze, senza la correzione "
+                    "dell'acqua), dalla battura verso l'orlo, e uniti in linee lungo lo scafo. I gradini sono misurati; "
+                    "le linee e il modello delle fasce sono un'ipotesi.",
+                    "The plank lands read on the sections at the stations (the raw ones, without the water correction), "
+                    "from the rabbet out to the sheer, and joined into lines along the hull. The lands are measured; the "
+                    "lines and the strake model are a hypothesis."))
+        if v:
+            params = {k: float(v[k]) for k in ("min_strake", "keel_half_width", "sole_width")}
+            params["min_step"] = float(v["min_step"]) / 1000.0
+            self.detect(chunk, params)
+
+    def detect(self, chunk, params=None) -> None:
+        from . import clinker
+
+        def job(p):
+            result = clinker.detect_lands(chunk, params, progress=p)
+            return result, lines_files(chunk)
+
+        def done(found):
+            result, files = found
+            count = sum(1 for line in result["lines"] if len(line["points"]) > 1)
+            self._status(t(f"Linee dei gradini: {count}", f"Land lines: {count}")
+                         + (f" ({files['dxf'].parent})" if files else ""))
+            self._changed()
+
+        self._run(t("Fasce del fasciame", "Clinker strakes"), job, done)
+
+    def _do_clinker_strakes(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import clinker
+
+        chunk = self._need_chunk()
+        state = clinker.check_strakes(chunk)
+        before = (state.get("strakes") or [{}])[0]
+        v = self._ask(t("Modello delle fasce", "Strake model"), [
+            Field("lap", t("Sovrapposizione (mm)", "Lap (mm)"), before.get("lap_mm", 20.0), minimum=1.0, maximum=200.0,
+                  decimals=1, tip=t("Quanto una fascia copre quella sotto", "How much a strake covers the one below")),
+            Field("thickness", t("Spessore (mm, 0 = il gradino misurato)", "Thickness (mm, 0 = the step measured)"), 0.0,
+                  minimum=0.0, maximum=200.0, decimals=1),
+            Field("catalogue", t("Anche nel catalogo dei legni", "Into the timber catalogue too"), False)],
+            intro=t("Fra due linee di gradini una fascia: larghezza a ogni stazione, lunghezza, spessore e "
+                    "sovrapposizione, una mesh per fascia (OBJ e PLY) e le tabelle. È un'ipotesi dalle sezioni, non una "
+                    "misura: è scritto in ogni file.",
+                    "Between two land lines a strake: width at every station, length, thickness and lap, a mesh per "
+                    "strake (OBJ and PLY) and the tables. It is a hypothesis from the sections, not a measure: every "
+                    "file says so."))
+        if v:
+            self.strakes(chunk, float(v["lap"]) / 1000.0, float(v["thickness"]) / 1000.0 or None, bool(v["catalogue"]))
+
+    def strakes(self, chunk, lap=0.02, thickness=None, catalogue=False) -> None:
+        from . import clinker
+
+        def job(p):
+            result = clinker.build_strakes(chunk, lap, thickness, progress=p)
+            result.update(clinker.write_tables(chunk))
+            if catalogue:
+                result["catalogue"] = clinker.to_catalogue(chunk)
+            return result
+
+        def done(result):
+            count = plural(len(result["strakes"]), ("fascia", "fasce"), ("strake", "strakes"))
+            self._status(t(f"Modello delle fasce (ipotesi): {count} in {result['obj'].parent}",
+                           f"Strake model (hypothesis): {count} in {result['obj'].parent}"))
+            self._changed()
+
+        self._run(t("Modello delle fasce", "Strake model"), job, done)
+
+    def _do_clinker_catalogue(self) -> None:
+        from . import clinker
+
+        count = clinker.to_catalogue(self._need_chunk())
+        self._status(t(f"Fasce nel catalogo dei legni: {count}", f"Strakes in the timber catalogue: {count}"))
+        self._changed()
+
+    def _do_clinker_export(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from . import houdini, ship
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        last = ((chunk.meta.get(ship.KEY) or {}).get("houdini") or {}).get("export")
+        folder = QFileDialog.getExistingDirectory(self.context.window, t("Cartella per il Clinker Boat Tool",
+                                                                         "Folder for the Clinker Boat Tool"),
+                                                  str(Path(last).parent) if last else "")
+        if not folder:
+            return
+
+        def done(out):
+            self._status(t(f"File per il Clinker Boat Tool in {out['readme'].parent}",
+                           f"Files for the Clinker Boat Tool in {out['readme'].parent}"))
+            self._changed()
+
+        self._run(t("File per il Clinker Boat Tool", "Files for the Clinker Boat Tool"),
+                  lambda p: houdini.export(chunk, folder, progress=p), done)
+
+    def _do_clinker_import(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import houdini, ship
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        last = ((chunk.meta.get(ship.KEY) or {}).get("houdini") or {}).get("export") or ""
+        path, _ = QFileDialog.getOpenFileName(self.context.window, t("Fasce da Houdini", "Planks from Houdini"), last,
+                                              "OBJ (*.obj)")
+        if not path:
+            return
+        v = self._ask(t("Fasce da Houdini", "Planks from Houdini"), [
+            Field("side_from", t("Lato", "Side"), "y", choices=[
+                ("y", t("Dalla y media dei vertici", "From the mean y of the vertices")),
+                ("name", t("Dal nome (B/T, babordo/tribordo)", "From the name (B/T, port/starboard)"))]),
+            Field("deviation", t("Distanza dalla scansione", "Distance from the scan"), True)],
+            intro=t("Un oggetto (o un gruppo) del file per tavola, Y in alto come le esporta il Clinker Boat Tool. "
+                    "Le tavole di un'importazione precedente dello stesso file vengono sostituite.",
+                    "One object (or group) of the file per plank, Y up as the Clinker Boat Tool exports them. The "
+                    "planks of an earlier import of the same file are replaced."))
+        if not v:
+            return
+
+        def done(result):
+            self._status(t(f"Tavole importate: {result['planks']} ({result['csv'].name})",
+                           f"Planks imported: {result['planks']} ({result['csv'].name})"))
+            self._changed()
+
+        self._run(t("Fasce da Houdini", "Planks from Houdini"),
+                  lambda p: houdini.import_planks(chunk, path, v["side_from"], bool(v["deviation"]), progress=p), done)
+
+    def _do_clinker_open(self) -> None:
+        from . import ship
+
+        folder = ship.folder(self._need_chunk()) / "clinker"
+        folder.mkdir(parents=True, exist_ok=True)
+        self._open(folder)
+
     # ------------------------------------------------------------------ the view
     def _need_chunk(self):
         from . import ship
@@ -530,6 +697,24 @@ class ShipwreckPlugin(Plugin):
                 view.add_polygon(xy, label, colour, layer=LAYER, attrs=attrs)
             else:
                 view.add_line(xy, colour, label, layer=LAYER, attrs=attrs)
+        self._draw_lands(view, chunk)
+
+    @staticmethod
+    def _draw_lands(view, chunk) -> None:
+        """The land lines in the chunk's x, y, a colour per side, dashed when the sections changed since."""
+        from . import clinker, ship
+
+        view.remove_layer(CLINKER_LAYER)
+        frame = ship.frame_of(chunk)
+        found = [ln for ln in ((chunk.meta.get(ship.KEY) or {}).get("clinker") or {}).get("lines") or [] if len(ln["points"]) > 1]
+        if frame is None or not found:
+            return
+        stale = clinker.is_stale(chunk)
+        for line in found:
+            xy = frame.to_world(np.asarray(line["points"], float))[:, :2]
+            name = f"{clinker.SIDE_CODES[line['side']][0]}{line['k']}"
+            view.add_line(xy, SIDE_COLOURS[line["side"]], name, layer=CLINKER_LAYER, width=1.5, dash=stale,
+                          attrs={"side": line["side"], "k": line["k"], "uncertain": len(line["uncertain_stations"])})
 
     # ------------------------------------------------------------------ the workspace tree
     def _tree_items(self, chunk) -> list:
@@ -557,6 +742,16 @@ class ShipwreckPlugin(Plugin):
         if records:
             children.append({"label": t(f"Legni ({len(records)})", f"Timbers ({len(records)})"), "icon": "plugin",
                              "activate": self.show_pane})
+        strakes = strake_counts(chunk)
+        if strakes:
+            if len(set(strakes.values())) == 1 and len(strakes) == 2:
+                count = t(f"{strakes['port']} per lato", f"{strakes['port']} per side")
+            else:
+                from .clinker import _side_name
+
+                count = ", ".join(f"{n} {_side_name(side)}" for side, n in strakes.items())
+            children.append({"label": t(f"Fasce ({count})", f"Strakes ({count})"), "icon": "plugin",
+                             "activate": self.show_pane})
         if not children:
             return []
         return [{"label": t(*NAME), "icon": "plugin", "children": children}]
@@ -571,8 +766,11 @@ class ShipwreckPlugin(Plugin):
     def command(self, *args) -> int:
         from . import drawings, lines, ship, timbers
 
+        if args and str(args[0]) == "clinker":
+            return self._clinker_command([str(a) for a in args[1:]])
         parser = argparse.ArgumentParser(prog="ppg plugin shipwreck", description="the technical drawing of a hull from its 3D model")
-        parser.add_argument("what", choices=["frame", "stations", "sections", "water", "drawings", "timbers", "export", "status"])
+        parser.add_argument("what", choices=["frame", "stations", "sections", "water", "drawings", "timbers", "export", "status",
+                                             "clinker"], help="clinker: see 'ppg plugin shipwreck clinker --help'")
         parser.add_argument("project", help="the .ppg file")
         parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
         parser.add_argument("--start", help="frame: first end of the keel, X,Y[,Z] world, or a marker with --markers")
@@ -654,6 +852,152 @@ class ShipwreckPlugin(Plugin):
             return 1
         doc.save()
         return 0
+
+
+    def _clinker_command(self, args: list[str]) -> int:
+        from . import clinker, houdini, ship
+
+        parser = argparse.ArgumentParser(prog="ppg plugin shipwreck clinker",
+                                         description="clinker strakes: the lands on the sections, the land lines, the "
+                                                     "strake model (a hypothesis), the Clinker Boat Tool's files")
+        parser.add_argument("action", choices=["detect", "strakes", "export", "import", "status"])
+        parser.add_argument("project", help="the .ppg file")
+        parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
+        parser.add_argument("--min-step", type=float, help="detect: least step of a land, mm (8)")
+        parser.add_argument("--min-strake", type=float, help="detect: least width of a strake, m (0.08)")
+        parser.add_argument("--keel-half-width", type=float, help="detect: half width of the keel, m (0.10)")
+        parser.add_argument("--sole-width", type=float, help="detect: least width of a sole, m (0.02)")
+        parser.add_argument("--lap", type=float, default=20.0, help="strakes: the lap, mm (20)")
+        parser.add_argument("--thickness", type=float, help="strakes: mm (default: the step measured)")
+        parser.add_argument("--catalogue", action="store_true", help="strakes: a plank of the catalogue per strake")
+        parser.add_argument("--out", help="export: the folder (clinker_boat_tool/ is made in it)")
+        parser.add_argument("--obj", help="import: the OBJ of the planks exported by the Clinker Boat Tool")
+        parser.add_argument("--side-from", choices=["y", "name"], default="y", help="import: the side of a plank")
+        parser.add_argument("--no-deviation", action="store_true", help="import: skip the distance from the scan")
+        ns = parser.parse_args(args)
+        import pyarchinit_photogrammetry as ppg
+
+        doc = ppg.Document.open(ns.project)
+        chunk = next((c for c in doc.chunks if c.label == ns.chunk), None) if ns.chunk else doc.chunk
+        if chunk is None:
+            print(f"no chunk {ns.chunk!r} in the project")
+            return 1
+        try:
+            if ns.action == "detect":
+                params = {key: getattr(ns, key) for key in ("min_strake", "keel_half_width", "sole_width")
+                          if getattr(ns, key) is not None}
+                if ns.min_step is not None:
+                    params["min_step"] = ns.min_step / 1000.0
+                result = clinker.detect_lands(chunk, params, progress=_print_progress)
+                print(clinker.summary(chunk))
+                for line in detection_lines(chunk, result):
+                    print(line)
+                for path in lines_files(chunk).values():
+                    print(path)
+            elif ns.action == "strakes":
+                result = clinker.build_strakes(chunk, ns.lap / 1000.0,
+                                               ns.thickness / 1000.0 if ns.thickness else None, progress=_print_progress)
+                result.update(clinker.write_tables(chunk))
+                count = plural(len(result["strakes"]), ("fascia", "fasce"), ("strake", "strakes"))
+                print(t(f"Modello delle fasce (ipotesi): {count}", f"Strake model (hypothesis): {count}"))
+                for key in ("obj", "ply", "csv", "xlsx"):
+                    print(result[key])
+                if ns.catalogue:
+                    count = clinker.to_catalogue(chunk)
+                    print(plural(count, ("fascia", "fasce"), ("strake", "strakes")) + t(" nel catalogo dei legni",
+                                                                                        " in the timber catalogue"))
+            elif ns.action == "export":
+                if not ns.out:
+                    raise ship.NotReady("--out FOLDER")
+                for path in houdini.export(chunk, ns.out, progress=_print_progress).values():
+                    print(path)
+            elif ns.action == "import":
+                if not ns.obj:
+                    raise ship.NotReady("--obj FILE")
+                result = houdini.import_planks(chunk, ns.obj, ns.side_from, not ns.no_deviation, progress=_print_progress)
+                n = result["planks"]
+                print(t("1 fascia importata" if n == 1 else f"{n} fasce importate",
+                        "1 plank imported" if n == 1 else f"{n} planks imported"))
+                for r in result["rows"]:
+                    median = "-" if r["median_mm"] is None else num(r["median_mm"], 1)
+                    print(t(f"  {r['name']}: distanza dalla scansione, mediana {median} mm",
+                            f"  {r['name']}: distance from the scan, median {median} mm"))
+                print(result["csv"])
+                print(result["xlsx"])
+            else:
+                print(clinker_state(chunk))
+                if "lands" in ((chunk.meta.get(ship.KEY) or {}).get("clinker") or {}):
+                    print(t("Gradini da rilevare di nuovo: le sezioni sono cambiate." if clinker.is_stale(chunk)
+                            else "Gradini aggiornati rispetto alle sezioni.",
+                            "Lands to find again: the sections changed." if clinker.is_stale(chunk)
+                            else "Lands up to date with the sections."))
+                return 0
+        except ship.NotReady as exc:
+            print(exc)
+            return 1
+        doc.save()
+        return 0
+
+
+def clinker_state(chunk) -> str:
+    """The clinker step's state in words: the summary of the lands, the strake model, the catalogue, the imports."""
+    from statistics import median
+
+    from . import clinker, houdini, ship
+
+    text = clinker.summary(chunk)
+    state = (chunk.meta.get(ship.KEY) or {}).get("clinker") or {}
+    if state.get("strakes"):
+        count = plural(len(state["strakes"]), ("fascia", "fasce"), ("strake", "strakes"))
+        text += " " + t(f"Modello delle fasce (ipotesi dalle sezioni): {count} in shipwreck/clinker.",
+                        f"Strake model (hypothesis from the sections): {count} in shipwreck/clinker.")
+        if state.get("catalogue"):
+            text += " " + t(f"Nel catalogo: {len(state['catalogue'])}.", f"In the catalogue: {len(state['catalogue'])}.")
+    for name, rows in houdini.imports(chunk).items():
+        medians = [r["median_mm"] for r in rows if r.get("median_mm") is not None]
+        count = plural(len(rows), ("tavola", "tavole"), ("plank", "planks"))
+        far = (t(f", distanza dalla scansione mediana {num(median(medians), 1)} mm",
+                 f", distance from the scan median {num(median(medians), 1)} mm") if medians else "")
+        text += " " + t(f"Da Houdini, {name}: {count}{far}.", f"From Houdini, {name}: {count}{far}.")
+    return text
+
+
+def strake_counts(chunk) -> dict:
+    """The strakes found per side (the land lines plus one), for the sides with lands."""
+    from . import clinker, ship
+
+    state = (chunk.meta.get(ship.KEY) or {}).get("clinker") or {}
+    return {side: int(state["mode"][side]) + 1 for side in clinker.SIDES if int((state.get("mode") or {}).get(side, 0))}
+
+
+def detection_lines(chunk, result: dict) -> list[str]:
+    """The stations a detection was unsure of, one list per reason, for the command line."""
+    from .clinker import _reason_text, _side_name
+
+    def listed(names):
+        return ", ".join(names) or t("nessuna", "none")
+
+    other = [f"{n} {_side_name(side)}" for side, names in result["uncertain"].items() for n in names]
+    jumped = [f"{n} {_side_name(side)}" for side, names in result["jumps"].items() for n in names]
+    skipped = [f"{d['station']} {_side_name(d['side'])} ({_reason_text(d['reason'])})" for d in result["skipped"]]
+    return [t(f"Stazioni incerte (un altro numero di gradini): {listed(other)}",
+              f"Uncertain stations (another count of lands): {listed(other)}"),
+            t(f"Stazioni incerte (battura o torello che saltano): {listed(jumped)}",
+              f"Uncertain stations (the rabbet or the garboard jumping): {listed(jumped)}"),
+            t(f"Lati non letti: {'; '.join(skipped) or 'nessuno'}", f"Sides not read: {'; '.join(skipped) or 'none'}")]
+
+
+def lines_files(chunk) -> dict:
+    """The land lines written as DXF and GeoPackage (:func:`clinker.write_lines`); with no land line those of an
+    earlier detection are removed, as they no longer hold."""
+    from . import clinker, ship
+
+    try:
+        return clinker.write_lines(chunk)
+    except ship.NotReady:
+        for name in ("lands.dxf", "lands.gpkg"):
+            (ship.folder(chunk) / "clinker" / name).unlink(missing_ok=True)
+        return {}
 
 
 def joined_values(args: list[str]) -> list[str]:

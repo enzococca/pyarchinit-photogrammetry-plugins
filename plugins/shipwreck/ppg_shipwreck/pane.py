@@ -1,5 +1,6 @@
 """The *Relitto* pane: the steps of the drawing of a hull, one under the other, each with its buttons and its
-state, and the table of the timbers. It only says what the user asks (``requested``): the plugin does it."""
+state, the table of the timbers under the catalogue's step, then the clinker strakes. It only says what the user
+asks (``requested``): the plugin does it."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
@@ -36,7 +37,24 @@ STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
           (("timber_line", ("Linea...", "Line..."), "", ""), ("timber_polygon", ("Poligono...", "Polygon..."), "", ""),
            ("timber_point", ("Punto...", "Point..."), "", ""), ("timber_import", ("Da CSV...", "From CSV..."), "", ""),
            ("timber_remove", ("Rimuovi selezionati", "Remove selected"), "", ""),
-           ("timber_export", ("Esporta...", "Export..."), "CSV, XLSX o GeoPackage", "CSV, XLSX or GeoPackage"))))
+           ("timber_export", ("Esporta...", "Export..."), "CSV, XLSX o GeoPackage", "CSV, XLSX or GeoPackage"))),
+         ("clinker", ("7. Fasce (clinker)", "7. Strakes (clinker)"),
+          (("clinker_detect", ("Rileva i corsi...", "Find the strakes..."),
+            "I gradini del fasciame sulle sezioni alle stazioni, uniti in linee lungo lo scafo",
+            "The plank lands on the sections at the stations, joined into lines along the hull"),
+           ("clinker_strakes", ("Modello delle fasce...", "Strake model..."),
+            "Le fasce fra le linee dei gradini: un'ipotesi dalle sezioni, non una misura",
+            "The strakes between the land lines: a hypothesis from the sections, not a measure"),
+           ("clinker_catalogue", ("Nel catalogo", "Into the catalogue"),
+            "Una tavola del catalogo dei legni per fascia, segnata come ipotesi",
+            "A plank of the timber catalogue per strake, noted as a hypothesis"),
+           ("clinker_export", ("Per Clinker Boat Tool...", "For the Clinker Boat Tool..."),
+            "I file per il Clinker Boat Tool di Fröhlich e Nielsen (Houdini), Y in alto",
+            "The files for Fröhlich and Nielsen's Clinker Boat Tool (Houdini), Y up"),
+           ("clinker_import", ("Fasce da Houdini...", "Planks from Houdini..."),
+            "Le tavole esportate dal Clinker Boat Tool (OBJ) nel catalogo, con la distanza dalla scansione",
+            "The planks exported by the Clinker Boat Tool (OBJ) into the catalogue, with their distance from the scan"),
+           ("clinker_open", ("Apri la cartella", "Open the folder"), "", ""))))
 COLUMNS = (("Id", "Id"), ("Tipo", "Kind"), ("Lato", "Side"), ("Nome", "Name"), ("x (m)", "x (m)"), ("Lungh. (m)", "Length (m)"),
            ("Largh. (m)", "Width (m)"), ("z max (m)", "z max (m)"), ("Avviso", "Warning"))
 
@@ -55,6 +73,11 @@ class ShipwreckPane(QWidget):
         lay.addWidget(intro)
         self.states: dict[str, QLabel] = {}
         self.buttons: dict[str, QPushButton] = {}
+        self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setHorizontalHeaderLabels([t(*c) for c in COLUMNS])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         for key, title, buttons in STEPS:
             head = QLabel(f"<b>{t(*title)}</b>")
             lay.addWidget(head)
@@ -72,12 +95,8 @@ class ShipwreckPane(QWidget):
             state.setWordWrap(True)
             lay.addWidget(state)
             self.states[key] = state
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels([t(*c) for c in COLUMNS])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        lay.addWidget(self.table)
+            if key == "timbers":  # the catalogue's table under its step
+                lay.addWidget(self.table)
         lay.addStretch(1)
 
     def set_states(self, states: dict) -> None:

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-shipwreck"
-version = "0.1.0"
-description = "pyarchinit-photogrammetry plugin: the technical drawing of an excavated hull from its 3D model - ship frame, stations, sections cut from the model, a stated water correction, body plan, half-breadth plan, profile, plan, timber catalogue"
+version = "0.2.0"
+description = "pyarchinit-photogrammetry plugin: the technical drawing of an excavated hull from its 3D model - ship frame, stations, sections cut from the model, a stated water correction, body plan, half-breadth plan, profile, plan, timber catalogue, clinker strakes with a strake model (a hypothesis) and the file link with the Clinker Boat Tool for Houdini"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]

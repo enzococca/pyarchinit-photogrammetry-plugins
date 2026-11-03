@@ -619,8 +619,11 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
         uncertain[side] = [st["name"] for st in stations if st["side"] == side and st["count"] != mode[side]]
     jumps = {side: _jumps([st for st in stations if st["side"] == side], found) for side in SIDES}
     state = _state(chunk)
-    for key in ("lines", "unmatched", "strakes", "strakes_built"):
+    for key in ("lines", "unmatched", "strakes", "strakes_built", "set_aside"):
         state.pop(key, None)
+    aside = _set_aside(chunk)
+    if aside:
+        state["set_aside"] = aside
     state.update({"params": p, "source": _signature(data), "lands": found, "stations": stations, "mode": mode,
                   "uncertain": uncertain, "jumps": jumps, "skipped": skipped,
                   "detected": datetime.now().isoformat(timespec="seconds")})
@@ -629,6 +632,32 @@ def detect_lands(chunk, params: dict | None = None, progress=None) -> dict:
     progress(1.0, t("Gradini trovati", "Lands found"))
     return {"lands": found, "stations": stations, "mode": mode, "uncertain": uncertain, "jumps": jumps,
             "skipped": skipped, "lines": state["lines"], "unmatched": state["unmatched"]}
+
+
+MODEL_FILES = ("strakes.obj", "strakes.ply", "strakes.csv", "strakes.xlsx")
+"""The files of a strake model in ``<chunk data>/shipwreck/clinker``; ``EXPORT_FILES`` its copies (and the land lines)
+in the last folder written for the Clinker Boat Tool (``meta["shipwreck"]["houdini"]["export"]``)."""
+EXPORT_FILES = ("strakes.obj", "strakes.csv", "strakes.xlsx", "lands.obj")
+
+
+def _set_aside(chunk) -> list[str]:
+    """The files of an earlier strake model no longer follow the lands just found: each is renamed ``<name>.old``
+    (an earlier ``.old`` replaced), here and in the last folder exported for the Clinker Boat Tool. Returns the new
+    names, as paths from the chunk's ``shipwreck`` folder or absolute for the export's."""
+    base = ship.folder(chunk)
+    places = [(base / "clinker", MODEL_FILES)]
+    export = ((chunk.meta.get(ship.KEY) or {}).get("houdini") or {}).get("export")
+    if export:
+        places.append((Path(export), EXPORT_FILES))
+    out = []
+    for folder, names in places:
+        for name in names:
+            path = folder / name
+            if path.is_file():
+                old = path.with_name(name + ".old")
+                os.replace(path, old)
+                out.append(str(old.relative_to(base)) if old.is_relative_to(base) else str(old))
+    return out
 
 
 def _noise(vertices: np.ndarray) -> float:
@@ -787,7 +816,7 @@ def _jumps(rows: list[dict], lands: list[dict]) -> list[str]:
 
 
 def _need_lands(chunk) -> dict:
-    state = ship.state(chunk).get("clinker") or {}
+    state = (chunk.meta.get(ship.KEY) or {}).get("clinker") or {}
     if "lands" not in state:
         raise ship.NotReady(t("Rileva prima i gradini delle fasce.", "Find the lands first."))
     return state
@@ -859,7 +888,7 @@ def match_lines(chunk) -> list[dict]:
 
 def is_stale(chunk) -> bool:
     """The sections were cut again (other stations, another model, another frame) after the lands were found."""
-    state = ship.state(chunk).get("clinker") or {}
+    state = (chunk.meta.get(ship.KEY) or {}).get("clinker") or {}
     if "lands" not in state:
         return False
     data = lines.load(chunk)
@@ -883,7 +912,7 @@ def _why(st: dict) -> str:
 def summary(chunk) -> str:
     """The pane's text: strakes per side, uncertain stations, extra lands, skipped sides, and whether the sections
     changed since."""
-    state = ship.state(chunk).get("clinker") or {}
+    state = (chunk.meta.get(ship.KEY) or {}).get("clinker") or {}
     if "lands" not in state:
         return t("Fasce non ancora rilevate: taglia le sezioni alle stazioni e rileva i gradini.",
                  "Strakes not found yet: cut the sections at the stations and find the lands.")
@@ -921,6 +950,11 @@ def summary(chunk) -> str:
                                 f"Uncertain stations (the rabbet or the garboard jumping more than {cm} cm from the "
                                 f"stations beside them): {', '.join(jumped)}.")
             parts.append(text)
+    if state.get("set_aside"):
+        parts.append(t(f"Il modello delle fasce precedente non segue i gradini nuovi: file rinominati "
+                       f"{', '.join(state['set_aside'])}.",
+                       f"The earlier strake model does not follow the new lands: files renamed "
+                       f"{', '.join(state['set_aside'])}."))
     extra = state.get("unmatched") or []
     if extra:
         listed = ", ".join(f"{d['station']} {_side_name(d['side'])}" for d in extra)
@@ -1031,7 +1065,10 @@ def _along(b: np.ndarray, xs: np.ndarray) -> np.ndarray:
 
     spline = CubicSpline(b[:, 0], b[:, 1:], axis=0)
     out = spline(np.clip(xs, b[0, 0], b[-1, 0]))
-    out[np.isin(xs, b[:, 0])] = b[np.searchsorted(b[:, 0], xs[np.isin(xs, b[:, 0])]), 1:]  # the points as they are
+    # at the boundary's own x the points as they are, not the spline's rounding of them
+    exact = np.isin(xs, b[:, 0])
+    at = np.searchsorted(b[:, 0], xs[exact])
+    out[exact] = b[at, 1:]
     return np.column_stack([xs, out])
 
 
@@ -1043,8 +1080,12 @@ def _rows_between(lower: np.ndarray, upper: np.ndarray, stations: list[float]) -
     x0, x1 = max(lower[0, 0], upper[0, 0]), min(lower[-1, 0], upper[-1, 0])
     if x1 - x0 < 1e-6:
         return np.zeros((0, 3)), np.zeros((0, 3))
-    xs = np.unique(np.r_[[v for v in stations if x0 - 1e-9 <= v <= x1 + 1e-9], np.arange(x0, x1, MESH_STEP), x1])
-    xs = xs[np.r_[True, np.diff(xs) > 1e-3]]
+    inside = np.asarray([v for v in stations if x0 - 1e-9 <= v <= x1 + 1e-9], float)
+    grid = np.r_[np.arange(x0, x1, MESH_STEP), x1]
+    if len(inside):  # a grid point within 1 mm of a station gives way to it: the station's row is the measured one
+        grid = grid[np.abs(grid[:, None] - inside[None]).min(axis=1) >= 1e-3]
+    xs = np.unique(np.r_[inside, grid])
+    xs = xs[np.r_[True, np.diff(xs) > 1e-3]]  # grid points closer than 1 mm (the end just after the last step)
     return _along(lower, xs), _along(upper, xs)
 
 
@@ -1072,6 +1113,51 @@ def _strake_name(side: str, k: int) -> str:
     return f"{SIDE_CODES[side][0]}{k}"
 
 
+MIN_STATIONS = 3  # a side's strake model needs at least this many stations with a width
+
+
+def _too_few(state: dict, side: str) -> str:
+    """Why a side has too few stations with a measurable width (another count of lands, a jump of the rabbet or the
+    garboard, a side not read), or "" when it has enough. Without them every width of the side would be empty and
+    the lines spliced through two or three points, longer than the keel (a drone run on a real hull did that)."""
+    rows = [st for st in state["stations"] if st["side"] == side]
+    other = set(state["uncertain"].get(side) or [])
+    jumped = set((state.get("jumps") or {}).get(side) or []) - other
+    skipped = [d for d in state.get("skipped") or [] if d["side"] == side]
+    good = [st for st in rows if st["name"] not in other | jumped]
+    if len(good) >= MIN_STATIONS:
+        return ""
+    total = len(rows) + len(skipped)
+    count = plural(len(good), ("stazione", "stazioni"), ("station", "stations"))
+    return t(f"{_side_name(side).capitalize()}: solo {count} su {total} con una larghezza misurabile ({len(other)} con "
+             f"un altro numero di gradini, {len(jumped)} con battura o torello che saltano, {len(skipped)} lati non "
+             "letti).",
+             f"{_side_name(side).capitalize()}: only {count} of {total} with a measurable width ({len(other)} with "
+             f"another count of lands, {len(jumped)} with the rabbet or the garboard jumping, {len(skipped)} sides "
+             "not read).")
+
+
+def check_strakes(chunk) -> dict:
+    """The lands' state when a strake model can be built from it, else :class:`ship.NotReady` with the reason: no
+    lands found yet, sections changed since, no land at all (a plain hull), or a side with lands that has fewer than
+    ``MIN_STATIONS`` stations with a measurable width (:func:`_too_few`)."""
+    state = _need_current(chunk)
+    if not any(line["points"] for line in state.get("lines") or []):
+        raise ship.NotReady(t("Nessun gradino di fasciame sulle sezioni: lo scafo appare liscio, nessuna fascia da "
+                              "costruire.",
+                              "No plank land on the sections: the hull looks smooth, no strake to build."))
+    short = [_too_few(state, side) for side in SIDES if int(state["mode"].get(side, 0))]
+    short = [text for text in short if text]
+    if short:
+        raise ship.NotReady(" ".join(short) + " " + t(
+            f"Servono almeno {MIN_STATIONS} stazioni con una larghezza su ogni lato con gradini: il modello sarebbe "
+            "tutto interpolato. Controlla le stazioni elencate nel pannello o rileva di nuovo con altri parametri.",
+            f"At least {MIN_STATIONS} stations with a width are needed on each side with lands: the model would be "
+            "interpolated throughout. Check the stations listed in the pane or find the lands again with other "
+            "parameters."))
+    return state
+
+
 def build_strakes(chunk, lap: float = 0.02, thickness: float | None = None, progress=None) -> dict:
     """The strake model, a hypothesis from the sections: per side, strake ``k`` (1 = the garboard) between the
     boundary ``k - 1`` (the rabbet for k = 1) and ``k`` (the sheer for the last) - :func:`_boundaries`.
@@ -1092,14 +1178,10 @@ def build_strakes(chunk, lap: float = 0.02, thickness: float | None = None, prog
     triangles. ``<data>/shipwreck/clinker/strakes.obj`` in SHIP coordinates (``o fascia_B3``: port 3, ``T``
     starboard), ``strakes.ply`` in the chunk's coordinates (``frame.to_world``, double precision) with the vertex
     properties ``strake`` (int: k) and ``side`` (uchar: 0 port, 1 starboard). Kept in ``["strakes"]``. Refused
-    when no land was found (a plain hull) or the sections changed."""
+    for the reasons of :func:`check_strakes`."""
     progress = as_progress(progress)
     frame = ship.need_frame(chunk)
-    state = _need_current(chunk)
-    if not any(line["points"] for line in state.get("lines") or []):
-        raise ship.NotReady(t("Nessun gradino di fasciame sulle sezioni: lo scafo appare liscio, nessuna fascia da "
-                              "costruire.",
-                              "No plank land on the sections: the hull looks smooth, no strake to build."))
+    state = check_strakes(chunk)
     out, meshes = [], []
     for side in SIDES:
         if int(state["mode"].get(side, 0)) == 0:
