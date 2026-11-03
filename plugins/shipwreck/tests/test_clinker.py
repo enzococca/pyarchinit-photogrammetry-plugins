@@ -820,15 +820,14 @@ def test_widths_carry_their_uncertainty(tmp_path):
             assert abs(w - clinker_widths(x)[d["k"] - 1]) * 1000.0 <= u, (d["side"], d["k"], name, w, u)
 
 
-def _rocker(c, jump_at=None, count=7):
-    """``count`` sections 1 m apart, the same keel hull raised along z = c (x - xm)^2 (a keel's rocker), the station
-    ``jump_at`` (its index) 3 cm higher still."""
+def _rocker(c, jump_at=(), count=7):
+    """``count`` sections 1 m apart, the same keel hull raised along z = c (x - xm)^2 (a keel's rocker), the stations
+    ``jump_at`` (their indexes) 3 cm higher still."""
     lands = [0.15, 0.32, 0.5, 0.7]
     plain, _truth = _built(_KEEL_HULL, lands)
     xs = np.asarray(STATIONS[:count])
     rise = c * (xs - xs.mean()) ** 2
-    if jump_at is not None:
-        rise[jump_at] += 0.03
+    rise[list(jump_at)] += 0.03
     return [plain + [0.0, r] for r in rise]
 
 
@@ -843,7 +842,7 @@ def test_a_curved_rabbet_is_not_a_jump(tmp_path):
 
 
 def test_a_jump_on_a_curved_rabbet_is_the_only_one(tmp_path):
-    ch = _stations(tmp_path, _rocker(0.01, jump_at=2))
+    ch = _stations(tmp_path, _rocker(0.01, jump_at=[2]))
     result = clinker.detect_lands(ch)
     assert result["jumps"] == {"port": ["S3"], "starboard": ["S3"]}
 
@@ -870,3 +869,31 @@ def test_the_catalogue_follows_a_model_with_fewer_strakes(tmp_path):
         assert clinker.to_catalogue(ch) == 8
         names = sorted(r["name"] for r in timbers.timbers_of(ch))
         assert names == sorted([f"fascia {s}{k}" for s in "BT" for k in range(1, 5)] + ["fascia B9"])
+
+
+@pytest.mark.parametrize("c", [0.0, 0.01])
+def test_two_adjacent_jumps_are_both_found_and_no_clean_station(tmp_path, c):
+    """Nine stations, the fourth and the fifth both 3 cm higher (a plateau two stations long): those two are the
+    jumps on both sides; the clean end station beyond them is not."""
+    ch = _stations(tmp_path, _rocker(c, jump_at=[3, 4], count=9))
+    result = clinker.detect_lands(ch)
+    assert result["jumps"] == {"port": ["S4", "S5"], "starboard": ["S4", "S5"]}
+
+
+def test_the_catalogue_never_takes_a_users_record_with_a_reused_id(tmp_path):
+    """The strakes written, then deleted by the user, who records a real plank: it gets a freed id; building the
+    catalogue again keeps it."""
+    from ppg_shipwreck import timbers
+
+    _doc, ch, ends = clinker_project(tmp_path)
+    _ready(ch, ends, STATIONS[2:7])
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    clinker.to_catalogue(ch)
+    written = list(ch.meta["shipwreck"]["clinker"]["catalogue"])
+    timbers.remove(ch, written)
+    mine = timbers.add(ch, "plank", "port", "corso 3", timbers.geometry("point", [[0.0, 0.0]]), notes="rilevato a mano")
+    assert mine["id"] in written  # the id is handed out again
+    assert clinker.to_catalogue(ch) == 10
+    assert any(r["id"] == mine["id"] and r["name"] == "corso 3" for r in timbers.timbers_of(ch))
+    assert len(timbers.timbers_of(ch)) == 11

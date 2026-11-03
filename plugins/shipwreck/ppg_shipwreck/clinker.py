@@ -101,6 +101,8 @@ FLAT = 0.005  # the flats' samples beside a land, 5 mm apart
 LAYERS = {"port": "FASCE_BABORDO", "starboard": "FASCE_TRIBORDO"}
 TABLE = "fasce_linee"
 JUMP = 0.02  # a station whose rabbet or garboard lies farther than this from the curve through its neighbours
+END_GAIN = 1.25  # ... times this at the end stations, where the curve is extrapolated from one side
+SCATTER_TOL = 1e-4  # metres: another choice of neighbours is taken only when its scatter is this much tighter
 NOISE_FACTOR = 4.0  # a width's uncertainty: this many times the section's noise, plus half the step (see build_strakes)
 MESH_STEP = 0.10  # the strakes' mesh: a row at every station and every 10 cm of x between them
 SIDE_CODES = {"port": ("B", 0), "starboard": ("T", 1)}  # babordo / tribordo: the letter of the name, the PLY's side
@@ -662,45 +664,99 @@ def _neighbours(x: np.ndarray, i: int, keep: list[int], each: int = 2) -> list[i
     return near + extra[:2 * each - len(near)]
 
 
+def _fit(x: np.ndarray, values: np.ndarray, i: int, near: list[int]) -> tuple[float, float]:
+    """``(distance, scatter)``: the distance of item ``i`` from the least-squares curve along x through ``near`` (a
+    parabola through four or more, a straight line through two or three) and the robust scatter of ``near`` about
+    it (1.4826 times their median distance)."""
+    u = x[near] - x[i]
+    a = np.column_stack([u**2, u, np.ones(len(near))]) if len(near) >= 4 else np.column_stack([u, np.ones(len(near))])
+    coef = np.linalg.lstsq(a, values[near], rcond=None)[0]
+    scatter = 1.4826 * float(np.median(np.linalg.norm(values[near] - a @ coef, axis=1)))
+    return float(np.linalg.norm(values[i] - coef[-1])), scatter  # the curve's value at x[i]
+
+
 def _residuals(x: np.ndarray, values: np.ndarray, keep: list[int]) -> dict[int, tuple[float, float]]:
-    """For each item of ``keep``, ``(distance, limit)``: its distance from the least-squares curve along x through
-    its neighbours among ``keep`` (:func:`_neighbours`; a parabola through four of them, so that the smooth curve
-    of a keel's rocker, a rising forefoot or a hogged wreck is followed, a straight line through two or three;
-    none with fewer than two), and the limit it is judged by: ``JUMP``, or three times the robust scatter (1.4826
-    times the median distance) of the neighbours' own distances from that curve when that is larger (a station
-    is not a jump where its neighbours scatter as much)."""
+    """For each item of ``keep``, ``(distance, limit)``: its distance from the curve through its neighbours
+    (:func:`_neighbours`, :func:`_fit`; a parabola through four, so that the smooth curve of a keel's rocker, a
+    rising forefoot or a hogged wreck is followed; none with fewer than two neighbours), and the limit it is judged
+    by: ``JUMP``, or three times the neighbours' scatter when that is larger, times ``END_GAIN`` at an end (the
+    curve extrapolated from one side magnifies the scatter of the rabbet).
+
+    When the item lies beyond that limit, or the neighbours scatter enough to raise it, the neighbours are the most
+    consistent of a few choices: the four nearest, or the four nearest once one of them or two adjacent ones are
+    left out - the set with the least scatter (the nearest four unless another is ``SCATTER_TOL`` tighter). A shifted neighbour, or two side by side, then neither pulls the curve nor raises the
+    limit: a clean station beside a shifted pair stays clean, and each of the pair is judged against clean ones."""
     out = {}
     for i in keep:
-        near = _neighbours(x, i, keep)
+        others = [j for j in keep if j != i]
+        near = _neighbours(x, i, others)
         if len(near) < 2:
             continue
-        u = x[near] - x[i]
-        a = np.column_stack([u**2, u, np.ones(len(near))]) if len(near) >= 4 else np.column_stack([u, np.ones(len(near))])
-        coef = np.linalg.lstsq(a, values[near], rcond=None)[0]
-        scatter = 1.4826 * float(np.median(np.linalg.norm(values[near] - a @ coef, axis=1)))
-        out[i] = (float(np.linalg.norm(values[i] - coef[-1])), max(JUMP, 3.0 * scatter))  # the curve's value at x[i]
+        best_near, (dist, scatter) = near, _fit(x, values, i, near)
+        nearest = sorted(near, key=lambda j: x[j])
+        drops = [{j} for j in nearest] + [{j, k} for j, k in zip(others, others[1:]) if j in near or k in near]
+        if dist <= max(JUMP, 3.0 * scatter) and 3.0 * scatter <= JUMP:
+            drops = []  # it fits a consistent neighbourhood: nothing to look into (more choices, more false jumps)
+        for drop in drops:
+            pool = [j for j in others if j not in drop]
+            alt = _neighbours(x, i, pool)
+            if len(alt) < len(near):
+                continue
+            d, sc = _fit(x, values, i, alt)
+            if sc < scatter - SCATTER_TOL:
+                best_near, dist, scatter = alt, d, sc
+        end = all(x[j] < x[i] for j in best_near) or all(x[j] > x[i] for j in best_near)
+        out[i] = (dist, max(JUMP, 3.0 * scatter) * (END_GAIN if end else 1.0))
     return out
 
 
 def _outliers(x: np.ndarray, values: np.ndarray) -> dict[int, float]:
     """The items whose ``values`` (N, d) lie beyond their limit from the curve through their neighbours
     (:func:`_residuals`), one at a time: of those beyond it, the one whose removal leaves the others nearest to
-    their curves, measured in limits (a jump at the third station also throws its neighbours off their curves,
-    fitted across it: taking it out explains them, taking them out does not), then again without it; an item
-    found is never in another's fit. ``{index: distance}``."""
+    their curves, measured in limits; when no single removal brings every other item under its limit but the
+    removal of two adjacent items beyond it does, that pair (two stations shifted side by side). Then again
+    without them; an item found is never in another's fit. At the end an item that fits the curve through the
+    items not found is given back (:func:`_cleared`). ``{index: distance}``."""
     out: dict[int, float] = {}
     while True:
         keep = [i for i in range(len(x)) if i not in out]
         r = _residuals(x, values, keep)
         beyond = [i for i, (d, limit) in r.items() if d > limit]
         if not beyond:
-            return out
-        scores = {}
-        for i in beyond:
-            rest = _residuals(x, values, [j for j in keep if j != i]).values()
-            scores[i] = (max((d / limit for d, limit in rest), default=0.0), -r[i][0] / r[i][1])
+            return _cleared(x, values, out)
+
+        def left(drop):
+            rest = _residuals(x, values, [j for j in keep if j not in drop]).values()
+            return max((d / limit for d, limit in rest), default=0.0)
+
+        scores = {i: (left({i}), -r[i][0] / r[i][1]) for i in beyond}
         best = min(beyond, key=scores.__getitem__)
-        out[best] = r[best][0]
+        chosen = [best]
+        if scores[best][0] > 1.0:
+            pairs = [(j, k) for j, k in zip(keep, keep[1:]) if j in beyond and k in beyond]
+            explained = [pair for pair in pairs if left(set(pair)) <= 1.0]
+            if explained:
+                chosen = list(min(explained, key=lambda pair: left(set(pair))))
+        for i in chosen:
+            out[i] = r[i][0]
+
+
+def _cleared(x: np.ndarray, values: np.ndarray, found: dict[int, float]) -> dict[int, float]:
+    """``found`` less the items that fit the curve through the items NOT found (judged again one at a time, the
+    nearest to fitting first, until none does): one taken out early, while a shifted neighbour still bent its
+    curve, is given back."""
+    found = dict(found)
+    while found:
+        clean = [i for i in range(len(x)) if i not in found]
+        fits = []
+        for i in found:
+            r = _residuals(x, values, sorted(clean + [i])).get(i)
+            if r is not None and r[0] <= r[1]:
+                fits.append((r[0] / r[1], i))
+        if not fits:
+            return found
+        found.pop(min(fits)[1])
+    return found
 
 
 def _jumps(rows: list[dict], lands: list[dict]) -> list[str]:
@@ -1213,17 +1269,17 @@ def write_tables(chunk, folder=None) -> dict:
 def to_catalogue(chunk) -> int:
     """One ``plank`` record of the catalogue per strake: its outline in plan (its two boundaries, the land lines
     k - 1 and k, in the chunk's x, y, closed), named ``fascia B3``, no station, noted as a hypothesis. Records of
-    the model are replaced, never doubled: every record an earlier call wrote goes first (by the ids kept in
-    ``["catalogue"]`` and by the hypothesis note, in either language), so the strakes of an earlier model with more
-    lands leave no orphans. The strakes are those of ``["strakes"]``, their outlines from the same boundaries.
+    the model are replaced, never doubled: every record an earlier call wrote goes first (a ``plank`` with the
+    hypothesis note, in either language: ``CATALOGUE_NOTES``; ``["catalogue"]`` lists the ids written, for the
+    record only, as ids are reused), so the strakes of an earlier model with more lands leave no orphans. The strakes are those of ``["strakes"]``, their outlines from the same boundaries.
     Returns how many."""
     from . import timbers
 
     frame = ship.need_frame(chunk)
     state = _need_strakes(chunk)
-    ours = set(state.get("catalogue") or [])
+    # by the note, never by the ids alone: an id freed by the user is handed out again to a record of theirs
     timbers.remove(chunk, [r["id"] for r in timbers.timbers_of(chunk)
-                           if r["id"] in ours or (r["kind"] == "plank" and r.get("notes") in CATALOGUE_NOTES)])
+                           if r["kind"] == "plank" and r.get("notes") in CATALOGUE_NOTES])
     written = []
     bounds = {side: _boundaries(state, side) for side in SIDES if any(d["side"] == side for d in state["strakes"])}
     for d in sorted(state["strakes"], key=lambda d: (SIDES.index(d["side"]), d["k"])):
