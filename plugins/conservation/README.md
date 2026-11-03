@@ -1,6 +1,6 @@
 # Conservation
 
-A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry) (1.7.0 or later):
+A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry) (1.7.1 or later):
 decay mapping on the program's elevations.
 
 * **Vocabulary**: the terms of the ICOMOS-ISCS *Illustrated glossary on stone deterioration patterns* (2008) are the

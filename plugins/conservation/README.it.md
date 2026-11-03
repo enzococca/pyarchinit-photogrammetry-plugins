@@ -1,6 +1,6 @@
 # Conservazione
 
-Un plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry) (1.7.0 o successivo):
+Un plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry) (1.7.1 o successivo):
 la mappatura del degrado sui prospetti del programma.
 
 * **Lessico**: i termini del glossario ICOMOS-ISCS *Illustrated glossary on stone deterioration patterns* (2008) sono

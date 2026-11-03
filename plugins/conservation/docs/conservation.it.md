@@ -16,7 +16,7 @@ Il plugin non giudica al posto tuo. I termini vengono dai glossari delle norme e
 e di urgenza della EN 16096 sono tue, il plugin mostra solo un *suggerimento* con la regola che lo dà; quello che
 trovano i rilevatori automatici è una *proposta* finché non la accetti.
 
-Questa pagina descrive la versione 0.1.0 del plugin, che **richiede pyarchinit-photogrammetry 1.7.0** (i disegni
+Questa pagina descrive la versione 0.1.0 del plugin, che **richiede pyarchinit-photogrammetry 1.7.1** (i disegni
 legati ai prospetti). Il README e il codice sono nel [repository dei
 plugin](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/conservation).
 

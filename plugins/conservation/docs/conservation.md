@@ -16,7 +16,7 @@ The plugin never judges for you. Terms come from the standards' glossaries and a
 urgency classes of EN 16096 are yours, the plugin only shows a *suggestion* with the rule that gives it; what the
 detectors find is a *proposal* until you accept it.
 
-This page describes version 0.1.0 of the plugin, which **requires pyarchinit-photogrammetry 1.7.0** (drawings kept
+This page describes version 0.1.0 of the plugin, which **requires pyarchinit-photogrammetry 1.7.1** (drawings kept
 with the elevations). The README and the code are in the [plugin
 repository](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/conservation).
 
