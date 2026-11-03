@@ -9,15 +9,19 @@
 * the *Conservazione* pane (on the right, :mod:`.pane`): campaigns, mapping with the glossaries, interventions,
   assessment; the features drawn on the elevation as layers (not kept by the program: drawn again whenever the view
   loads the elevation), deleted with the window's *Seleziona* + Canc; every change one entry of *Modifica > Annulla*;
-* ``ppg plugin conservation list``, the plate of a campaign among the exports.
+* the outputs of a campaign (:mod:`.outputs`): plate, tables, DXF, GeoPackages, QGIS styles and project, the 3D
+  tables in the plan's QGIS project (``window.qgis_providers``), the plate among the exports (*Tavola della campagna
+  (PDF)*); PyArchInit only on *Salva in PyArchInit* (:mod:`.pyarchinit`);
+* ``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|legend`` (:mod:`.cli`).
 
-The plugin writes only ``chunk.meta["conservation"]`` and the files under ``<chunk data>/conservation/<eid>/``.
+The plugin writes only ``chunk.meta["conservation"]``, the files under ``<chunk data>/conservation/<eid>/`` (or the
+folder the user chooses) and, on *Salva in PyArchInit*, the media, documents and US forms of PyArchInit.
 """
 from __future__ import annotations
 
-import argparse
 import copy
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -92,7 +96,8 @@ class ConservationPlugin(Plugin):
         context.add_action(t("Conservazione...", "Conservation..."), self.show_pane,
                            tip=t("Il pannello della conservazione", "The conservation pane"))
         context.add_command("conservation", self.command,
-                            help="decay mapping on elevations: list the campaigns and their features")
+                            help="decay mapping on elevations: list, campaign, map, detect, plate, export, pyarchinit, "
+                                 "legend")
         context.add_exporter(t("Tavola della campagna (PDF)", "Plate of the campaign (PDF)"), ".pdf",
                              self._export_plate)
         if context.window is not None:
@@ -109,9 +114,14 @@ class ConservationPlugin(Plugin):
             context.on_raster_loaded(self._raster_loaded)
             for layer in LAYERS.values():
                 context.on_features_deleted(layer, self._on_deleted)
+            context.window.qgis_providers = list(getattr(context.window, "qgis_providers", [])) + \
+                [self._qgis_entries]
             self.refresh_pane()
 
     def deactivate(self) -> None:
+        window = self.context.window if self.context else None
+        if window is not None:
+            window.qgis_providers = [p for p in getattr(window, "qgis_providers", []) if p != self._qgis_entries]
         self._drop_layers()
         self.pane = None
 
@@ -964,52 +974,222 @@ class ConservationPlugin(Plugin):
         records.set_assessment(chunk, c["date"], v["rc"], reason=v["reason"], surveyor=v["surveyor"])
         self._changed(chunk, before, t("raccomandazione", "recommendation"))
 
-    # ------------------------------------------------------------------ outputs (the next steps of the plugin)
+    # ------------------------------------------------------------------ outputs
     def _coming(self) -> None:
         from .records import NotReady
 
         raise NotReady(t("Questa uscita è in arrivo in questa versione del plugin.",
                          "This output is coming in this version of the plugin."))
 
-    _do_plate = _do_tables = _do_drawings = _do_qgis = _do_pyarchinit = _do_ifc = _do_compare = _do_folder = _coming
+    _do_ifc = _do_compare = _coming
+
+    def _output_folder(self, chunk, entry: dict, c: dict, title: str):
+        """The folder of an output: the campaign's by default, or the one the user chooses; None when cancelled."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from .records import campaign_folder
+
+        default = str(campaign_folder(chunk, entry["id"], c["id"]))
+        v = self._ask(title, [Field("folder", t("Cartella", "Folder"), default, kind="dir")])
+        if v is None:
+            return None
+        return Path(v["folder"] or default)
+
+    def _done_files(self, title: str, paths, unnamed: int = 0) -> None:
+        lines = [str(p) for p in paths if p]
+        if unnamed:
+            lines.append(t(f"{unnamed} elementi da nominare esclusi", f"{unnamed} features to be named left out"))
+        self._message("information", title + "\n" + "\n".join(lines))
+
+    def _do_plate(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import outputs, records
+
+        chunk, entry, c = self._need_campaign()
+        scales = [t("automatica", "automatic")] + [f"1:{n}" for n in outputs.SCALES]
+        default = str(records.campaign_folder(chunk, entry["id"], c["id"]))
+        v = self._ask(t("Tavola della campagna", "Plate of the campaign"),
+                      [Field("scale", t("Scala", "Scale"), scales[0], choices=scales),
+                       Field("folder", t("Cartella", "Folder"), default, kind="dir")])
+        if v is None:
+            return
+        scale = None if v["scale"] == scales[0] else int(str(v["scale"]).split(":")[1])
+        folder = Path(v["folder"] or default)
+        stem = f"{outputs._stem(outputs._context(chunk, c['id']))}_{t('tavola', 'plate')}"
+        self.context.run(t("Conservazione: tavola", "Conservation: plate"),
+                         lambda _p: outputs.plate(chunk, c["id"], folder, scale, stem=stem),
+                         lambda out: self._done_files(t(f"Tavola in scala 1:{out['scale']}:",
+                                                        f"Plate at 1:{out['scale']}:"),
+                                                      [out.get(k) for k in ("pdf", "svg", "png")],
+                                                      outputs.unnamed_count(chunk, c["id"])))
+
+    def _do_tables(self) -> None:
+        from . import outputs
+
+        chunk, entry, c = self._need_campaign()
+        folder = self._output_folder(chunk, entry, c, t("Tabelle della campagna", "Tables of the campaign"))
+        if folder is None:
+            return
+        stem = f"{outputs._stem(outputs._context(chunk, c['id']))}_{t('tabelle', 'tables')}"
+        self.context.run(t("Conservazione: tabelle", "Conservation: tables"),
+                         lambda _p: outputs.tables(chunk, c["id"], folder, stem),
+                         lambda out: self._done_files(t("Tabelle:", "Tables:"), out.values(),
+                                                      outputs.unnamed_count(chunk, c["id"])))
+
+    def _do_drawings(self) -> None:
+        from . import outputs
+
+        chunk, entry, c = self._need_campaign()
+        folder = self._output_folder(chunk, entry, c, t("Disegni della campagna", "Drawings of the campaign"))
+        if folder is None:
+            return
+        stem = outputs._stem(outputs._context(chunk, c["id"]))
+
+        def work(progress):
+            progress(0.1, "DXF")
+            paths = [outputs.dxf(chunk, c["id"], folder / f"{stem}.dxf")]
+            progress(0.5, "GeoPackage")
+            made = outputs.geopackages(chunk, c["id"], folder, f"{stem}_conservazione")
+            rows = outputs.feature_rows(chunk, c["id"])
+            codes = {k: list(dict.fromkeys(v["code"] for _g, v in rows[k])) for k in outputs.TABLES}
+            styles = outputs.qgis_styles(folder, codes, outputs._context(chunk, c["id"])["legend"], chunk=chunk)
+            return paths + list(made.values()) + list(styles.values())
+
+        self.context.run(t("Conservazione: disegni", "Conservation: drawings"), work,
+                         lambda paths: self._done_files(t("Disegni (DXF, GeoPackage spiegato e 3D, stili QGIS):",
+                                                          "Drawings (DXF, unfolded and 3D GeoPackages, QGIS "
+                                                          "styles):"), paths,
+                                                        outputs.unnamed_count(chunk, c["id"])))
+
+    def _do_qgis(self) -> None:
+        from pyarchinit_photogrammetry.io import qgis_link
+
+        from . import outputs
+        from .records import NotReady, campaign_folder
+
+        chunk, entry, c = self._need_campaign()
+        if qgis_link.find_qgis() is None:
+            raise NotReady(t("QGIS non trovato: installalo da qgis.org (o indica il percorso con PPG_QGIS).",
+                             "QGIS not found: install it from qgis.org (or give its path with PPG_QGIS)."))
+        self.context.store_drawings()  # the program's drawings of the elevation go into the project too
+        folder = campaign_folder(chunk, entry["id"], c["id"]) / "qgis"
+        self.context.run(t("Conservazione: apertura in QGIS", "Conservation: opening in QGIS"),
+                         lambda _p: outputs.qgis_project(chunk, c["id"], folder),
+                         lambda project: self._message("information", t(
+                             f"Progetto QGIS del prospetto con la campagna: {project} (coordinate del prospetto, in "
+                             "metri; i retini della legenda come stili dei layer).", f"QGIS project of the elevation "
+                             f"with the campaign: {project} (the elevation's coordinates, metres; the legend's "
+                             "hatches as the layers' styles).")))
+
+    def _do_pyarchinit(self) -> None:
+        """*Salva in PyArchInit*: the only step that writes into the database (:func:`.pyarchinit.save`)."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import assess, pyarchinit, records
+
+        chunk, entry, c = self._need_campaign()
+        window = self.context.window
+        pa = getattr(window, "pa", None)
+        if pa is None:
+            raise records.NotReady(t("Collegati prima a PyArchInit (pannello PyArchInit).",
+                                     "Connect to PyArchInit first (PyArchInit pane)."))
+        site = ""
+        if hasattr(window, "project_site"):
+            try:
+                site = window.project_site() or ""
+            except Exception:  # noqa: BLE001 - no site chosen yet
+                site = ""
+        found = pyarchinit.database_words(pa)
+        words = [assess.condition_word(n, "it", thesaurus=found) for n in range(4)]
+        links = pyarchinit._links([f for f in records.features(chunk, c["id"], status="accepted")])
+        cc = (c.get("classes") or {}).get("cc")
+        units = ", ".join(f"{tipo} {us}" for _a, us, tipo in links) or t("nessuna", "none")
+        ccn = "-" if cc is None else cc
+        intro = t(f"La tavola (SVG, PDF) e il DXF diventano media di un documento «Prospetto»; le US collegate "
+                  f"({units}) ricevono lo stato di conservazione della CC {ccn} e i termini nelle osservazioni.",
+                  f"The plate (SVG, PDF) and the DXF become media of a “Prospetto” document; the linked units "
+                  f"({units}) get the condition of CC {ccn} and the terms in their observations.")
+        fields = [Field("sito", t("Sito", "Site"), site, kind="text")]
+        fields += [Field(f"w{n}", t(f"Parola per CC {n}", f"Word for CC {n}"), words[n], kind="text")
+                   for n in range(4)]
+        v = self._ask(t("Salva in PyArchInit", "Save in PyArchInit"), fields, intro=intro)
+        if v is None:
+            return
+        chosen = [str(v[f"w{n}"]).strip() or words[n] for n in range(4)]
+        before = self._snapshot(chunk)
+        self.context.store_drawings()
+
+        def done(out):
+            self._changed(chunk, before, "PyArchInit")
+            lines = [t(f"Media registrati: {', '.join(map(str, out['media'])) or '-'}",
+                       f"Media registered: {', '.join(map(str, out['media'])) or '-'}")]
+            lines += [t(f"{tipo} {us}: aggiornata", f"{tipo} {us}: updated") for _a, us, tipo, _i in out["us"]]
+            lines += [t(f"{tipo} {us}: scheda non trovata", f"{tipo} {us}: no form found")
+                      for _a, us, tipo in out["missing"]]
+            self._message("information", "\n".join(lines))
+
+        self.context.run(t("Conservazione: PyArchInit", "Conservation: PyArchInit"),
+                         lambda _p: pyarchinit.save(pa, chunk, c["id"], sito=v["sito"] or None, words=chosen),
+                         lambda out: self._guarded(done, out))
+
+    def _do_folder(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from .records import campaign_folder
+
+        chunk, entry, c = self._need_campaign()
+        folder = campaign_folder(chunk, entry["id"], c["id"])
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _qgis_entries(self):
+        """For the QGIS project of the plan: the shown campaign's tables in 3D in the chunk's system (the GeoPackage
+        the campaign's *Disegni* or export wrote)."""
+        from . import outputs, records
+
+        chunk = self._chunk()
+        cid = self.pane.campaign_id() if self.pane is not None else None
+        if chunk is None or cid is None:
+            return [], []
+        try:
+            ctx = outputs._context(chunk, cid)
+        except records.NotReady:
+            return [], []
+        folder = records.campaign_folder(chunk, ctx["entry"]["id"], cid)
+        path = folder / f"{outputs._stem(ctx)}_conservazione_mondo.gpkg"
+        if not path.exists():
+            return [], []
+        vectors = []
+        for table, (gtype, _style, _kinds) in outputs.TABLES.items():
+            first = next((f["code"] for f in ctx["features"] if f["kind"] in outputs.TABLES[table][2]), None)
+            colour = (ctx["legend"].get(first) or {}).get("colour") if first else None
+            vectors.append({"name": f"{t(*outputs.TABLE_TITLES[table])} - {ctx['campaign']['name']} (3D)",
+                            "path": str(path), "table": table, "geometry": gtype, "color": colour or "#808080",
+                            "label": ""})
+        return [], vectors
 
     # ------------------------------------------------------------------ exports
     def _export_plate(self, chunk, path, progress=None):
-        """*File > Esporta > Tavola della campagna (PDF)*."""
-        from .records import NotReady
+        """*File > Esporta > Tavola della campagna (PDF)*: the campaign chosen in the pane, else the chunk's latest."""
+        from . import outputs, records
 
-        raise NotReady(t("La tavola della campagna non è ancora disponibile in questa versione del plugin.",
-                         "The plate of the campaign is not available yet in this version of the plugin."))
+        cid = self.pane.campaign_id() if self.pane is not None else None
+        if cid is None or cid not in {c["id"] for c in records.campaigns(chunk)}:
+            found = records.campaigns(chunk)
+            if not found:
+                raise records.NotReady(t("Nessuna campagna di conservazione in questo chunk.",
+                                         "No conservation campaign in this chunk."))
+            cid = found[-1]["id"]
+        path = Path(path)
+        out = outputs.plate(chunk, cid, path.parent, stem=path.stem, formats=("pdf",))
+        return out.get("pdf") or out.get("png")
 
     # ------------------------------------------------------------------ command line
     def command(self, *args) -> int:
-        import pyarchinit_photogrammetry as ppg
+        """``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|legend PROJECT ...``
+        (:mod:`.cli`)."""
+        from . import cli
 
-        from . import records, texts
-        from .vocabulary import load
-
-        parser = argparse.ArgumentParser(prog="ppg plugin conservation", description="decay mapping on elevations")
-        parser.add_argument("what", choices=["list"])
-        parser.add_argument("project", help="the .ppg file")
-        parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
-        a = parser.parse_args(list(args))
-        doc = ppg.Document.open(a.project)
-        chunk = next((c for c in doc.chunks if c.label == a.chunk), None) if a.chunk else doc.chunk
-        if chunk is None:
-            print(f"no chunk {a.chunk!r}")
-            return 2
-        vocab = load(chunk)
-        lang = texts.lang()
-        names = {e["id"]: e.get("name", e["id"]) for e in chunk.meta.get("elevations") or []}
-        found = records.campaigns(chunk)
-        if not found:
-            print(t("Nessuna campagna.", "No campaign."))
-        for c in found:
-            feats = records.features(chunk, c["id"])
-            print(f"{c['id']}  {c['date']}  {c['name']}  [{names.get(c['elevation'], c['elevation'])}]  "
-                  f"{len(feats)}")
-            for f in feats:
-                label = vocab.name(f["code"], lang) if f["code"] in vocab else f["code"]
-                extent = "" if f["extent"] is None else f"  {f['extent']:.3f}"
-                print(f"    {f['id']}  {f['kind']:<9} {f['status']:<8} {label}{extent}")
-        return 0
+        return cli.run(args)

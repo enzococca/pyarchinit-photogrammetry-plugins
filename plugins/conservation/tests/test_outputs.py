@@ -339,3 +339,162 @@ def test_pyarchinit_round_trip_on_a_demo_database(made, tmp_path):
     pyarchinit.save(pa, ch, c["id"], sito=sito)  # again: the same records
     assert len(pa.db.query("media_table")) == before + 3
     assert pa.us_record(sito, "1", "5")["osservazioni"].count("[conservazione") == 1
+
+
+def test_outputs_from_the_pane(tmp_path, monkeypatch):
+    """The output buttons of the pane: plate, tables, drawings (and their 3D tables in the plan's QGIS project), QGIS,
+    PyArchInit written only on *Salva*, the exporter of the plate."""
+    pytest.importorskip("PySide6")
+    from test_plugin import _window
+
+    from ppg_conservation import ConservationPlugin
+    from pyarchinit_photogrammetry.io import qgis_link
+    from pyarchinit_photogrammetry.plugins import Context
+
+    w, doc, ch, entry, errors, infos = _window(tmp_path, monkeypatch)
+    _d, _c, _e, c, feats = campaign(tmp_path / "copy")  # the same records, put into the window's chunk
+    ch.meta["conservation"] = _c.meta["conservation"]
+    plugin = ConservationPlugin()
+    try:
+        plugin.activate(Context("conservation", tmp_path / "plugin", window=w))
+        assert plugin._qgis_entries in w.qgis_providers
+        said, asked, answers = [], [], {}
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+
+        def answer(title, fields, intro="", photos=None, **_k):
+            asked.append((title, intro, {f.name: f.default for f in fields}))
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            values.update(answers)
+            return values
+
+        monkeypatch.setattr(plugin, "_ask", answer)
+        plugin.refresh_pane()
+        assert plugin.pane.campaign_id() == c["id"]
+        folder = records.campaign_folder(ch, entry["id"], c["id"])
+        assert plugin._qgis_entries() == ([], [])  # nothing written yet
+        plugin._requested("plate")
+        w.runner.wait()
+        assert asked[-1][2]["folder"] == str(folder) and "1:20" in said[-1]
+        assert any(p.suffix == ".pdf" for p in folder.iterdir())
+        answers["folder"] = str(tmp_path / "tab")
+        plugin._requested("tables")
+        w.runner.wait()
+        assert (tmp_path / "tab").exists() and ".xlsx" in said[-1]
+        answers.clear()
+        plugin._requested("drawings")
+        w.runner.wait()
+        assert ".dxf" in said[-1] and "_mondo.gpkg" in said[-1]
+        rasters, vectors = plugin._qgis_entries()
+        assert rasters == [] and {v["table"] for v in vectors} == {"degrado", "lesioni", "interventi", "note"}
+        # QGIS
+        calls = {}
+        monkeypatch.setattr(qgis_link, "find_qgis", lambda: None)
+        plugin._requested("qgis")
+        assert "QGIS non trovato" in said[-1]
+        monkeypatch.setattr(qgis_link, "find_qgis", lambda: "QGIS")
+
+        def build(project, crs, layers, rasters, title="", qgis=None, extra_vectors=None, **k):
+            calls["build"] = extra_vectors
+            project.write_text("<qgis/>", encoding="utf-8")
+            return {"written": True}
+
+        monkeypatch.setattr(qgis_link, "build_project", build)
+        monkeypatch.setattr(qgis_link, "open_in_qgis", lambda project, q=None: calls.setdefault("open", project))
+        plugin._requested("qgis")
+        w.runner.wait()
+        assert calls["open"].parent == folder / "qgis" and "Progetto QGIS" in said[-1]
+        # PyArchInit: not connected; cancelled; saved
+        w.pa = None
+        plugin._requested("pyarchinit")
+        assert "Collegati prima a PyArchInit" in said[-1]
+        pa = FakePyArchInit()
+        pa.forms[("1", "5")] = {"id_us": 50, "osservazioni": ""}
+        w.pa = pa
+        S.put_units(ch, entry["id"], {"5": S.box((0.0, Z0, 3.0, Z0 + 3.0))})
+        for f in records.features(ch, c["id"]):
+            records.link_units(ch, entry, f["id"])
+        monkeypatch.setattr(plugin, "_ask", lambda *a, **k: None)
+        plugin._requested("pyarchinit")
+        w.runner.wait()
+        assert pa.media == [] and pa.updates == []  # nothing written without Salva
+        monkeypatch.setattr(plugin, "_ask", answer)
+        answers.update(sito="Saggio", w2="degradato")
+        plugin._requested("pyarchinit")
+        w.runner.wait()
+        assert "US 5" in asked[-1][1] and asked[-1][2]["w2"] == "mediocre"
+        assert pa.updates[-1][1]["stato_di_conservazione"] == "degradato" and "US 5: aggiornata" in said[-1]
+        assert records.campaign(ch, c["id"])["media"] == {"dxf": 11, "svg": 12}
+        w.history.undo()  # the media ids kept in the campaign are one entry of the undo
+        assert "media" not in records.campaign(ch, c["id"])
+        # the exporter of File > Esporta
+        pdf = plugin._export_plate(ch, tmp_path / "esportata.pdf")
+        assert pdf == tmp_path / "esportata.pdf" and pdf.read_bytes()[:4] == b"%PDF"
+        assert not errors, errors
+        plugin.deactivate()
+        assert plugin._qgis_entries not in w.qgis_providers
+        plugin.context.release()
+    finally:
+        w.setWindowModified(False)
+        w.close()
+
+
+def _plugin_folder(root):
+    folder = root / "plugins"
+    dist = folder / "conservation" / "ppg_conservation-0.1.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: ppg-conservation\nVersion: 0.1.0\n")
+    (dist / "entry_points.txt").write_text("[pyarchinit_photogrammetry.plugins]\n"
+                                           "conservation = ppg_conservation:ConservationPlugin\n")
+    return folder
+
+
+def test_command_line(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    import pyarchinit_photogrammetry as ppg
+    from pyarchinit_photogrammetry.cli import app
+
+    doc, ch, entry = S.face(tmp_path)
+    monkeypatch.setenv("PPG_PLUGINS_DIR", str(_plugin_folder(tmp_path)))
+    cli = CliRunner()
+    project = str(doc.path)
+
+    def run(*args):
+        return cli.invoke(app, ["plugin", "conservation", *args])
+
+    r = run("list", project)
+    assert r.exit_code == 0 and "Nessuna campagna" in r.output, r.output
+    r = run("plate", project)
+    assert r.exit_code == 1 and "Nessuna campagna" in r.output, r.output
+    r = run("campaign", project, "--new", "--surveyor", "E. Cocca", "--method", "drone", "--name", "Prima")
+    assert r.exit_code == 0 and "Prima" in r.output and "2026-05-14" in r.output, r.output
+    r = run("map", project, "--term", "ISCS.CRUST.BLACK_CRUST", "--wkt", S.box(S.BLACK_CRUST).wkt,
+            "--intensity", "high")
+    assert r.exit_code == 0 and "decay" in r.output, r.output
+    wkt_file = tmp_path / "patina.wkt"
+    wkt_file.write_text(S.box(S.GREEN_PATCH).wkt)
+    r = run("map", project, "--elevation", entry["name"], "--campaign", "Prima", "--term", "UNI.PATINA_BIOLOGICA",
+            "--wkt", str(wkt_file))
+    assert r.exit_code == 0, r.output
+    r = run("map", project, "--term", "INT.CLEANING", "--wkt", S.box(S.BLACK_CRUST).wkt, "--done")
+    assert r.exit_code == 0 and "treatment" in r.output, r.output
+    r = run("map", project, "--term", "ISCS.NOTHING", "--wkt", "POINT (1 313)")
+    assert r.exit_code == 1, r.output
+    r = run("detect", "cracks", project, "--bounds", f"0.6,{Z0 + 1.8},2.2,{Z0 + 2.8}", "--accept")
+    assert r.exit_code == 0 and "accettate" in r.output, r.output
+    ch = ppg.Document.open(project).chunk
+    c = records.campaigns(ch)[0]
+    feats = records.features(ch, c["id"])
+    cracks = [f for f in feats if f["kind"] == "crack"]
+    assert cracks and all(f["status"] == "accepted" and f["source"] == "proposed:cracks" for f in cracks)
+    assert {f["code"] for f in feats} >= {"ISCS.CRUST.BLACK_CRUST", "UNI.PATINA_BIOLOGICA", "INT.CLEANING"}
+    assert next(f for f in feats if f["kind"] == "treatment")["treatment"]["done"] is True
+    r = run("plate", project, "--folder", str(tmp_path / "tav"), "--scale", "25")
+    assert r.exit_code == 0 and "1:25" in r.output and (tmp_path / "tav" / "tavola.pdf").exists(), r.output
+    r = run("export", project, "--folder", str(tmp_path / "exp"))
+    assert r.exit_code == 0, r.output
+    assert len(list((tmp_path / "exp").glob("*.gpkg"))) == 2 and len(list((tmp_path / "exp").glob("*.qml"))) == 4
+    r = run("legend", project, "--set", "ISCS.CRUST.BLACK_CRUST=#112233:xx", "--qml", str(tmp_path / "qml"))
+    assert r.exit_code == 0 and "#112233" in r.output and (tmp_path / "qml" / "degrado.qml").exists(), r.output
+    r = run("list", project)
+    assert r.exit_code == 0 and "Prima" in r.output, r.output
