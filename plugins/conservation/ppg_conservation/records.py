@@ -131,12 +131,14 @@ def set_campaign(chunk, cid: str, **fields) -> dict:
     rec = campaign(chunk, cid)
     wrong = set(fields) - set(CAMPAIGN_FIELDS)
     if wrong:
-        raise ValueError(f"fields of a campaign: {', '.join(CAMPAIGN_FIELDS)}; not {', '.join(sorted(wrong))}")
+        raise ValueError(t(f"campi di una campagna: {', '.join(CAMPAIGN_FIELDS)}; non {', '.join(sorted(wrong))}",
+                           f"fields of a campaign: {', '.join(CAMPAIGN_FIELDS)}; not {', '.join(sorted(wrong))}"))
     if "classes" in fields:
         classes = dict(rec.get("classes") or {"cc": None, "uc": None, "reason": ""})
         given = dict(fields.pop("classes") or {})
         if set(given) - {"cc", "uc", "reason"}:
-            raise ValueError("the classes of a campaign are cc, uc and reason")
+            raise ValueError(t("le classi di una campagna sono cc, uc e reason",
+                               "the classes of a campaign are cc, uc and reason"))
         for key in ("cc", "uc"):
             if key in given:
                 classes[key] = _class(given[key], key.upper())
@@ -179,18 +181,22 @@ def _checked(chunk, kind: str, code: str, geometry):
     from .vocabulary import load
 
     if kind not in FEATURE_KINDS:
-        raise ValueError(f"the kind of a feature is one of {', '.join(FEATURE_KINDS)}, not {kind!r}")
+        raise ValueError(t(f"il tipo di un elemento è uno fra {', '.join(FEATURE_KINDS)}, non {kind!r}",
+                           f"the kind of a feature is one of {', '.join(FEATURE_KINDS)}, not {kind!r}"))
     term = load(chunk).term(code)
     if kind == "note":
         if term.kind == "treatment":
-            raise ValueError(f"{term.code} is a treatment: kind 'treatment' expected")
+            raise ValueError(t(f"{term.code} è un intervento: serve il tipo 'treatment'",
+                               f"{term.code} is a treatment: kind 'treatment' expected"))
     elif term.kind != kind:
-        raise ValueError(f"{term.code} is a {term.kind}: kind {term.kind!r} expected, not {kind!r}")
+        raise ValueError(t(f"{term.code} è di tipo {term.kind!r}, non {kind!r}",
+                           f"{term.code} is a {term.kind}: kind {term.kind!r} expected, not {kind!r}"))
     geom = as_geometry(geometry)
     if geom is None or geom.is_empty:
-        raise ValueError("the geometry of a feature is empty")
+        raise ValueError(t("la geometria dell'elemento è vuota", "the geometry of a feature is empty"))
     if geom.geom_type not in GEOMETRY_OF[kind]:
-        raise ValueError(f"a feature of kind {kind!r} is a {WKT_OF[kind]}, not a {geom.geom_type.upper()}")
+        raise ValueError(t(f"un elemento di tipo {kind!r} è un {WKT_OF[kind]}, non un {geom.geom_type.upper()}",
+                           f"a feature of kind {kind!r} is a {WKT_OF[kind]}, not a {geom.geom_type.upper()}"))
     text = shapely.to_wkt(geom, rounding_precision=6, trim=True)
     geom = shapely.from_wkt(text)
     if geom.geom_type in ("Polygon", "MultiPolygon"):
@@ -207,15 +213,23 @@ def _optional(value, name: str):
         return None
     v = float(value)
     if not np.isfinite(v) or v < 0:
-        raise ValueError(f"{name} is a positive number of millimetres, not {value!r}")
+        raise ValueError(t(f"{name} è un numero positivo di millimetri, non {value!r}",
+                           f"{name} is a positive number of millimetres, not {value!r}"))
     return v
 
 
 def _check_fields(rec: dict) -> None:
+    from .vocabulary import UNNAMED
+
     if rec.get("intensity") not in (None, *INTENSITIES):
-        raise ValueError(f"the intensity is one of {', '.join(INTENSITIES)}, not {rec['intensity']!r}")
+        raise ValueError(t(f"l'intensità è una fra {', '.join(INTENSITIES)}, non {rec['intensity']!r}",
+                           f"the intensity is one of {', '.join(INTENSITIES)}, not {rec['intensity']!r}"))
     if rec.get("status") not in STATUSES:
-        raise ValueError(f"the status is one of {', '.join(STATUSES)}, not {rec.get('status')!r}")
+        raise ValueError(t(f"lo stato è uno fra {', '.join(STATUSES)}, non {rec.get('status')!r}",
+                           f"the status is one of {', '.join(STATUSES)}, not {rec.get('status')!r}"))
+    if rec.get("status") == "accepted" and rec.get("code") == UNNAMED:
+        raise ValueError(t("un elemento ancora da nominare non può essere accettato: dagli prima un termine",
+                           "a feature still to be named cannot be accepted: give it a term first"))
     rec["condition"] = _class(rec.get("condition"), "CC")
     rec["urgency"] = _class(rec.get("urgency"), "UC")
     rec["width_mm"] = _optional(rec.get("width_mm"), "width_mm")
@@ -237,7 +251,8 @@ def add_feature(chunk, cid: str, kind: str, code: str, geometry, status: str = "
     """A feature of the campaign ``cid``: ``geometry`` a shapely geometry or its WKT in ``(u, v)`` of the campaign's
     elevation; the term's code (a sub-type by its short form too) stored in full, ``code_uni`` from the vocabulary's
     mapping when not given; ``extent`` the area (m2) of a polygon, the length (m) of a line. ValueError when the kind
-    does not match the term or the geometry."""
+    does not match the term or the geometry, or when an accepted feature would carry the working term
+    ``PPG.UNNAMED`` (a proposal may)."""
     campaign(chunk, cid)
     term, _geom, text, extent = _checked(chunk, kind, code, geometry)
     rec = {"id": uuid.uuid4().hex[:8], "campaign": cid, "kind": kind, "code": term.code,
@@ -272,7 +287,8 @@ def update_feature(chunk, fid: str, **fields) -> dict:
     rec = feature(chunk, fid)
     wrong = set(fields) - set(FEATURE_FIELDS)
     if wrong:
-        raise ValueError(f"fields of a feature: {', '.join(FEATURE_FIELDS)}; not {', '.join(sorted(wrong))}")
+        raise ValueError(t(f"campi di un elemento: {', '.join(FEATURE_FIELDS)}; non {', '.join(sorted(wrong))}",
+                           f"fields of a feature: {', '.join(FEATURE_FIELDS)}; not {', '.join(sorted(wrong))}"))
     new = dict(rec)
     new.update(fields)
     if {"geometry", "code", "kind"} & set(fields):

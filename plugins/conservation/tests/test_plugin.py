@@ -529,6 +529,8 @@ def test_the_proposals_dialog(tmp_path, monkeypatch):
         said = []
         monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
         monkeypatch.setattr(plugin, "_segmenter", lambda: segmenter)
+        choices = []
+        monkeypatch.setattr(plugin, "_choose", lambda text, options: choices.append(text) or 0)
         pane = plugin.pane
         answers = {}
 
@@ -563,7 +565,8 @@ def test_the_proposals_dialog(tmp_path, monkeypatch):
         assert abs(cracks[0]["extent"] - S.groove().length) <= 0.05 * S.groove().length
         assert abs(cracks[0]["width_mm"] - S.GROOVE_WIDTH * 1000) <= 1.0
         assert "lesione proposta" in cracks[0]["notes"] and "rilievo sul" in cracks[0]["notes"]
-        assert "1 proposte aggiunte" in out[-1]
+        assert "1 proposte aggiunte" in out[-1] and "0 linee più larghe di 12 mm tolte come giunti" in out[-1]
+        assert len(choices) == 1 and "pietre di questo prospetto non sono disegnate" in choices[0]
         assert _fids(view, "Proposte") == [cracks[0]["id"]]
         assert len(w.history.entries) == n_undo + 1
         # the hole as a missing part
@@ -587,8 +590,17 @@ def test_the_proposals_dialog(tmp_path, monkeypatch):
         plugin._requested("accept")
         assert "dai un termine prima di accettare" in said[-1]
         assert records.feature(ch, sam[0]["id"])["status"] == "proposed"
+        # all together: the named proposals accepted, the unnamed ones left and counted
+        named_before = [f["id"] for f in records.features(ch, cid, status="proposed") if f["code"] != "PPG.UNNAMED"]
+        n_undo = len(w.history.entries)
         plugin._requested("accept_all")
-        assert "dai un termine prima di accettare" in said[-1]
+        assert f"{len(sam)} sono ancora da nominare" in said[-1]
+        assert sorted(f["id"] for f in records.features(ch, cid, status="accepted")) == sorted(named_before)
+        assert {f["code"] for f in records.features(ch, cid, status="proposed")} == {"PPG.UNNAMED"}
+        assert len(w.history.entries) == n_undo + 1
+        plugin._requested("accept_all")
+        assert "sono tutte da nominare" in said[-1]
+        w.history.undo()
         assert records.features(ch, cid, status="accepted") == []
         # with a term chosen in the list it is used only when asked for
         assert pane.choose_term("ISCS.ALGA")
@@ -634,6 +646,149 @@ def test_the_proposals_dialog(tmp_path, monkeypatch):
         segmenter._proc.kill()
         w.setWindowModified(False)
         w.close()
+
+
+def test_proposal_windows_stones_and_budget(tmp_path, monkeypatch):
+    """*Proposte...*: with no stones drawn the cracks are asked about first (stop to draw the stones, change the
+    largest opening, go on); a window drawn on the view; a small pixel budget runs the losses by tiles and refuses
+    the colour classes with the number; a polygon with a hole drawn with its hole."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QPointF
+    from shapely import wkt
+
+    from ppg_conservation import ConservationPlugin
+    from pyarchinit_photogrammetry.plugins import Context
+
+    w, doc, ch, entry, errors, infos = _window(tmp_path, monkeypatch)
+    view = w.ortho_view
+    plugin = ConservationPlugin()
+    try:
+        plugin.activate(Context("conservation", tmp_path / "plugin", window=w))
+        said, choices, answers, asked = [], [], {}, []
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+        reply = {"choice": 2}
+        monkeypatch.setattr(plugin, "_choose", lambda text, options: choices.append(text) or reply["choice"])
+
+        def answer(title, fields, intro="", photos=None, **_k):
+            asked.append(title)
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            values.update(answers)
+            return values
+
+        monkeypatch.setattr(plugin, "_ask", answer)
+        plugin._requested("new_campaign")
+        cid = records.campaigns(ch, entry["id"])[0]["id"]
+
+        def propose(**values):
+            answers.clear()
+            answers.update(values)
+            n = len(said)
+            plugin._requested("propose")
+            w.runner.wait()
+            return said[n:]
+
+        # no stones: "draw the stones first" stops before running
+        out = propose(detector="cracks", window="face")
+        assert len(choices) == 1 and "Disegna le pietre" in out[-1] and records.features(ch, cid) == []
+        reply["choice"] = None  # cancelled
+        propose(detector="cracks", window="face")
+        assert records.features(ch, cid) == []
+        reply["choice"] = 1  # a largest opening of 5 mm: the groove (10 mm) is a joint now
+        out = propose(detector="cracks", window="face", max_width_mm=5.0)
+        assert asked[-1] == "Apertura massima" and records.features(ch, cid) == []
+        assert "linee più larghe di 5 mm tolte come giunti" in out[-1]
+        # a window drawn on the view: the losses around the hole only
+        hole = S.box(S.HOLE).buffer(0.1)
+        monkeypatch.setattr(plugin.context, "request_polygon", lambda done, cancelled=None, hint="": done(
+            np.asarray(list(hole.exterior.coords)[:-1], float)))
+        propose(detector="loss", window="draw")
+        found = records.features(ch, cid, status="proposed")
+        assert len(found) == 1 and wkt.loads(found[0]["geometry"]).within(hole.buffer(1e-6))
+        records.discard(ch, [f["id"] for f in found])
+        # a small budget: the losses by tiles, the colours refused with the number of pixels
+        plugin.pixel_budget = 30_000
+        out = propose(detector="loss", window="face")
+        found = records.features(ch, cid, status="proposed")
+        assert len(found) == 1 and found[0]["code"] == "ISCS.MISSING_PART" and "tasselli" in out[-1]
+        assert abs(found[0]["depth_mm"] - 30.0) <= 3.0
+        out = propose(detector="colours", window="face")
+        assert "milioni di pixel" in out[-1] and "Disegna una finestra" in out[-1]
+        # a polygon with a hole: the hole not filled on the view
+        ring = S.box((0.2, Z0 + 0.2, 1.8, Z0 + 1.6))
+        inner = S.box((0.7, Z0 + 0.7, 1.3, Z0 + 1.1))
+        donut = records.add_feature(ch, cid, "decay", "ISCS.ALGA", ring.difference(inner))
+        plugin.refresh_pane()
+        item = next(i for i, _l, a in view.layers["Degrado"]["features"] if a.get("fid") == donut["id"])
+        assert not item.path().contains(view.scene_pt(1.0, Z0 + 0.9))
+        assert item.path().contains(view.scene_pt(0.4, Z0 + 0.9))
+        assert isinstance(view.scene_pt(0, 0), QPointF)
+        assert not errors, errors
+        plugin.deactivate()
+        plugin.context.release()
+    finally:
+        w.setWindowModified(False)
+        w.close()
+
+
+def test_a_photo_failing_after_the_form_keeps_the_feature(tmp_path, monkeypatch):
+    """A photo chosen in the feature form that fails to open when the form closes is said, and the feature just
+    drawn stays."""
+    pytest.importorskip("PySide6")
+    from ppg_conservation import ConservationPlugin
+    from ppg_conservation import pane as pane_module
+    from pyarchinit_photogrammetry.plugins import Context
+
+    w, doc, ch, entry, errors, infos = _window(tmp_path, monkeypatch)
+    plugin = ConservationPlugin()
+    try:
+        plugin.activate(Context("conservation", tmp_path / "plugin", window=w))
+        said = []
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+        monkeypatch.setattr(plugin, "_ask", lambda title, fields, intro="", **_k: {
+            f.name: f.default for f in fields if f.kind != "heading"})
+        plugin._requested("new_campaign")
+        cid = records.campaigns(ch, entry["id"])[0]["id"]
+        monkeypatch.setattr(plugin, "_ask", ConservationPlugin._ask.__get__(plugin))
+        photo = {"key": 1, "label": "IMG_1", "px": 1.0, "py": 1.0, "distance": 2.0, "angle": 5.0}
+        monkeypatch.setattr(plugin, "_photos", lambda *a, **k: [photo])
+
+        def boom(*_a, **_k):
+            raise RuntimeError("no such photo")
+
+        monkeypatch.setattr(plugin, "_open_photo", boom)
+
+        def form(parent, title, fields, intro, photos, open_photo):
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            open_photo(photos[0])  # as the form does when it closes
+            return values
+
+        monkeypatch.setattr(pane_module, "feature_dialog", form)
+        assert plugin.pane.choose_term("ISCS.ALGA")
+        monkeypatch.setattr(plugin.context, "request_polygon", lambda done, cancelled=None, hint="": done(
+            np.asarray(list(S.box(S.GREEN_PATCH).exterior.coords)[:-1], float)))
+        plugin._requested("area")
+        assert len(records.features(ch, cid)) == 1 and "non si apre" in said[-1]
+        assert not errors, errors
+        plugin.deactivate()
+        plugin.context.release()
+    finally:
+        w.setWindowModified(False)
+        w.close()
+
+
+def test_numbers_typed_in_the_forms():
+    from ppg_conservation import forms
+
+    assert forms.number("3,5") == 3.5 and forms.number(" ") is None and forms.number(None) is None
+    assert forms.number("-2") == -2.0
+    for bad in ("nan", "inf", "-inf", float("nan")):
+        with pytest.raises(ValueError):
+            forms.number(bad)
+    with pytest.raises(ValueError):
+        forms.number("-2", positive=True)
+    with pytest.raises(ValueError):
+        forms.number("tre")
+    assert forms._text(2.5) == "2,5" and forms._text(None) == "" and forms._text(3.0) == "3"
 
 
 def test_english_texts(monkeypatch):

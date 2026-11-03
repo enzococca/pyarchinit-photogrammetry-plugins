@@ -5,7 +5,9 @@ the values to write, or None when the form is cancelled. Nothing is written here
 from __future__ import annotations
 
 import dataclasses
+import math
 
+from . import texts
 from .texts import num, t
 
 MEMORY = 12  # the materials and methods remembered
@@ -13,18 +15,31 @@ INTENSITIES = (("low", ("bassa", "low")), ("medium", ("media", "medium")), ("hig
 NUMBERS = {"width_mm": ("Apertura (mm)", "Opening (mm)"), "depth_mm": ("Profondità (mm)", "Depth (mm)")}
 
 
-def number(value) -> float | None:
-    """A number typed in a form (``3,5`` or ``3.5``; empty = None); ValueError when it is no number."""
+def number(value, positive: bool = False) -> float | None:
+    """A number typed in a form (``3,5`` or ``3.5``; empty = None); ValueError when it is no number, not finite, or
+    negative where ``positive`` (a measure: an opening, a depth, a pixel)."""
     if value is None:
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    text = str(value).strip().replace(",", ".")
-    return float(text) if text else None
+        out = float(value)
+    else:
+        text = str(value).strip().replace(",", ".")
+        if not text:
+            return None
+        out = float(text)
+    if not math.isfinite(out):
+        raise ValueError(t(f"{value!r} non è un numero finito", f"{value!r} is not a finite number"))
+    if positive and out < 0:
+        raise ValueError(t(f"{value!r} non può essere negativo", f"{value!r} cannot be negative"))
+    return out
 
 
 def _text(value) -> str:
-    return "" if value is None else f"{value:g}"
+    """A number as the form shows it to be typed again: no thousands, the decimal comma in Italian."""
+    if value is None:
+        return ""
+    text = f"{float(value):g}"
+    return text.replace(".", ",") if texts.lang() == "it" else text
 
 
 def campaign_fields(plugin, chunk, c: dict | None = None) -> list:
@@ -113,7 +128,7 @@ def feature_form(plugin, chunk, rec: dict) -> dict | None:
         for name in NUMBERS:
             if name in v:
                 try:
-                    v[name] = number(v[name])
+                    v[name] = number(v[name], positive=True)
                 except ValueError:
                     bad.append(t(*NUMBERS[name]))
         if not bad:
@@ -225,8 +240,8 @@ def assessment_form(plugin, chunk, c: dict) -> dict | None:
 
 DETECTOR_TITLES = {"cracks": ("Lesioni (valli del rilievo e linee scure)", "Cracks (valleys of the relief and dark "
                               "lines)"),
-                   "loss": ("Mancanze (depressioni sotto il piano del muro)", "Losses (depressions behind the wall's "
-                            "plane)"),
+                   "loss": ("Mancanze (depressioni sotto il muro intorno)", "Losses (depressions behind the wall "
+                            "around them)"),
                    "colours": ("Classi di colore (le nomini tu)", "Colour classes (you name them)"),
                    "sam": ("Aree di SAM 2.1 (da nominare)", "SAM 2.1 areas (to be named)"),
                    "like": ("Aree di SAM 2.1 come l'area scelta (Come questo)", "SAM 2.1 areas like the chosen area "
@@ -234,13 +249,15 @@ DETECTOR_TITLES = {"cracks": ("Lesioni (valli del rilievo e linee scure)", "Crac
 
 
 def proposals_form(plugin, selected: dict | None, term_name: str | None) -> dict | None:
-    """The detector, the window (the area chosen in the table or the whole face) and the parameters of the
-    proposals. Returns ``{detector, window, use_term, thoroughness, resolution_mm, min_length_cm, min_depth_cm,
-    min_area_m2, k, radius}`` or None (``use_term`` is never remembered: off at every opening)."""
+    """The detector, the window (the area chosen in the table, a window drawn on the view or the whole face) and
+    the parameters of the proposals. Returns ``{detector, window, use_term, thoroughness, resolution_mm,
+    min_length_cm, max_width_mm, min_depth_cm, min_area_m2, k, radius}`` or None (``use_term`` is never
+    remembered: off at every opening)."""
     from pyarchinit_photogrammetry.gui.dialogs import Field
 
     s = plugin.context.settings.get("proposals") or {}
-    windows = [("face", t("tutto il prospetto", "the whole face"))]
+    windows = [("face", t("tutto il prospetto", "the whole face")),
+               ("draw", t("disegna una finestra", "draw a window"))]
     if selected is not None:
         windows.insert(0, ("selected", t("l'area scelta nella tabella", "the area chosen in the table")))
     detectors = [(k, t(*v)) for k, v in DETECTOR_TITLES.items()]
@@ -251,6 +268,11 @@ def proposals_form(plugin, selected: dict | None, term_name: str | None) -> dict
               Field("h_relief", t("Lesioni e mancanze", "Cracks and losses"), kind="heading"),
               Field("min_length_cm", t("Lunghezza minima di una lesione (cm)", "Least length of a crack (cm)"),
                     float(s.get("min_length_cm", 10.0)), minimum=0.5, maximum=1000.0, decimals=1),
+              Field("max_width_mm", t("Apertura massima di una lesione (mm)", "Largest opening of a crack (mm)"),
+                    float(s.get("max_width_mm", 12.0)), minimum=0.0, maximum=1000.0, decimals=1,
+                    tip=t("Le linee più larghe sono giunti fra le pietre, non lesioni: tolte e contate (0: nessun "
+                          "limite)", "Wider lines are joints between the stones, not cracks: dropped and counted "
+                          "(0: no limit)")),
               Field("min_depth_cm", t("Profondità minima di una mancanza (cm)", "Least depth of a loss (cm)"),
                     float(s.get("min_depth_cm", 2.0)), minimum=0.1, maximum=100.0, decimals=1),
               Field("min_area_m2", t("Area minima di una mancanza (m²)", "Least area of a loss (m²)"),
@@ -283,8 +305,8 @@ def proposals_form(plugin, selected: dict | None, term_name: str | None) -> dict
     v = plugin._ask(t("Proposte", "Proposals"), fields, intro=intro)
     if v is None:
         return None
-    keep = {k: v.get(k) for k in ("detector", "min_length_cm", "min_depth_cm", "min_area_m2", "k", "thoroughness",
-                                  "resolution_mm", "radius")}
+    keep = {k: v.get(k) for k in ("detector", "min_length_cm", "max_width_mm", "min_depth_cm", "min_area_m2", "k",
+                                  "thoroughness", "resolution_mm", "radius")}
     plugin.context.settings["proposals"] = keep
     plugin.context.save_settings()
     return {**keep, "window": v.get("window"), "use_term": bool(v.get("use_term"))}

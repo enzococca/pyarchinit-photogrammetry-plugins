@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
 
 import numpy as np
 
@@ -60,22 +59,6 @@ class _Step:
         self._put(self.after)
 
 
-def _parts(geom, kind: str):
-    """The parts of ``geom`` (a proposal clipped to its window) a feature of ``kind`` can have: polygons for an area,
-    lines for a crack; None when nothing of them is left."""
-    import shapely
-    from shapely.geometry import MultiLineString, MultiPolygon
-
-    want = "Polygon" if kind == "decay" else "LineString"
-    flat = [p for g in shapely.get_parts(geom) for p in shapely.get_parts(g)]  # a collection may hold multi-parts
-    parts = [p for p in flat if p.geom_type == want and not p.is_empty]
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0]
-    return MultiPolygon(parts) if kind == "decay" else MultiLineString(parts)
-
-
 class ConservationPlugin(Plugin):
     name = "conservation"
     version = __version__
@@ -91,10 +74,12 @@ class ConservationPlugin(Plugin):
         self._terms_key: str | None = None  # what the term chooser was filled with
         self.comparison: dict | None = None  # the last comparison: {"chunk", "eid", "colour", "relief", "folder"}
         self.overlay = None  # its raster over the view (.overlay.Overlay)
+        self.pixel_budget: int | None = None  # pixels a detector reads at once (None: detect.PIXEL_BUDGET)
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
         self.context = context
+        self._terms_key = None  # a new pane (after a deactivation) is filled again
         context.add_action(t("Conservazione...", "Conservation..."), self.show_pane,
                            tip=t("Il pannello della conservazione", "The conservation pane"))
         context.add_command("conservation", self.command,
@@ -166,6 +151,12 @@ class ConservationPlugin(Plugin):
 
         return dialogs.choice(self.context.window, "question", self.title, text, [t("Rimuovi", "Remove")]) == 0
 
+    def _choose(self, text: str, options: list[str]) -> int | None:
+        """A question with the buttons ``options``: the index of the one pressed, None when cancelled."""
+        from pyarchinit_photogrammetry.gui import dialogs
+
+        return dialogs.choice(self.context.window, "question", self.title, text, options)
+
     def _guarded(self, function, *args) -> None:
         """A step of the user: what it needs and is missing is said, not raised."""
         from .records import NotReady
@@ -181,7 +172,7 @@ class ConservationPlugin(Plugin):
             from . import pane
 
             return pane.feature_dialog(self.context.window, title, fields, intro, photos,
-                                       lambda photo: self._open_photo(photo, rec))
+                                       lambda photo: self._open_photo_safely(photo, rec))
         from pyarchinit_photogrammetry.gui.dialogs import ParamDialog
 
         return ParamDialog.ask(self.context.window, title, fields, intro=intro)
@@ -643,6 +634,16 @@ class ConservationPlugin(Plugin):
             focus = chunk.to_internal(np.asarray(world, float)[None])[0]
         window.open_photo(camera, focus)
 
+    def _open_photo_safely(self, photo: dict, rec: dict | None = None) -> None:
+        """A photo opened from the feature form (after it closes): a failure is said, never raised, so that the
+        feature just drawn is kept."""
+        try:
+            self._open_photo(photo, rec)
+        except Exception as exc:  # noqa: BLE001 - the drawing must not be lost for a photo
+            self.context.log.info("conservation: photo not opened: %s", exc)
+            self._message("warning", t(f"La foto {photo.get('label') or photo.get('key')} non si apre: {exc}",
+                                       f"The photo {photo.get('label') or photo.get('key')} does not open: {exc}"))
+
     def _do_photos(self) -> None:
         from . import records
 
@@ -654,246 +655,41 @@ class ConservationPlugin(Plugin):
                                      "No aligned photo sees this feature."))
         self._open_photo(photos[0], rec)
 
+    # ------------------------------------------------------------------ proposals (:mod:`.proposals_ui`)
     def _segmenter(self):
-        """The program's SAM 2.1 worker; NotReady with the way to install it when it is missing."""
-        from .records import NotReady
+        from . import proposals_ui
 
-        window = self.context.window
-        if window is not None and hasattr(window, "_segmenter"):
-            try:
-                return window._segmenter()
-            except ImportError:
-                pass
-        try:
-            from pyarchinit_photogrammetry.ai.sam_env import make_segmenter
-
-            return make_segmenter()
-        except ImportError:
-            raise NotReady(t("SAM 2.1 non è installato: installalo dagli strumenti SAM del programma (per esempio "
-                             "Pietre (SAM)), poi riprova.", "SAM 2.1 is not installed: install it from the program's "
-                             "SAM tools (for instance Stones (SAM)), then try again.")) from None
+        return proposals_ui.segmenter(self)
 
     def _chosen_area(self, chunk):
-        """The one polygon feature chosen in the table, or None."""
-        from . import records
+        from . import proposals_ui
 
-        ids = [i for i in (self.pane.selected_ids() if self.pane is not None else []) if i]
-        if len(ids) != 1:
-            return None
-        rec = records.feature(chunk, ids[0])
-        return rec if rec["geometry"].upper().startswith(("POLYGON", "MULTIPOLYGON")) else None
+        return proposals_ui.chosen_area(self, chunk)
 
     def _do_propose(self) -> None:
-        """The *Proposte* dialog: a detector of :mod:`.detect` on the area chosen in the table or on the whole face,
-        in the background; its results join the campaign as proposals (``source`` ``proposed:<detector>``)."""
-        from shapely import wkt
+        from . import proposals_ui
 
-        from . import detect, forms, texts
-        from .records import NotReady
-        from .vocabulary import load
-
-        chunk, entry, c = self._need_campaign()
-        selected = self._chosen_area(chunk)
-        code = self.pane.term_code() if self.pane is not None else None
-        vocab = load(chunk)
-        term = vocab.term(code) if code else None
-        v = forms.proposals_form(self, selected, None if term is None else vocab.name(term.code, texts.lang()))
-        if v is None:
-            return
-        name = v["detector"]
-        # what a proposal with no term of its own gets: the working term "da nominare", or - for SAM's segments only,
-        # when the user asked for it - the term chosen in the list
-        default = UNNAMED
-        if name == "sam" and v.get("use_term") and term is not None and term.kind == "decay":
-            default = term.code
-        reference = None
-        if name == "like":
-            if selected is None:
-                raise NotReady(t("Come questo: scegli nella tabella l'area che fa da esempio.",
-                                 "Like this: choose in the table the area that is the example."))
-            if selected["code"] == UNNAMED:
-                raise NotReady(t("Come questo: l'area d'esempio è ancora da nominare; dalle prima un termine.",
-                                 "Like this: the example area is still to be named; give it a term first."))
-            reference, default = wkt.loads(selected["geometry"]), selected["code"]
-        area = None
-        if v["window"] == "selected" and selected is not None and name != "like":  # like: the example is inside
-            area = wkt.loads(selected["geometry"])
-        bounds = None if area is None else area.bounds
-        segmenter = self._segmenter() if name in ("sam", "like") else None
-        res = forms.number(v.get("resolution_mm"))
-        res = None if res is None else res / 1000.0
-
-        def work(progress):
-            win = detect.read_window(chunk, entry, bounds)
-            if win is None or win.empty:
-                return None
-            if name == "cracks":
-                return detect.cracks(chunk, entry, bounds, min_length=float(v["min_length_cm"]) / 100.0,
-                                     progress=progress)
-            if name == "loss":
-                return detect.material_loss(chunk, entry, bounds, min_depth=float(v["min_depth_cm"]) / 100.0,
-                                            min_area=float(v["min_area_m2"]), progress=progress)
-            if name == "colours":
-                return detect.colour_classes(chunk, entry, bounds, k=int(v["k"]), progress=progress)
-            found = detect.sam_areas(chunk, entry, bounds, thoroughness=v.get("thoroughness") or "normale",
-                                     resolution=res, progress=progress, segmenter=segmenter)
-            if name == "like":
-                radius = float(v["radius"])
-                keep = detect.like_this(chunk, entry, [f["geometry"] for f in found], reference, radius)
-                found = [found[i] for i in keep]
-                for f in found:
-                    f["notes"] += t(f"; come l'area {selected['id']} (distanza massima {num(radius, 2)})",
-                                    f"; like the area {selected['id']} (largest distance {num(radius, 2)})")
-            return found
-
-        self.context.run(t("Conservazione: proposte", "Conservation: proposals"), work,
-                         lambda result: self._guarded(self._proposed, chunk, c, name, area, default, result))
-
-    def _restore(self, chunk, before) -> None:
-        """The records as they were before a change that failed half-way."""
-        if before is None:
-            chunk.meta.pop("conservation", None)
-        else:
-            chunk.meta["conservation"] = copy.deepcopy(before)
-
-    def _proposed(self, chunk, c: dict, name: str, area, default: str, result) -> None:
-        """The detector's results as proposals of the campaign ``c``: clipped to the window ``area``, those with no
-        term given ``default`` (the working term "da nominare" unless the user chose otherwise), the colour classes
-        named by the user first. A failure half-way leaves the records as they were."""
-        from . import forms, records
-
-        if result is None:
-            self._message("information", t("La finestra non ha superficie: niente da proporre.",
-                                           "The window has no surface: nothing to propose."))
-            return
-        source = "proposed:" + {"like": "sam", "loss": "material_loss"}.get(name, name)
-        found = result
-        if name == "colours":
-            named = forms.colour_classes_form(self, chunk, result) if result else {}
-            if named is None:
-                return
-            found = [{"kind": "decay", "code": named[cl["class"]], "geometry": g, "width_mm": None, "depth_mm": None,
-                      "notes": cl["notes"], "coverage": cl["coverage"]}
-                     for cl in result if cl["class"] in named for g in cl["polygons"]]
-        before = self._snapshot(chunk)
-        added, unnamed = 0, 0
-        try:
-            for p in found:
-                geom = p["geometry"] if area is None else _parts(p["geometry"].intersection(area), p["kind"])
-                if geom is None:
-                    continue
-                code = p["code"] or default
-                unnamed += code == UNNAMED
-                cover = float(p.get("coverage") or 0.0)
-                notes = p["notes"] + t(f"; rilievo sul {num(cover * 100, 0)} % della finestra",
-                                       f"; relief on {num(cover * 100, 0)} % of the window")
-                records.add_feature(chunk, c["id"], p["kind"], code, geom, status="proposed", source=source,
-                                    width_mm=None if p.get("width_mm") is None else round(float(p["width_mm"]), 1),
-                                    depth_mm=p.get("depth_mm"), notes=notes)
-                added += 1
-        except Exception:
-            self._restore(chunk, before)
-            raise
-        if added:
-            self._changed(chunk, before, t("proposte aggiunte", "proposals added"))
-        text = t(f"{added} proposte aggiunte alla campagna (layer Proposte): Accetta o Scarta.",
-                 f"{added} proposals added to the campaign (layer Proposte): Accept or Discard.") if added else \
-            t("Nessuna proposta nella finestra.", "No proposal in the window.")
-        if unnamed:
-            text += " " + t(f"{unnamed} sono da nominare: scegline una, dalle un termine con Modifica... e usa Come "
-                            "questo per le simili.", f"{unnamed} are to be named: choose one, give it a term with "
-                            "Edit... and use Like this for the similar ones.")
-        self._message("information", text)
+        proposals_ui.do_propose(self)
 
     def _do_like(self) -> None:
-        """*Come questo*: the campaign's proposed areas from SAM (and those still to be named) that look like the
-        area chosen in the table take its term (:func:`.detect.like_this`, in the background; one entry of the
-        undo)."""
-        from shapely import wkt
+        from . import proposals_ui
 
-        from . import detect, records
-
-        chunk, entry, c = self._need_campaign()
-        ref = self._chosen_area(chunk)
-        if ref is None or ref["code"] == UNNAMED:
-            raise records.NotReady(t("Come questo: scegli nella tabella un'area con il termine giusto.",
-                                     "Like this: choose in the table an area with the right term."))
-        others = [f for f in records.features(chunk, c["id"], status="proposed")
-                  if f["id"] != ref["id"] and f["kind"] == "decay"
-                  and (str(f.get("source", "")).startswith("proposed:sam") or f["code"] == UNNAMED)]
-        if not others:
-            raise records.NotReady(t("La campagna non ha aree proposte da SAM o da nominare: usa prima Proposte...",
-                                     "The campaign has no area proposed by SAM or to be named: use Proposals... "
-                                     "first."))
-        radius = float((self.context.settings.get("proposals") or {}).get("radius", 1.0))
-        shapes = [wkt.loads(f["geometry"]) for f in others]
-        reference = wkt.loads(ref["geometry"])
-
-        def work(_progress):
-            return detect.like_this(chunk, entry, shapes, reference, radius)
-
-        self.context.run(t("Conservazione: come questo", "Conservation: like this"), work,
-                         lambda keep: self._guarded(self._liked, chunk, ref, others, keep, radius))
-
-    def _liked(self, chunk, ref: dict, others: list, keep: list, radius: float) -> None:
-        from . import records
-
-        known = {f["id"] for f in records.features(chunk)}
-        changed = [others[i] for i in keep if others[i]["code"] != ref["code"] and others[i]["id"] in known]
-        if not changed:
-            self._message("information", t("Nessun'altra area proposta somiglia a quella scelta.",
-                                           "No other proposed area looks like the chosen one."))
-            return
-        before = self._snapshot(chunk)
-        try:
-            for f in changed:
-                records.update_feature(chunk, f["id"], code=ref["code"], notes=(f.get("notes") or "") + t(
-                    f"; termine come l'area {ref['id']} (distanza massima {num(radius, 2)})",
-                    f"; term as the area {ref['id']} (largest distance {num(radius, 2)})"))
-        except Exception:
-            self._restore(chunk, before)
-            raise
-        self._changed(chunk, before, t("termine come questo", "term like this"))
-        self._message("information", t(f"{len(changed)} aree proposte prendono il termine dell'area scelta.",
-                                       f"{len(changed)} proposed areas take the term of the chosen area."))
+        proposals_ui.do_like(self)
 
     def _do_accept(self) -> None:
-        from . import records
+        from . import proposals_ui
 
-        chunk, _entry, _c = self._need_campaign()
-        found = [f for f in self._selected(chunk, one=False) if f["status"] == "proposed"]
-        if not found:
-            raise records.NotReady(t("Gli elementi scelti non sono proposte.", "The features chosen are no proposals."))
-        before = self._snapshot(chunk)
-        records.accept(chunk, [f["id"] for f in found])
-        self._changed(chunk, before, t("proposte accettate", "proposals accepted"))
+        proposals_ui.do_accept(self)
 
     def _do_accept_all(self) -> None:
-        from . import records
+        from . import proposals_ui
 
-        chunk, _entry, c = self._need_campaign()
-        found = records.features(chunk, c["id"], status="proposed")
-        if not found:
-            raise records.NotReady(t("La campagna non ha proposte.", "The campaign has no proposals."))
-        before = self._snapshot(chunk)
-        records.accept(chunk, [f["id"] for f in found])
-        self._changed(chunk, before, t("proposte accettate", "proposals accepted"))
+        proposals_ui.do_accept_all(self)
 
     def _do_discard(self) -> None:
-        from . import records
+        from . import proposals_ui
 
-        chunk, _entry, _c = self._need_campaign()
-        found = self._selected(chunk, one=False)
-        accepted = [f for f in found if f["status"] != "proposed"]
-        if accepted and not self._confirm(
-                t(f"Fra gli elementi scelti {len(accepted)} non sono proposte ma elementi del rilievo: rimuoverli "
-                  "comunque? Modifica > Annulla li riporta.",
-                  f"Among the features chosen {len(accepted)} are no proposals but features of the survey: remove "
-                  "them anyway? Edit > Undo brings them back.")):
-            return
-        before = self._snapshot(chunk)
-        records.discard(chunk, [f["id"] for f in found])
-        self._changed(chunk, before, t("elementi scartati", "features discarded"))
+        proposals_ui.do_discard(self)
 
     def _do_favourite(self) -> None:
         term = self._need_term()
@@ -1010,276 +806,61 @@ class ConservationPlugin(Plugin):
         if self.overlay is not None:
             self.overlay.set_opacity(value)
 
-    # ------------------------------------------------------------------ outputs
-    def _ifc_done(self, out: dict) -> None:
-        from .texts import plural
-
-        walls = plural(out["hosts"], ("parete", "pareti"), ("wall", "walls"))
-        feats = plural(out["features"], ("elemento", "elementi"), ("feature", "features"))
-        lines = [str(out["path"]), t(f"{walls} con {feats}", f"{walls} with {feats}")]
-        lines += out.get("warnings") or []
-        self._message("information", t("IFC 4.3:", "IFC 4.3:") + "\n" + "\n".join(lines))
-
+    # ------------------------------------------------------------------ outputs (:mod:`.outputs_ui`)
     def _do_ifc(self) -> None:
-        """*IFC 4.3*: the campaigns of the elevation chosen, the thickness of the stand-in wall, the file."""
-        from pyarchinit_photogrammetry.gui.dialogs import Field
+        from . import outputs_ui
 
-        from . import ifc43, records
-        from .outputs import _stem, _context
-
-        chunk, entry, c = self._need_campaign()
-        if entry.get("kind") == "section":
-            raise records.NotReady(t(f"IFC: {ifc43.SECTION[0]}: i suoi elementi vanno nei GeoPackage e nel DXF.",
-                                     f"IFC: {ifc43.SECTION[1]}: its features go to the GeoPackages and the DXF."))
-        found = records.campaigns(chunk, entry["id"])
-        default = str(records.campaign_folder(chunk, entry["id"], c["id"]) / f"{_stem(_context(chunk, c['id']))}.ifc")
-        v = self._ask(t("IFC 4.3 della campagna", "IFC 4.3 of the campaign"), [
-            Field("campaigns", t("Campagne", "Campaigns"), [c["id"]],
-                  choices=[(x["id"], f"{x['name']} ({x['date']})") for x in found], kind="checklist"),
-            Field("thickness", t("Spessore della parete di appoggio (m)", "Thickness of the host wall (m)"), 0.5,
-                  minimum=0.01, maximum=10.0, decimals=2,
-                  tip=t("Senza un muro del plugin murature, gli elementi aderiscono a una lastra di questo spessore "
-                        "dietro la faccia.", "Without a wall of the masonry plugin, the features adhere to a slab "
-                        "this thick behind the face.")),
-            Field("path", t("File", "File"), default, kind="file_save", filter="IFC (*.ifc)")],
-            intro=t("Gli elementi della campagna come IfcSurfaceFeature (IFC 4.3) aderenti al muro; niente "
-                    "ortofoto né texture.", "The campaign's features as IfcSurfaceFeature (IFC 4.3) adhering to "
-                    "the wall; no orthophoto or texture."))
-        if v is None:
-            return
-        cids = [x for x in (v["campaigns"] or []) if x] or [c["id"]]
-        path = Path(v["path"] or default)
-        if path.suffix.lower() != ".ifc":
-            path = path.with_suffix(".ifc")
-        thickness = float(v["thickness"] or 0.5)
-        doc = getattr(chunk, "document", None)
-        site = (doc.meta.get("sito") if doc is not None else None) or None
-        self.context.run(t("Conservazione: IFC 4.3", "Conservation: IFC 4.3"),
-                         lambda _p: ifc43.export(chunk, cids, path, thickness, site=site), self._ifc_done)
-
-    def _output_folder(self, chunk, entry: dict, c: dict, title: str):
-        """The folder of an output: the campaign's by default, or the one the user chooses; None when cancelled."""
-        from pyarchinit_photogrammetry.gui.dialogs import Field
-
-        from .records import campaign_folder
-
-        default = str(campaign_folder(chunk, entry["id"], c["id"]))
-        v = self._ask(title, [Field("folder", t("Cartella", "Folder"), default, kind="dir")])
-        if v is None:
-            return None
-        return Path(v["folder"] or default)
-
-    def _done_files(self, title: str, paths, note: str = "") -> None:
-        lines = [str(p) for p in paths if p]
-        if note:
-            lines.append(note)
-        self._message("information", title + "\n" + "\n".join(lines))
+        outputs_ui.do_ifc(self)
 
     def _do_plate(self) -> None:
-        from pyarchinit_photogrammetry.gui.dialogs import Field
+        from . import outputs_ui
 
-        from . import outputs, records
-
-        chunk, entry, c = self._need_campaign()
-        scales = [t("automatica", "automatic")] + [f"1:{n}" for n in outputs.SCALES]
-        default = str(records.campaign_folder(chunk, entry["id"], c["id"]))
-        v = self._ask(t("Tavola della campagna", "Plate of the campaign"),
-                      [Field("scale", t("Scala", "Scale"), scales[0], choices=scales),
-                       Field("folder", t("Cartella", "Folder"), default, kind="dir")])
-        if v is None:
-            return
-        scale = None if v["scale"] == scales[0] else int(str(v["scale"]).split(":")[1])
-        folder = Path(v["folder"] or default)
-        stem = f"{outputs._stem(outputs._context(chunk, c['id']))}_{t('tavola', 'plate')}"
-        self.context.run(t("Conservazione: tavola", "Conservation: plate"),
-                         lambda _p: outputs.plate(chunk, c["id"], folder, scale, stem=stem),
-                         lambda out: self._done_files(t(f"Tavola in scala 1:{out['scale']}:",
-                                                        f"Plate at 1:{out['scale']}:"),
-                                                      [out.get(k) for k in ("pdf", "svg", "png")],
-                                                      outputs.unnamed_text(chunk, c["id"])))
+        outputs_ui.do_plate(self)
 
     def _do_tables(self) -> None:
-        from . import outputs
+        from . import outputs_ui
 
-        chunk, entry, c = self._need_campaign()
-        folder = self._output_folder(chunk, entry, c, t("Tabelle della campagna", "Tables of the campaign"))
-        if folder is None:
-            return
-        stem = f"{outputs._stem(outputs._context(chunk, c['id']))}_{t('tabelle', 'tables')}"
-        self.context.run(t("Conservazione: tabelle", "Conservation: tables"),
-                         lambda _p: outputs.tables(chunk, c["id"], folder, stem),
-                         lambda out: self._done_files(t("Tabelle:", "Tables:"), out.values(),
-                                                      outputs.unnamed_text(chunk, c["id"])))
+        outputs_ui.do_tables(self)
 
     def _do_drawings(self) -> None:
-        from . import outputs
+        from . import outputs_ui
 
-        chunk, entry, c = self._need_campaign()
-        folder = self._output_folder(chunk, entry, c, t("Disegni della campagna", "Drawings of the campaign"))
-        if folder is None:
-            return
-        stem = outputs._stem(outputs._context(chunk, c["id"]))
-
-        def work(progress):
-            progress(0.1, "DXF")
-            paths = [outputs.dxf(chunk, c["id"], folder / f"{stem}.dxf")]
-            progress(0.5, "GeoPackage")
-            made = outputs.geopackages(chunk, c["id"], folder, f"{stem}_conservazione")
-            rows = outputs.feature_rows(chunk, c["id"])
-            codes = {k: list(dict.fromkeys(v["code"] for _g, v in rows[k])) for k in outputs.TABLES}
-            styles = outputs.qgis_styles(folder, codes, outputs._context(chunk, c["id"])["legend"], chunk=chunk)
-            return paths + list(made.values()) + list(styles.values())
-
-        def done(paths):
-            c.setdefault("exports", {})["drawings"] = str(folder)  # the plan's QGIS project reads them there
-            self.context.mark_modified()
-            self._done_files(t("Disegni (DXF, GeoPackage spiegato e 3D, stili QGIS):",
-                               "Drawings (DXF, unfolded and 3D GeoPackages, QGIS styles):"), paths,
-                             outputs.unnamed_text(chunk, c["id"]))
-
-        self.context.run(t("Conservazione: disegni", "Conservation: drawings"), work, done)
+        outputs_ui.do_drawings(self)
 
     def _do_qgis(self) -> None:
-        from pyarchinit_photogrammetry.io import qgis_link
+        from . import outputs_ui
 
-        from . import outputs
-        from .records import NotReady, campaign_folder
-
-        chunk, entry, c = self._need_campaign()
-        if qgis_link.find_qgis() is None:
-            raise NotReady(t("QGIS non trovato: installalo da qgis.org (o indica il percorso con PPG_QGIS).",
-                             "QGIS not found: install it from qgis.org (or give its path with PPG_QGIS)."))
-        self.context.store_drawings()  # the program's drawings of the elevation go into the project too
-        folder = campaign_folder(chunk, entry["id"], c["id"]) / "qgis"
-        self.context.run(t("Conservazione: apertura in QGIS", "Conservation: opening in QGIS"),
-                         lambda _p: outputs.qgis_project(chunk, c["id"], folder),
-                         lambda project: self._message("information", t(
-                             f"Progetto QGIS del prospetto con la campagna: {project} (coordinate del prospetto, in "
-                             "metri; i retini della legenda come stili dei layer).", f"QGIS project of the elevation "
-                             f"with the campaign: {project} (the elevation's coordinates, metres; the legend's "
-                             "hatches as the layers' styles).")))
+        outputs_ui.do_qgis(self)
 
     def _do_pyarchinit(self) -> None:
-        """*Salva in PyArchInit*: the only step that writes into the database (:func:`.pyarchinit.save`)."""
-        from pyarchinit_photogrammetry.gui.dialogs import Field
+        from . import outputs_ui
 
-        from . import assess, pyarchinit, records
-
-        chunk, entry, c = self._need_campaign()
-        window = self.context.window
-        pa = getattr(window, "pa", None)
-        if pa is None:
-            raise records.NotReady(t("Collegati prima a PyArchInit (pannello PyArchInit).",
-                                     "Connect to PyArchInit first (PyArchInit pane)."))
-        site = ""
-        if hasattr(window, "project_site"):
-            try:
-                site = window.project_site() or ""
-            except Exception:  # noqa: BLE001 - no site chosen yet
-                site = ""
-        found = pyarchinit.database_words(pa)
-        words = [assess.condition_word(n, "it", thesaurus=found) for n in range(4)]
-        links = pyarchinit._links([f for f in records.features(chunk, c["id"], status="accepted")])
-        cc = (c.get("classes") or {}).get("cc")
-        units = ", ".join(f"{tipo} {us}" for _a, us, tipo in links) or t("nessuna", "none")
-        ccn = "-" if cc is None else cc
-        intro = t(f"La tavola (SVG, PDF) e il DXF diventano media di un documento «Prospetto»; le US collegate "
-                  f"({units}) ricevono lo stato di conservazione della CC {ccn} e i termini nelle osservazioni.",
-                  f"The plate (SVG, PDF) and the DXF become media of a “Prospetto” document; the linked units "
-                  f"({units}) get the condition of CC {ccn} and the terms in their observations.")
-        fields = [Field("sito", t("Sito", "Site"), site, kind="text")]
-        fields += [Field(f"w{n}", t(f"Parola per CC {n}", f"Word for CC {n}"), words[n], kind="text")
-                   for n in range(4)]
-        v = self._ask(t("Salva in PyArchInit", "Save in PyArchInit"), fields, intro=intro)
-        if v is None:
-            return
-        chosen = [str(v[f"w{n}"]).strip() or words[n] for n in range(4)]
-        before = self._snapshot(chunk)
-        self.context.store_drawings()
-
-        def done(out):
-            self._changed(chunk, before, "PyArchInit")
-            lines = [t(f"Media registrati: {', '.join(map(str, out['media'])) or '-'}",
-                       f"Media registered: {', '.join(map(str, out['media'])) or '-'}")]
-            lines += [t(f"{tipo} {us}: aggiornata", f"{tipo} {us}: updated") for _a, us, tipo, _i in out["us"]]
-            lines += [t(f"{tipo} {us}: scheda non trovata", f"{tipo} {us}: no form found")
-                      for _a, us, tipo in out["missing"]]
-            self._message("information", "\n".join(lines))
-
-        self.context.run(t("Conservazione: PyArchInit", "Conservation: PyArchInit"),
-                         lambda _p: pyarchinit.save(pa, chunk, c["id"], sito=v["sito"] or None, words=chosen),
-                         lambda out: self._guarded(done, out))
+        outputs_ui.do_pyarchinit(self)
 
     def _do_folder(self) -> None:
-        from PySide6.QtCore import QUrl
-        from PySide6.QtGui import QDesktopServices
+        from . import outputs_ui
 
-        from .records import campaign_folder
+        outputs_ui.do_folder(self)
 
-        chunk, entry, c = self._need_campaign()
-        folder = campaign_folder(chunk, entry["id"], c["id"])
-        folder.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+    def _done_files(self, title: str, paths, note: str = "") -> None:
+        from . import outputs_ui
+
+        outputs_ui.done_files(self, title, paths, note)
 
     def _qgis_entries(self):
-        """For the QGIS project of the plan: the shown campaign's tables in 3D in the chunk's system (the GeoPackage
-        the campaign's *Disegni* wrote last - in the folder the user chose, kept in ``campaign["exports"]`` - else the
-        one in the campaign's folder)."""
-        from . import outputs, records
+        from . import outputs_ui
 
-        chunk = self._chunk()
-        cid = self.pane.campaign_id() if self.pane is not None else None
-        if chunk is None or cid is None:
-            return [], []
-        try:
-            ctx = outputs._context(chunk, cid)
-        except records.NotReady:
-            return [], []
-        name = f"{outputs._stem(ctx)}_conservazione_mondo.gpkg"
-        folders = [(ctx["campaign"].get("exports") or {}).get("drawings"),
-                   records.campaign_folder(chunk, ctx["entry"]["id"], cid)]
-        path = next((Path(f) / name for f in folders if f and (Path(f) / name).exists()), None)
-        if path is None:
-            return [], []
-        vectors = []
-        for table, (gtype, _style, _kinds) in outputs.TABLES.items():
-            first = next((f["code"] for f in ctx["features"] if f["kind"] in outputs.TABLES[table][2]), None)
-            colour = (ctx["legend"].get(first) or {}).get("colour") if first else None
-            vectors.append({"name": f"{t(*outputs.TABLE_TITLES[table])} - {ctx['campaign']['name']} (3D)",
-                            "path": str(path), "table": table, "geometry": gtype, "color": colour or "#808080",
-                            "label": ""})
-        return [], vectors
+        return outputs_ui.qgis_entries(self)
 
-    # ------------------------------------------------------------------ exports
     def _export_plate(self, chunk, path, progress=None):
-        """*File > Esporta > Tavola della campagna (PDF)*: the campaign chosen in the pane, else the chunk's latest."""
-        from . import outputs, records
+        from . import outputs_ui
 
-        cid = self.pane.campaign_id() if self.pane is not None else None
-        if cid is None or cid not in {c["id"] for c in records.campaigns(chunk)}:
-            found = records.campaigns(chunk)
-            if not found:
-                raise records.NotReady(t("Nessuna campagna di conservazione in questo chunk.",
-                                         "No conservation campaign in this chunk."))
-            cid = found[-1]["id"]
-        path = Path(path)
-        out = outputs.plate(chunk, cid, path.parent, stem=path.stem, formats=("pdf",))
-        return out.get("pdf") or out.get("png")
+        return outputs_ui.export_plate(self, chunk, path, progress)
 
     def _export_ifc(self, chunk, path, progress=None):
-        """*File > Esporta > Conservazione (IFC 4.3)*: the campaigns of the elevation chosen in the pane, else every
-        campaign of the chunk on a face (sections left out), the stand-in walls 0.5 m thick."""
-        from . import ifc43, records
+        from . import outputs_ui
 
-        eid = self.pane.elevation_id() if self.pane is not None else None
-        found = records.campaigns(chunk, eid) if eid else []
-        if not found:
-            faces = {e["id"] for e in self._elevations(chunk) if e.get("kind") != "section"}
-            found = [c for c in records.campaigns(chunk) if c["elevation"] in faces] or records.campaigns(chunk)
-        if not found:
-            raise records.NotReady(t("Nessuna campagna di conservazione in questo chunk.",
-                                     "No conservation campaign in this chunk."))
-        return ifc43.export(chunk, [c["id"] for c in found], path)["path"]
+        return outputs_ui.export_ifc(self, chunk, path, progress)
 
     # ------------------------------------------------------------------ command line
     def command(self, *args) -> int:

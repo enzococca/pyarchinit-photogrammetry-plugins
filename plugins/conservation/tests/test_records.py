@@ -170,6 +170,39 @@ def test_totals_of_a_campaign(face):
     assert tot["area_by_iscs"] == pytest.approx(tot["area_by_code"])
 
 
+def test_share_of_face_clips_a_feature_half_outside(face):
+    """A decay area half outside the face counts only its half within the face's bounds (clipping, not capping at
+    1: the share is far below 1 here)."""
+    import rasterio
+
+    from pyarchinit_photogrammetry.engine.elevation import bounds_of, elevation_paths
+
+    doc, ch, entry = face
+    c = records.new_campaign(ch, entry["id"])
+    records.add_feature(ch, c["id"], "decay", "ISCS.ALGA", S.box((5.5, Z0 + 1.0, 6.5, Z0 + 2.0)))  # u 6 = the edge
+    with rasterio.open(elevation_paths(ch, entry)[1]) as src:
+        face_area = float(np.isfinite(src.read(1)).sum()) * entry["resolution"] ** 2
+    right = bounds_of(ch, entry)[2]
+    assert 5.9 < right < 6.1
+    inside = (right - 5.5) * 1.0
+    tot = records.totals(ch, c["id"])
+    assert tot["area_by_code"]["ISCS.ALGA"] == pytest.approx(1.0)  # the area of the record stays the drawing's
+    assert tot["share_of_face"] == pytest.approx(inside / face_area, rel=1e-6)
+
+
+def test_an_unnamed_feature_is_never_accepted(face):
+    doc, ch, entry = face
+    c = records.new_campaign(ch, entry["id"])
+    prop = records.add_feature(ch, c["id"], "decay", "PPG.UNNAMED", S.box(S.HOLE), status="proposed")
+    with pytest.raises(ValueError, match="da nominare"):
+        records.add_feature(ch, c["id"], "decay", "PPG.UNNAMED", S.box(S.HOLE))
+    with pytest.raises(ValueError, match="da nominare"):
+        records.update_feature(ch, prop["id"], status="accepted")
+    assert records.feature(ch, prop["id"])["status"] == "proposed"
+    records.update_feature(ch, prop["id"], code="ISCS.MISSING_PART", status="accepted")
+    assert records.feature(ch, prop["id"])["status"] == "accepted"
+
+
 def test_one_phenomenon_drawn_with_the_two_glossaries(face):
     from shapely.geometry import box
 
