@@ -10,7 +10,7 @@ where the relief has a value. A window with no surface at all (no relief and no 
 - :func:`cracks`: valleys of the relief (Hessian of the smoothed depth at a few scales, a Frangi-like line measure,
   both sides higher) joined with the dark thin lines of the orthophoto (black-hat on L, near Canny edges), thinned,
   followed into polylines; joints between drawn stones are not cracks.
-- :func:`material_loss`: depressions of the relief under the wall's robust plane.
+- :func:`material_loss`: local depressions of the relief under a smooth reference of the wall around them.
 - :func:`colour_classes`: k-means on Lab of the orthophoto; the user names the classes.
 
 The relief is ``d`` in metres, positive towards the viewer, NaN where the model is missing: a groove or a hole is a
@@ -27,10 +27,15 @@ CRACK = "ISCS.CRACK"
 MISSING_PART = "ISCS.MISSING_PART"
 ALVEOLIZATION = "ISCS.ALVEOLIZATION"
 BIG_FACE = 4.0  # m2: SAM on a coarser copy and the "normale" thoroughness above it
-BIG_FACE_RESOLUTION = 0.005  # m/px: the finest pixel SAM gets on a big face (the Khutm lesson on MPS)
+BIG_FACE_RESOLUTION = 0.005  # m/px: the finest pixel SAM gets on a big face (memory of SAM on MPS)
 JOINT_DISTANCE = 0.01  # m: a crack within this of a joint between two stones lies on the joint
 JOINT_GAP = 0.05  # m: two stones nearer than this have a joint between them
 JOINT_SHARE = 0.6  # a crack longer than this share on a joint is dropped
+MAX_CRACK_WIDTH_MM = 12.0  # mm: a wider dark or hollow line is a joint between stones, not a crack
+REFERENCE_SCALE = 1.0  # m: the scale of the local reference of the losses (its gaussian sigma is half of it)
+WIDE_SHARE = 0.2  # a depression over this share of the window is no loss of its own: maybe the shape of the wall
+PIXEL_BUDGET = 30_000_000  # pixels of the working resolution a detector reads at once; beyond: by tiles
+TILE_OVERLAP = 0.2  # m: the overlap of two tiles
 VALLEY_DEPTH = 0.0005  # m: the least depth of a valley of the relief (scale-normalised curvature and both sides)
 DARK_CONTRAST = 12.0  # L units: the least black-hat of a dark thin line
 SUGGESTIONS = {"green": ("ISCS.BIOLOGICAL_COLONIZATION",), "bright": ("ISCS.EFFLORESCENCE", "ISCS.DEPOSIT"),
@@ -521,13 +526,15 @@ def _profile_width(d: np.ndarray, rows, cols, nx, ny, reach: float) -> np.ndarra
 
 
 def cracks(chunk, entry, bounds=None, min_length: float = 0.10, scales_mm=(2, 5, 10, 20),
-           progress=None) -> list[dict]:
+           progress=None, max_width_mm: float | None = MAX_CRACK_WIDTH_MM, stats: dict | None = None) -> list[dict]:
     """Cracks proposed in the window (``code`` ``ISCS.CRACK``, said as "proposto"): the valleys of the relief at the
     scales ``scales_mm`` joined with the dark thin lines of the orthophoto, thinned, followed into polylines,
     simplified by a pixel, those shorter than ``min_length`` m dropped. ``width_mm``: the median along the line of
     the dark width across it (distance transform of the dark mask: ``2 d - 1`` pixels) and, where the relief has a
     value, of the width at half depth of its profile. A line lying for more than ``JOINT_SHARE`` of its length on a
-    joint between two stones drawn on the face is dropped and counted."""
+    joint between two stones drawn on the face is dropped and counted; so is a line wider than ``max_width_mm``
+    (None: no limit), which on a stone wall is a mortar joint, not a crack. ``stats`` (a dict, when given) gets
+    ``on_joints``, ``wide`` (the lines dropped for each reason) and ``stones`` (whether the face has stones drawn)."""
     import cv2
     from shapely.geometry import LineString
 
@@ -547,7 +554,7 @@ def cracks(chunk, entry, bounds=None, min_length: float = 0.10, scales_mm=(2, 5,
     dist = cv2.distanceTransform(dark.astype(np.uint8), cv2.DIST_L2, 5)
     joints = _joints(chunk, entry)
     reach = max(4.0, 2.5 * max(scales_mm) / 1000.0 / res)
-    found, on_joints = [], 0
+    found, on_joints, wide = [], 0, 0
     for ln in lines:
         ln = ln.simplify(1.0)
         xy = np.asarray(ln.coords)
@@ -574,6 +581,9 @@ def cracks(chunk, entry, bounds=None, min_length: float = 0.10, scales_mm=(2, 5,
         relief_w = relief_w[np.isfinite(relief_w)]
         widths = np.concatenate([dark_w, relief_w])
         width = float(np.median(widths) * 1000.0) if widths.size else None
+        if max_width_mm is not None and width is not None and width > max_width_mm:
+            wide += 1  # a joint between stones, not a crack
+            continue
         source = _t("rilievo e immagine", "relief and image") if relief_w.size and dark_w.size else (
             _t("solo dal rilievo", "relief only") if relief_w.size else _t("solo dall'immagine", "image only"))
         notes = _t(f"lesione proposta: valli del rilievo a {', '.join(str(s) for s in scales_mm)} mm e linee scure "
@@ -587,54 +597,170 @@ def cracks(chunk, entry, bounds=None, min_length: float = 0.10, scales_mm=(2, 5,
     else:
         extra = _t(f"{on_joints} linee sui giunti tra le pietre tolte", f"{on_joints} lines on joints between the "
                    "stones dropped")
+    if max_width_mm is not None:
+        extra += "; " + _t(f"{wide} linee più larghe di {_num(max_width_mm, 0)} mm tolte (giunti?)",
+                           f"{wide} lines wider than {_num(max_width_mm, 0)} mm dropped (joints?)")
     for f in found:
         f["notes"] += "; " + extra
+    if stats is not None:
+        stats.update(on_joints=on_joints, wide=wide, stones=joints is not None)
     progress(1.0, _t(f"lesioni: {len(found)} proposte; {extra}", f"cracks: {len(found)} proposals; {extra}"))
     return found
 
 
-def plane_fit(u, v, d) -> tuple[np.ndarray, float]:
-    """The robust plane ``d = a u + b v + c`` of the samples: least squares, then again without those farther than
-    3 MAD from the median residual (at least 0.5 mm); ``(coefficients, MAD)``."""
-    A = np.column_stack([u, v, np.ones_like(u)])
+def surface_fit(u, v, d, order: int = 1) -> tuple[np.ndarray, float]:
+    """The robust polynomial surface of the samples, ``order`` 1 (a plane ``d = a u + b v + c``) or 2 (with ``u²``,
+    ``u v``, ``v²``): least squares, then twice again without those farther than 3 MAD from the median residual (at
+    least 0.5 mm); ``(coefficients, MAD)``, the coefficients in the order of :func:`_terms`."""
+    A = _terms(np.asarray(u, float), np.asarray(v, float), order)
     keep = np.ones(len(u), bool)
-    coef, mad = np.zeros(3), 0.0
-    for _ in range(2):
+    coef, mad = np.zeros(A.shape[1]), 0.0
+    for _ in range(3):
         coef, *_ = np.linalg.lstsq(A[keep], d[keep], rcond=None)
         r = d - A @ coef
-        centre = float(np.median(r[keep]))  # a big hole pulls the first plane: the bulk of the wall is the median
+        centre = float(np.median(r[keep]))  # a big hole pulls the first surface: the bulk of the wall is the median
         mad = float(np.median(np.abs(r[keep] - centre))) * 1.4826
         keep = np.abs(r - centre) <= max(3.0 * mad, 0.0005)
-        if keep.sum() < 3:
+        if keep.sum() < A.shape[1] + 1:
             break
     return coef, mad
 
 
+def _terms(u, v, order: int) -> np.ndarray:
+    cols = [u, v, np.ones_like(u)]
+    if order >= 2:
+        cols += [u * u, u * v, v * v]
+    return np.column_stack(cols)
+
+
+def plane_fit(u, v, d) -> tuple[np.ndarray, float]:
+    """The robust plane ``d = a u + b v + c`` of the samples (:func:`surface_fit` of order 1)."""
+    return surface_fit(u, v, d, 1)
+
+
+def _local_reference(d: np.ndarray, res: float, sigma: float) -> np.ndarray:
+    """A smooth reference of the relief ``d`` (NaN where it has no value): at each pixel the value of the
+    gaussian-weighted local surface of the second order of the values around it (sigma ``sigma`` m), so that a slope,
+    the curve of a bulge or the edge of the window bring no bias; fitted on a grid of blocks of about ``sigma / 8``
+    (block means weighted by their counts), each pixel given the surface of its block at its own offset. The weighted
+    moments about each block come from separable filters (the gaussian times the powers of the offset). NaN where
+    the values within reach weigh less than 2 % of a full kernel."""
+    from scipy import ndimage
+
+    H, W = d.shape
+    f = max(1, int(sigma / res / 8.0))
+    h, w = -(-H // f), -(-W // f)
+    pad = np.full((h * f, w * f), np.nan)
+    pad[:H, :W] = d
+    blocks = pad.reshape(h, f, w, f)
+    ok = np.isfinite(blocks)
+    count = ok.sum(axis=(1, 3)).astype(np.float64)
+    total = np.where(ok, blocks, 0.0).sum(axis=(1, 3))
+    z = np.where(count > 0, total / np.maximum(count, 1.0), 0.0)
+    s = sigma / (res * f)
+    radius = int(np.ceil(3.0 * s))
+    off = np.arange(-radius, radius + 1, dtype=np.float64)
+    kern = np.exp(-0.5 * (off / s) ** 2)
+    kern /= kern.sum()
+    powers = [(0, 0), (1, 0), (0, 1), (2, 0), (1, 1), (0, 2)]  # the terms 1, x, y, x², x y, y² of the surface
+
+    def moment(a, px, py):  # sum over the kernel of a * dx^px * dy^py (x along the columns)
+        out = ndimage.correlate1d(a, kern * off ** px, axis=1, mode="constant", cval=0.0)
+        return ndimage.correlate1d(out, kern * off ** py, axis=0, mode="constant", cval=0.0)
+
+    cache = {}
+
+    def m(px, py):
+        if (px, py) not in cache:
+            cache[(px, py)] = moment(count, px, py)
+        return cache[(px, py)]
+
+    A = np.empty((h, w, 6, 6))
+    b = np.empty((h, w, 6))
+    for i, (pi, qi) in enumerate(powers):
+        for j, (pj, qj) in enumerate(powers):
+            A[..., i, j] = m(pi + pj, qi + qj)
+        b[..., i] = moment(count * z, pi, qi)
+    S0 = A[..., 0, 0]
+    scale = np.array([1.0, s, s, s * s, s * s, s * s])  # the unknowns in kernel units: a well-conditioned system
+    An = A / scale[:, None] / scale[None, :]
+    bn = b / scale
+    An += np.eye(6) * (1e-9 * np.maximum(S0, 1e-12))[..., None, None]
+    coef = np.full((h, w, 6), np.nan)
+    good = S0 >= 0.02 * f * f
+    if good.any():
+        try:
+            coef[good] = np.linalg.solve(An[good], bn[good][..., None])[..., 0] / scale
+        except np.linalg.LinAlgError:  # a degenerate cell somewhere: the weighted mean there instead
+            coef[good] = 0.0
+            coef[good, 0] = b[good][:, 0] / S0[good]
+    # each pixel: the surface of its block evaluated at its offset from the block's centre (in blocks)
+    rows, cols = np.arange(H), np.arange(W)
+    br, bc = rows // f, cols // f
+    dy = (rows - (br * f + (f - 1) / 2.0)) / f
+    dx = (cols - (bc * f + (f - 1) / 2.0)) / f
+    c = coef[br[:, None], bc[None, :]]
+    DX, DY = dx[None, :], dy[:, None]
+    return c[..., 0] + c[..., 1] * DX + c[..., 2] * DY + c[..., 3] * DX * DX + c[..., 4] * DX * DY + \
+        c[..., 5] * DY * DY
+
+
+def loss_residual(win: Window, min_depth: float, scale: float = REFERENCE_SCALE) -> tuple[np.ndarray, str]:
+    """The relief of the window against its reference (negative = behind it) and the words of the notes. A window
+    whose shorter side is under ``2 scale`` has its robust plane as the reference (the wall around a hole within
+    it). A larger one: a robust surface of the second order over the window (a batter, a broad bulge), then a local
+    reference (:func:`_local_reference`, sigma ``scale / 2``) of what is left, made twice: the second time without
+    the depressions the first found (deeper than half ``min_depth`` under it, grown by two pixels), so that a hole
+    does not pull its own reference. Where the second reference has no value (inside a depression wider than its
+    reach) the surface of the window is the reference."""
+    from scipy import ndimage
+
+    d = win.relief
+    ok = np.isfinite(d)
+    rows, cols = np.nonzero(ok)
+    u, v = win.uv(rows, cols)
+    pick = np.arange(len(u))
+    if len(pick) > 200_000:
+        pick = np.random.default_rng(0).choice(len(u), 200_000, replace=False)
+    bx = win.bounds
+    local = min(bx[2] - bx[0], bx[3] - bx[1]) >= 2.0 * scale
+    order = 2 if local else 1
+    uc, vc = (bx[0] + bx[2]) / 2.0, (bx[1] + bx[3]) / 2.0  # centred: a well-conditioned second order
+    coef, _mad = surface_fit(u[pick] - uc, v[pick] - vc, d[rows[pick], cols[pick]], order)
+    r0 = np.full(d.shape, np.nan)
+    r0[rows, cols] = d[rows, cols] - _terms(u - uc, v - vc, order) @ coef
+    if not local:
+        return r0, _t("piano robusto della finestra", "robust plane of the window")
+    first = _local_reference(r0, win.res, scale / 2.0)
+    cand = np.nan_to_num(r0 - first, nan=0.0) < -min_depth / 2.0
+    cand = ndimage.binary_dilation(cand, iterations=2) & ok
+    second = _local_reference(np.where(cand, np.nan, r0), win.res, scale / 2.0)
+    resid = np.where(np.isfinite(second), r0 - second, r0)
+    words = _t(f"superficie locale del muro senza le depressioni, scala {_num(scale, 2)} m",
+               f"local surface of the wall without the depressions, scale {_num(scale, 2)} m")
+    return resid, words
+
+
 def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: float = 0.01,
-                  progress=None) -> list[dict]:
-    """Losses of material proposed in the window: the relief against the wall's robust plane in the window (on a
-    cylinder the relief is already radial: the plane takes its residual tilt), depressions deeper than ``min_depth``
-    m as connected components of at least ``min_area`` m2, polygons with ``depth_mm`` = their median depth.
-    ``ISCS.MISSING_PART`` over 0.05 m2; ``ISCS.ALVEOLIZATION`` for the components under 0.02 m2 when the window
-    holds at least five of them; the others with no term."""
+                  progress=None, scale: float = REFERENCE_SCALE) -> list[dict]:
+    """Losses of material proposed in the window: the relief against the wall's reference around it
+    (:func:`loss_residual`: a robust surface over the window, then a local one at the scale ``scale`` m with the
+    depressions left out), depressions deeper than ``min_depth`` m as connected components of at least ``min_area``
+    m2, polygons with ``depth_mm`` = their median depth. ``ISCS.MISSING_PART`` over 0.05 m2; ``ISCS.ALVEOLIZATION``
+    for the components under 0.02 m2 when the window holds at least five of them; the others with no term. A
+    component larger than a quarter of ``scale²`` or than ``WIDE_SHARE`` of the window gets no term and the note
+    "da verificare" (``check`` True): at that size the reference cannot tell a loss from the shape of the wall."""
     import cv2
 
     progress = _progress(progress)
     win = read_window(chunk, entry, bounds)
     if win is None or win.empty:
         return []
-    d = win.relief
-    ok = np.isfinite(d)
-    if ok.sum() < 3:
+    ok = np.isfinite(win.relief)
+    if ok.sum() < 7:
         return []
-    rows, cols = np.nonzero(ok)
-    u, v = win.uv(rows, cols)
-    pick = np.arange(len(u))
-    if len(pick) > 200_000:
-        pick = np.random.default_rng(0).choice(len(u), 200_000, replace=False)
-    coef, _mad = plane_fit(u[pick], v[pick], d[rows[pick], cols[pick]])
-    resid = np.full(d.shape, np.nan)
-    resid[rows, cols] = d[rows, cols] - (coef[0] * u + coef[1] * v + coef[2])
+    progress(0.1, _t("mancanze: superficie di riferimento", "losses: reference surface"))
+    resid, words = loss_residual(win, min_depth, scale)
     progress(0.5, _t("mancanze: depressioni", "losses: depressions"))
     deep = np.nan_to_num(resid, nan=0.0) < -min_depth
     n, labels, stats, _c = cv2.connectedComponentsWithStats(deep.astype(np.uint8), connectivity=8)
@@ -654,20 +780,26 @@ def material_loss(chunk, entry, bounds=None, min_depth: float = 0.02, min_area: 
         g = shape(geom).buffer(0)
         if not g.is_empty:
             comps.append((g, float(depths[int(value)])))
+    too_big = min(scale * scale / 4.0, WIDE_SHARE * float(ok.sum()) * cell)
     small = [g.area < 0.02 for g, _ in comps]
     alveoli = sum(small) >= 5
     found = []
     for (g, depth), is_small in zip(comps, small):
-        if g.area > 0.05:
+        check = ""
+        if g.area > too_big:
+            code = None
+            check = _t("; da verificare: può essere la forma del muro", "; to check: it may be the shape of the wall")
+        elif g.area > 0.05:
             code = MISSING_PART
         elif alveoli and is_small:
             code = ALVEOLIZATION
         else:
             code = None
-        notes = _t(f"mancanza proposta: più di {_num(min_depth * 100, 1)} cm sotto il piano del muro nella finestra, "
+        notes = _t(f"mancanza proposta: più di {_num(min_depth * 100, 1)} cm sotto il muro intorno ({words}), "
                    f"area minima {_num(min_area, 3)} m²", f"loss proposed: more than {_num(min_depth * 100, 1)} cm "
-                   f"behind the wall's plane in the window, least area {_num(min_area, 3)} m²")
-        found.append(_proposal("decay", code, g, notes, win.coverage, depth_mm=round(depth, 1)))
+                   f"behind the wall around it ({words}), least area {_num(min_area, 3)} m²") + check
+        found.append({**_proposal("decay", code, g, notes, win.coverage, depth_mm=round(depth, 1)),
+                      "check": bool(check)})
     progress(1.0, _t(f"mancanze: {len(found)} proposte", f"losses: {len(found)} proposals"))
     return found
 
@@ -731,8 +863,142 @@ def colour_classes(chunk, entry, bounds=None, k: int = 5, progress=None, min_are
     return out
 
 
+# ---------------------------------------------------------------- big windows
+
+
+def stones_drawn(chunk, entry) -> bool:
+    """Whether the face has stones drawn (the program's *Pietre* on the elevation): without them the joints between
+    the stones cannot be told from cracks."""
+    from pyarchinit_photogrammetry.engine.elevation import frame_drawings
+
+    return bool((frame_drawings(chunk, entry["id"]).get("stones") or {}).get(entry["id"]))
+
+
+def window_extent(chunk, entry, bounds=None) -> tuple[tuple, float, int] | None:
+    """``(bounds clipped to the orthophoto, its pixel in m, the pixels of the window)``, or None outside it."""
+    import rasterio
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    ortho, _relief = elevation_paths(chunk, entry)
+    with rasterio.open(str(ortho)) as src:
+        full = src.bounds
+        res = abs(src.res[0])
+    bx = (full.left, full.bottom, full.right, full.top) if bounds is None else (
+        max(bounds[0], full.left), max(bounds[1], full.bottom), min(bounds[2], full.right), min(bounds[3], full.top))
+    if bx[2] <= bx[0] or bx[3] <= bx[1]:
+        return None
+    return bx, float(res), int(round((bx[2] - bx[0]) / res)) * int(round((bx[3] - bx[1]) / res))
+
+
+def tiles(bounds, res: float, budget: int = PIXEL_BUDGET, overlap: float = TILE_OVERLAP) -> list[tuple]:
+    """The tiles of the window ``bounds``: ``(core, window)`` pairs, the cores a partition of it, each window its core
+    grown by ``overlap`` (within ``bounds``) and of at most ``budget`` pixels of ``res`` m."""
+    u0, v0, u1, v1 = bounds
+    side = math.sqrt(budget) * res - 2.0 * overlap
+    if side <= 0:
+        raise ValueError(f"a budget of {budget} pixels is smaller than the overlap of the tiles")
+    nu, nv = max(1, math.ceil((u1 - u0) / side)), max(1, math.ceil((v1 - v0) / side))
+    du, dv = (u1 - u0) / nu, (v1 - v0) / nv
+    out = []
+    for j in range(nv):
+        for i in range(nu):
+            core = (u0 + i * du, v0 + j * dv, u0 + (i + 1) * du, v0 + (j + 1) * dv)
+            win = (max(u0, core[0] - overlap), max(v0, core[1] - overlap), min(u1, core[2] + overlap),
+                   min(v1, core[3] + overlap))
+            out.append((core, win))
+    return out
+
+
+def _merge(pieces: list[dict], res: float) -> list[dict]:
+    """The proposals of the tiles, each already clipped to its tile's core, merged where they meet: the areas of the
+    same kind that touch in one polygon (the term, depth and notes of the largest piece; a piece "to check" leaves
+    the whole with no term), the lines joined end to end (snapped within two pixels; the opening the length-weighted
+    mean of the pieces)."""
+    import shapely
+    from shapely.ops import linemerge, unary_union
+
+    out = []
+    areas = [p for p in pieces if p["geometry"].geom_type in ("Polygon", "MultiPolygon")]
+    lines = [p for p in pieces if p["geometry"].geom_type in ("LineString", "MultiLineString")]
+    out += [p for p in pieces if p not in areas and p not in lines]
+    for kind in sorted({p["kind"] for p in areas}):
+        group = [p for p in areas if p["kind"] == kind]
+        for g in shapely.get_parts(unary_union([p["geometry"].buffer(res * 0.01) for p in group]).buffer(
+                -res * 0.01)):
+            if g.is_empty:
+                continue
+            mine = [p for p in group if p["geometry"].intersects(g)]
+            if not mine:
+                continue
+            first = max(mine, key=lambda p: p["geometry"].area)
+            depths = [(p["geometry"].area, p["depth_mm"]) for p in mine if p.get("depth_mm") is not None]
+            depth = round(sum(a * x for a, x in depths) / sum(a for a, _ in depths), 1) if depths else None
+            check = [p for p in mine if p.get("check")]
+            code = None if check else first["code"]
+            notes = check[0]["notes"] if check else first["notes"]
+            out.append({**first, "code": code, "geometry": g, "depth_mm": depth, "notes": notes})
+    for code in sorted({str(p["code"]) for p in lines}):
+        group = [p for p in lines if str(p["code"]) == code]
+        joined = unary_union([p["geometry"] for p in group])
+        joined = unary_union(shapely.snap(joined, joined, 2.0 * res))  # the overlaps noded once
+        merged = linemerge(joined) if joined.geom_type == "MultiLineString" else joined
+        for ln in shapely.get_parts(merged):
+            if ln.is_empty:
+                continue
+            near = [p for p in group if p["geometry"].distance(ln) <= res]
+            first = max(near, key=lambda p: p["geometry"].length) if near else group[0]
+            widths = [(p["geometry"].length, p["width_mm"]) for p in near if p.get("width_mm") is not None]
+            width = sum(a * x for a, x in widths) / sum(a for a, _ in widths) if widths else None
+            out.append({**first, "geometry": ln, "width_mm": width})
+    return out
+
+
+def tiled(detector, chunk, entry, bounds=None, budget: int = PIXEL_BUDGET, overlap: float = TILE_OVERLAP,
+          progress=None, **kwargs) -> list[dict]:
+    """``detector`` (:func:`cracks` or :func:`material_loss`) on the window ``bounds``, at once when it holds at most
+    ``budget`` pixels, else by :func:`tiles` with an overlap of ``overlap`` m: each tile's proposals clipped to its
+    core and merged across the tiles (:func:`_merge`). A ``stats`` dict in ``kwargs`` gets the tiles' counts summed
+    and ``tiles``."""
+    import shapely
+    from shapely.geometry import box
+
+    progress = _progress(progress)
+    extent = window_extent(chunk, entry, bounds)
+    if extent is None:
+        return []
+    bx, res, pixels = extent
+    if pixels <= budget:
+        return detector(chunk, entry, bounds, progress=progress, **kwargs)
+    parts = tiles(bx, res, budget, overlap)
+    stats = kwargs.pop("stats", None)
+    pieces = []
+    for k, (core, win) in enumerate(parts):
+        mine = {} if stats is not None else None
+        extra = {"stats": mine} if stats is not None else {}
+        found = detector(chunk, entry, win, progress=progress.sub(k / len(parts), 0.95 / len(parts)),
+                         **kwargs, **extra)
+        if stats is not None:
+            for key, value in mine.items():
+                stats[key] = (stats.get(key, 0) + value) if isinstance(value, (int, float)) and \
+                    not isinstance(value, bool) else value
+        cell = box(*core)
+        for p in found:
+            g = p["geometry"].intersection(cell)
+            if g.is_empty:
+                continue
+            want = "Polygon" if p["geometry"].geom_type.endswith("Polygon") else "LineString"
+            pieces += [{**p, "geometry": x} for x in shapely.get_parts(g) if x.geom_type == want and not x.is_empty]
+    out = _merge(pieces, res)
+    if stats is not None:
+        stats["tiles"] = len(parts)
+    progress(1.0, _t(f"{len(parts)} tasselli: {len(out)} proposte", f"{len(parts)} tiles: {len(out)} proposals"))
+    return out
+
+
 DETECTORS = ("sam", "cracks", "loss", "colours")
 
 __all__ = ["CRACK", "MISSING_PART", "ALVEOLIZATION", "BIG_FACE", "BIG_FACE_RESOLUTION", "SUGGESTIONS", "DETECTORS",
-           "Window", "read_window", "lab", "sam_pixel", "sam_areas", "like_this", "cracks", "material_loss",
-           "plane_fit", "looks", "colour_classes"]
+           "MAX_CRACK_WIDTH_MM", "REFERENCE_SCALE", "PIXEL_BUDGET", "TILE_OVERLAP", "Window", "read_window", "lab",
+           "sam_pixel", "sam_areas", "like_this", "cracks", "material_loss", "loss_residual", "plane_fit",
+           "surface_fit", "looks", "colour_classes", "stones_drawn", "window_extent", "tiles", "tiled"]

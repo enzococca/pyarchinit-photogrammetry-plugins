@@ -55,6 +55,10 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--min-length-cm", type=float, default=10.0)
     s.add_argument("--min-depth-cm", type=float, default=2.0)
     s.add_argument("--min-area-m2", type=float, default=0.01)
+    s.add_argument("--max-width-mm", type=float, default=12.0,
+                   help="cracks: wider lines are joints and are dropped (0: no limit)")
+    s.add_argument("--budget", type=int, default=30_000_000,
+                   help="cracks and loss: the pixels read at once; a larger window runs by tiles")
     s = sub.add_parser("plate", parents=[common], help="the plate (SVG, PDF)")
     s.add_argument("--scale", type=int)
     s.add_argument("--folder")
@@ -224,10 +228,18 @@ def _detect(doc, chunk, a) -> int:
     bounds = _bounds(a.bounds)
     name = a.detector
     if name == "cracks":
-        found = detect.cracks(chunk, entry, bounds, min_length=a.min_length_cm / 100.0, progress=print_progress)
+        stats = {}
+        found = detect.tiled(detect.cracks, chunk, entry, bounds, budget=a.budget, progress=print_progress,
+                             min_length=a.min_length_cm / 100.0, max_width_mm=a.max_width_mm or None, stats=stats)
+        if not stats.get("stones"):
+            print(t("Le pietre del prospetto non sono disegnate: i giunti possono sembrare lesioni.",
+                    "The stones of the elevation are not drawn: joints may look like cracks."))
+        if stats.get("wide"):
+            print(t(f"{stats['wide']} linee più larghe di {num(a.max_width_mm, 0)} mm tolte come giunti",
+                    f"{stats['wide']} lines wider than {num(a.max_width_mm, 0)} mm dropped as joints"))
     elif name == "loss":
-        found = detect.material_loss(chunk, entry, bounds, min_depth=a.min_depth_cm / 100.0,
-                                     min_area=a.min_area_m2, progress=print_progress)
+        found = detect.tiled(detect.material_loss, chunk, entry, bounds, budget=a.budget, progress=print_progress,
+                             min_depth=a.min_depth_cm / 100.0, min_area=a.min_area_m2)
     elif name == "colours":
         named = {}
         for item in a.name:

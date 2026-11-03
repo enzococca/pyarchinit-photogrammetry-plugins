@@ -71,7 +71,8 @@ def test_a_wider_crack_gives_its_opening(face):
                 d[m] -= depth
                 dst.write(d, 1)
     u0, v0, u1, v1 = line.bounds
-    found = detect.cracks(ch, entry, bounds=(u0 - 0.2, v0 - 0.2, u1 + 0.2, v1 + 0.2))
+    # wider than the default maximum (a joint on a stone wall): kept only when the maximum is lifted
+    found = detect.cracks(ch, entry, bounds=(u0 - 0.2, v0 - 0.2, u1 + 0.2, v1 + 0.2), max_width_mm=None)
     assert len(found) == 1
     assert abs(found[0]["geometry"].length - line.length) <= 0.05 * line.length
     assert abs(found[0]["width_mm"] - width * 1000) <= 1.0, found[0]["width_mm"]
@@ -101,11 +102,103 @@ def test_material_loss_finds_the_hole(face):
     assert abs(loss["depth_mm"] - S.HOLE_DEPTH * 1000) <= 3.0
     assert abs(loss["geometry"].area - hole.area) <= 0.10 * hole.area
     assert loss["geometry"].intersection(hole).area >= 0.9 * hole.area
-    assert "piano del muro" in loss["notes"]
+    assert "muro intorno" in loss["notes"]
     # a window tight around the hole (the hole is 44 % of it): the wall's plane is still the plane of the rest
     tight = detect.material_loss(ch, entry, bounds=hole.buffer(0.1).bounds)
     assert len(tight) == 1 and abs(tight[0]["depth_mm"] - 30.0) <= 3.0
     assert abs(tight[0]["geometry"].area - hole.area) <= 0.10 * hole.area
+
+
+def _bulge(chunk, entry, height: float = 0.2) -> None:
+    """A bulge of the whole face: ``height`` m at the middle, nothing at the edges (a product of two parabolas: no
+    surface of the second order fits it)."""
+    import rasterio
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    _o, relief = elevation_paths(chunk, entry)
+    with rasterio.open(relief, "r+") as dst:
+        u, v = S._cells(dst)
+        su = (u - S.WALL_LENGTH / 2) / (S.WALL_LENGTH / 2)
+        sv = (v - Z0 - S.WALL_HEIGHT / 2) / (S.WALL_HEIGHT / 2)
+        d = dst.read(1)
+        d += (height * (1 - su ** 2) * (1 - sv ** 2)).astype(np.float32)
+        dst.write(d, 1)
+
+
+def test_material_loss_on_a_bulging_face(face):
+    """The wall bulges by 20 cm over the window: only the hole is proposed, with its depth against the wall around
+    it, not against a plane of the whole window."""
+    doc, ch, entry = face
+    _bulge(ch, entry)
+    found = detect.material_loss(ch, entry)
+    hole = S.box(S.HOLE)
+    assert len(found) == 1, [(round(f["geometry"].area, 3), f["depth_mm"]) for f in found]
+    assert found[0]["code"] == "ISCS.MISSING_PART"
+    assert abs(found[0]["depth_mm"] - S.HOLE_DEPTH * 1000) <= 3.0, found[0]["depth_mm"]
+    assert found[0]["geometry"].intersection(hole).area >= 0.9 * hole.area
+
+
+def test_a_loss_too_big_for_its_reference_gets_no_term(face):
+    """A depression of 2 x 1 m, 5 cm deep: no term and the note "da verificare"."""
+    import rasterio
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    doc, ch, entry = face
+    _o, relief = elevation_paths(ch, entry)
+    sink = S.box((3.3, Z0 + 0.3, 5.3, Z0 + 1.3))
+    with rasterio.open(relief, "r+") as dst:
+        u, v = S._cells(dst)
+        d = dst.read(1)
+        d[S._inside(u, v, sink)] -= 0.05
+        dst.write(d, 1)
+    found = detect.material_loss(ch, entry)
+    big = [f for f in found if f["geometry"].intersects(sink)]
+    assert len(big) == 1 and big[0]["code"] is None and "da verificare" in big[0]["notes"]
+    assert any(f["code"] == "ISCS.MISSING_PART" and f["geometry"].intersects(S.box(S.HOLE)) for f in found)
+
+
+def test_wide_dark_bands_are_joints_not_cracks(face):
+    """A dark band 4 cm wide (a mortar joint) is dropped and counted; the groove (1 cm) stays."""
+    import rasterio
+    from shapely.geometry import LineString
+
+    from pyarchinit_photogrammetry.engine.elevation import elevation_paths
+
+    doc, ch, entry = face
+    band = LineString([(3.3, Z0 + 1.6), (5.6, Z0 + 1.6)]).buffer(0.02, cap_style="flat")
+    ortho, _relief = elevation_paths(ch, entry)
+    with rasterio.open(ortho, "r+") as dst:
+        u, v = S._cells(dst)
+        m = S._inside(u, v, band)
+        rgb = dst.read()
+        rgb[:3, m] = np.array(S.CRACK_RGB, np.uint8)[:, None]
+        dst.write(rgb)
+    stats = {}
+    found = detect.cracks(ch, entry, stats=stats)
+    assert len(found) == 1 and found[0]["geometry"].hausdorff_distance(S.groove()) < 0.03
+    assert stats["wide"] >= 1 and stats["stones"] is False
+    assert "più larghe di 12 mm" in found[0]["notes"]
+    lifted = detect.cracks(ch, entry, max_width_mm=None)
+    assert any(f["geometry"].distance(band) < 0.01 for f in lifted)
+
+
+def test_a_big_window_by_tiles(face):
+    """With a budget of 30 000 pixels the face (180 000) runs in 15 tiles, whose edges cross the hole and the groove:
+    the same hole, of the same depth and area, and the groove as one line."""
+    doc, ch, entry = face
+    stats = {}
+    found = detect.tiled(detect.material_loss, ch, entry, budget=30_000)
+    hole = S.box(S.HOLE)
+    assert len(found) == 1 and abs(found[0]["depth_mm"] - 30.0) <= 3.0
+    assert abs(found[0]["geometry"].area - hole.area) <= 0.10 * hole.area
+    assert len(detect.tiles(detect.window_extent(ch, entry)[0], 0.01, 400_000)) > 1
+    cracks = detect.tiled(detect.cracks, ch, entry, budget=30_000, stats=stats)
+    assert stats["tiles"] > 1
+    assert len(cracks) == 1, [c["geometry"].wkt[:80] for c in cracks]
+    assert abs(cracks[0]["geometry"].length - S.groove().length) <= 0.05 * S.groove().length
+    assert abs(cracks[0]["width_mm"] - S.GROOVE_WIDTH * 1000) <= 1.0
 
 
 def test_alveolization_from_many_small_holes(face):
