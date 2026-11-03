@@ -39,6 +39,8 @@ muri, edifici e torri in pietra rilevati per facce.
   `IfcWall` - la lastra fra due facce rilevate (in versi opposti entro 15°, a meno di 3 m), o dietro ogni altra
   faccia per uno spessore dato (ogni lato di una torre poligonale) - con
   `Pset_PyArchInit_Masonry` e le USM come `IfcBuildingElementPart`; la faccia aperta in QGIS, spiegata.
+  Dalla 0.1.2 il muro e le sue USM tengono i loro GlobalId da un'esportazione all'altra, con la regola che il
+  plugin conservazione condivide, così i suoi degradi aderiscono allo stesso muro.
 
 La prova sulla catena del programma (un muro sintetico fotografato, allineato, densificato, con il modello; pietre
 trovate da SAM 2.1): `proof/make_proof.py`.

@@ -39,6 +39,8 @@ walls, buildings and stone towers recorded by their faces.
   `IfcWall` - the slab between two surveyed faces (looking within 15° of opposite ways, less than 3 m apart), or
   behind each other face by a thickness given (each side of a polygonal tower) - with
   `Pset_PyArchInit_Masonry` and the USM as `IfcBuildingElementPart`; the face opened in QGIS, unfolded.
+  From 0.1.2 the wall and its USM keep their GlobalIds from one export to the next, by the rule the conservation
+  plugin shares, so its surface features adhere to the same wall.
 
 The proof through the program's pipeline (a synthetic wall photographed, aligned, densified, meshed; stones found by
 SAM 2.1): `proof/make_proof.py`.

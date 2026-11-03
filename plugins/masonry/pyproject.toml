@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-masonry"
-version = "0.1.1"
+version = "0.1.2"
 description = """\
 pyarchinit-photogrammetry plugin: walls, buildings and stone towers recorded by their faces - elevations on planes, \
 cylinders and the sides of polygonal towers; lean, bulge, sections, the axis of a round tower and two surveys compared; \

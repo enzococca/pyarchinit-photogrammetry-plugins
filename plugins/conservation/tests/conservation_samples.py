@@ -182,3 +182,92 @@ def cleanup() -> None:
     _CACHE.pop("path", None)
     if root is not None:
         shutil.rmtree(root, ignore_errors=True)
+
+
+# ------------------------------------------------------------------ a round tower (from the masonry plugin's samples)
+TOWER_RADIUS, TOWER_HEIGHT, TOWER_LEAN_DEG, TOWER_LEAN_AZIMUTH = 3.0, 6.0, 1.0, 60.0
+OUT_OF_ROUND = 0.01  # peak to valley of the radius
+
+
+def _grid(f, nu: int, nv: int):
+    """A mesh of the surface ``f(s, t)`` (s, t in [0, 1]), (nu x nv) vertices, two triangles per cell."""
+    s, t = np.meshgrid(np.linspace(0, 1, nu), np.linspace(0, 1, nv), indexing="ij")
+    verts = f(s.ravel(), t.ravel())
+    idx = np.arange(nu * nv).reshape(nu, nv)
+    a, b, c, d = idx[:-1, :-1].ravel(), idx[1:, :-1].ravel(), idx[1:, 1:].ravel(), idx[:-1, 1:].ravel()
+    faces = np.concatenate([np.column_stack([a, b, c]), np.column_stack([a, c, d])])
+    return verts, faces
+
+
+def tower_axis():
+    """The unit axis of the round tower (leaning ``TOWER_LEAN_DEG`` towards the azimuth ``TOWER_LEAN_AZIMUTH``)."""
+    a, z = np.radians(TOWER_LEAN_AZIMUTH), np.radians(TOWER_LEAN_DEG)
+    return np.array([np.sin(a) * np.sin(z), np.cos(a) * np.sin(z), np.cos(z)])
+
+
+def _tower_basis():
+    axis = tower_axis()
+    e1 = np.cross(axis, [0.0, 0.0, 1.0])
+    e1 = e1 / np.linalg.norm(e1)
+    return axis, e1, np.cross(axis, e1)
+
+
+def tower_radius(phi):
+    """The true radius of the tower at the angle ``phi`` about its axis (from ``e1`` towards ``e2``)."""
+    return TOWER_RADIUS + OUT_OF_ROUND / 2 * np.cos(2 * (np.asarray(phi) - np.radians(20.0)))
+
+
+def round_tower(base=None):
+    """An open tube on ``base``: radius :func:`tower_radius` across its leaning axis, ``TOWER_HEIGHT`` high."""
+    base = WORLD if base is None else np.asarray(base, np.float64)
+    axis, e1, e2 = _tower_basis()
+
+    def f(s, t):
+        phi = s * 2 * np.pi
+        r = tower_radius(phi)
+        h = t * TOWER_HEIGHT / axis[2]
+        return base + h[:, None] * axis + (r * np.cos(phi))[:, None] * e1 + (r * np.sin(phi))[:, None] * e2
+
+    v, faces = _grid(f, 721, 61)
+    n = 61  # the seam: the last column of vertices is the first one
+    v = v[:-n]
+    faces = np.where(faces >= len(v), faces - len(v), faces)
+    return v, faces
+
+
+def off_the_tower(points) -> np.ndarray:
+    """How far (m) the world ``points`` are from the tower's true surface, across its axis."""
+    axis, e1, e2 = _tower_basis()
+    p = np.asarray(points, np.float64) - WORLD
+    across = p - (p @ axis)[:, None] * axis
+    return np.linalg.norm(across, axis=1) - tower_radius(np.arctan2(across @ e2, across @ e1))
+
+
+def tower(folder: Path, resolution: float = 0.02):
+    """``(doc, chunk, entry)``: a project holding the round tower and the developed elevation of a stretch of it (a
+    vertical cylinder through a circle of the tower at 3 m, 3 m of arc, from 1 to 3 m above the base)."""
+    import pyarchinit_photogrammetry as ppg
+    from pyarchinit_photogrammetry.engine.elevation import build_elevation, cylinder_from_circle
+    from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
+
+    doc = ppg.Document()
+    doc.save(Path(folder) / "torre.ppg")
+    ch = doc.add_chunk("Torre")
+    ch.crs = CRS
+    ch.transform = transform()
+    verts, faces = round_tower()
+    internal = ch.to_internal(np.asarray(verts, np.float64))
+    path = write_mesh_ply(ch.data_dir / "model.ply", internal, np.asarray(faces), double=True)
+    ch._set_product("model", path)
+    ch.meta["metric"] = True
+    ch.meta["date"] = DATE
+    doc.chunk = ch
+    axis, e1, e2 = _tower_basis()
+    h = 3.0 / axis[2]
+    rim = [WORLD + h * axis + tower_radius(p) * (np.cos(p) * e1 + np.sin(p) * e2)
+           for p in np.radians(np.arange(0.0, 360.0, 15.0))]
+    frame = cylinder_from_circle(ch, rim, inside=False)
+    entry = build_elevation(ch, frame, resolution, "Sviluppo della torre", depth=(-0.15, 0.15),
+                            bounds=(0.0, Z0 + 1.0, 3.0, Z0 + 3.0))
+    doc.save()
+    return doc, ch, entry

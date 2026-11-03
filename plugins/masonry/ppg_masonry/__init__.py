@@ -29,7 +29,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, kind_title, metres, num, t
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 NEGATIVE_VALUES = ("--line", "--side", "--circle", "--heights", "--stations", "--sections", "--slice", "--polygon")
 
 
