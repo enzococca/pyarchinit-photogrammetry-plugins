@@ -2,14 +2,15 @@
 that carry a term accepted, the plate, the tables, the drawings, the IFC 4.3 file, and a ``LEGGIMI.md`` with the
 numbers and the times. Nothing is copied anywhere else.
 
-The project given is never written: it is copied first (the ``.ppg`` file and its ``.ppg.files`` folder, cloned
-on APFS when possible) into ``FOLDER/progetto/``, and the run adds its campaign to the copy and writes under the
+The project given is never written: it is copied first - the ``.ppg`` file and its WHOLE ``.ppg.files`` folder
+(every chunk's photos links, models, rasters: cloned on APFS when possible, a full copy elsewhere, so mind the disk)
+- into ``FOLDER/progetto/``, and the run adds its campaign to the copy and writes under the
 copy's data. ``--out`` inside the project's data folder is refused, and so is a ``FOLDER/progetto/`` that is
 already there (choose another folder or remove it).
 
     python run_proof.py PROJECT.ppg --elevation "NAME" --window U0 V0 U1 V1 --out FOLDER
-        [--chunk LABEL] [--sam] [--min-depth-cm 2] [--min-area-m2 0.0025] [--min-length-cm 10] [--colours 5]
-        [--thickness 0.5]
+        [--chunk LABEL] [--sam] [--min-depth-cm 2] [--min-area-m2 0.0025] [--min-length-cm 10]
+        [--max-width-mm 12] [--colours 5] [--thickness 0.5]
 
 ``--window`` in (u, v) metres of the elevation (the coordinates the program shows on it); ``--sam`` adds SAM 2.1's
 segments (they stay proposals still to be named: the restorer names them). Colour classes are counted, not
@@ -66,6 +67,7 @@ def main(argv=None) -> int:
     p.add_argument("--min-depth-cm", type=float, default=2.0)
     p.add_argument("--min-area-m2", type=float, default=0.0025)
     p.add_argument("--min-length-cm", type=float, default=10.0)
+    p.add_argument("--max-width-mm", type=float, default=12.0, help="wider lines are joints (0: no limit)")
     p.add_argument("--colours", type=int, default=5)
     p.add_argument("--thickness", type=float, default=0.5)
     a = p.parse_args(argv)
@@ -75,7 +77,7 @@ def main(argv=None) -> int:
     from ppg_conservation import assess, detect, ifc43, outputs, records
     from ppg_conservation.vocabulary import UNNAMED
 
-    out = Path(a.out)
+    out = Path(a.out).resolve()
     times, lines = {}, []
     t0 = time.perf_counter()
     project = copy_project(Path(a.project), out)  # the project given is never written
@@ -97,9 +99,12 @@ def main(argv=None) -> int:
         return result
 
     found = {}
-    found["cracks"] = run("lesioni", lambda: detect.cracks(chunk, entry, bounds, min_length=a.min_length_cm / 100.0))
-    found["material_loss"] = run("mancanze", lambda: detect.material_loss(
-        chunk, entry, bounds, min_depth=a.min_depth_cm / 100.0, min_area=a.min_area_m2))
+    crack_stats: dict = {}
+    found["cracks"] = run("lesioni", lambda: detect.tiled(
+        detect.cracks, chunk, entry, bounds, min_length=a.min_length_cm / 100.0, max_width_mm=a.max_width_mm or None,
+        stats=crack_stats))
+    found["material_loss"] = run("mancanze", lambda: detect.tiled(
+        detect.material_loss, chunk, entry, bounds, min_depth=a.min_depth_cm / 100.0, min_area=a.min_area_m2))
     classes = run("classi di colore", lambda: detect.colour_classes(chunk, entry, bounds, k=a.colours))
     if a.sam:
         from pyarchinit_photogrammetry.ai.sam_env import make_segmenter
@@ -133,7 +138,7 @@ def main(argv=None) -> int:
     median_width = f"{widths[len(widths) // 2]:.1f}" if widths else "-"
     deepest = f"{depths[-1]:.0f}" if depths else "-"
     lines += ["# Prova del plugin Conservazione", "",
-              f"Progetto: una copia di `{Path(a.project).name}` in `{project.parent.relative_to(out.resolve())}/` "
+              f"Progetto: una copia di `{Path(a.project).name}` in `{project.parent.relative_to(out)}/` "
               f"(l'originale non è stato toccato), chunk «{chunk.label}», prospetto «{entry['name']}» "
               f"({entry['id']}, {entry['resolution'] * 1000:.1f} mm/px).",
               f"Finestra (u, v): {bounds[0]:.2f} {bounds[1]:.2f} - {bounds[2]:.2f} {bounds[3]:.2f} m "
@@ -141,11 +146,13 @@ def main(argv=None) -> int:
               "## Proposte", "",
               f"- Lesioni: {len(found['cracks'])} (lunghezza totale "
               f"{sum(f['geometry'].length for f in found['cracks']):.2f} m; apertura mediana "
-              f"{median_width} mm)",
+              f"{median_width} mm; {crack_stats.get('wide', 0)} linee più larghe di {a.max_width_mm:g} mm tolte "
+              f"come giunti; pietre {'disegnate' if crack_stats.get('stones') else 'non disegnate'})",
               f"- Mancanze di materiale: {len(found['material_loss'])} "
               f"(mancanza {n(found['material_loss'], code=detect.MISSING_PART)}, "
               f"alveolizzazione {n(found['material_loss'], code=detect.ALVEOLIZATION)}, da nominare "
-              f"{n(found['material_loss'], code=None)}; profondità massima {deepest} mm)",
+              f"{n(found['material_loss'], code=None)}, di cui da verificare "
+              f"{n(found['material_loss'], check=True)}; profondità massima {deepest} mm)",
               f"- Classi di colore: {len(classes)} (" + ", ".join(
                   f"{cl['class'] + 1}: {cl['share'] * 100:.0f} %{' ' + cl['looks'] if cl['looks'] else ''}"
                   for cl in classes) + "), non accettate: le nomina il restauratore"]

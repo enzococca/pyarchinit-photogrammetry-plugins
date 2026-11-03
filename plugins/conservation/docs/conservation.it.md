@@ -30,7 +30,7 @@ plugin](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main
    **Area**, **Linea** o **Punto** e disegna sul prospetto. Una scheda chiede intensità, apertura, causa, urgenza e
    note.
 4. **Proposte...**: lesioni, mancanze di materiale, classi di colore e segmenti di SAM proposti dall'immagine e dal
-   rilievo. **Accetta**, **Accetta tutte** o **Scarta**.
+   rilievo. **Accetta**, **Accetta tutte** (quelle con un termine: dice quante restano da nominare) o **Scarta**.
 5. **Interventi**: **Intervento (area)** / **Intervento (linea)**, oppure **Da restaurare** su un'area di degrado
    scelta nella tabella.
 6. **Classi CC e UC...** (EN 16096) per il paramento, **Raccomandazione RC...** per l'oggetto in quella data.
@@ -97,8 +97,8 @@ sezione della fonte: per il testo vero leggi i glossari.
 
 **Nessuna norma prescrive colori o retini** (i retini della vecchia NorMaL 1/88 non sono arrivati in una forma
 usabile): la legenda qui sotto è quella predefinita del plugin. Colore e retino di un termine si cambiano per il
-progetto (nella 0.1.0 dalla riga di comando, `legend --set`), e la legenda è scritta anche come stili QGIS. La tabella è
-generata dal vocabolario del plugin (`scripts/legend_table.py`).
+progetto (nella 0.1.0 dalla riga di comando, `legend --set`), e la legenda è scritta anche come stili QGIS. La
+tabella è generata dal vocabolario del plugin (`scripts/legend_table.py`).
 
 <!-- legend:start -->
 **Termini dei glossari (ICOMOS-ISCS e UNI 11182)**
@@ -269,15 +269,16 @@ Un elemento è legato alle US o USM disegnate sul paramento che ne coprono almen
 
 ### 3. Proposte (i rilevatori)
 
-**Proposte...** fa girare un rilevatore su tutto il paramento o sull'area scelta nella tabella, in background. Niente
-entra nella campagna senza **Accetta**: le proposte sono disegnate tratteggiate, e un elemento accettato conserva
-`proposed:<rilevatore>` come fonte, così le tabelle dicono cosa era automatico. Ogni rilevatore scrive i suoi
-parametri nelle note dell'elemento.
+**Proposte...** fa girare un rilevatore su tutto il paramento, sull'area scelta nella tabella o su una finestra
+disegnata sulla vista, in background. Oltre 30 milioni di pixel lesioni e mancanze girano a tasselli (sovrapposti di
+20 cm, poi uniti); le classi di colore chiedono una finestra più piccola. Niente entra nella campagna senza
+**Accetta**: le proposte sono disegnate tratteggiate, e un elemento accettato conserva `proposed:<rilevatore>` come
+fonte, così le tabelle dicono cosa era automatico. Ogni rilevatore scrive i suoi parametri nelle note dell'elemento.
 
 | Rilevatore | Cosa fa | Parametri (predefiniti) |
 |---|---|---|
-| **Lesioni** | Le valli del rilievo a più scale (hessiana, alla Frangi) unite alle linee scure e sottili dell'ortofoto (black-hat su L), assottigliate e seguite come polilinee. L'apertura è la mediana lungo la lesione della larghezza scura e, dove il rilievo ha valori, della larghezza a metà profondità. Una linea che per più del 60 % della lunghezza sta su un giunto fra due pietre disegnate sul paramento (entro 1 cm) viene scartata: senza pietre, le proposte comprendono i giunti. | scale 2, 5, 10, 20 mm; lunghezza minima 10 cm; valle minima 0,5 mm; contrasto minimo 12 L |
-| **Mancanze di materiale** | Le depressioni del rilievo rispetto al piano robusto del muro nella finestra (su un cilindro la sua inclinazione residua), come poligoni con la loro profondità mediana. *Mancanza* oltre 0,05 m², *alveolizzazione* per le parti sotto 0,02 m² quando la finestra ne ha almeno cinque; le altre da nominare. | profondità minima 2 cm; area minima 0,0025 m² nel pannello, 0,01 m² dalla riga di comando |
+| **Lesioni** | Le valli del rilievo a più scale (hessiana, alla Frangi) unite alle linee scure e sottili dell'ortofoto (black-hat su L), assottigliate e seguite come polilinee. L'apertura è la mediana lungo la lesione della larghezza scura e, dove il rilievo ha valori, della larghezza a metà profondità. Una linea che per più del 60 % della lunghezza sta su un giunto fra due pietre disegnate sul paramento (entro 1 cm) viene scartata. Una linea più larga dell'apertura massima è un giunto di malta, non una lesione: tolta e contata. Senza pietre disegnate il pannello lo dice prima di partire e propone di disegnarle o di cambiare l'apertura massima (un giunto di questo muro, misurato). | scale 2, 5, 10, 20 mm; lunghezza minima 10 cm; apertura massima 12 mm; valle minima 0,5 mm; contrasto minimo 12 L |
+| **Mancanze di materiale** | Le depressioni del rilievo rispetto al muro intorno, come poligoni con la loro profondità mediana. Su una finestra con il lato minore di almeno 2 m il riferimento è una superficie di secondo grado (scarpa, spanciamento ampio) e poi una superficie locale (scala 1 m), rifatta senza le depressioni trovate, così un buco non tira il proprio riferimento; su una finestra più piccola il piano robusto della finestra. *Mancanza* oltre 0,05 m², *alveolizzazione* per le parti sotto 0,02 m² quando la finestra ne ha almeno cinque; le altre da nominare. Una depressione oltre 0,25 m² o oltre il 20 % della finestra resta da nominare con la nota «da verificare: può essere la forma del muro». | profondità minima 2 cm; area minima 0,0025 m² nel pannello, 0,01 m² dalla riga di comando; scala del riferimento 1 m |
 | **Classi di colore** | k-means su CIELAB della finestra; ogni classe ripulita (apertura di 3 px) e vettorializzata. Le classi che sembrano verdi, scure o chiare arrivano con un termine suggerito (colonizzazione biologica; efflorescenza o deposito...): le classi le nomini tu, la finestra propone soltanto. | 5 classi; area minima 0,005 m² |
 | **Aree di SAM** | I segmenti di SAM 2.1 nella finestra, come aree *da nominare* (`PPG.UNNAMED`). Nominane una, poi **Come questo** dà il suo termine ai segmenti con colore e tessitura simili (media e dispersione in Lab, energia del gradiente, un piccolo istogramma di tessitura) entro la distanza indicata. | accuratezza "normale"; sui paramenti oltre 4 m² l'immagine è letta al massimo a 5 mm/px |
 
@@ -316,7 +317,7 @@ un'altra cartella; `<nome>` sono i nomi del prospetto e della campagna.
 
 | Pulsante | File |
 |---|---|
-| **Tavola...** | `<nome>_tavola.pdf` e `.svg` (A3, scala scelta fra 1:10 ... 1:1000): ortofoto, elementi con colori e retini, lesioni con l'apertura, la legenda dei termini presenti con i nomi ICOMOS-ISCS e UNI, il cartiglio (data, rilevatore, metodo, CC, UC, RC, fonti), la barra di scala, la direzione verso cui guarda il paramento quando il piano lo permette |
+| **Tavola...** | `<nome>_tavola.pdf` e `.svg` (A3, scala scelta fra 1:10 ... 1:1000) dell'area degli elementi con mezzo metro intorno, di un'area disegnata sulla vista o di tutta la faccia: ortofoto letta alla risoluzione che la scala chiede, elementi con colori e retini, lesioni con l'apertura (oltre 30 lesioni, le 30 più larghe; le altre con il numero della tabella *Lesioni*), la legenda dei termini presenti con i nomi ICOMOS-ISCS e UNI, il cartiglio (data, rilevatore, metodo, CC, UC, RC, fonti), la barra di scala, la direzione verso cui guarda il paramento quando il piano lo permette |
 | **Tabelle...** | `<nome>_tabelle.xlsx` (fogli *Elementi*, *Aree per termine*, *Aree per famiglia*, *Lesioni*, *Interventi*, *Rapporto EN 16096*), `<nome>_tabelle_elementi.csv`, `<nome>_tabelle_aree.csv` |
 | **Disegni...** | `<nome>.dxf` (un layer per famiglia, `LESIONI`, `INTERVENTI`, `NOTE`, `BORDO`; retini; un blocco per termine con codice e nomi), `<nome>_conservazione.gpkg` (spiegato, metri (u, v), con la colonna `geom_world`), `<nome>_conservazione_mondo.gpkg` (3D nel sistema del rilievo, sul piano del prospetto), gli stili QGIS `degrado.qml`, `lesioni.qml`, `interventi.qml`, `note.qml` |
 | **Apri in QGIS** | il progetto QGIS del prospetto del programma con le tabelle del plugin e gli stili della legenda |
@@ -374,8 +375,9 @@ paramento:
   risoluzione e gli stessi limiti: quando l'altro chunk non lo ha, il plugin lo costruisce con lo strumento dei
   prospetti del programma sullo stesso piano e con le stesse impostazioni (fusione, correzione del colore, angolo,
   filtro dei fantasmi, buchi riempiti), così le due griglie coincidono. Quando un prospetto trovato lì è stato
-  dipinto in altro modo, il riepilogo del confronto dice quali impostazioni sono diverse: cambiano anche il colore. Uno sviluppo misurato sul muro (*scala
-  sul muro*) non si rifà uguale: fai il secondo sul cilindro, o confronta campagne dello stesso prospetto.
+  dipinto in altro modo, il riepilogo del confronto dice quali impostazioni sono diverse: cambiano anche il colore.
+  Uno sviluppo misurato sul muro (*scala sul muro*) non si rifà uguale: fai il secondo sul cilindro, o confronta
+  campagne dello stesso prospetto.
 
 **I due chunk devono essere già nello stesso sistema.** Lo fa il programma con *Flusso di lavoro > Allinea chunk*
 (marker, camere o punti), non il plugin. Prima del confronto il plugin lo verifica:
@@ -430,8 +432,8 @@ prospetto, da WKT (testo o file) o da una tabella di un GeoPackage.
   le pietre sono disegnate; classi di colore e segmenti di SAM non sono termini finché non li nomini.
 - L'**apertura** di una lesione è misurata sull'ortofoto e sul rilievo alla loro risoluzione: un capello più sottile
   di un pixel non ha un'apertura affidabile.
-- La **profondità** di una mancanza è misurata rispetto a un piano adattato alla finestra: su un muro molto spanciato
-  scegli una finestra più piccola.
+- La **profondità** di una mancanza è misurata rispetto a una superficie del muro intorno (scala 1 m): una mancanza
+  più grande di quella scala non si distingue dalla forma del muro e resta «da verificare».
 - Il **GeoPackage nel mondo** mette gli elementi sul piano del prospetto (come i disegni del programma); l'**IFC** li
   porta sulla superficie attraverso il rilievo, sul piano dove il rilievo non ha valore (lo dice il log).
 - Le **classi EN 16096** sono tue; le soglie del suggerimento sono valori predefiniti del plugin, non della norma.

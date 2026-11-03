@@ -29,7 +29,7 @@ repository](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/
 3. **Map**: choose a term in the list (grouped by family, search in Italian, English or French), then **Area**,
    **Line** or **Point** and draw on the elevation. A form asks intensity, opening, cause, urgency and notes.
 4. **Proposals...**: cracks, losses of material, colour classes and SAM segments proposed from the image and the
-   relief. **Accept**, **Accept all** or **Discard** them.
+   relief. **Accept**, **Accept all** (those with a term: it says how many are left to name) or **Discard** them.
 5. **Interventions**: **Treatment (area)** / **Treatment (line)**, or **To treat** on a decay area chosen in the
    table.
 6. **Classes CC and UC...** (EN 16096) for the face, **Recommendation RC...** for the object on that date.
@@ -265,15 +265,16 @@ A feature is linked to the US or USM drawn on the face that cover at least **a t
 
 ### 3. Proposals (the detectors)
 
-**Proposals...** runs a detector on the whole face or on the area chosen in the table, in the background. Nothing
-enters the campaign without **Accept**: the proposals are drawn dashed, and an accepted feature keeps
-`proposed:<detector>` as its source, so the tables say what was automatic. Each detector writes its parameters in the
-feature's notes.
+**Proposals...** runs a detector on the whole face, on the area chosen in the table or on a window drawn on the view,
+in the background. Beyond 30 million pixels cracks and losses run by tiles (overlapping by 20 cm, then merged); the
+colour classes ask for a smaller window. Nothing enters the campaign without **Accept**: the proposals are drawn
+dashed, and an accepted feature keeps `proposed:<detector>` as its source, so the tables say what was automatic. Each
+detector writes its parameters in the feature's notes.
 
 | Detector | What it does | Parameters (default) |
 |---|---|---|
-| **Cracks** | Valleys of the relief at several scales (Hessian, Frangi-like) joined with the dark thin lines of the orthophoto (black-hat on L), thinned and followed into polylines. The opening is the median along the crack of the dark width and, where the relief has values, of the width at half depth. A line lying for more than 60 % of its length on a joint between two stones drawn on the face (within 1 cm) is dropped: without stones, the proposals include joints. | scales 2, 5, 10, 20 mm; least length 10 cm; least valley 0.5 mm; least contrast 12 L |
-| **Losses of material** | Depressions of the relief against the wall's robust plane in the window (on a cylinder its residual tilt), as polygons with their median depth. *Missing part* above 0.05 m², *alveolization* for parts under 0.02 m² when the window holds at least five; the others to be named. | least depth 2 cm; least area 0.0025 m² in the pane, 0.01 m² on the command line |
+| **Cracks** | Valleys of the relief at several scales (Hessian, Frangi-like) joined with the dark thin lines of the orthophoto (black-hat on L), thinned and followed into polylines. The opening is the median along the crack of the dark width and, where the relief has values, of the width at half depth. A line lying for more than 60 % of its length on a joint between two stones drawn on the face (within 1 cm) is dropped. A line wider than the largest opening is a mortar joint, not a crack: dropped and counted. With no stones drawn the pane says so before running and offers to draw them or to change the largest opening (measure a joint of this wall). | scales 2, 5, 10, 20 mm; least length 10 cm; largest opening 12 mm; least valley 0.5 mm; least contrast 12 L |
+| **Losses of material** | Depressions of the relief against the wall around them, as polygons with their median depth. On a window whose shorter side is at least 2 m the reference is a second-order surface (batter, broad bulge) and then a local surface (scale 1 m), made again without the depressions found, so that a hole does not pull its own reference; on a smaller window the window's robust plane. *Missing part* above 0.05 m², *alveolization* for parts under 0.02 m² when the window holds at least five; the others to be named. A depression over 0.25 m² or over 20 % of the window stays to be named with the note "da verificare: può essere la forma del muro" (to check: it may be the shape of the wall). | least depth 2 cm; least area 0.0025 m² in the pane, 0.01 m² on the command line; reference scale 1 m |
 | **Colour classes** | k-means on CIELAB of the window; each class cleaned (opening of 3 px) and vectorised. Classes that look green, dark or bright come with a suggested term (biological colonization; efflorescence or deposit...): you name the classes, the dialog only proposes. | 5 classes; least area 0.005 m² |
 | **SAM areas** | The segments of SAM 2.1 in the window, as areas *to be named* (`PPG.UNNAMED`). Name one, then **Like this** gives its term to the segments whose colour and texture resemble it (Lab mean and spread, gradient energy, a small texture histogram) within the distance shown. | thoroughness "normale"; on faces over 4 m² the image is read at 5 mm/px at most |
 
@@ -311,7 +312,7 @@ folder; `<stem>` is the elevation's and the campaign's names.
 
 | Button | Files |
 |---|---|
-| **Plate...** | `<stem>_tavola.pdf` and `.svg` (A3, scale chosen among 1:10 ... 1:1000): orthophoto, features with colours and hatches, cracks with their opening, the legend of the terms present with the ICOMOS-ISCS and UNI names, the title block (date, surveyor, method, CC, UC, RC, sources), scale bar, the direction the face looks to when the frame allows |
+| **Plate...** | `<stem>_tavola.pdf` and `.svg` (A3, scale chosen among 1:10 ... 1:1000) of the features' area with half a metre around, of an area drawn on the view or of the whole face: orthophoto read at the resolution the scale needs, features with colours and hatches, cracks with their opening (beyond 30 cracks, the 30 widest; the others with their number of the *Cracks* table), the legend of the terms present with the ICOMOS-ISCS and UNI names, the title block (date, surveyor, method, CC, UC, RC, sources), scale bar, the direction the face looks to when the frame allows |
 | **Tables...** | `<stem>_tabelle.xlsx` (sheets *Elementi*, *Aree per termine*, *Aree per famiglia*, *Lesioni*, *Interventi*, *Rapporto EN 16096*), `<stem>_tabelle_elementi.csv`, `<stem>_tabelle_aree.csv` |
 | **Drawings...** | `<stem>.dxf` (a layer per family, `LESIONI`, `INTERVENTI`, `NOTE`, `BORDO`; hatches; a block per term with its code and names), `<stem>_conservazione.gpkg` (unfolded, (u, v) metres, with the `geom_world` column), `<stem>_conservazione_mondo.gpkg` (3D in the survey's CRS, on the plane of the elevation), the QGIS styles `degrado.qml`, `lesioni.qml`, `interventi.qml`, `note.qml` |
 | **Open in QGIS** | the elevation's QGIS project of the program with the plugin's tables styled with the legend |
@@ -366,8 +367,8 @@ Viewers support surface features poorly: most show the shells as ordinary elemen
   when the other chunk has none, the plugin builds it with the program's elevation tool on the same plane, painted
   with the same settings (blending, colour correction, angle, ghosting filter, filled holes), so the two grids
   coincide. When an elevation found there was painted otherwise, the comparison's summary says which settings
-  differ: they change the colour too. A development measured on the wall (*scala sul muro*) cannot be rebuilt the same way: make the
-  second one on the cylinder, or compare campaigns of the same elevation.
+  differ: they change the colour too. A development measured on the wall (*scala sul muro*) cannot be rebuilt the
+  same way: make the second one on the cylinder, or compare campaigns of the same elevation.
 
 **The two chunks must already be in the same system.** The program does that with *Workflow > Align chunks*
 (markers, cameras or points), not the plugin. Before comparing, the plugin checks it:
@@ -422,8 +423,8 @@ elevation, from WKT (text or a file) or a GeoPackage table.
   stones are drawn; colour classes and SAM segments are not terms until you name them.
 - The **opening** of a crack is measured on the orthophoto and the relief at their resolution: a hair crack thinner
   than a pixel has no reliable opening.
-- **Depth** of a loss is measured against a plane fitted to the window: on a strongly bulging wall choose a smaller
-  window.
+- **Depth** of a loss is measured against a surface of the wall around it (scale 1 m): a loss larger than that
+  scale cannot be told from the shape of the wall and stays "to check".
 - The **world GeoPackage** places the features on the elevation's plane (as the program's drawings); the **IFC**
   lifts them on the surface through the relief, on the plane where the relief has no value (said in the log).
 - The **EN 16096 classes** are yours; the suggestion's thresholds are the plugin's defaults, not the standard's.
