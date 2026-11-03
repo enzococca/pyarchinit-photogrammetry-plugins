@@ -97,9 +97,10 @@ class ConservationPlugin(Plugin):
                            tip=t("Il pannello della conservazione", "The conservation pane"))
         context.add_command("conservation", self.command,
                             help="decay mapping on elevations: list, campaign, map, detect, plate, export, pyarchinit, "
-                                 "legend")
+                                 "ifc, legend")
         context.add_exporter(t("Tavola della campagna (PDF)", "Plate of the campaign (PDF)"), ".pdf",
                              self._export_plate)
+        context.add_exporter(t("Conservazione (IFC 4.3)", "Conservation (IFC 4.3)"), ".ifc", self._export_ifc)
         if context.window is not None:
             from .pane import ConservationPane
 
@@ -981,7 +982,53 @@ class ConservationPlugin(Plugin):
         raise NotReady(t("Questa uscita è in arrivo in questa versione del plugin.",
                          "This output is coming in this version of the plugin."))
 
-    _do_ifc = _do_compare = _coming
+    _do_compare = _coming
+
+    def _ifc_done(self, out: dict) -> None:
+        from .texts import plural
+
+        walls = plural(out["hosts"], ("parete", "pareti"), ("wall", "walls"))
+        feats = plural(out["features"], ("elemento", "elementi"), ("feature", "features"))
+        lines = [str(out["path"]), t(f"{walls} con {feats}", f"{walls} with {feats}")]
+        lines += out.get("warnings") or []
+        self._message("information", t("IFC 4.3:", "IFC 4.3:") + "\n" + "\n".join(lines))
+
+    def _do_ifc(self) -> None:
+        """*IFC 4.3*: the campaigns of the elevation chosen, the thickness of the stand-in wall, the file."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import ifc43, records
+        from .outputs import _stem, _context
+
+        chunk, entry, c = self._need_campaign()
+        if entry.get("kind") == "section":
+            raise records.NotReady(t(f"IFC: {ifc43.SECTION[0]}: i suoi elementi vanno nei GeoPackage e nel DXF.",
+                                     f"IFC: {ifc43.SECTION[1]}: its features go to the GeoPackages and the DXF."))
+        found = records.campaigns(chunk, entry["id"])
+        default = str(records.campaign_folder(chunk, entry["id"], c["id"]) / f"{_stem(_context(chunk, c['id']))}.ifc")
+        v = self._ask(t("IFC 4.3 della campagna", "IFC 4.3 of the campaign"), [
+            Field("campaigns", t("Campagne", "Campaigns"), [c["id"]],
+                  choices=[(x["id"], f"{x['name']} ({x['date']})") for x in found], kind="checklist"),
+            Field("thickness", t("Spessore della parete di appoggio (m)", "Thickness of the host wall (m)"), 0.5,
+                  minimum=0.01, maximum=10.0, decimals=2,
+                  tip=t("Senza un muro del plugin murature, gli elementi aderiscono a una lastra di questo spessore "
+                        "dietro la faccia.", "Without a wall of the masonry plugin, the features adhere to a slab "
+                        "this thick behind the face.")),
+            Field("path", t("File", "File"), default, kind="file_save", filter="IFC (*.ifc)")],
+            intro=t("Gli elementi della campagna come IfcSurfaceFeature (IFC 4.3) aderenti al muro; niente "
+                    "ortofoto né texture.", "The campaign's features as IfcSurfaceFeature (IFC 4.3) adhering to "
+                    "the wall; no orthophoto or texture."))
+        if v is None:
+            return
+        cids = [x for x in (v["campaigns"] or []) if x] or [c["id"]]
+        path = Path(v["path"] or default)
+        if path.suffix.lower() != ".ifc":
+            path = path.with_suffix(".ifc")
+        thickness = float(v["thickness"] or 0.5)
+        doc = getattr(chunk, "document", None)
+        site = (doc.meta.get("sito") if doc is not None else None) or None
+        self.context.run(t("Conservazione: IFC 4.3", "Conservation: IFC 4.3"),
+                         lambda _p: ifc43.export(chunk, cids, path, thickness, site=site), self._ifc_done)
 
     def _output_folder(self, chunk, entry: dict, c: dict, title: str):
         """The folder of an output: the campaign's by default, or the one the user chooses; None when cancelled."""
@@ -1186,9 +1233,24 @@ class ConservationPlugin(Plugin):
         out = outputs.plate(chunk, cid, path.parent, stem=path.stem, formats=("pdf",))
         return out.get("pdf") or out.get("png")
 
+    def _export_ifc(self, chunk, path, progress=None):
+        """*File > Esporta > Conservazione (IFC 4.3)*: the campaigns of the elevation chosen in the pane, else every
+        campaign of the chunk on a face (sections left out), the stand-in walls 0.5 m thick."""
+        from . import ifc43, records
+
+        eid = self.pane.elevation_id() if self.pane is not None else None
+        found = records.campaigns(chunk, eid) if eid else []
+        if not found:
+            faces = {e["id"] for e in self._elevations(chunk) if e.get("kind") != "section"}
+            found = [c for c in records.campaigns(chunk) if c["elevation"] in faces] or records.campaigns(chunk)
+        if not found:
+            raise records.NotReady(t("Nessuna campagna di conservazione in questo chunk.",
+                                     "No conservation campaign in this chunk."))
+        return ifc43.export(chunk, [c["id"] for c in found], path)["path"]
+
     # ------------------------------------------------------------------ command line
     def command(self, *args) -> int:
-        """``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|legend PROJECT ...``
+        """``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|ifc|legend PROJECT ...``
         (:mod:`.cli`)."""
         from . import cli
 

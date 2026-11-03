@@ -1,6 +1,7 @@
-"""``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|legend PROJECT ...``: the plugin's steps
-from the command line, the same functions as the pane's. Common options: ``--chunk LABEL``, ``--elevation ID|NAME``,
-``--campaign ID|NAME`` (default: the only elevation, the latest campaign of the elevation). Geometry in ``(u, v)``
+"""``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|ifc|legend PROJECT ...``: the plugin's
+steps from the command line, the same functions as the pane's. Common options: ``--chunk LABEL``, ``--elevation
+ID|NAME``, ``--campaign ID|NAME`` (default: the only elevation, the latest campaign of the elevation; ``ifc`` takes
+``--campaign`` more than once, by default every campaign of the elevation, or of the chunk). Geometry in ``(u, v)``
 metres of the elevation, from WKT (text or a file holding it) or a GeoPackage table. What is missing is printed as one
 line and the exit code is 1 (2 for an unknown chunk)."""
 from __future__ import annotations
@@ -10,9 +11,9 @@ from pathlib import Path
 
 from . import records
 from .records import NotReady
-from .texts import num, t
+from .texts import num, plural, t
 
-COMMANDS = ("list", "campaign", "map", "detect", "plate", "export", "pyarchinit", "legend")
+COMMANDS = ("list", "campaign", "map", "detect", "plate", "export", "pyarchinit", "ifc", "legend")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -64,6 +65,14 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--sito", help="the site (default: the project's)")
     s.add_argument("--words", help="the four words of CC 0-3, separated by commas")
     s.add_argument("--config", help="PyArchInit's config.cfg (default: PyArchInit's own)")
+    s = sub.add_parser("ifc", help="IFC 4.3: the features as IfcSurfaceFeature adhering to the wall")
+    s.add_argument("project", help="the .ppg file")
+    s.add_argument("--chunk", help="the label of the chunk (default: the active one)")
+    s.add_argument("--elevation", help="the elevation: its id or name (default: every elevation with campaigns)")
+    s.add_argument("--campaign", action="append", default=[],
+                   help="a campaign: its id or name, more than once (default: those of the elevation)")
+    s.add_argument("--out", required=True, help="the .ifc file")
+    s.add_argument("--thickness", type=float, default=0.5, help="of the stand-in host wall, metres (default 0.5)")
     s = sub.add_parser("legend", parents=[common], help="the legend of the project; --set changes a term")
     s.add_argument("--set", action="append", default=[], help="CODE=#rrggbb[:hatch]")
     s.add_argument("--qml", help="a folder: the QGIS styles of the four tables")
@@ -298,6 +307,31 @@ def _pyarchinit(doc, chunk, a) -> int:
     return 0
 
 
+def _ifc(doc, chunk, a) -> int:
+    from . import ifc43
+
+    if a.campaign:
+        cids = []
+        for key in a.campaign:
+            found = [c for c in records.campaigns(chunk) if key in (c["id"], c["name"]) and
+                     (not a.elevation or _elevation(chunk, a.elevation)["id"] == c["elevation"])]
+            if not found:
+                raise NotReady(t(f"Nessuna campagna {key!r}.", f"No campaign {key!r}."))
+            cids += [c["id"] for c in found]
+    elif a.elevation:
+        cids = [c["id"] for c in records.campaigns(chunk, _elevation(chunk, a.elevation)["id"])]
+    else:
+        cids = [c["id"] for c in records.campaigns(chunk)]
+    if not cids:
+        raise NotReady(t("Nessuna campagna da esportare.", "No campaign to export."))
+    out = ifc43.export(chunk, cids, a.out, a.thickness)
+    print(f"{out['path']}: {plural(out['hosts'], ('parete', 'pareti'), ('wall', 'walls'))}, "
+          f"{plural(out['features'], ('elemento', 'elementi'), ('feature', 'features'))}")
+    for line in out["warnings"]:
+        print(f"  {line}")
+    return 0
+
+
 def _legend(doc, chunk, a) -> int:
     from . import outputs, texts
     from .vocabulary import legend, load, set_legend
@@ -328,7 +362,7 @@ def _legend(doc, chunk, a) -> int:
 
 
 HANDLERS = {"list": _list, "campaign": _campaign_cmd, "map": _map, "detect": _detect, "plate": _plate,
-            "export": _export, "pyarchinit": _pyarchinit, "legend": _legend}
+            "export": _export, "pyarchinit": _pyarchinit, "ifc": _ifc, "legend": _legend}
 
 
 def run(args) -> int:

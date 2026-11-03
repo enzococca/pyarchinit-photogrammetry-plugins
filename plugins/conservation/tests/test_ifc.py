@@ -196,3 +196,78 @@ def test_one_rule_for_the_suite():
     assert ifc43.stable_global_id(0, "w1", "e1") == masonry_ifc.stable_global_id(0, "w1", "e1")
     assert ifc43.stable_global_id(0, "w1", "e1") != ifc43.stable_global_id(0, "w1", "e2")
     assert len(ifc43.stable_global_id("x")) == 22
+
+
+def test_the_ifc_from_the_pane(tmp_path, monkeypatch):
+    """*IFC 4.3* in the pane: the dialog (the campaigns of the elevation, the thickness, the file), the export in the
+    background, the line said; the exporter of *File > Esporta*."""
+    pytest.importorskip("PySide6")
+    from test_plugin import _window
+
+    from ppg_conservation import ConservationPlugin
+    from pyarchinit_photogrammetry.plugins import Context
+
+    w, doc, ch, entry, errors, infos = _window(tmp_path, monkeypatch)
+    _d, _c, _e, c, feats = campaign(tmp_path / "copy")  # the same records, put into the window's chunk
+    ch.meta["conservation"] = _c.meta["conservation"]
+    plugin = ConservationPlugin()
+    try:
+        plugin.activate(Context("conservation", tmp_path / "plugin", window=w))
+        said, asked, answers = [], [], {}
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: said.append(text))
+
+        def answer(title, fields, intro="", photos=None, **_k):
+            asked.append((title, intro, {f.name: f for f in fields}))
+            values = {f.name: f.default for f in fields if f.kind != "heading"}
+            values.update(answers)
+            return values
+
+        monkeypatch.setattr(plugin, "_ask", answer)
+        plugin.refresh_pane()
+        assert plugin.pane.campaign_id() == c["id"]
+        answers.update(path=str(tmp_path / "out" / "campagna"), thickness=0.3)
+        plugin._requested("ifc")
+        w.runner.wait()
+        title, intro, fields = asked[-1]
+        assert title == "IFC 4.3 della campagna" and "IfcSurfaceFeature" in intro
+        assert fields["campaigns"].kind == "checklist" and fields["campaigns"].default == [c["id"]]
+        assert [v for v, _l in fields["campaigns"].choices] == [c["id"]] and fields["thickness"].default == 0.5
+        assert fields["path"].default.endswith(".ifc")
+        path = tmp_path / "out" / "campagna.ifc"
+        assert "IFC 4.3:" in said[-1] and str(path) in said[-1] and "1 parete con 7 elementi" in said[-1]
+        rb = ifc43.read_back(path)
+        d = _uv(ch, entry, rb["hosts"][0]["vertices"])[:, 2]
+        assert abs(d.min() + 0.3) < 1e-3 and len(rb["features"]) == 7
+        # cancelled: nothing more
+        monkeypatch.setattr(plugin, "_ask", lambda *a, **k: None)
+        n = len(said)
+        plugin._requested("ifc")
+        assert len(said) == n
+        # File > Esporta > Conservazione (IFC 4.3)
+        out = plugin._export_ifc(ch, tmp_path / "esportato.ifc")
+        assert out == tmp_path / "esportato.ifc" and len(ifc43.read_back(out)["features"]) == 7
+        assert not errors, errors
+        plugin.deactivate()
+        plugin.context.release()
+    finally:
+        w.setWindowModified(False)
+        w.close()
+
+
+def test_the_ifc_from_the_command_line(tmp_path, capsys):
+    from ppg_conservation import cli
+
+    doc, ch, entry, c, feats = campaign(tmp_path)
+    out = tmp_path / "c.ifc"
+    assert cli.run(["ifc", str(doc.path), "--campaign", c["name"], "--out", str(out), "--thickness", "0.25"]) == 0
+    printed = capsys.readouterr().out
+    assert f"{out}: 1 parete, 7 elementi" in printed
+    rb = ifc43.read_back(out)
+    assert abs(_uv(ch, entry, rb["hosts"][0]["vertices"])[:, 2].min() + 0.25) < 1e-3
+    # by the elevation, every campaign of it
+    assert cli.run(["ifc", str(doc.path), "--elevation", entry["name"], "--out", str(tmp_path / "e.ifc")]) == 0
+    assert len(ifc43.read_back(tmp_path / "e.ifc")["features"]) == 7
+    # a campaign that is not there: one line, code 1
+    assert cli.run(["ifc", str(doc.path), "--campaign", "nessuna", "--out", str(tmp_path / "x.ifc")]) == 1
+    assert "Nessuna campagna 'nessuna'" in capsys.readouterr().out
+    assert "ifc" in cli.COMMANDS
