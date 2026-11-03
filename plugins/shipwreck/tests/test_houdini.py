@@ -159,6 +159,18 @@ def test_the_strakes_read_back_as_planks(tmp_path):
     assert again["planks"] == 10 and again["replaced"] == 10
     records = timbers.timbers_of(ch)
     assert len(records) == 11 and sum(r["kind"] == "frame" for r in records) == 1
+    planks = [r for r in records if r["kind"] == "plank"]
+    assert all(r["status"] == "reconstructed:imported" and not timbers.is_measured(r) for r in planks)
+    for r in planks:  # a project of 0.2.0: no status, the import note in either language
+        old_record = {k: v for k, v in r.items() if k != "status"}
+        assert timbers.status_of(old_record) == "reconstructed:imported"
+        assert timbers.status_of({**old_record, "notes": houdini.NOTE[1].format("x.obj")}) == "reconstructed:imported"
+    assert timbers.status_title("reconstructed:imported") == "ricostruito: importato dal Clinker Boat Tool"
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    for r in planks:  # an imported plank named like a section strake blocks nothing
+        r["name"] = "fascia " + r["name"].split("_")[-1]
+    assert clinker.to_catalogue(ch) == 10
 
 
 def _write(path, text):

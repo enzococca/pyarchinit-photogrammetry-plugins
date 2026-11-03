@@ -157,14 +157,15 @@ def test_old_catalogue_records_read_as_before(tmp_path):
     assert [timbers.is_measured(r) for r in old] == [False, False, True]
     rows = timbers.measure(ch)
     assert [r["status"] for r in rows] == ["reconstructed:sections", "reconstructed:sections", "measured"]
-    assert [r["chunk"] for r in rows] == ["", "", ""] and [r["loose"] for r in rows] == [0, 0, 0]
+    assert [r["chunk"] for r in rows] == [None, None, None] and [r["loose"] for r in rows] == [0, 0, 0]
     out = timbers.export_csv(ch, tmp_path / "legni.csv")
     header = out.read_text(encoding="utf-8").splitlines()[0].split(",")
     assert {"status", "chunk", "loose"} <= set(header)
     assert timbers.timbers_of(ch) == old
     assert timbers.status_title("reconstructed:sections") == "ipotesi dalle sezioni"
     assert set(timbers.STATUS) == {"measured", "reconstructed:given", "reconstructed:sections", "reconstructed:mirror",
-                                   "reconstructed:extension", "reconstructed:spacing", "reconstructed:fairing"}
+                                   "reconstructed:extension", "reconstructed:spacing", "reconstructed:fairing",
+                                   "reconstructed:imported"}
 
 
 def test_add_keeps_the_new_fields_and_refuses_unknown_ones(tmp_path):
@@ -179,3 +180,102 @@ def test_add_keeps_the_new_fields_and_refuses_unknown_ones(tmp_path):
         timbers.add(ch, "frame", "port", "F2", g, colour="red")
     with pytest.raises(NotReady):
         timbers.add(ch, "frame", "port", "F2", g, status="guessed")
+
+
+def test_a_frame_changed_after_the_proposals_refuses_them(hull):
+    """Proposals read, then the bow moved to the other end: accepting or rejecting them, or tracing on the old relief,
+    would put the timber at its mirror image: refused, nothing written."""
+    ch, frame = hull
+    item = _items(ch, "frame")[0]
+    ship.set_frame(ch, frame.other_bow())
+    before = copy.deepcopy(ship.state(ch).get("timbers", []))
+    items = copy.deepcopy(ship.state(ch)["proposals"])
+    for call in (lambda: tracing.accept(ch, [item["id"]]), lambda: tracing.reject(ch, [item["id"]]),
+                 lambda: tracing.add_traced(ch, "frame", "auto", "F", [[4.0, 0.2], [4.0, 0.9]], "line")):
+        with pytest.raises(NotReady):
+            call()
+    assert ship.state(ch).get("timbers", []) == before and ship.state(ch)["proposals"] == items
+    ship.set_frame(ch, frame)
+    relief_entry = ship.state(ch).pop("relief")  # a relief removed in the program: the proposals' own key decides
+    ship.set_frame(ch, frame.other_bow())
+    with pytest.raises(NotReady):
+        tracing.accept(ch, [item["id"]])
+    ship.state(ch)["relief"] = relief_entry
+    ship.set_frame(ch, frame)
+    assert tracing.accept(ch, [item["id"]])
+
+
+def test_ship_xy_follows_a_frame_changed_after_tracing(hull):
+    """``geometry`` is the record; ``ship_xy`` a cache of the frame it was traced in: after the bow moves, the helper
+    gives the plan of the new frame (y the other way round), and the proposals, the visible parts and the renaming
+    read it."""
+    ch, frame = hull
+    plank = next(i for i in _items(ch, "plank") if i["name"].endswith("B3"))
+    fr = _items(ch, "frame")[2]
+    a, b = tracing.accept(ch, [plank["id"], fr["id"]])
+    assert a["frame_key"] == relief.frame_key(frame)
+    other = frame.other_bow()
+    ship.set_frame(ch, other)
+    xy = tracing.ship_xy_of(ch, a)
+    assert np.abs(xy - _ship(other, a)).max() < 1e-9
+    assert np.abs(xy[:, 1] + np.asarray(plank["ship_xy"])[:, 1]).max() < 1e-9  # y the other way round
+    assert a["frame_key"] == relief.frame_key(other) and np.abs(np.asarray(a["ship_xy"]) - xy).max() < 1e-12
+    assert tracing.update_visible(ch) == 1
+    vis = shapely.MultiPolygon([shapely.Polygon(r) for r in a["visible_xy"] if shapely.LinearRing(r).is_ccw])
+    assert vis.within(shapely.Polygon(xy).buffer(1e-6))
+    relief.build(ch, cell=0.005)
+    again = proposals.build(ch)
+    for item, rec in ((plank, a), (fr, b)):
+        assert not any(i["kind"] == item["kind"] and shapely.Polygon(i["ship_xy"]).intersection(
+            shapely.Polygon(tracing.ship_xy_of(ch, rec))).area > 0.5 * shapely.Polygon(i["ship_xy"]).area
+            for i in again["items"])
+
+
+def test_ceiling_lies_over_the_frames(hull):
+    """Seen from inside the ceiling lies over the frames: it is not cut by them; the planking is."""
+    ch, _frame = hull
+    plank = next(i for i in _items(ch, "plank") if i["name"].endswith("B2"))
+    cutters = _items(ch, "frame")
+    records = tracing.accept(ch, [plank["id"]] + [i["id"] for i in cutters])
+    ceiling = tracing.add_traced(ch, "ceiling", "auto", "C1", relief.uv_of_ship(plank["ship_xy"], _frame.sign), "polygon")
+    assert tracing.update_visible(ch) == 1
+    assert "visible_xy" not in ceiling and "visible_xy" in records[0]
+
+
+def test_section_name_blocked_only_by_a_traced_strake_and_correct_drops_the_hypothesis(hull):
+    ch, frame = hull
+    point = timbers.add(ch, "fastening", "port", "fascia B2", timbers.geometry("point", [[0.0, 0.0]]), notes="a mano")
+    assert timbers.is_measured(point)
+    assert clinker._name_blocked(timbers.timbers_of(ch), "B2") is False
+    plank = next(i for i in _items(ch, "plank") if i["name"].endswith("B3"))
+    rec = tracing.accept(ch, [plank["id"]])[0]
+    assert clinker._name_blocked(timbers.timbers_of(ch), "B3") is True
+    hyp = timbers.add(ch, "plank", "port", "fascia B4", copy.deepcopy(rec["geometry"]),
+                      notes=clinker.CATALOGUE_NOTES[0], status="reconstructed:sections")
+    fixed = tracing.correct(ch, hyp["id"], relief.uv_of_ship(np.asarray(rec["ship_xy"]) + [0.0, 0.01], frame.sign))
+    assert fixed["status"] == "measured" and fixed["notes"] == "" and not clinker._is_hypothesis(fixed)
+
+
+def test_accept_refuses_twice_the_same_id_and_rename_is_one_to_one(hull, tmp_path):
+    ch, _frame = hull
+    frames = sorted(_items(ch, "frame"), key=lambda i: np.mean(np.asarray(i["ship_xy"])[:, 0]))
+    with pytest.raises(NotReady):
+        tracing.accept(ch, [frames[0]["id"], frames[0]["id"], frames[1]["id"]], names=["A", "A2", "B"])
+    tracing.accept(ch, [i["id"] for i in frames])
+    x = float(np.mean(np.asarray(frames[3]["ship_xy"])[:, 0]))
+    hand = tracing.add_traced(ch, "frame", "port", "H", [[x - 0.17, -0.3], [x - 0.17, -0.9]], "line")
+    table = tmp_path / "t.csv"
+    table.write_text(f"nome;x\nH1;{x - 0.17:.3f}\nH2;{x:.3f}\n".replace(".", ","), encoding="utf-8")
+    assert tracing.rename_frames(ch, table) == (2, 0)
+    names = {r["id"]: r["name"] for r in timbers.timbers_of(ch)}
+    assert names[hand["id"]] == "H1"
+    assert sum(1 for n in names.values() if n == "H2") == 1
+
+
+def test_loose_keeps_the_kind_to_go_back(hull):
+    ch, _frame = hull
+    rec = tracing.accept(ch, [_items(ch, "frame")[0]["id"]])[0]
+    tracing.loose(ch, [rec["id"]])
+    assert rec["kind"] == "other" and rec["loose"] is True
+    tracing.loose(ch, [rec["id"]], flag=False)
+    assert rec["kind"] == "frame" and rec["loose"] is False

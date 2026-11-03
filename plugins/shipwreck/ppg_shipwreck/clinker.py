@@ -686,6 +686,16 @@ def _is_hypothesis(record: dict) -> bool:
     return record["kind"] == "plank" and record.get("notes") in CATALOGUE_NOTES and record.get("status") != "measured"
 
 
+def _name_blocked(records, code: str) -> bool:
+    """Whether the strake ``code`` (B3) is held by a measured strake: a ``plank`` POLYGON named ``fascia B3`` or
+    ``strake B3`` traced on the relief (a point or a line of that name, a note on a fastening, blocks nothing)."""
+    from . import timbers
+
+    names = {f"fascia {code}", f"strake {code}"}
+    return any(r["kind"] == "plank" and r["geometry"]["type"] == "polygon" and r["name"] in names and
+               timbers.is_measured(r) for r in records)
+
+
 def _off_catalogue(chunk) -> int:
     """The records an earlier strake model wrote into the timber catalogue (:func:`_is_hypothesis`) taken away: they
     no longer follow the lands just found. Returns how many."""
@@ -1402,15 +1412,14 @@ def to_catalogue(chunk) -> int:
     hypothesis note, in either language: ``CATALOGUE_NOTES``; ``["catalogue"]`` lists the ids written, for the
     record only, as ids are reused), so the strakes of an earlier model with more lands leave no orphans. The strakes are those of ``["strakes"]``, their outlines from the same boundaries.
     The records are written with the status ``reconstructed:sections`` (a hypothesis layer); a name held by a measured
-    record (a strake traced on the relief) is skipped: the traced strake is the record, never replaced. Returns how
-    many."""
+    plank polygon (a strake traced on the relief, :func:`_name_blocked`) is skipped: the traced strake is the record,
+    never replaced. Returns how many."""
     from . import timbers
 
     frame = ship.need_frame(chunk)
     state = _need_strakes(chunk)
     # by the note, never by the ids alone: an id freed by the user is handed out again to a record of theirs
     timbers.remove(chunk, [r["id"] for r in timbers.timbers_of(chunk) if _is_hypothesis(r)])
-    measured = {r["name"] for r in timbers.timbers_of(chunk) if timbers.is_measured(r)}
     written = []
     bounds = {side: _boundaries(state, side) for side in SIDES if any(d["side"] == side for d in state["strakes"])}
     for d in sorted(state["strakes"], key=lambda d: (SIDES.index(d["side"]), d["k"])):
@@ -1418,7 +1427,7 @@ def to_catalogue(chunk) -> int:
         if d["k"] >= len(lines_):
             continue
         lo, hi = _rows_between(_polyline(lines_[d["k"] - 1]), _polyline(lines_[d["k"]]), [st["x"] for st in rows])
-        if len(lo) < 2 or {f"fascia {d['name']}", f"strake {d['name']}"} & measured:  # a traced name, either language
+        if len(lo) < 2 or _name_blocked(timbers.timbers_of(chunk), d["name"]):
             continue
         outline = frame.to_world(np.vstack([lo, hi[::-1]]))[:, :2]
         record = timbers.add(chunk, "plank", d["side"], f"fascia {d['name']}", timbers.geometry("polygon", outline),

@@ -34,10 +34,12 @@ STATUS = {"measured": ("misurato", "measured"),
           "reconstructed:mirror": ("ricostruito: simmetria", "reconstructed: mirror"),
           "reconstructed:extension": ("ricostruito: prolungamento", "reconstructed: extension"),
           "reconstructed:spacing": ("ricostruito: passo delle ordinate", "reconstructed: frame spacing"),
-          "reconstructed:fairing": ("ricostruito: carenatura", "reconstructed: fairing")}
+          "reconstructed:fairing": ("ricostruito: carenatura", "reconstructed: fairing"),
+          "reconstructed:imported": ("ricostruito: importato dal Clinker Boat Tool",
+                                     "reconstructed: imported from the Clinker Boat Tool")}
 """The status of a record: measured on the model, or reconstructed and how (the codes are stored, the titles shown)."""
 EXTRA = ("ship_xy", "visible_xy", "status", "chunk", "loose", "source", "elevation", "thickness_mm", "sources",
-         "corrected")
+         "corrected", "frame_key", "kind_before")
 """The fields :func:`add` keeps beside the 0.2.0 ones."""
 SAMPLE = 0.02  # metres between the points read along a timber
 MAX_SAMPLES = 2000
@@ -58,13 +60,20 @@ def status_title(code: str) -> str:
 
 def status_of(record: dict) -> str:
     """The status code of a record; a record of 0.2.0 has none: ``reconstructed:sections`` when its notes are those of
-    the strake model of the sections (:data:`clinker.CATALOGUE_NOTES`), else ``measured``."""
+    the strake model of the sections (:data:`clinker.CATALOGUE_NOTES`), ``reconstructed:imported`` when they are the
+    note of a plank imported from the Clinker Boat Tool (:data:`houdini.NOTE`, either language), else ``measured``."""
     from .clinker import CATALOGUE_NOTES
+    from .houdini import NOTE
 
     code = record.get("status")
     if code:
         return code
-    return "reconstructed:sections" if record.get("notes") in CATALOGUE_NOTES else "measured"
+    notes = str(record.get("notes") or "")
+    if notes in CATALOGUE_NOTES:
+        return "reconstructed:sections"
+    if any(notes.startswith(n.split("{}")[0]) for n in NOTE):
+        return "reconstructed:imported"
+    return "measured"
 
 
 def is_measured(record: dict) -> bool:
@@ -237,8 +246,8 @@ def measure(chunk, datum: float | None = None, progress=None) -> list[dict]:
         s, kind = _samples(r["geometry"], frame)
         z = surface.at(s) if surface is not None else np.full(len(s), np.nan)
         ok = np.isfinite(z)
-        row = {k: r.get(k, "") for k in ("id", "kind", "side", "name", "station", "notes", "chunk")}
-        row["status"], row["loose"] = status_of(r), int(bool(r.get("loose")))
+        row = {k: r.get(k, "") for k in ("id", "kind", "side", "name", "station", "notes")}
+        row["status"], row["chunk"], row["loose"] = status_of(r), r.get("chunk"), int(bool(r.get("loose")))
         row["warning"] = _side_warning(r["side"], float(s[:, 1].mean()))
         row.update(x=float(s[:, 0].mean()), y=float(s[:, 1].mean()), length=None, width=None, z_min=None, z_max=None,
                    z_min_water=None, z_max_water=None)
@@ -345,7 +354,7 @@ def export_gpkg(chunk, path, datum: float | None = None) -> Path:
 
     rows = {r["id"]: r for r in measure(chunk, datum)}
     columns = {c: ("REAL" if c in ("x", "y", "length", "width", "z_min", "z_max", "z_min_water", "z_max_water") else
-                   "INTEGER" if c == "loose" else "TEXT") for c in COLUMNS}
+                   "INTEGER" if c in ("loose", "chunk") else "TEXT") for c in COLUMNS}
     makers = {"line": ("LINESTRING", shapely.LineString), "polygon": ("POLYGON", shapely.Polygon),
               "point": ("POINT", lambda xy: shapely.Point(xy[0]))}
     records = timbers_of(chunk)

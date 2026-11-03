@@ -5,7 +5,10 @@ strakes, which run under the frames, get their visible parts; a timber found out
 
 Every record written here is ``measured`` (:data:`timbers.STATUS`), with its ``geometry`` in the chunk's coordinates
 (through the ship frame) and ``ship_xy`` in the ship plan, the key of the ``chunk``, the relief's ``elevation`` entry
-and, for an accepted proposal, its ``source``. Only ``chunk.meta["shipwreck"]`` changes: the chunk's transform, model
+and, for an accepted proposal, its ``source``. ``geometry`` is the record; ``ship_xy`` (and ``visible_xy``) a cache in
+the plan of the frame whose key (:func:`relief.frame_key`) is ``frame_key``: read it through :func:`ship_xy_of`, which
+recomputes it when the frame changed. Nothing is read or traced in the plan of a frame that is no longer the chunk's:
+the proposals carry the frame they were read in, the relief its own. Only ``chunk.meta["shipwreck"]`` changes: the chunk's transform, model
 and products never; a record is never touched unless asked (a correction keeps its id; a new reading of the proposals
 never proposes over it)."""
 from __future__ import annotations
@@ -19,7 +22,7 @@ from .texts import t
 
 GEOMETRY_TYPES = ("line", "polygon", "point")
 CUTTERS = ("frame", "keelson", "stringer")  # the timbers lying over the planking
-CUT = ("plank", "ceiling")  # the timbers whose visible parts they cut
+CUT = ("plank",)  # the timbers whose visible parts they cut (seen from inside the ceiling lies over the frames)
 FALLBACK_SPACE = 0.5  # metres: the frame space taken with fewer than two frames on a side
 
 
@@ -36,11 +39,14 @@ def _items(chunk, ids) -> tuple[dict, list[dict]]:
     prop = _proposals(chunk)
     by_id = {i["id"]: i for i in prop["items"]}
     ids = list(ids)
+    twice = sorted({i for i in ids if ids.count(i) > 1})
+    if twice:
+        raise ship.NotReady(t(f"Proposte ripetute: {', '.join(twice)}.", f"Proposals given twice: {', '.join(twice)}."))
     missing = [i for i in ids if i not in by_id]
     if missing:
         raise ship.NotReady(t(f"Proposte non trovate (già accettate o scartate?): {', '.join(missing)}.",
                               f"Proposals not found (already accepted or rejected?): {', '.join(missing)}."))
-    return prop, [by_id[i] for i in dict.fromkeys(ids)]
+    return prop, [by_id[i] for i in ids]
 
 
 def _shape(xy, geometry_type: str):
@@ -76,6 +82,19 @@ def _need_fresh_relief(chunk) -> None:
                               "The relief of the hull is of another ship frame or another model: build it again."))
 
 
+def _need_current_proposals(chunk, prop: dict, frame: ship.Frame) -> None:
+    """Proposals read in another ship frame (the bow moved, the keel traced again) are in another plan: accepting
+    them would put each timber at its image in the new frame (the mirror, with the bow moved): refused, as on a stale
+    relief."""
+    _need_fresh_relief(chunk)
+    read_in = prop.get("frame")
+    if read_in is not None and relief.frame_key(ship.Frame.from_dict(read_in)) != relief.frame_key(frame):
+        raise ship.NotReady(t("Le proposte sono state lette in un altro sistema della nave: ricostruisci il rilievo "
+                              "dello scafo e leggi di nuovo le proposte.",
+                              "The proposals were read in another ship frame: build the relief of the hull again and "
+                              "read the proposals again."))
+
+
 def _name_of(item: dict, names, k: int) -> str:
     if names is None:
         return item["name"]
@@ -93,12 +112,13 @@ def accept(chunk, ids, names=None) -> list[dict]:
     items leave the proposals. Returns the records."""
     frame = ship.need_frame(chunk)
     prop, items = _items(chunk, ids)
-    elevation = _elevation(chunk)
+    _need_current_proposals(chunk, prop, frame)
+    elevation, key = _elevation(chunk), relief.frame_key(frame)
     out = []
     for k, item in enumerate(items):
         gtype = _geometry_type(item)
         extra = {"ship_xy": [[float(x), float(y)] for x, y in item["ship_xy"]], "status": "measured",
-                 "chunk": chunk.key, "source": item["id"], "elevation": elevation}
+                 "chunk": chunk.key, "source": item["id"], "elevation": elevation, "frame_key": key}
         if item.get("step_mm") is not None and item["kind"] in ("seam", "plank"):
             extra["thickness_mm"] = float(item["step_mm"])
         out.append(timbers.add(chunk, item["kind"], item["side"], _name_of(item, names, k),
@@ -112,6 +132,7 @@ def reject(chunk, ids) -> int:
     """The proposals ``ids`` rejected: their geometries (ship plan, WKT) go to ``rejected``, which a new reading never
     proposes again, and they leave the proposals. Returns how many."""
     prop, items = _items(chunk, ids)
+    _need_current_proposals(chunk, prop, ship.need_frame(chunk))
     rejected = prop.setdefault("rejected", [])
     for item in items:
         rejected.append(_shape(item["ship_xy"], _geometry_type(item)).wkt)
@@ -145,7 +166,8 @@ def add_traced(chunk, kind: str, side: str, name: str, uv, geometry_type: str) -
     _need_fresh_relief(chunk)
     xy = _ship_of(uv, frame, geometry_type)
     return timbers.add(chunk, kind, _side(side, xy), name, timbers.geometry(geometry_type, _world(frame, xy)),
-                       ship_xy=xy.tolist(), status="measured", chunk=chunk.key, elevation=_elevation(chunk))
+                       ship_xy=xy.tolist(), status="measured", chunk=chunk.key, elevation=_elevation(chunk),
+                       frame_key=relief.frame_key(frame))
 
 
 def _record(chunk, tid: str) -> dict:
@@ -157,15 +179,18 @@ def _record(chunk, tid: str) -> dict:
 
 def correct(chunk, tid: str, uv) -> dict:
     """The record ``tid`` traced again on the relief (``uv`` as in :func:`add_traced`, its geometry's type kept): same
-    id, name, kind and side, new ``geometry`` and ``ship_xy``, ``corrected`` True, ``status`` measured. The visible
-    parts of the strakes follow when they were computed."""
+    id, name, kind and side, new ``geometry`` and ``ship_xy``, ``corrected`` True, ``status`` measured (a hypothesis
+    traced again on the model becomes a measure: its hypothesis or import note goes). The visible parts of the
+    strakes follow when they were computed."""
     frame = ship.need_frame(chunk)
     _need_fresh_relief(chunk)
     record = _record(chunk, tid)
     gtype = record["geometry"]["type"]
     xy = _ship_of(uv, frame, gtype)
+    if not timbers.is_measured(record):
+        record["notes"] = ""
     record.update(geometry=timbers.geometry(gtype, _world(frame, xy)), ship_xy=xy.tolist(), corrected=True,
-                  status="measured", elevation=_elevation(chunk))
+                  status="measured", elevation=_elevation(chunk), frame_key=relief.frame_key(frame))
     record.setdefault("chunk", chunk.key)
     record.pop("visible_xy", None)
     if any("visible_xy" in r for r in ship.state(chunk).get("timbers", [])):
@@ -173,12 +198,22 @@ def correct(chunk, tid: str, uv) -> dict:
     return record
 
 
-def _ship_xy(record: dict, frame: ship.Frame) -> np.ndarray:
-    """A record's geometry in the ship plan: its ``ship_xy``, else its ``geometry`` through the frame (0.2.0)."""
-    if record.get("ship_xy") is not None:
+def ship_xy_of(chunk, record: dict, frame: ship.Frame | None = None) -> np.ndarray:
+    """A record's geometry in the plan of the chunk's ship frame (``frame``: that frame, when the caller has it):
+    its ``ship_xy`` when cached in this frame (``frame_key``), else its ``geometry`` (the chunk's coordinates, the
+    record proper) through the frame. A cache of another frame is refreshed in the record (``ship_xy``,
+    ``frame_key``; its ``visible_xy``, in the old plan, dropped); a record without a cache (0.2.0, a hand record) is
+    left as it is."""
+    frame = frame or ship.need_frame(chunk)
+    key = relief.frame_key(frame)
+    if record.get("ship_xy") is not None and record.get("frame_key") == key:
         return np.asarray(record["ship_xy"], float).reshape(-1, 2)
     w = np.asarray(record["geometry"]["xy"], float).reshape(-1, 2)
-    return frame.to_ship(np.column_stack([w, np.zeros(len(w))]))[:, :2]
+    xy = frame.to_ship(np.column_stack([w, np.zeros(len(w))]))[:, :2]
+    if record.get("ship_xy") is not None:
+        record["ship_xy"], record["frame_key"] = xy.tolist(), key
+        record.pop("visible_xy", None)
+    return xy
 
 
 def _names_table(path) -> list[dict]:
@@ -199,23 +234,27 @@ def _names_table(path) -> list[dict]:
 
 def rename_frames(chunk, path) -> tuple[int, int]:
     """The frames of the catalogue named from a table ``nome, x`` (``name, x``; ``;``, tab or comma, a decimal comma
-    with ``;`` or tabs, as :func:`ship.rows_of`): each frame takes the name of the row whose x is nearest its own (the
-    mean x of its geometry in the ship plan) when within half the median frame space (:func:`proposals.frame_space`;
-    :data:`FALLBACK_SPACE` with fewer than two frames on a side). Returns (frames renamed, rows matching no frame)."""
+    with ``;`` or tabs, as :func:`ship.rows_of`): rows and frames paired one to one on each side, the closest pairs
+    first (the mean x of a frame's geometry in the ship plan, :func:`ship_xy_of`), within half the median frame space
+    (:func:`proposals.frame_space`; :data:`FALLBACK_SPACE` with fewer than two frames on a side). A row names one frame
+    per side (the port and starboard pieces of one frame share it; a frame on the centre takes both sides). Returns
+    (frames renamed, rows matching no frame)."""
     frame = ship.need_frame(chunk)
     rows = _names_table(path)
     frames = [r for r in ship.state(chunk).get("timbers", []) if r["kind"] == "frame"]
-    xs = [float(_ship_xy(r, frame)[:, 0].mean()) for r in frames]
+    xs = [float(ship_xy_of(chunk, r, frame)[:, 0].mean()) for r in frames]
     space = proposals.frame_space([{"x": x, "side": r["side"]} for r, x in zip(frames, xs)]) or FALLBACK_SPACE
-    table = np.array([row["x"] for row in rows], float)
-    used, renamed = set(), 0
-    for record, x in zip(frames, xs):
-        k = int(np.argmin(np.abs(table - x)))
-        if abs(table[k] - x) <= space / 2.0:
-            record["name"] = rows[k]["name"]
-            used.add(k)
-            renamed += 1
-    return renamed, len(rows) - len(used)
+    pairs = sorted((abs(row["x"] - x), k, j) for k, row in enumerate(rows) for j, x in enumerate(xs)
+                   if abs(row["x"] - x) <= space / 2.0)
+    named, sides_of_row = set(), {}
+    for _d, k, j in pairs:
+        sides = {"port", "starboard"} if frames[j]["side"] == "centre" else {frames[j]["side"]}
+        if j in named or sides & sides_of_row.get(k, set()):
+            continue
+        frames[j]["name"] = rows[k]["name"]
+        named.add(j)
+        sides_of_row.setdefault(k, set()).update(sides)
+    return len(named), len(rows) - len(sides_of_row)
 
 
 def _rings(geom) -> list:
@@ -233,9 +272,10 @@ def _rings(geom) -> list:
 
 
 def update_visible(chunk) -> int:
-    """``visible_xy`` of every plank and ceiling with a polygon: its polygon in the ship plan minus the polygons of the
-    frames, keelsons and stringers (the strakes are traced under them, their footprints included): a list of rings
-    in the ship plan (:func:`_rings`). Returns how many records were given their visible parts."""
+    """``visible_xy`` of every plank with a polygon: its polygon in the ship plan minus the polygons of the frames,
+    keelsons and stringers (the strakes are traced under them, their footprints included; the ceiling lies over the
+    frames and is not cut): a list of rings in the ship plan (:func:`_rings`). Returns how many records were given
+    their visible parts."""
     import shapely
 
     frame = ship.need_frame(chunk)
@@ -243,14 +283,14 @@ def update_visible(chunk) -> int:
     cutters = []
     for r in records:
         if r["kind"] in CUTTERS and r["geometry"]["type"] == "polygon":
-            poly = shapely.Polygon(_ship_xy(r, frame))
+            poly = shapely.Polygon(ship_xy_of(chunk, r, frame))
             cutters.append(poly if poly.is_valid else poly.buffer(0))
     over = shapely.union_all(cutters) if cutters else None
     count = 0
     for r in records:
         if r["kind"] not in CUT or r["geometry"]["type"] != "polygon":
             continue
-        poly = shapely.Polygon(_ship_xy(r, frame))
+        poly = shapely.Polygon(ship_xy_of(chunk, r, frame))
         if not poly.is_valid:
             poly = poly.buffer(0)
         r["visible_xy"] = _rings(poly.difference(over) if over is not None else poly)
@@ -259,8 +299,8 @@ def update_visible(chunk) -> int:
 
 
 def loose(chunk, ids, flag: bool = True) -> int:
-    """The records ``ids`` flagged as loose timbers found out of place (``kind`` other, ``loose`` True), or the flag
-    taken off (``flag`` False: the kind stays). Returns how many."""
+    """The records ``ids`` flagged as loose timbers found out of place (``kind`` other, ``loose`` True; the kind they
+    had kept in ``kind_before``), or the flag taken off (``flag`` False: the kind they had back). Returns how many."""
     wanted = set(ids)
     missing = wanted - {r["id"] for r in ship.state(chunk).get("timbers", [])}
     if missing:
@@ -269,9 +309,12 @@ def loose(chunk, ids, flag: bool = True) -> int:
     count = 0
     for r in ship.state(chunk).get("timbers", []):
         if r["id"] in wanted:
-            if flag:
+            if flag and r["kind"] != "other":
+                r["kind_before"] = r["kind"]
                 r["kind"] = "other"
                 r.pop("visible_xy", None)
+            elif not flag and r.get("kind_before"):
+                r["kind"] = r.pop("kind_before")
             r["loose"] = bool(flag)
             count += 1
     return count

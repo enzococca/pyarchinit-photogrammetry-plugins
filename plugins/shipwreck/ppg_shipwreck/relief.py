@@ -130,6 +130,11 @@ def _frame_key(d: dict | None):
             float(d.get("x0", 0.0))]
 
 
+def frame_key(frame: ship.Frame | None):
+    """The key of a ship frame :func:`is_stale` compares (start, end, bow, datum, x0): kept with what is read in it."""
+    return _frame_key(None if frame is None else frame.to_dict())
+
+
 def _model_key(chunk) -> dict | None:
     path = chunk.product_path("model")
     if path is None or not Path(path).exists():

@@ -836,19 +836,47 @@ def _geometry(xy, line: bool):
     return shapely.Polygon(xy) if len(xy) >= 3 else shapely.LineString(xy)
 
 
-def _taken(chunk, frame: ship.Frame) -> list:
-    """The geometries no proposal may cover again: the accepted records (``ship_xy``, else their geometry in the
-    chunk's coordinates through the frame) and the rejected ones."""
+def _rejected_now(previous: dict, frame: ship.Frame) -> list[str]:
+    """The rejected geometries (ship plan of the reading they were rejected in, ``previous["frame"]``) in the plan of
+    ``frame``: through the world when the frame changed since (the bow moved, the keel traced again)."""
     import shapely
+
+    rejected = list(previous.get("rejected", []))
+    old = previous.get("frame")
+    if not rejected or old is None or relief.frame_key(ship.Frame.from_dict(old)) == relief.frame_key(frame):
+        return rejected
+    before = ship.Frame.from_dict(old)
+
+    def move(xy):
+        xy = np.asarray(xy, float).reshape(-1, 2)
+        w = before.to_world(np.column_stack([xy, np.zeros(len(xy))]))
+        return frame.to_ship(w)[:, :2]
+
+    out = []
+    for text in rejected:
+        try:
+            out.append(shapely.transform(shapely.from_wkt(text), move).wkt)
+        except Exception:  # noqa: BLE001 - a broken entry is kept as it was
+            out.append(text)
+    return out
+
+
+def _taken(chunk, frame: ship.Frame) -> list:
+    """The geometries no proposal may cover again: the MEASURED records (their plan through
+    :func:`tracing.ship_xy_of`: the cached ``ship_xy`` when of this frame, else the chunk's ``geometry`` through it; a
+    hypothesis - the strakes of the sections, planks imported from the Clinker Boat Tool - blocks nothing) and the
+    rejected ones."""
+    import shapely
+
+    from . import tracing
 
     out = []
     for r in timbers.timbers_of(chunk):
-        xy = r.get("ship_xy")
         geom = r.get("geometry") or {}
-        if xy is None and geom.get("xy"):
-            w = np.asarray(geom["xy"], float)
-            xy = frame.to_ship(np.column_stack([w, np.zeros(len(w))]))[:, :2]
-        if xy is None or geom.get("type") == "point" or len(xy) < 2:
+        if not timbers.is_measured(r) or not geom.get("xy") or geom.get("type") == "point":
+            continue
+        xy = tracing.ship_xy_of(chunk, r, frame)
+        if len(xy) < 2:
             continue
         out.append(_geometry(xy, geom.get("type") == "line" or len(xy) < 3))
     for text in (ship.state(chunk).get("proposals") or {}).get("rejected", []):
@@ -909,10 +937,12 @@ def _name_frames(frames: list[dict], bow_x: float) -> None:
 
 def build(chunk, params=None, progress=None) -> dict:
     """Read the proposals on the relief of the hull: ``state["proposals"] = {"items": [...], "rejected": [WKT],
-    "params", "built", "next"}``, each item ``{"id": "P1", "kind", "side", "name", "ship_xy", "score", "step_mm",
-    "room"}``. An item covering an accepted record or a rejected geometry (:func:`_covered`) is not proposed; the
-    catalogue's records and the rejected list are never changed; the ids go on from the previous reading. Returns
-    the proposals."""
+    "params", "built", "next", "frame"}`` (``frame``: the ship frame read in, the plan of the items and of the
+    rejected geometries), each item ``{"id": "P1", "kind", "side", "name", "ship_xy", "score", "step_mm", "room"}``.
+    An item covering a measured record or a rejected geometry (:func:`_covered`) is not proposed; the catalogue's
+    records are never changed (only the cache of their plan, :func:`tracing.ship_xy_of`) and the rejected geometries
+    only moved into the plan of a frame changed since; the ids go on from the previous reading. Returns the
+    proposals."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
@@ -962,9 +992,11 @@ def build(chunk, params=None, progress=None) -> dict:
         items.append({"kind": "plank", "side": b["side"], "name": b["name"], "ship_xy": b["ship_xy"],
                       "score": float(min(scores)) if scores else 0.0,
                       "step_mm": float(np.median(steps)) if steps else None, "room": None})
-    taken = _taken(chunk, frame)
     st = ship.state(chunk)
     previous = st.get("proposals") or {}
+    if previous:
+        previous["rejected"] = _rejected_now(previous, frame)
+    taken = _taken(chunk, frame)
     n = int(previous.get("next", 1))
     kept = []
     for item in items:
@@ -973,7 +1005,8 @@ def build(chunk, params=None, progress=None) -> dict:
         kept.append({"id": f"P{n}", **item})
         n += 1
     st["proposals"] = {"items": kept, "rejected": list(previous.get("rejected", [])), "params": p,
-                       "built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "next": n}
+                       "built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "next": n,
+                       "frame": frame.to_dict()}
     progress(1.0, summary(chunk))
     return st["proposals"]
 
