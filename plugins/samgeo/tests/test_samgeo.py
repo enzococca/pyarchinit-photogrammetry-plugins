@@ -708,7 +708,7 @@ def test_no_two_proposals_overlap():
     assert sorted(round(m["geometry"].area, 2) for m in merged) == [0.8, 1.0]
 
 
-def test_the_resolution_follows_the_size_of_the_objects(tmp_path):
+def test_the_resolution_follows_the_size_of_the_objects(tmp_path, fake):
     doc, ch = samples.project(tmp_path / "p")  # the raster is at 5 mm/px
     assert segment.plan(ch.orthomosaic_path).resolution == 0.01  # automatic: 1 cm/px
     assert segment.plan(ch.orthomosaic_path, object_size=0.16).resolution == pytest.approx(0.005)  # 16 cm / 32 px
