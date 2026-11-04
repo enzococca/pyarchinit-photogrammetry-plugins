@@ -26,7 +26,8 @@ eastings, northings and rotation are the ship frame's); GlobalIds stable across 
 The reconstruction of :mod:`reconstruct` (0.4.0) goes in with ``reconstruction=True`` (the default): after the
 catalogue's timbers (and the typed keel) every reconstruction record with a solid (its name and :data:`RIC`, its own
 status: ``ricostruito: simmetria`` ...), then the faired hull ``carenatura_ric`` (kind ``hull``, an open surface, an
-``IfcMember`` with ``ObjectType`` "carenatura (ipotesi)"), all translucent like every hypothesis; GlobalIds stable from
+``IfcMember`` with ``ObjectType`` "carenatura (ipotesi)", a face set not ``Closed``, no volume in its Pset), all
+translucent like every hypothesis; GlobalIds stable from
 the record's id ("carenatura" for the faired hull). ``reconstruction=False`` writes what 0.3.0 wrote.
 
 Only the files asked for are written (and the OBJ's ``.mtl`` beside it): the records, the chunk's transform, model and
@@ -434,6 +435,16 @@ def write_tables(chunk, folder) -> dict:
 
 
 # ----------------------------------------------------------------------------- IFC
+def _closed(faces) -> bool:
+    """Whether a mesh is closed: every edge shared by exactly two faces (the faired hull is an open surface)."""
+    f = np.asarray(faces, np.int64)
+    if not len(f):
+        return False
+    edges = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    _unique, counts = np.unique(edges, axis=0, return_counts=True)
+    return bool((counts == 2).all())
+
+
 def _pset(chunk, e: dict, row: dict | None) -> dict:
     row = row or {}
     rec = e["record"] or {}
@@ -449,6 +460,9 @@ def _pset(chunk, e: dict, row: dict | None) -> dict:
              "Thickness": float(e["thickness_mm"]) / 1000.0 if e["thickness_mm"] else None,
              "HiddenShare": float(e["hidden_share"]), "Sources": _sources(rec) if rec else e.get("sources") or t(
                  "dimensioni date", "given dimensions")}
+    if e["kind"] == "hull":  # an open surface: no volume, no thickness
+        props.pop("Volume")
+        props.pop("Thickness")
     return {k: v for k, v in props.items() if v is not None}
 
 
@@ -555,8 +569,8 @@ def _write_ifc(chunk, path, system, project, site, reconstruction=True) -> dict:
             model.createIfcCartesianPoint((0.0, 0.0, 0.0)), None, None))
         v = e["vertices"] - origin
         pts = model.createIfcCartesianPointList3D(np.asarray(v, float).tolist())
-        faces = model.createIfcTriangulatedFaceSet(pts, None, True, (np.asarray(e["faces"], np.int64) + 1).tolist(),
-                                                   None)
+        faces = model.createIfcTriangulatedFaceSet(pts, None, _closed(e["faces"]),
+                                                   (np.asarray(e["faces"], np.int64) + 1).tolist(), None)
         rep = model.createIfcShapeRepresentation(body, "Body", "Tessellation", [faces])
         ifcopenshell.api.geometry.assign_representation(model, product=el, representation=rep)
         style = styles.get(e["material"])

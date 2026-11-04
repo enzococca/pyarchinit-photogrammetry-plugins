@@ -356,7 +356,10 @@ def test_the_reconstruction_translucent_in_the_3d_files(rebuilt, tmp_path):
     assert e.GlobalId == models3d.stable_global_id(ch.key, "shipwreck", mirrored["id"])
     e, pset = psets["carenatura"]
     assert e.is_a("IfcMember") and e.ObjectType == "carenatura (ipotesi)"
-    assert pset["Status"] == "ricostruito: carenatura"
+    assert pset["Status"] == "ricostruito: carenatura" and "Volume" not in pset and "Thickness" not in pset
+    closed = {e.Name: e.Representation.Representations[0].Items[0].Closed for e in elements}
+    assert closed["carenatura_ric"] is False  # an open surface, never a solid
+    assert closed[next(i["name"] for i in added if i["id"] == mirrored["id"])] is True
     assert len({e.GlobalId for e in elements}) == len(elements)
     again = models3d.write_ifc(ch, tmp_path / "w.ifc", system="world")
     other = ifcopenshell.open(str(again["path"]))

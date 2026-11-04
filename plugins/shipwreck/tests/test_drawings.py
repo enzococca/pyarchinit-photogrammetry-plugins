@@ -924,28 +924,40 @@ def test_the_reconstruction_hatched_and_lighter_on_the_wreck_plan(rebuilt, tmp_p
     statuses = {r["status"] for r in records}
     assert statuses == {"reconstructed:mirror", "reconstructed:extension", "reconstructed:spacing"}
     sign = ship.need_frame(ch).sign
-    for r in records:  # every reconstruction record a hatched, lighter fill on its own layer
+    hatches = {"reconstructed:mirror": "////", "reconstructed:extension": "\\\\\\\\", "reconstructed:spacing": "xxxx"}
+    assert drawings.STATUS_HATCHES == hatches
+    for r in records:  # every reconstruction record a fill hatched as its status, lighter, on its own layer
         layer = "RICOSTRUZIONE_" + r["kind"].upper()
         assert layer in ("RICOSTRUZIONE_PLANK", "RICOSTRUZIONE_FRAME") or r["kind"] not in ("plank", "frame")
         poly = shapely.Polygon(np.asarray(r["ship_xy"]) * [1.0, sign]).buffer(0)
-        mine = [i for i, (lay, ring, _c, hatch, dashed) in enumerate(d.fills) if lay == layer and hatch == drawings.HATCH
-                and not dashed and shapely.Polygon(ring).buffer(0).symmetric_difference(poly).area < 1e-3 * poly.area]
+        mine = [i for i, (lay, ring, _c, hatch, dashed) in enumerate(d.fills) if lay == layer
+                and hatch == hatches[r["status"]] and not dashed
+                and shapely.Polygon(ring).buffer(0).symmetric_difference(poly).area < 1e-3 * poly.area]
         assert mine, r["name"]
         assert all(i in d.faint for i in mine)
     assert not any(lay.startswith("LEGNI_") for i, (lay, *_rest) in enumerate(d.fills) if i in d.faint)
-    # the faired hull: its plan hatched on RICOSTRUZIONE_HULL, the area of the loft's plan
-    hull = _filled(d, "RICOSTRUZIONE_HULL", hatched=True)
-    assert hull.area == pytest.approx(reconstruct.state(ch)["loft"]["area"], rel=0.02)
-    # a legend entry per how present, nothing for the others
+    # the faired hull: its plan a dashed outline only (no fill, no hatch) on RICOSTRUZIONE_HULL, smoothed
+    rings = [(ring, hatch, dashed) for lay, ring, _c, hatch, dashed in d.fills if lay == "RICOSTRUZIONE_HULL"]
+    assert rings and all(dashed and not hatch for _r, hatch, dashed in rings)
+    hull = shapely.union_all([shapely.Polygon(r) for r, _h, _d in rings if shapely.LinearRing(r).is_ccw])
+    assert hull.area == pytest.approx(reconstruct.state(ch)["loft"]["area"], rel=0.05)
+    assert sum(len(r) for r, _h, _d in rings) < 400  # smoothed: no saw-tooth along the cells
+    # a legend entry per how present, its swatch as on the sheet, nothing for the others
+    legend = {text: hatch for text, _c, hatch in d.legend}
     texts = [text for text, _c, _h in d.legend]
     for status in ("reconstructed:mirror", "reconstructed:extension", "reconstructed:spacing", "reconstructed:fairing"):
         assert texts.count(timbers.status_title(status)) == 1, status
+        assert legend[timbers.status_title(status)] == hatches.get(status, drawings.DASH_SWATCH)
     assert timbers.status_title("reconstructed:imported") not in " ".join(texts)
-    # both ends open: "aperto" on the keel line at the first and last stations
+    # both ends open: "carenatura aperta" on the keel line just past the first and last stations
     stations = reconstruct.state(ch)["loft"]["stations"]
-    open_at = sorted(x for x, y, text, _c in d.labels if text == "aperto")
-    assert open_at == pytest.approx([min(stations), max(stations)]) and all(
-        y == 0.0 for _x, y, text, _c in d.labels if text == "aperto")
+    open_at = sorted(x for x, y, text, _c in d.labels if text == "carenatura aperta")
+    assert len(open_at) == 2 and open_at[0] < min(stations) - 0.05 and open_at[1] > max(stations) + 0.05
+    assert all(y == 0.0 for _x, y, text, _c in d.labels if text == "carenatura aperta")
+    # one note on the hatches, naming the three of the reconstruction
+    hatch_notes = [n for n in d.notes if "////" in n]
+    assert len(hatch_notes) == 1 and "\\\\\\\\" in hatch_notes[0] and "xxxx" in hatch_notes[0]
+    assert not any(n.startswith("Ricostruzione (ipotesi): campitura") for n in d.notes)
     totals = reconstruct.state(ch)["table"]["totals"]
     said = f"misurato {num(totals['measured']['area'], 2)} m², ricostruito {num(totals['reconstructed']['area'], 2)} m² (ipotesi)"
     assert any(said in n for n in d.notes), d.notes
@@ -953,8 +965,12 @@ def test_the_reconstruction_hatched_and_lighter_on_the_wreck_plan(rebuilt, tmp_p
     assert not any("dai chunk" in n for n in d.notes)  # one chunk
     path = drawings.write_dxf(d, tmp_path / "wreck.dxf")
     msp = ezdxf.readfile(path).modelspace()
-    hatched = {e.dxf.layer for e in msp if e.dxftype() == "HATCH" and e.dxf.pattern_name == "ANSI31"}
-    assert {"RICOSTRUZIONE_PLANK", "RICOSTRUZIONE_FRAME", "RICOSTRUZIONE_HULL"} <= hatched
+    patterns = {(e.dxf.layer, e.dxf.pattern_name) for e in msp if e.dxftype() == "HATCH"}
+    for status, pattern in (("reconstructed:mirror", "ANSI31"), ("reconstructed:extension", "ANSI32"),
+                            ("reconstructed:spacing", "ANSI37")):
+        layers = {"RICOSTRUZIONE_" + r["kind"].upper() for r in records if r["status"] == status}
+        assert {(lay, pattern) for lay in layers} <= patterns, status
+    assert not any(lay == "RICOSTRUZIONE_HULL" for lay, _p in patterns)
     assert any(e.dxf.linetype == "DASHED" for e in msp if e.dxftype() == "LWPOLYLINE"
                and e.dxf.layer == "RICOSTRUZIONE_HULL")
     drawings.figure(d)  # the sheet draws
@@ -972,9 +988,12 @@ def test_the_loft_past_the_last_station_and_the_chunks_said(rebuilt):
     reconstruct.set_ends(ch, stem=-0.3, stern=12.3)
     reconstruct.loft(ch)
     d = drawings.make(ch, "wreck_plan")
-    assert not any(text == "aperto" for _x, _y, text, _c in d.labels)
+    from ppg_shipwreck import models3d
+
+    assert not any(text == "carenatura aperta" for _x, _y, text, _c in d.labels)
     stations = reconstruct.state(ch)["loft"]["stations"]
-    beyond = [ring for lay, ring, _c, _h, dashed in d.fills if lay == "RICOSTRUZIONE_HULL" and dashed]
+    lighter = models3d.lighter(models3d.lighter(models3d.HULL_COLOUR))
+    beyond = [ring for lay, ring, c, _h, dashed in d.fills if lay == "RICOSTRUZIONE_HULL" and dashed and c == lighter]
     assert beyond and all(ring[:, 0].min() >= max(stations) - 1e-6 or ring[:, 0].max() <= min(stations) + 1e-6
                           for ring in beyond)
     assert any("oltre l'ultima stazione la carenatura è un'ipotesi della sola larghezza" in n.lower() for n in d.notes)
@@ -1005,7 +1024,10 @@ def test_the_loft_on_the_body_plan_and_the_extended_sheer_on_the_profile(rebuilt
         best = min(abs(z - np.interp(abs(y), sec[sec[:, 0] >= 0][:, 0], sec[sec[:, 0] >= 0][:, 1]))
                    for sec in map(clinker_section, stations))
         assert best < 0.03, (y, z, best)
-    assert any("carenatura" in n for n in d.notes)
+    assert not any("niente di ciò che manca è ricostruito" in n for n in d.notes)
+    assert any(n.startswith("Linee di sezione misurate sul modello 3D; a trattini la carenatura (ipotesi)") for n in d.notes)
+    assert any("Senza linea del modello, carenatura (ipotesi): S17, S18." in n for n in d.notes), d.notes
+    assert not any(n.startswith("Senza linea, fuori dal modello") for n in d.notes)
     # the top strakes (T5, B5) are not extended on this hull: no extended upper edge, never a lower strake's
     p = drawings.make(ch, "profile")
     assert not [q for lay, q, _c in p.lines if lay == "RICOSTRUZIONE_HULL"]
