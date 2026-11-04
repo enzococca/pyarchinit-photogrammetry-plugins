@@ -51,7 +51,10 @@ HULL_LAYER = "RICOSTRUZIONE_HULL"  # the faired hull (and the extended upper edg
 FAINT = 0.6  # the fill of a part of the reconstruction: this share of its layer's alpha
 STATUS_HATCHES = {"reconstructed:mirror": "////", "reconstructed:extension": "\\\\\\\\", "reconstructed:spacing": "xxxx"}
 """The hatch of a part of the reconstruction by how it was reconstructed (any other status: :data:`HATCH`)."""
-DXF_PATTERNS = {"////": "ANSI31", "\\\\\\\\": "ANSI32", "xxxx": "ANSI37"}  # the hatches in the DXF
+IMPORTED_HATCH = "----"
+"""The hatch of a plank imported from the Clinker Boat Tool when the reconstruction is drawn (as 0.3.0: :data:`HATCH`
+without it)."""
+DXF_PATTERNS = {"////": "ANSI31", "\\\\\\\\": "ANSI32", "xxxx": "ANSI37", IMPORTED_HATCH: "ANSI33"}  # in the DXF
 DASH_SWATCH = "dashed"  # a legend entry drawn as a dashed outline (the faired hull)
 LOFT_SMOOTH = 0.03  # m: the faired hull's plan closed and opened by this (no saw-tooth along the cells), simplified to a third
 OPEN_OFFSET = 0.15  # m: "carenatura aperta" this far past an open end of the faired hull, on the keel line
@@ -73,12 +76,13 @@ HATCH_NOTE = ("Parti campite a righe oblique (////): ricostruzione (ipotesi), ma
               "Parts hatched with oblique lines (////): reconstruction (hypothesis), never a measure.")
 RECONSTRUCTION_NOTE = ("Parti campite: ricostruzione (ipotesi), mai una misura; righe oblique (////): dimensioni date, "
                        "ipotesi dalle sezioni e simmetria; righe oblique contrarie (\\\\\\\\): prolungamento delle fasce; "
-                       "righe incrociate (xxxx): ordinate al passo misurato. Carenatura: solo il contorno a trattini.",
+                       "righe incrociate (xxxx): ordinate al passo misurato; righe orizzontali (----): tavole importate "
+                       "dal Clinker Boat Tool (Houdini). Carenatura: solo il contorno a trattini.",
                        "Hatched parts: reconstruction (hypothesis), never a measure; oblique lines (////): given "
                        "dimensions, hypothesis from the sections and mirror; opposite oblique lines (\\\\\\\\): extension of "
-                       "the strakes; crossed lines (xxxx): frames at the measured spacing. Faired hull: its dashed outline "
-                       "only.")
-"""The note on the hatches when the reconstruction (0.4.0) is drawn: :data:`HATCH_NOTE` with the three hatches."""
+                       "the strakes; crossed lines (xxxx): frames at the measured spacing; horizontal lines (----): planks imported "
+                       "from the Clinker Boat Tool (Houdini). Faired hull: its dashed outline only.")
+"""The note on the hatches when the reconstruction (0.4.0) is drawn: :data:`HATCH_NOTE` with the four hatches."""
 ACROSS_RATIO = 3.0  # a polygon this many times as long as wide is named along its length
 NAME_AT = {"frame": 0.85, "line": 0.3, "longitudinal": 0.2}  # where along a timber its name goes
 DRAW_ORDER = ("keel", "plank", "ceiling", "frame", "stringer", "keelson", "other", "fastening", "seam")
@@ -798,6 +802,8 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief", reco
         kind, gtype = r["kind"], r["geometry"]["type"]
         base = models3d.KIND_COLOURS.get(kind, models3d.KIND_COLOURS["other"])
         colour, hatch = (base, "") if measured else (models3d.lighter(base), HATCH)
+        if reconstruction and status == "reconstructed:imported":
+            hatch = IMPORTED_HATCH  # its own hatch beside the reconstruction's three
         layer = (MEASURED if measured else RECONSTRUCTED) + kind.upper()
         xy = _ship_xy(chunk, r, frame)
         sheet = xy * [1.0, sign]
@@ -1053,7 +1059,7 @@ def _reconstruction_plan(chunk, frame: ship.Frame, d: Drawing) -> tuple[list, li
         open_ends = entry.get("open_ends") or []
         if open_ends:
             try:
-                _given, names = loft_mod._ends(chunk, frame, lo, hi)
+                _given, names = loft_mod.ends(chunk, frame, lo, hi)
             except ship.NotReady:
                 names = {}
             for side in (-1, 1):
@@ -1130,8 +1136,10 @@ def make(chunk, kind: str, scale: int | None = None, background: str = "relief",
 
 def _hatch_note(d: Drawing) -> None:
     """The note on the hatched parts, when a drawing has any (a reconstruction is never presented as measured):
-    :data:`RECONSTRUCTION_NOTE` when the reconstruction (0.4.0) is drawn on it, else :data:`HATCH_NOTE`."""
-    if d.faint or any(layer == HULL_LAYER for layer, *_rest in d.fills):
+    :data:`RECONSTRUCTION_NOTE` when the reconstruction (0.4.0) is drawn on it (or an imported plank with its own
+    hatch), else :data:`HATCH_NOTE`."""
+    if (d.faint or any(layer == HULL_LAYER for layer, *_rest in d.fills)
+            or any(hatch == IMPORTED_HATCH for _l, _r, _c, hatch, _d in d.fills)):
         d.notes.append(t(*RECONSTRUCTION_NOTE))
     elif any(hatch for _l, _r, _c, hatch, _d in d.fills):
         d.notes.append(t(*HATCH_NOTE))

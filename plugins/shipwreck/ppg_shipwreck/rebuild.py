@@ -41,8 +41,11 @@ from .texts import t
 STEP = 0.10
 SAMPLES = 41
 STATUSES = ("reconstructed:mirror", "reconstructed:extension", "reconstructed:spacing")
+STEPS = ("mirror", "extension", "frames", "loft")  # the steps of a build, in their order
 TABLE_COLUMNS = ("id", "name", "kind", "side", "status", "measured_length", "measured_area", "reconstructed_length",
-                 "reconstructed_area")
+                 "reconstructed_area", "length_kind")
+LENGTH_KINDS = {"3D": ("3D sul modello", "3D on the model"), "pianta": ("in pianta", "in plan")}
+"""How a row's length is measured (``length_kind``): along the record over the model, or in the ship plan."""
 TABLE_FILE = "tabella"
 
 
@@ -245,8 +248,20 @@ def _members(chunk, doc, progress) -> tuple[list[dict] | None, list[dict] | None
     return records, sections, entry
 
 
-def build(chunk, progress=None, doc=None) -> dict:
+def _skip(chunk, status: str | None, key: str) -> None:
+    """A step left out of a build: nothing of its kind is kept (its records and its entry; the files go with
+    :func:`_clean`)."""
+    from . import reconstruct
+
+    if status is not None:
+        reconstruct._replace(chunk, status, [])
+    reconstruct.state(chunk).pop(key, None)
+
+
+def build(chunk, progress=None, doc=None, steps=STEPS) -> dict:
     """The whole reconstruction (see the module): mirror, extension, frames by spacing, loft, the new parts' solids.
+    ``steps``: those of :data:`STEPS` to run; a step left out keeps nothing of its kind (no mirrored record, no
+    extension, no spaced frame, no faired hull), recorded in ``params["steps"]``.
     Returns ``{"mirrored", "extended", "spaced", "loft", "built", "refused", "open_ends", "warnings", "notes",
     "table", "members"}`` (``warnings``: the extension's, the loft's and those of the members - a member of the
     previous build no longer in the project, the merge's - kept in ``members["warnings"]`` too; ``notes``: the
@@ -257,6 +272,10 @@ def build(chunk, progress=None, doc=None) -> dict:
     from . import reconstruct
 
     progress = as_progress(progress)
+    wanted = set(steps)
+    if wanted - set(STEPS):
+        raise ValueError(f"steps: {sorted(wanted - set(STEPS))} unknown (of {', '.join(STEPS)})")
+    steps = [s for s in STEPS if s in wanted]
     frame = ship.need_frame(chunk)
     root = ship.state(chunk)
     before = copy.deepcopy(root.get("reconstruction"))
@@ -269,18 +288,33 @@ def build(chunk, progress=None, doc=None) -> dict:
             reconstruct.state(chunk)["members"] = members
         else:
             reconstruct.state(chunk).pop("members", None)
-        progress(0.05, t("Ricostruzione: simmetria", "Reconstruction: mirror"))
-        mirrored = reconstruct.mirror(chunk, progress.sub(0.05, 0.20), records=records)
-        progress(0.25, t("Ricostruzione: prolungamento delle fasce", "Reconstruction: extension of the strakes"))
-        extended = reconstruct.extend(chunk, progress.sub(0.25, 0.20), records=records)
-        progress(0.45, t("Ricostruzione: ordinate al passo misurato", "Reconstruction: frames at the measured spacing"))
-        spaced = reconstruct.frames_by_spacing(chunk, records=records)
-        progress(0.55, t("Ricostruzione: carenatura", "Reconstruction: fairing"))
-        solid = reconstruct.loft(chunk, STEP, SAMPLES, records=records, sections=sections or None)
+        mirrored = extended = spaced = []
+        solid = None
+        if "mirror" in steps:
+            progress(0.05, t("Ricostruzione: simmetria", "Reconstruction: mirror"))
+            mirrored = reconstruct.mirror(chunk, progress.sub(0.05, 0.20), records=records)
+        else:
+            _skip(chunk, reconstruct.STATUS, "mirror")
+        if "extension" in steps:
+            progress(0.25, t("Ricostruzione: prolungamento delle fasce", "Reconstruction: extension of the strakes"))
+            extended = reconstruct.extend(chunk, progress.sub(0.25, 0.20), records=records)
+        else:
+            _skip(chunk, reconstruct.EXTENSION, "extension")
+        if "frames" in steps:
+            progress(0.45, t("Ricostruzione: ordinate al passo misurato",
+                             "Reconstruction: frames at the measured spacing"))
+            spaced = reconstruct.frames_by_spacing(chunk, records=records)
+        else:
+            _skip(chunk, reconstruct.SPACING, "spacing")
+        if "loft" in steps:
+            progress(0.55, t("Ricostruzione: carenatura", "Reconstruction: fairing"))
+            solid = reconstruct.loft(chunk, STEP, SAMPLES, records=records, sections=sections or None)
+        else:
+            _skip(chunk, None, "loft")
         progress(0.7, t("Ricostruzione: legni in 3D", "Reconstruction: timbers in 3D"))
         built, refused = _new_solids(chunk, frame, progress.sub(0.7, 0.3), records)
         st = reconstruct.state(chunk)
-        new = {"params": {"step": STEP, "samples": SAMPLES},
+        new = {"params": {"step": STEP, "samples": SAMPLES, "steps": steps},
                "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "timbers": [r for r in st.get("timbers", []) if r.get("status") in STATUSES]}
         for key in ("mirror", "extension", "spacing", "loft", "ends", "disagreement", "members"):
@@ -343,7 +377,8 @@ def table(chunk, records=None) -> dict:
     reconstruction, then the faired hull: ``id``, ``name``, ``kind``, ``side``, ``status``, ``measured_length``,
     ``measured_area``, ``reconstructed_length``, ``reconstructed_area`` - a measured record fills the first two, any
     other the last two; length in m, as :func:`timbers.measure` gives it for the catalogue, area in m2 in the ship
-    plan), ``totals`` (``measured`` and ``reconstructed`` sums, per ``kind`` and per ``status``), ``counts`` per
+    plan - and ``length_kind``, how the length was measured: "3D" along a line over the model, "pianta" in the ship
+    plan (a polygon's long side, a record merged from several chunks, the reconstruction), "" without a length), ``totals`` (``measured`` and ``reconstructed`` sums, per ``kind`` and per ``status``), ``counts`` per
     status, ``mirror`` (its pieces, refusals and the disagreements of the two sides). ``records``: the measured
     records (default the catalogue; the merged records of several chunks: a record merged from more than one chunk
     has its length in plan, the catalogue's are measured on the model)."""
@@ -353,18 +388,26 @@ def table(chunk, records=None) -> dict:
     rows = []
     lengths = {m["id"]: m["length"] for m in timbers.measure(chunk)}
 
-    def row(r, status, length, area):
+    model = chunk.product_path("model")
+    on_model = model is not None and Path(model).exists()
+
+    def row(r, status, length, area, how="pianta"):
         measured = status == "measured"
         return {"id": r["id"], "name": r.get("name") or "", "kind": r["kind"], "side": r.get("side") or "",
                 "status": status,
                 "measured_length": _round(length, 4) if measured else None,
                 "measured_area": _round(area, 6) if measured else None,
                 "reconstructed_length": None if measured else _round(length, 4),
-                "reconstructed_area": None if measured else _round(area, 6)}
+                "reconstructed_area": None if measured else _round(area, 6),
+                "length_kind": how if length is not None else ""}
 
     for r in timbers.timbers_of(chunk) if records is None else records:
-        length = _plan_length(chunk, r, frame) if _merged(chunk, r) else lengths.get(r["id"])
-        rows.append(row(r, timbers.status_of(r), length, _area(chunk, r, frame)))
+        if _merged(chunk, r):  # several chunks' parts: its length in plan
+            length, how = _plan_length(chunk, r, frame), "pianta"
+        else:  # as the catalogue measures it: a line along the model, a polygon's long side in plan
+            length = lengths.get(r["id"])
+            how = "3D" if r["geometry"]["type"] == "line" and on_model else "pianta"
+        rows.append(row(r, timbers.status_of(r), length, _area(chunk, r, frame), how))
     for r in reconstruct.records_of(chunk):
         length = (timbers._polygon_sides(r["geometry"], frame)[0] if r["geometry"]["type"] == "polygon" else None)
         rows.append(row(r, r.get("status") or "reconstructed", length, _area(chunk, r, frame)))
@@ -402,18 +445,32 @@ def table(chunk, records=None) -> dict:
     return {"rows": rows, "totals": totals, "counts": counts, "mirror": summary}
 
 
-def write_table(chunk, folder=None) -> dict:
+def _merged_records(chunk, doc=None) -> list[dict] | None:
+    """The records of the reconstruction's chunks merged (:func:`chunks.merged`) when it was made over several, else
+    None (the catalogue)."""
+    from . import chunks, reconstruct
+
+    members = (reconstruct.state(chunk).get("members") or {}).get("chunks") or []
+    doc = doc if doc is not None else getattr(chunk, "document", None)
+    if len(members) < 2 or doc is None:
+        return None
+    found, _refused = chunks.members(doc, chunk)
+    return chunks.merged(doc, chunk, found) if len(found) > 1 else None
+
+
+def write_table(chunk, folder=None, records=None, doc=None) -> dict:
     """:func:`table` as ``tabella.csv`` (codes, as the plugin's other tables) and ``tabella.xlsx`` (titles, through the
     program's :func:`pyarchinit_photogrammetry.io.tables.write_xlsx`; the sheet "misurato e ricostruito", the
-    workbook's title "misurato e ricostruito (ipotesi)") in ``folder`` (default: the reconstruction's). Returns
-    ``{"csv", "xlsx", "rows"}``."""
+    workbook's title "misurato e ricostruito (ipotesi)") in ``folder`` (default: the reconstruction's). ``records``:
+    the measured records (default: the records of the chunks merged when the reconstruction was made over several,
+    so that the table and the files agree; else the catalogue). Returns ``{"csv", "xlsx", "rows"}``."""
     import csv
 
     from pyarchinit_photogrammetry.io.tables import Sheet, write_xlsx
 
     from . import reconstruct
 
-    rows = table(chunk)["rows"]
+    rows = table(chunk, records if records is not None else _merged_records(chunk, doc))["rows"]
     folder = Path(folder) if folder is not None else reconstruct.folder(chunk)
     folder.mkdir(parents=True, exist_ok=True)
     csv_path, xlsx_path = folder / f"{TABLE_FILE}.csv", folder / f"{TABLE_FILE}.xlsx"
@@ -427,15 +484,15 @@ def write_table(chunk, folder=None) -> dict:
     headers = [t("id", "id"), t("nome", "name"), t("tipo", "kind"), t("lato", "side"), t("stato", "status"),
                t("lunghezza misurata (m)", "measured length (m)"), t("area misurata (m²)", "measured area (m²)"),
                t("lunghezza ricostruita (m)", "reconstructed length (m)"),
-               t("area ricostruita (m²)", "reconstructed area (m²)")]
+               t("area ricostruita (m²)", "reconstructed area (m²)"), t("lunghezza misurata", "length measured")]
     titled = [[r["id"], r["name"], timbers.kind_title(r["kind"]) if r["kind"] in timbers.KIND_TITLES
                else t("scafo", "hull"), timbers.side_title(r["side"]) if r["side"] in timbers.SIDE_TITLES else r["side"],
                timbers.status_title(r["status"]), r["measured_length"], r["measured_area"], r["reconstructed_length"],
-               r["reconstructed_area"]] for r in rows]
+               r["reconstructed_area"], t(*LENGTH_KINDS[r["length_kind"]]) if r["length_kind"] else ""] for r in rows]
     tmp = xlsx_path.with_name(f"{TABLE_FILE}.tmp.xlsx")
     try:
         write_xlsx(tmp, {t("misurato e ricostruito", "measured and reconstructed"):
-                         Sheet(headers, titled, [None, None, None, None, None, 3, 4, 3, 4])},
+                         Sheet(headers, titled, [None, None, None, None, None, 3, 4, 3, 4, None])},
                    title=t("misurato e ricostruito (ipotesi)", "measured and reconstructed (hypothesis)"))
         tmp.replace(xlsx_path)
     finally:

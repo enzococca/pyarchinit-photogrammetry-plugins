@@ -1072,3 +1072,34 @@ def test_without_the_reconstruction_the_drawings_of_0_3_0(_rebuilt, tmp_path):
             assert off.faint == set() and not any(lay.endswith("_HULL") for lay, *_r in off.fills + off.lines)
     finally:
         ch.meta[ship.KEY] = copy.deepcopy(after)
+
+
+def test_imported_planks_have_their_own_hatch(rebuilt, tmp_path):
+    """A plank imported from the Clinker Boat Tool: hatched with horizontal lines (----, ANSI33 in the DXF) when the
+    reconstruction is drawn, named in the note on the hatches; as 0.3.0 (////) without it."""
+    import ezdxf
+    import shapely
+
+    from ppg_shipwreck import houdini
+
+    ch = rebuilt
+    plank = next(r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and r["geometry"]["type"] == "polygon")
+    plank["notes"], plank["status"] = houdini.NOTE[0].format("tavole.obj"), "reconstructed:imported"
+    assert timbers.status_of(plank) == "reconstructed:imported"
+    sign = ship.need_frame(ch).sign
+    poly = shapely.Polygon(np.asarray(plank["ship_xy"]) * [1.0, sign]).buffer(0)
+
+    def hatches(d):
+        return {hatch for lay, ring, _c, hatch, dashed in d.fills if lay == "RICOSTRUZIONE_PLANK" and not dashed
+                and shapely.Polygon(ring).buffer(0).intersection(poly).area > 0.5 * poly.area}
+
+    d = drawings.make(ch, "wreck_plan")
+    assert drawings.IMPORTED_HATCH == "----" and hatches(d) == {"----"}
+    note = next(n for n in d.notes if "////" in n)
+    assert "(----)" in note and "Houdini" in note
+    legend = {text: hatch for text, _c, hatch in d.legend}
+    assert legend[f"{timbers.kind_title('plank')} - {timbers.status_title('reconstructed:imported')}"] == "----"
+    path = drawings.write_dxf(d, tmp_path / "wreck_plan.dxf")
+    patterns = {e.dxf.pattern_name for e in ezdxf.readfile(path).modelspace() if e.dxftype() == "HATCH"}
+    assert "ANSI33" in patterns
+    assert hatches(drawings.make(ch, "wreck_plan", reconstruction=False)) == {"////"}

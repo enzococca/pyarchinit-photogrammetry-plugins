@@ -773,7 +773,7 @@ def test_build_the_whole_reconstruction(lost):
     assert {p.name: p.read_bytes() for p in (ship.folder(ch) / solids.FOLDER).glob("*.ply")} == files
     st = reconstruct.state(ch)
     assert {"params", "built", "timbers", "mirror", "extension", "spacing", "loft", "table", "open_ends"} <= set(st)
-    assert st["params"] == {"step": 0.10, "samples": 41}
+    assert st["params"] == {"step": 0.10, "samples": 41, "steps": ["mirror", "extension", "frames", "loft"]}
     assert out["loft"] and out["mirrored"] and out["extended"] and out["spaced"]
     assert out["table"] == st["table"] and set(out["open_ends"]) == {"stem", "stern"}
     records = reconstruct.records_of(ch)

@@ -8,7 +8,8 @@ Plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-ph
 technical drawing of an excavated hull from its 3D model. Where the ship's axis runs, the shape of the hull at each
 frame, a plan, a numbered list of the timbers with their measures, the plan of the wreck with every timber outlined and
 named, and every timber a 3D object. It measures what is there and does not fair a line away from the model; what it
-adds (a keel of given dimensions, the strake model of the sections) is a stated hypothesis, hatched and apart.
+adds (a keel of given dimensions, the strake model of the sections, the reconstruction of what is lost) is a stated
+hypothesis, hatched and apart.
 
 | Step | What it does |
 |---|---|
@@ -20,10 +21,10 @@ adds (a keel of given dimensions, the strake model of the sections) is a stated 
 | **Timbers** | keel, keelson, frames, planks, ceiling, stringers, fastenings: drawn on the raster or from a CSV; length along the timber over the model, width across, heights above a datum, room and space; a table, a layer of the raster view, CSV, XLSX and GeoPackage. |
 | **Strakes (clinker)** | *Find the strakes*: the lands (the steps where a strake laps over the one below) on the raw section of every station and side, from the rabbet out to the sheer, joined into land lines along the hull; stations with another count of lands (a stealer, a drop strake, damage) or whose rabbet or garboard jumps are listed as uncertain; the lines in the drawings and in a layer "Fasce" of the raster view, DXF and GeoPackage with Z. *Strake model*: a strake between two land lines, its width at every station with an uncertainty, length, thickness (the median step) and lap, a mesh per strake (OBJ, PLY in the chunk's coordinates), CSV and XLSX; *Into the catalogue* adds a plank record per strake. *For the Clinker Boat Tool* writes the files for Fröhlich & Nielsen's Houdini asset (Y up); *Planks from Houdini* reads its planks back with their distance from the scan. The lands are measured; the lines and the strake model are a hypothesis, and every file says so. |
 | **Relief and tracing** | *Relief of the hull*: the hull seen from above in the ship frame (an elevation of the program at 5 mm by default, u = x, v = y to the left of x) with its hillshade and local relief model, to draw on. *Propose*: seams, frames, keelson, stringers and strakes read on it, proposals to *Accept*, *Reject*, *Correct* or *Add* by hand (snap included), named from a table, flagged *Loose*; each change a step of Undo. *Keel (dimensions)*: a keel from a given siding and moulding under the keelson, a hypothesis. *3D timbers*: every traced polygon a closed object (a strake with its thickness, a frame or a longitudinal timber a solid from the planking to its top), one PLY each. *Export 3D*: OBJ, GLB or IFC4 (one element per timber with `Pset_PyArchInit_Timber`) in ship or chunk coordinates, with the tables. *Plan of the wreck*: every timber outlined, coloured by kind and named over the hillshade or the orthophoto, the hypotheses hatched; SVG, PDF, PNG, DXF. |
+| **Reconstruction (hypothesis)** | *Stem and stern*: how far the reconstruction may go past the surveyed length. *Reconstruct*: the preserved side mirrored where the other is lost (as the wreck lies; where both are measured, their disagreement listed), the strakes extended along their seams within the surveyed length and to the ends given, the missing frames put back at the measured spacing, the faired hull lofted through the stations' sections where the wreck shows nothing (open at an end not given), over the other chunks of the same wreck too (aligned, or a ship frame from markers of the same names; *Use the ship frame of*); each build a step of Undo. *Table*: measured and reconstructed, timber by timber (CSV, XLSX). *Export 3D* and *Plan with reconstruction*: the reconstruction translucent (`_ric`) and hatched, a hatch per way. |
 
 Limits. A chunk in degrees (WGS 84) is refused: a frame needs metres (*GNSS > System and heights* brings the chunk to a
-projected system; the import from Metashape does it by itself). No hull reconstruction, mirrored sides, lofted surfaces,
-hydrostatics, plank expansion, or merging of several days; the timbers found on the relief are proposals, never
+projected system; the import from Metashape does it by itself). No hydrostatics or plank expansion; the timbers found on the relief are proposals, never
 accepted without you. Picks in the 3D view are not
 offered directly: place two markers there and use *From two markers*. Heights over the model are good to about one edge of
 the mesh.
@@ -52,7 +53,13 @@ over the longitudinals is a doubtful `fascia B?`): correct them by hand. The rel
 from above in the ship frame (undercuts, the underside of a timber, a timber under another, the outer face of the
 planking of a wreck seen from inside) is in neither the proposals nor the solids. Trace every timber touching the one you build in 3D; at 5 mm a 12 m hull (1.9 M cells) takes about 0.75 GB to build in 3D, PLY 160 MB, IFC
 20 s and 290 MB, and a 20 m hull (16 M cells) several GB of memory and an IFC of a few GB taking minutes: build the
-relief at 1 cm for the 3D exports of a long hull (decimation is planned for 0.4.0); a cancelled or stale build is said, and an export warns. Names may crowd where narrow strakes or several stringers end together.
+relief at 1 cm for the 3D exports of a long hull (decimation is planned for a later version); a cancelled or stale build is said, and an export warns. Names may crowd where narrow strakes or several stringers end together.
+
+Limits of the reconstruction. It is a hypothesis built on what is traced: an untraced timber lying on the planking enters
+the sections and the faired hull passes over it; a twisted wreck is mirrored twisted; past the last station the faired
+hull is a hypothesis of the breadth only, its height that of the last section; a seam without land lines is followed for
+at most a metre past its points, then held straight (`uncertain`); with several chunks the frames must carry the field's
+numbers, and only the active chunk's files are written.
 
 The Clinker Boat Tool is a Houdini Digital Asset by Fred Fröhlich and Sigurd Solhaug Nielsen (MIT,
 [10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), described in *From Photogrammetry to Construction
@@ -91,8 +98,13 @@ ppg plugin shipwreck trace reject PROJECT.ppg ID...
 ppg plugin shipwreck trace names PROJECT.ppg --table FILE
 ppg plugin shipwreck keel PROJECT.ppg --siding MM --moulding MM [--from X --to X]   # or --none
 ppg plugin shipwreck solids PROJECT.ppg [--thickness MM]
-ppg plugin shipwreck export3d PROJECT.ppg --out FILE.obj|.glb|.ifc [--world]
-ppg plugin shipwreck plan PROJECT.ppg [--background relief|ortho|none] [--scale N] [--out FOLDER]
+ppg plugin shipwreck export3d PROJECT.ppg --out FILE.obj|.glb|.ifc [--world] [--reconstruction]
+ppg plugin shipwreck plan PROJECT.ppg [--background relief|ortho|none] [--scale N] [--out FOLDER] [--reconstruction]
+ppg plugin shipwreck ends PROJECT.ppg [--stem X] [--stern X]                       # or --none
+ppg plugin shipwreck frame-of PROJECT.ppg CHUNK [--chunk THIS]                     # the ship frame of another chunk
+ppg plugin shipwreck chunks PROJECT.ppg                                            # the chunks of the reconstruction
+ppg plugin shipwreck reconstruct PROJECT.ppg [--no-mirror] [--no-extension] [--no-frames] [--no-loft]
+ppg plugin shipwreck reconstruct table PROJECT.ppg [--out FOLDER]
 ```
 
 A table of timbers has a header: `kind`, `side`, `name`, `station`, `notes` and either `x, y` (a point) or `x1, y1, x2, y2`

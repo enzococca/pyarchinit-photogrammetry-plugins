@@ -203,9 +203,15 @@ def _over_frames(chunk, frame, half: float, records=None) -> bool:
     return bool(votes) and sum(votes) > len(votes) / 2.0
 
 
+def wider_than_keel(width: float, siding: float, cell: float) -> bool:
+    """Whether a ridge on the keel line ``width`` across is wider than the typed keel of ``siding`` could show on a
+    relief of ``cell``: as wide as the siding and one cell, or wider (the keelson over it, not the keel)."""
+    return width >= siding + cell - 1e-9
+
+
 def _is_keel(chunk, frame, xs, halves, keel, untraced, records=None) -> bool:
     """Whether the ridge the untraced stations show is the typed keel itself: a keel typed (:func:`solids.set_keel`),
-    the ridge seen over at least :data:`KEEL_RUN` of the stations, no wider than the siding and two cells, and
+    the ridge seen over at least :data:`KEEL_RUN` of the stations, narrower than the siding and a cell, and
     running under the frames, not over them."""
     typed = ship.state(chunk).get("keel") or {}
     siding = typed.get("siding")
@@ -222,7 +228,7 @@ def _is_keel(chunk, frame, xs, halves, keel, untraced, records=None) -> bool:
 
     cell = float(abs(reconstruct.height_load(chunk)[1].a))
     widths = [_ridge_width(pair, zk) for pair, zk, u in zip(halves, keel, untraced) if u]
-    if any(w > float(siding) + 2 * cell for w in widths):
+    if any(wider_than_keel(w, float(siding), cell) for w in widths):
         return False
     return not _over_frames(chunk, frame, float(siding) / 2.0, records)
 
@@ -246,7 +252,7 @@ def _end_x(e: dict) -> float:
     return float(np.interp(0.0, line[order, 1], line[order, 0]))
 
 
-def _ends(chunk, frame, lo: float, hi: float):
+def ends(chunk, frame, lo: float, hi: float):
     """``{-1: (name, x) | None, +1: ...}``: the end given at the smaller and at the larger x, and the names of the two
     ends (the one given, else the bow's end of the keel line is the stem)."""
     from . import reconstruct
@@ -389,7 +395,7 @@ def loft(chunk, step: float = 0.10, samples: int = 41, records=None, sections=No
     cols = np.unique(np.r_[np.arange(xs_a[0], xs_a[-1], step), xs_a[-1]])
     values = spline(cols)
     values[..., 0] = np.maximum(values[..., 0], 0.0)
-    given, names = _ends(chunk, frame, float(xs_a[0]), float(xs_a[-1]))
+    given, names = ends(chunk, frame, float(xs_a[0]), float(xs_a[-1]))
     open_ends = []
     for side in (-1, 1):
         last = float(cols[0] if side < 0 else cols[-1])

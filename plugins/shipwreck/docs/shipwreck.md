@@ -1,5 +1,5 @@
-<!-- Sections to add to the program's guide docs/plugins/shipwreck.md for version 0.3.0 of the plugin (needs
-pyarchinit-photogrammetry 1.7.1 or later). Suggested place: after "Clinker strakes", before "Command line"; the
+<!-- Sections to add to the program's guide docs/plugins/shipwreck.md for versions 0.3.0 and 0.4.0 of the plugin
+(needs pyarchinit-photogrammetry 1.7.1 or later). Suggested place: after "Clinker strakes", before "Command line"; the
 command lines go into "Command line"; the figures of img/ go beside the guide's images. -->
 
 ## Relief, tracing, 3D timbers and the plan of the wreck
@@ -82,7 +82,7 @@ proposes again what was accepted or rejected. The limits, plainly:
 - strays at the bow may take rank 1;
 - on a real wreck frames lying close together, or with planking between them, are read as one wide item, proposed as
   `ordinata ?` (or *other* when even shorter): correct the outline, or trace the frames by hand with *Add...*; splitting
-  merged frames is planned for version 0.4.0; flat patches of sediment may be proposed as a keelson;
+  merged frames is planned for a later version; flat patches of sediment may be proposed as a keelson;
 - the strakes are bands between the seams read, not the outlines of the planks: where seams are missing they are boxes
   over whatever lies there (sediment, longitudinal timbers); correct or trace them by hand.
 
@@ -134,7 +134,7 @@ Sizes at 5 mm, measured on a 12 m synthetic hull (1.9 million cells): proposals 
 about 20 s and 290 MB. A 20 m hull at 5 mm has about 16 million cells: count on several GB of memory for the proposals
 (about 3.5 GB) and the 3D timbers, an IFC of a few GB taking minutes, and about ten minutes for the relief of a
 photogrammetric model. For the 3D exports of a long hull build the relief at 1 cm (four times fewer cells); the
-decimation of the solids is planned for version 0.4.0.
+decimation of the solids is planned for a later version.
 
 Hypotheses end in `_ric`, lighter and half transparent, with their status in the Pset.
 
@@ -158,6 +158,90 @@ Limits of the drawings: narrow strakes or several stringers ending at one x may 
 keel line is named at its top end; a measured keel record has no box on the profile; the station names of the body plan
 may overlap.
 
+## Reconstruction (hypothesis)
+
+Step 9 of the pane, **Reconstruction (hypothesis)** (version 0.4.0), completes what the wreck has lost. Every part of
+it is a hypothesis built from what was traced and measured: hatched in the drawings, lighter and translucent (`_ric`)
+in the 3D files, a status of its own in the tables; the catalogue of the measured timbers is never changed. It needs
+the relief of the hull and the timbers traced on it (step 8); the faired hull also needs the stations and their
+sections (steps 2 and 3).
+
+| Button | What it does |
+|---|---|
+| *Stem and stern...* | How far the reconstruction may go past the surveyed length: a ship x for the stem, for the stern, or none. |
+| *Reconstruct...* | The mirror, the extension of the strakes, the frames at the measured spacing and the faired hull, each of them optional, in one build. |
+| *Use the ship frame of...* | The ship frame (and the stations) of another chunk of the same wreck; the sections cut again on this model. |
+| *Table...* | What is measured and what is reconstructed, timber by timber: `tabella.csv` and `.xlsx`. |
+| *Export 3D...* | The timbers in 3D with the reconstruction (OBJ, GLB, IFC), and the table beside them. |
+| *Plan with reconstruction...* | The plan of the wreck with the reconstruction hatched. |
+
+Each build, and each change of the stem and the stern, is a step of *Edit > Undo*: undoing a build brings back the
+earlier reconstruction, records and files. The workspace tree shows *Reconstruction (n, hypothesis)*; while the relief
+is shown, the layer *Ricostruzione (ipotesi)* draws the reconstructed timbers hatched and dashed over it.
+
+![The reconstruction of the synthetic hull on the plan of the wreck](img/shipwreck-reconstruction-plan.png)
+
+### What is reconstructed, and its limits
+
+- **Mirror.** A timber of the preserved side is reflected across the keel plane where the other side has neither the
+  model nor a record of its kind: as the wreck lies, so a hull that is twisted or flattened is mirrored twisted. Where
+  both sides are measured nothing is mirrored and their difference is listed (the table of the disagreements of the two
+  sides, per station): a deformed wreck gives disagreements, not mirrored pieces. Pieces smaller than 25 cm², narrower
+  than 5 cm (unless the timber itself is narrow) or lying over the model are not mirrored.
+- **Extension of the strakes.** A strake traced over part of the hull is continued along its two seams: within the
+  surveyed length (the relief of the chunks), and beyond it only to a stem or a stern you give. The seams follow the
+  land lines of the sections (step 7) where there are some, else the bending of the seam's own points for at most a
+  metre, then held straight: those pieces are flagged `uncertain`.
+- **Frames at the measured spacing.** Where the space between two traced frames is more than 1.5 times the median
+  space of their side, the missing frames are put back at that spacing, standing on the hull (from the relief, the
+  mirrored solids or the faired hull) as high as their two neighbours.
+- **Faired hull.** A surface lofted through the stations' sections (a half-section with too few points takes the
+  other side's), kept only where the wreck shows nothing. Past the last station it narrows to the given end on a
+  quadratic from the last station's breadth and slope, its height that of the last section: a hypothesis of the
+  breadth only. With no stem or stern given, that end stays open at the last station (the plan writes *faired hull
+  open*). Untraced timbers lying on the planking enter the sections: trace them (the keelson above all), or the hull
+  is lofted over them.
+- **The keel** typed in step 8 stays a solid of its own; it is never lofted.
+
+### Several chunks of the same wreck
+
+Other campaigns or other parts of the wreck in other chunks feed the reconstruction of the active chunk when they are
+compatible: aligned to it (*Workflow > Align chunks*) with the same ship frame (*Use the ship frame of...* copies it),
+or with a ship frame taken from markers of the same names. Each needs its own relief and its traced timbers; the frames
+must carry the field's numbers (*Names from a table...*). The records of the same kind, side and name are merged in
+the ship plan, the better-measured chunk's outline kept where both surveyed; frames numbered differently are merged by
+place; the heights come from a merged relief, each cell from the best chunk; the faired hull goes through every
+chunk's stations. The chunks left out are listed with the reason (`chunks` on the command line), and the warnings of
+the merge are said after the build. Only the active chunk's files are written.
+
+### The table
+
+`tabella.csv` (codes) and `tabella.xlsx` (titles): one row per measured record, then per reconstructed record, then the
+faired hull, with `id`, `name`, `kind`, `side`, `status`, `measured_length`, `measured_area` (a measured record),
+`reconstructed_length`, `reconstructed_area` (any other), `length_kind`: `3D` for a line measured along the model,
+`pianta` for a length in the ship plan (a polygon's long side, a record merged from several chunks, the
+reconstruction). Areas are in the ship plan. With several chunks the table lists the merged records, as the build and
+the files use them.
+
+### Hatches and 3D files
+
+On the plan, a hatch per way of reconstructing: oblique lines `////` for the mirror (and the given keel and the strakes
+of the sections), opposite oblique lines `\\\\` for the extension, crossed lines `xxxx` for the frames at the spacing,
+horizontal lines `----` for the planks imported from the Clinker Boat Tool; the faired hull is a dashed outline only.
+The DXF has `RICOSTRUZIONE_<KIND>` layers with ANSI31, ANSI32, ANSI37 and ANSI33 hatches and `RICOSTRUZIONE_HULL`. In
+the 3D files every reconstructed object ends in `_ric`, lighter and translucent; in the IFC its status is in the Pset,
+and a mesh that is not closed (the faired hull) is written with `Closed=False`.
+
+![The timbers of the synthetic hull in 3D with the reconstruction (lighter, hatched)](img/shipwreck-reconstruction-3d.png)
+
+On the synthetic hull (the tests' framed clinker hull, port lost aft of midship and both sides over 0.9 m): the
+mirrored strakes' outlines lie within 1.1 mm (median; p95 4.3 mm) of the strakes traced on the whole hull, 99 % within
+1 cm, their faces within 4 mm (p95 8 mm) of its surface; strakes traced over x 2-9 extended to the surveyed ends with
+their edges within 1 mm (p95 3 mm) across and 1 mm (p95 7 mm) in height of the true lands; the four missing frames put
+back where they were; the faired hull within 0.6 mm (p95) of the true section; one build of the whole reconstruction
+1.4 s, its IFC (68 elements, 33 of them `_ric`) 7 s. Two chunks of the same hull (0-7 m and 6-12 m) give one
+reconstruction over the whole surveyed length.
+
 <!-- Lines to add to "Command line": -->
 
 ```bash
@@ -173,4 +257,11 @@ ppg plugin shipwreck solids PROJECT.ppg [--thickness MM]
 ppg plugin shipwreck export3d PROJECT.ppg --out FILE.obj|.glb|.ifc [--world] [--no-tables]
 ppg plugin shipwreck plan PROJECT.ppg [--background relief|ortho|none] [--scale N] [--out FOLDER]
 ppg plugin shipwreck status PROJECT.ppg                                # with the counts of the 3D timbers
+ppg plugin shipwreck ends PROJECT.ppg [--stem X] [--stern X]           # or --none: within the surveyed length only
+ppg plugin shipwreck frame-of PROJECT.ppg CHUNK [--chunk THIS]         # the ship frame of another chunk of the wreck
+ppg plugin shipwreck chunks PROJECT.ppg                                # the chunks feeding the reconstruction, and why not
+ppg plugin shipwreck reconstruct PROJECT.ppg [--no-mirror] [--no-extension] [--no-frames] [--no-loft]
+ppg plugin shipwreck reconstruct table PROJECT.ppg [--out FOLDER]      # tabella.csv and .xlsx
+ppg plugin shipwreck export3d PROJECT.ppg --out FILE.obj|.glb|.ifc --reconstruction
+ppg plugin shipwreck plan PROJECT.ppg --reconstruction [--out FOLDER]
 ```

@@ -1,6 +1,6 @@
 """The *Relitto* pane: the steps of the drawing of a hull, one under the other, each with its buttons and its
 state, the table of the timbers under the catalogue's step, then the clinker strakes, then the relief of the hull and
-the tracing on it. It only says what the user
+the tracing on it, then the reconstruction (a hypothesis). It only says what the user
 asks (``requested``): the plugin does it."""
 from __future__ import annotations
 
@@ -93,7 +93,25 @@ STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
             "The timbers in 3D as OBJ, GLB or IFC, one object per timber, with the tables"),
            ("wreck_plan", ("Pianta del relitto...", "Plan of the wreck..."),
             "Ogni legno contornato, colorato per tipo e nominato sopra il rilievo o l'ortofoto: SVG, PDF, PNG, DXF",
-            "Every timber outlined, coloured by kind and named over the relief or the orthophoto: SVG, PDF, PNG, DXF"))))
+            "Every timber outlined, coloured by kind and named over the relief or the orthophoto: SVG, PDF, PNG, DXF"))),
+         ("reconstruction", ("9. Ricostruzione (ipotesi)", "9. Reconstruction (hypothesis)"),
+          (("rec_ends", ("Prua e poppa...", "Stem and stern..."),
+            "Fin dove le fasce e la carenatura possono andare oltre la lunghezza rilevata (una x della nave)",
+            "How far the strakes and the faired hull may go past the surveyed length (a ship x)"),
+           ("rec_build", ("Ricostruisci...", "Reconstruct..."),
+            "Simmetria, prolungamento delle fasce, ordinate al passo misurato, carenatura: ipotesi, mai misure",
+            "Mirror, extension of the strakes, frames at the measured spacing, faired hull: hypotheses, never measures"),
+           ("rec_frame_of", ("Usa il sistema nave di...", "Use the ship frame of..."),
+            "Il sistema della nave di un altro chunk dello stesso relitto (allineato o con marker degli stessi nomi)",
+            "The ship frame of another chunk of the same wreck (aligned, or with markers of the same names)"),
+           ("rec_table", ("Tabella...", "Table..."), "Misurato e ricostruito, legno per legno: CSV ed Excel",
+            "Measured and reconstructed, timber by timber: CSV and Excel"),
+           ("rec_export", ("Esporta 3D...", "Export 3D..."),
+            "I legni in 3D con la ricostruzione (_ric, trasparente): OBJ, GLB o IFC",
+            "The timbers in 3D with the reconstruction (_ric, translucent): OBJ, GLB or IFC"),
+           ("rec_plan", ("Pianta con ricostruzione...", "Plan with reconstruction..."),
+            "La pianta del relitto con la ricostruzione campita, una campitura per modo",
+            "The plan of the wreck with the reconstruction hatched, a hatch per way"))))
 COLUMNS = (("Id", "Id"), ("Tipo", "Kind"), ("Lato", "Side"), ("Nome", "Name"), ("Stato", "Status"), ("Chunk", "Chunk"),
            ("Sciolto", "Loose"), ("x (m)", "x (m)"), ("Lungh. (m)", "Length (m)"), ("Largh. (m)", "Width (m)"),
            ("z max (m)", "z max (m)"), ("Avviso", "Warning"))
