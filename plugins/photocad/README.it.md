@@ -18,7 +18,9 @@ rasterio, Pillow e shapely sono già nel programma.
 | *... > Vettorializza il DEM...* | Il DEM come ombreggiatura (luce da nord-ovest), con le stesse scelte. |
 | *... > Vettorializza il prospetto mostrato...* | L'ortofoto del prospetto o della sezione mostrata nella vista 2D, nelle sue (u, v); a scelta anche in 3D sulla sua superficie. |
 | *... > Converti in US / USM...* | I poligoni PhotoCAD selezionati nella vista (o un intero layer PhotoCAD) diventano unità stratigrafiche del chunk attivo, sulla pianta o nei disegni del prospetto mostrato. Tipo (US, USM, ...) e un primo numero facoltativo; le polilinee chiuse valgono come poligoni, le linee aperte si saltano e si contano. Una sola voce di *Modifica > Annulla*. |
-| *(automatico)* Pietre | PhotoCAD disegna le pietre come linee aperte: le estremità entro 2 px si uniscono, le linee si nodano e si poligonizzano; le facce sotto i 50 px o soprattutto sul bianco (senza dati) si scartano. Le pietre vanno in `polygons.gpkg` e in un secondo layer **«PhotoCAD: \<nome\> (pietre)»**; *Converti in US / USM* le usa per prime (`--from lines` per i contorni chiusi di PhotoCAD). Di nuovo con altri valori: `ppg plugin photocad polygonize PROGETTO ID --snap-px 3 --min-area-px 80`. |
+| *(automatico)* Pietre | PhotoCAD disegna le pietre come linee aperte: le estremità entro 2 px si uniscono, le linee si nodano e si poligonizzano; le facce sotto i 50 px, le facce sottili (area / perimetro² sotto 0,02: i giunti fra le pietre) e quelle soprattutto
+sul bianco (senza dati) si scartano; le isole bianche sotto metà di una pietra restano dentro (il suo `area_m2` le
+comprende). Le pietre vanno in `polygons.gpkg` e in un secondo layer **«PhotoCAD: \<nome\> (pietre)»**; *Converti in US / USM* le usa per prime (`--from lines` per i contorni chiusi di PhotoCAD). Di nuovo con altri valori: `ppg plugin photocad polygonize PROGETTO ID --snap-px 3 --min-area-px 80`. |
 | *... > Importa come disegni liberi...* | (programma 1.7.2) Gli elementi di una conversione come disegni liberi 3D nel layer *PhotoCAD*: sulla pianta alla quota del DEM, su un prospetto sulla sua superficie. |
 | *... > Recupera una conversione...* | Una conversione già pagata scaricata e georeferenziata di nuovo, senza un nuovo invio: una finita mentre la rete o lo scaricamento si sono interrotti, o annullata quando PhotoCAD aveva già finito. |
 | *... > Esporta una conversione...* / *Rimuovi una conversione...* | Una copia in DXF, GeoPackage o SVG; una conversione tolta dal progetto con i suoi file (le US fatte dai suoi poligoni restano). |
@@ -49,8 +51,12 @@ trovato, in millimetri a una scala naturale (qualunque cosa chieda `units`). Qui
 scarica in mm e si colloca per **registrazione**: la pagina sul riquadro del contenuto dell'immagine (una sola
 scala, proporzioni entro il 2 %), poi spostamento e scala affinati (±24 px, ±3 %) portando le linee sui bordi
 dell'immagine (l'intensità del gradiente sotto di esse, massimizzata fino a un quarantesimo di pixel). Lo scarto (distanza
-mediana delle linee dai bordi dell'immagine, in pixel) resta in `conversion.json`; oltre 2 px, o con meno del 60 % delle
-linee vicino a un bordo, il disegno è rifiutato e non viene messo nulla. Le tessere poi si uniscono: da ciascuna ciò
+mediana delle linee dai bordi dell'immagine, in pixel) resta in `conversion.json` come diagnosi. Il disegno è rifiutato, e non viene messo nulla, quando l'accordo non è un
+picco netto: il punteggio al punto trovato deve essere almeno 1,3 volte la mediana delle collocazioni ±40 px intorno,
+in entrambe le direzioni (un muro a corsi spostato lungo i corsi combacia ancora con i letti di posa); quando il punto
+trovato è al bordo della ricerca (prima si cerca una volta tre volte più lontano); o con uno scarto oltre 2 px. Khutm:
+picco 1,6 lungo i corsi, 2,1 di traverso. `fetch --search-px N` ricolloca gratis una conversione finita con un'altra
+ricerca. Le tessere poi si uniscono: da ciascuna ciò
 che è più vicino al suo centro (le copie nelle sovrapposizioni una volta sola). Su un prospetto ogni vertice può
 andare anche nel mondo, alla profondità letta dal rilievo del prospetto.
 
@@ -61,7 +67,11 @@ File, in `<dati del chunk>/photocad/<id>/`: per tessera `t0/`, `t1/`...: `image.
 senza sistema per un prospetto; `photocad_3d` con la Z per un prospetto in 3D), `drawing_3d.dxf`, `conversion.json`
 (sorgente, tessere con i loro id PhotoCAD, chiavi di idempotenza e registrazioni, data, crediti usati). Ogni invio porta
 una `Idempotency-Key` salvata prima di inviarlo: un invio ripetuto (un 429, una connessione persa, `fetch` dopo un
-arresto) non viene mai addebitato due volte.
+arresto) non viene mai addebitato due volte. Questo si basa sull'idempotenza di PhotoCAD (la sua documentazione: «Use an
+Idempotency-Key per file so a crashed run can be resumed without double-charging»). Una tessera si invia al massimo due
+volte quando l'esito non è noto (la prima e un nuovo invio con la stessa chiave); poi è segnata *sconosciuta* e il
+plugin non la rimanda più: va controllata su photocad.ai. `fetch` di una conversione con tessere non ancora inviate
+chiede prima (`--yes`).
 
 ## Riga di comando
 

@@ -18,7 +18,8 @@ rasterio, Pillow and shapely come with the program.
 | *... > Vettorializza il DEM...* | The DEM rendered as a hillshade (light from the north-west), same choices. |
 | *... > Vettorializza il prospetto mostrato...* | The orthophoto of the elevation or section shown in the 2D view, in its (u, v); optionally also in 3D on its surface. |
 | *... > Converti in US / USM...* | The PhotoCAD polygons selected on the view (or a whole PhotoCAD layer) become stratigraphic units of the active chunk - on the plan, or in the drawings of the elevation shown. Kind (US, USM, ...) and an optional first number; closed polylines count as polygons, open lines are skipped and counted. One entry of *Edit > Undo*. |
-| *(automatic)* Stones | PhotoCAD draws stones as open lines: their ends within 2 px are joined, the lines noded and polygonized; faces under 50 px or mostly on white (no data) are left out. The stones go to `polygons.gpkg` and to a second layer **"PhotoCAD: \<name\> (pietre)"**; *Converti in US / USM* takes them by default (`--from lines` for PhotoCAD's own closed outlines). Again with other values: `ppg plugin photocad polygonize PROJECT ID --snap-px 3 --min-area-px 80`. |
+| *(automatic)* Stones | PhotoCAD draws stones as open lines: their ends within 2 px are joined, the lines noded and polygonized; faces under 50 px, thin faces (area / perimeter² under 0.02: the joints between stones) and faces mostly on white
+(no data) are left out; white islands under half a stone stay inside it (its `area_m2` includes them). The stones go to `polygons.gpkg` and to a second layer **"PhotoCAD: \<name\> (pietre)"**; *Converti in US / USM* takes them by default (`--from lines` for PhotoCAD's own closed outlines). Again with other values: `ppg plugin photocad polygonize PROJECT ID --snap-px 3 --min-area-px 80`. |
 | *... > Importa come disegni liberi...* | (program 1.7.2) The features of a conversion as free 3D drawings in the layer *PhotoCAD*: on the plan at the height of the DEM, on an elevation on its surface. |
 | *... > Recupera una conversione...* | A conversion already paid for downloaded and georeferenced again, without a new upload: one that finished while the network failed or the download broke, or that was cancelled after PhotoCAD had finished. |
 | *... > Esporta una conversione...* / *Rimuovi una conversione...* | A copy as DXF, GeoPackage or SVG; a conversion out of the project with its files (the units made from it stay). |
@@ -48,8 +49,11 @@ millimetres at a natural size (whatever `units` asks). So each tile's drawing is
 **registration**: the page onto the image's content box (one scale, proportions within 2 %), then offset and scale
 refined (+-24 px, +-3 %) by bringing the lines onto the image's edges (the strength of the gradient under them,
 maximised to a fortieth of a pixel). The residual (median distance of the lines from the image's edges, in pixels)
-is kept in `conversion.json`; over 2 px, or under 60 % of the lines near an edge, the drawing is refused and nothing
-is placed. The tiles are then merged: from each tile what is nearer its own centre (the copies in the overlaps once).
+is kept in `conversion.json` as a diagnostic. The drawing is refused, and nothing placed, when the match is not a
+clear peak: the score at the optimum must be at least 1.3 times the median of the placements +-40 px around it, in
+both directions (a coursed wall shifted along its courses still fits its bed joints); when the optimum lies on the
+border of the search (searched once more three times as far first); or with a residual over 2 px. Khutm: peak 1.6
+along the courses, 2.1 across. `fetch --search-px N` places a finished conversion again with another search, free. The tiles are then merged: from each tile what is nearer its own centre (the copies in the overlaps once).
 On an elevation each vertex can also go to the world, at the depth read from the elevation's relief.
 
 Files, in `<chunk data>/photocad/<id>/`: per tile `t0/`, `t1/`...: `image.jpg` (what was sent), `photocad_mm.dxf` (as
@@ -59,7 +63,10 @@ polygons and lines with the PhotoCAD layer, length and area; in the CRS of the c
 elevation; `photocad_3d` with Z for an elevation in 3D), `drawing_3d.dxf`, `conversion.json` (source, tiles with
 their PhotoCAD ids, idempotency keys and registrations, date, credits used). Each upload carries an
 `Idempotency-Key` saved before it is sent: an upload asked again (a 429, a lost connection, `fetch` after a crash)
-never charges twice.
+never charges twice. This relies on PhotoCAD's idempotency (their documentation: "Use an Idempotency-Key per file
+so a crashed run can be resumed without double-charging"). A tile is POSTed at most twice when the outcome is
+unknown (the first time and one resend with the same key); after that it is marked *unknown* and the plugin never
+sends it again: check it on photocad.ai. `fetch` of a conversion with tiles not sent yet asks first (`--yes`).
 
 ## Command line
 

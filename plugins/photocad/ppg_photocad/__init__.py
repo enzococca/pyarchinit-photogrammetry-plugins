@@ -298,10 +298,17 @@ class PhotoCADPlugin(Plugin):
             return
         recs = sorted(recs, key=lambda r: r.get("status", "done") == "done")  # those not done first
         k = dialogs.choice(self._window(), "question", t("Recupera una conversione", "Fetch a conversion"),
-                           t("Quale conversione scaricare di nuovo da PhotoCAD (senza un nuovo invio)?",
-                             "Which conversion to download again from PhotoCAD (no new upload)?"),
+                           t("Quale conversione riprendere da PhotoCAD? Le tessere già inviate si scaricano di nuovo senza addebito.",
+                             "Which conversion to take up again from PhotoCAD? The tiles already sent are downloaded "
+                             "again at no charge."),
                            [project.summary(r) for r in recs])
         if k is None:
+            return
+        todo = project.pending_uploads(recs[k])
+        if todo and dialogs.choice(self._window(), "question", "PhotoCAD", t(
+                "{0} tessere di questa conversione non sono ancora state inviate: saranno inviate ora (una conversione "
+                "ciascuna).", "{0} tiles of this conversion have not been sent yet: they will be sent now (one "
+                "conversion each).").format(todo), [t("Invia", "Send")]) is None:
             return
         key = self._key()
         if key is None:
@@ -388,6 +395,12 @@ class PhotoCADPlugin(Plugin):
                 continue
             kind, coords = attrs["_geom"]
             geom = Polygon(coords) if kind == "Polygon" else LineString(coords)
+            if attrs.get("photocad_layer") == "pietre" and attrs.get("photocad"):  # the stone itself, with its holes
+                rec_s = project.record(chunk, attrs["photocad"])
+                stones = project.stone_features(chunk, rec_s) if rec_s is not None else []
+                k = int(attrs.get("n", -1))
+                if 0 <= k < len(stones):
+                    geom = stones[k][0]
             selected.append((geom, {"layer": attrs.get("photocad_layer")}))
         if not selected and not here:
             self._say(t("Nessun disegno PhotoCAD qui: vettorializza prima l'ortofoto, il DEM o il prospetto.",
@@ -588,6 +601,9 @@ class PhotoCADPlugin(Plugin):
         p.add_argument("--id", required=True, help="the id of the conversion, or its PhotoCAD id")
         p.add_argument("--chunk")
         p.add_argument("--out", help="a copy of the drawing: FILE.dxf, .gpkg, .svg or .pdf")
+        p.add_argument("--search-px", type=float, default=None,
+                       help="offset searched by the registration, image pixels (default 24; widened once by itself)")
+        p.add_argument("--yes", action="store_true", help="send tiles not sent yet without asking")
         p = sub.add_parser("list", help="the conversions of the chunk (and its elevations)")
         p.add_argument("project")
         p.add_argument("--chunk")
@@ -705,9 +721,20 @@ class PhotoCADPlugin(Plugin):
             if not key:
                 print(keys.status_text())
                 return 1
+            found = project.find(chunk, ns.id)
+            todo = project.pending_uploads(found) if found is not None else 0
+            if todo and not ns.yes:
+                print(t("{0} tessere non sono ancora state inviate: saranno inviate ora (una conversione ciascuna).",
+                        "{0} tiles have not been sent yet: they will be sent now (one conversion each).").format(todo))
+                try:
+                    answer = input(t("Inviare? [s/N] ", "Send? [y/N] ")).strip().lower()
+                except EOFError:
+                    answer = ""
+                if answer not in ("s", "si", "sì", "y", "yes"):
+                    return 1
             try:
                 run = (self.context.run if self.context is not None else (lambda title, f, done=None: f(None)))
-                rec = run("PhotoCAD fetch", lambda p: project.fetch(chunk, ns.id, key, p))
+                rec = run("PhotoCAD fetch", lambda p: project.fetch(chunk, ns.id, key, p, ns.search_px))
             except (client.PhotoCADError, ValueError) as exc:
                 print(f"error: {exc}")
                 doc.save()

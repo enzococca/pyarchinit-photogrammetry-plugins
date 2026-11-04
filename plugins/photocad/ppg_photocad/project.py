@@ -92,6 +92,8 @@ def features(chunk, rec: dict):
 
 
 STATUS = {"uploading": ("non ancora inviata del tutto", "not all sent yet"),
+          "unknown": ("esito di un invio sconosciuto: controlla su photocad.ai", "outcome of an upload unknown: check "
+                      "on photocad.ai"),
           "pending": ("inviata, non ancora finita", "sent, not finished yet"),
           "complete": ("finita, non scaricata", "finished, not downloaded"),
           "mismatch": ("disegno non corrispondente all'immagine", "drawing not matching the image")}
@@ -219,9 +221,11 @@ class FrameMismatch(client_mod.PhotoCADError):
 def _hint(rec: dict) -> str:
     ids = ", ".join(str(tl.get("photocad_id")) for tl in rec.get("tiles") or [] if tl.get("photocad_id"))
     return t("La conversione {0} (PhotoCAD {1}) è conservata nel progetto: recuperala con Plugin > PhotoCAD > Recupera "
-             "una conversione, o `ppg plugin photocad fetch PROGETTO --id {0}` (nessun nuovo addebito).",
+             "una conversione, o `ppg plugin photocad fetch PROGETTO --id {0}` (una tessera già inviata si rimanda con la sua "
+             "chiave di idempotenza: PhotoCAD non la addebita di nuovo).",
              "The conversion {0} (PhotoCAD {1}) is kept in the project: get it with Plugin > PhotoCAD > Fetch a "
-             "conversion, or `ppg plugin photocad fetch PROJECT --id {0}` (no new charge).").format(rec["id"], ids or "-")
+             "conversion, or `ppg plugin photocad fetch PROJECT --id {0}` (a tile already sent goes again with its "
+             "idempotency key: PhotoCAD does not charge it again).").format(rec["id"], ids or "-")
 
 
 def _write_json(chunk, rec: dict) -> None:
@@ -243,6 +247,8 @@ def _tile_dir(chunk, rec: dict, tile: dict) -> Path:
 
 def _status(rec: dict) -> str:
     states = {tl.get("status") for tl in rec["tiles"]}
+    if "unknown" in states:
+        return "unknown"
     for s in ("new", "pending"):
         if s in states:
             return "uploading" if s == "new" else "pending"
@@ -287,6 +293,24 @@ def upload(chunk, prep: dict, key: str, detailed: bool = True, remove_background
     return dict(_complete(chunk, rec, _client(key), progress))
 
 
+MAX_POSTS = 2  # POSTs of unknown outcome per tile: the first and one resend with the same Idempotency-Key
+
+
+def _unknown_text(rec: dict, tiles: list) -> str:
+    return t("Non so se PhotoCAD ha ricevuto {0} tessera/e della conversione {1} (la connessione si è interrotta due "
+             "volte): controlla su photocad.ai (Conversions) prima di riprovare. Il plugin non le rimanda da solo: "
+             "una conversione rimandata senza l'idempotenza di PhotoCAD sarebbe addebitata due volte.",
+             "I do not know whether PhotoCAD received {0} tile(s) of the conversion {1} (the connection broke twice): "
+             "check on photocad.ai (Conversions) before trying again. The plugin does not send them again by itself: "
+             "a conversion sent again without PhotoCAD's idempotency would be charged twice.").format(
+        len(tiles), rec["id"])
+
+
+def pending_uploads(rec: dict) -> int:
+    """How many tiles of a record are still to be sent (a fetch would send them: one conversion each)."""
+    return sum(1 for tl in (rec.get("tiles") or []) if tl.get("status") == "new")
+
+
 def _fail(chunk, rec, exc, status=None, code=None):
     rec["status"] = _status(rec)
     rec["error"] = str(exc)
@@ -295,12 +319,13 @@ def _fail(chunk, rec, exc, status=None, code=None):
                                     code if code is not None else getattr(exc, "code", ""))
 
 
-def _complete(chunk, rec: dict, c, progress) -> dict:
+def _complete(chunk, rec: dict, c, progress, search_px: float | None = None) -> dict:
     """Upload, wait, download and place the tiles of ``rec`` still to do (a record of the chunk, changed in place)."""
     tiles = _tiles(rec)
     opts = rec.get("options") or {}
     n = len(tiles)
-    # 1. the uploads (the key on disk already)
+    # 1. the uploads (the key on disk already). A tile is POSTed at most MAX_POSTS times whose outcome is not known
+    # (a 429 is known: not processed); after that it is "unknown" and never sent again by the plugin
     for tile in tiles:
         if tile.get("status") != "new":
             continue
@@ -309,15 +334,38 @@ def _complete(chunk, rec: dict, c, progress) -> dict:
         progress(0.02 + 0.06 * tile["n"] / n, t("Invio a PhotoCAD ({0}/{1})", "Sending to PhotoCAD ({0}/{1})")
                  .format(tile["n"] + 1, n))
         ctype = "image/png" if img.endswith(".png") else "image/jpeg"
+
+        def before_post(event, tile=tile):
+            if event == "rate_limited":
+                tile["posts"] = max(0, int(tile.get("posts", 0)) - 1)
+                _write_json(chunk, rec)
+                return None
+            if int(tile.get("posts", 0)) >= MAX_POSTS:
+                return False
+            tile["posts"] = int(tile.get("posts", 0)) + 1
+            _write_json(chunk, rec)  # on disk before the POST leaves
+            return True
+
         try:
             cid = c.convert(data, img, ctype, detailed=opts.get("detailed", True),
                             remove_background=opts.get("remove_background", False),
-                            idempotency_key=tile.get("idempotency_key"))
+                            idempotency_key=tile.get("idempotency_key"), before_post=before_post)
         except client_mod.PhotoCADError as exc:
+            if exc.code == "unknown" or (exc.code == "network" and int(tile.get("posts", 0)) >= MAX_POSTS):
+                tile["status"] = "unknown"
+                tile["error"] = str(exc)
+                rec["status"] = _status(rec)
+                _write_json(chunk, rec)
+                raise client_mod.PhotoCADError(_unknown_text(rec, [tile]), 0, "unknown") from None
             raise _fail(chunk, rec, exc) from None
         tile.update(photocad_id=cid, status="pending")
         rec["status"] = _status(rec)
         _write_json(chunk, rec)
+    unknown = [tl for tl in tiles if tl.get("status") == "unknown"]
+    if unknown:
+        rec["status"] = _status(rec)
+        _write_json(chunk, rec)
+        raise client_mod.PhotoCADError(_unknown_text(rec, unknown), 0, "unknown")
     # 2. the waits
     for tile in tiles:
         if tile.get("status") != "pending":
@@ -330,16 +378,16 @@ def _complete(chunk, rec: dict, c, progress) -> dict:
                 _write_json(chunk, rec)
                 continue
             raise _fail(chunk, rec, exc) from None
-        except BaseException:  # cancelled while PhotoCAD worked: wait() deleted this one, the others go too
-            tile["status"] = "deleted"
+        except BaseException as exc:  # cancelled while PhotoCAD worked: wait() deleted this one, the others go too
+            tile["status"] = "pending" if getattr(exc, "photocad_not_deleted", None) else "deleted"
             for other in tiles:
-                if other.get("status") in ("pending", "new") and other.get("photocad_id"):
+                if other is not tile and other.get("status") == "pending" and other.get("photocad_id"):
                     try:
                         c.delete(other["photocad_id"])
-                    except client_mod.PhotoCADError:
+                        other["status"] = "deleted"
+                    except client_mod.PhotoCADError:  # it may still be made and charged: kept, to check or fetch
                         pass
-                    other["status"] = "deleted"
-            if not any(tl.get("status") in ("complete", "placed", "mismatch") for tl in tiles):
+            if not any(tl.get("status") in ("complete", "placed", "mismatch", "pending", "unknown") for tl in tiles):
                 _forget(chunk, rec)
             else:
                 rec["status"] = _status(rec)
@@ -361,7 +409,7 @@ def _complete(chunk, rec: dict, c, progress) -> dict:
         if tile.get("status") not in ("complete", "mismatch"):
             continue
         try:
-            _download_tile(chunk, rec, tile, c, progress)
+            _download_tile(chunk, rec, tile, c, progress, search_px)
         except Cancelled:
             rec["status"] = _status(rec)
             _write_json(chunk, rec)
@@ -386,7 +434,7 @@ def _complete(chunk, rec: dict, c, progress) -> dict:
     return rec
 
 
-def _download_tile(chunk, rec: dict, tile: dict, c, progress) -> None:
+def _download_tile(chunk, rec: dict, tile: dict, c, progress, search_px: float | None = None) -> None:
     """The drawing of a complete tile at its natural size (mm, no ``longest``: PhotoCAD writes mm whatever ``units``
     says), its registration on the tile's image, the tile placed (``placed``) or refused (``mismatch``)."""
     from . import register
@@ -408,7 +456,7 @@ def _download_tile(chunk, rec: dict, tile: dict, c, progress) -> None:
         files["pdf"] = "drawing.pdf"
     items, factor = register.read_mm(raw)
     image = (d / files.get("image", "image.jpg")).read_bytes()
-    reg = register.register(items, tile.get("page_mm"), image)
+    reg = register.register(items, tile.get("page_mm"), image, search_px)
     tile["registration"] = reg
     tile["files"] = files
     if not reg["ok"]:
@@ -494,6 +542,14 @@ def _merge(chunk, rec: dict, progress) -> None:
 SNAP_PX = 2.0  # ends of lines this close (in pixels of the image) are joined
 MIN_AREA_PX = 50.0  # smaller faces are left out (pixels of the image)
 BACKGROUND_SHARE = 0.5  # faces with more of their pixels white (no data) are background
+SLIVER = 0.02  # area / perimeter^2 under this: a thin face (a joint between two stones), not a stone (square 0.0625)
+
+
+def is_sliver(face) -> bool:
+    """A thin face: its area over its perimeter squared under :data:`SLIVER` (a rectangle about 8 times longer than
+    wide or thinner)."""
+    p = float(face.length)
+    return p > 0 and float(face.area) / (p * p) < SLIVER
 STONES_TABLE = "polygons"
 
 
@@ -569,10 +625,13 @@ def polygonize(chunk, rec: dict, snap_px: float = SNAP_PX, min_area_px: float = 
     noded = shapely.unary_union(lines + connectors, grid_size=grid)
     faces = list(shapely.get_parts(shapely.polygonize(list(shapely.get_parts(noded)))))
     greys: dict = {}
-    kept, small, background = [], 0, 0
+    kept, small, background, slivers = [], 0, 0, 0
     for face in faces:
         if face.area < min_area:
             small += 1
+            continue
+        if is_sliver(face):
+            slivers += 1
             continue
         c = face.representative_point()
         tile = _tile_of(rec, (c.x, c.y))
@@ -596,7 +655,7 @@ def polygonize(chunk, rec: dict, snap_px: float = SNAP_PX, min_area_px: float = 
     rec.setdefault("counts", {})["stones"] = len(kept)
     rec["polygonize"] = {"snap_m": tol, "snap_px": snap_px, "min_area_m2": min_area, "min_area_px": min_area_px,
                          "lines": len(lines), "connectors": len(connectors), "faces": len(faces), "small": small,
-                         "background": background, "stones": len(kept)}
+                         "slivers": slivers, "background": background, "stones": len(kept)}
     _write_json(chunk, rec)
     return len(kept)
 
@@ -644,7 +703,7 @@ def find(chunk, ident: str) -> dict | None:
     return None
 
 
-def fetch(chunk, ident: str, key: str, progress=None) -> dict:
+def fetch(chunk, ident: str, key: str, progress=None, search_px: float | None = None) -> dict:
     """Go on with a conversion already made (by its id or a PhotoCAD id): tiles not sent are sent with their
     idempotency key (never charged twice), running ones waited for, finished ones downloaded and placed again.
     The record, status ``done``."""
@@ -653,7 +712,7 @@ def fetch(chunk, ident: str, key: str, progress=None) -> dict:
         raise ValueError(t("Nessuna conversione «{0}» in questo chunk.", "No conversion '{0}' in this chunk.")
                          .format(ident))
     _tiles(rec)
-    return dict(_complete(chunk, rec, _client(key), progress or (lambda *a: None)))
+    return dict(_complete(chunk, rec, _client(key), progress or (lambda *a: None), search_px))
 
 
 def convert(chunk, src: str, key: str, bbox=None, detailed: bool = True, remove_background: bool = False,
