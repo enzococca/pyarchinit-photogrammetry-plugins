@@ -163,7 +163,7 @@ def test_drawings_out_of_date_are_said(tmp_path):
     drawings.write_all(ch)
     assert drawings.out_of_date(ch) == [] and "Da rifare" not in ShipwreckPlugin.states(ch)["drawings"]
     lines.set_water(ch, -0.5, on=True)  # the water
-    assert set(drawings.out_of_date(ch)) == set(drawings.KINDS) and "Da rifare" in ShipwreckPlugin.states(ch)["drawings"]
+    assert set(drawings.out_of_date(ch)) == set(drawings.KINDS) - {"wreck_plan"} and "Da rifare" in ShipwreckPlugin.states(ch)["drawings"]
     lines.set_water(ch, -0.5, on=False)
     assert drawings.out_of_date(ch) == []
     timbers.add(ch, "frame", "port", "F", timbers.geometry("point", _world(frame, (6.0, 0.5))))  # the plan only
@@ -478,3 +478,242 @@ def test_the_land_lines_on_the_drawings(tmp_path):
     assert clinker.is_stale(ch)
     d = drawings.make(ch, "plan")
     assert "Fasce" not in {layer for layer, _p, _c in d.lines} and not any("ipotesi" in n for n in d.notes)
+
+
+# ----------------------------------------------------------------------------- the plan of the wreck (0.3.0)
+WRECK_STATIONS = (4.275, 5.175, 6.075, 6.975)  # between the frames of the framed hull (0.9 + 0.45 k)
+
+
+@pytest.fixture(scope="module")
+def _wreck(tmp_path_factory):
+    import copy
+
+    from hulls import framed_project
+
+    from ppg_shipwreck import proposals, relief, solids, tracing
+
+    _doc, ch, ends = framed_project(tmp_path_factory.mktemp("wreck"), heading_deg=35, x_range=(3.0, 9.0))
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))  # sign -1: the plan's y is the ship's -y
+    relief.build(ch, cell=0.01)
+    proposals.build(ch)
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"]])
+    solids.set_keel(ch, 0.12, 0.15)
+    ship.set_stations(ch, [{"name": f"S{k + 1}", "x": x} for k, x in enumerate(WRECK_STATIONS)])
+    lines.build(ch, longitudinals=[0.0, 0.5], half_width=2.0)
+    return ch, copy.deepcopy(ch.meta[ship.KEY])
+
+
+@pytest.fixture
+def wreck(_wreck):
+    import copy
+
+    ch, snapshot = _wreck
+    ch.meta[ship.KEY] = copy.deepcopy(snapshot)
+    return ch
+
+
+def _sheet_polygon(ch, record):
+    import shapely
+
+    from ppg_shipwreck import tracing
+
+    frame = ship.need_frame(ch)
+    return shapely.Polygon(tracing.ship_xy_of(ch, record, frame) * [1.0, frame.sign])
+
+
+def test_the_wreck_plan_outlines_fills_and_names_every_timber(wreck):
+    import shapely
+
+    ch = wreck
+    d = drawings.make(ch, "wreck_plan")
+    assert d.kind == "wreck_plan" and d.title == "Pianta del relitto" and d.scale > 0
+    polygons = [r for r in timbers.timbers_of(ch) if r["geometry"]["type"] == "polygon"]
+    assert {r["kind"] for r in polygons} >= {"frame", "plank", "keelson"}
+    texts = [text for _x, _y, text, _c in d.labels]
+    for r in polygons:
+        poly = _sheet_polygon(ch, r).buffer(0.001)
+        layer = f"LEGNI_{r['kind'].upper()}"
+        mine = [ring for lay, ring, _c, _h, _dashed in d.fills if lay == layer and
+                poly.contains(shapely.Point(np.asarray(ring).mean(axis=0)))]
+        assert mine, r["name"]
+        assert texts.count(r["name"]) == sum(1 for q in polygons if q["name"] == r["name"])
+        x, y = next((x, y) for x, y, text, _c in d.labels if text == r["name"] and poly.contains(shapely.Point(x, y)))
+    from ppg_shipwreck import models3d
+
+    measured = [(lay, c, h) for lay, _ring, c, h, _dashed in d.fills if lay.startswith("LEGNI_")]
+    assert all(c == models3d.KIND_COLOURS[lay[6:].lower()] and h == "" for lay, c, h in measured)
+    seams = [r for r in timbers.timbers_of(ch) if r["kind"] == "seam"]
+    assert seams and {"LEGNI_SEAM"} <= {layer for layer, _p, _c in d.lines}
+    legend = [text for text, _c, _h in d.legend]
+    assert any(text.startswith("ordinata") for text in legend) and any("ipotesi" in text or "ricostruito" in text
+                                                                     for text in legend)
+    assert d.north is not None and any("Sfondo" in n for n in d.notes)
+    assert d.raster is not None  # the hillshade of the relief
+
+
+def test_the_typed_keel_is_hatched_and_the_four_files_written(wreck, tmp_path):
+    import ezdxf
+
+    ch = wreck
+    d = drawings.make(ch, "wreck_plan")
+    keel = [(ring, c, h) for lay, ring, c, h, _dashed in d.fills if lay == "RICOSTRUZIONE_KEEL"]
+    assert len(keel) == 1 and keel[0][2] == "////"
+    from ppg_shipwreck import models3d
+
+    assert keel[0][1] == models3d.lighter(models3d.KIND_COLOURS["keel"])
+    k = ship.state(ch)["keel"]
+    ring = np.asarray(keel[0][0])
+    assert ring[:, 0].min() == pytest.approx(k["x0"]) and ring[:, 1].max() == pytest.approx(0.06)
+    assert any("parti tratteggiate: ricostruzione (ipotesi)" in n.lower() for n in d.notes)
+    written = drawings.write_all(ch, kinds=("wreck_plan",), folder=tmp_path / "out")
+    assert {p.name for p in written} == {"wreck_plan.svg", "wreck_plan.pdf", "wreck_plan.png", "wreck_plan.dxf"}
+    msp = ezdxf.readfile(tmp_path / "out" / "wreck_plan.dxf").modelspace()
+    hatches = [e for e in msp if e.dxftype() == "HATCH"]
+    assert any(e.dxf.layer == "RICOSTRUZIONE_KEEL" and e.dxf.pattern_name == "ANSI31" for e in hatches)
+    assert not any(e.dxf.layer.startswith("LEGNI_") for e in hatches)  # a measured timber is never hatched
+    closed = [e for e in msp if e.dxftype() == "LWPOLYLINE" and e.closed]
+    assert {"LEGNI_FRAME", "LEGNI_PLANK", "LEGNI_KEELSON", "RICOSTRUZIONE_KEEL"} <= {e.dxf.layer for e in closed}
+    assert any(e.dxf.linetype == "DASHED" for e in closed if e.dxf.layer == "LEGNI_PLANK")
+    assert "chiglia" in (tmp_path / "out" / "wreck_plan.svg").read_text()
+    # written into the chunk's folder by default, with the others: noted and up to date
+    drawings.write_all(ch)
+    assert "wreck_plan" in ch.meta[ship.KEY]["drawings"] and drawings.out_of_date(ch) == []
+    timbers.add(ch, "other", "port", "X", timbers.geometry("point", _world(ship.need_frame(ch), (6.0, 0.4))))
+    assert "wreck_plan" in drawings.out_of_date(ch)
+
+
+def test_the_section_strakes_hidden_where_a_traced_strake_has_their_name(wreck):
+    from ppg_shipwreck import clinker
+
+    ch = wreck
+    frame = ship.need_frame(ch)
+    traced = next(r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and timbers.is_measured(r))
+    outline = _world(frame, (4.0, 0.3), (6.0, 0.3), (6.0, 0.5), (4.0, 0.5))
+    for name in (traced["name"], "fascia B9"):
+        timbers.add(ch, "plank", "port", name, timbers.geometry("polygon", outline), notes=clinker.CATALOGUE_NOTES[0],
+                    status="reconstructed:sections")
+    d = drawings.make(ch, "wreck_plan")
+    texts = [text for _x, _y, text, _c in d.labels]
+    assert texts.count(traced["name"]) == 1 and texts.count("fascia B9") == 1
+    hypotheses = [(ring, c, h) for lay, ring, c, h, dashed in d.fills if lay == "RICOSTRUZIONE_PLANK" and not dashed]
+    assert hypotheses and all(h == "////" for _r, _c, h in hypotheses)
+    assert len({tuple(np.round(np.asarray(r).mean(axis=0), 6)) for r, _c, _h in hypotheses}) >= 1
+    assert any("fascia B9" in text or "ipotesi dalle sezioni" in text for text, _c, _h in d.legend)
+    assert any(traced["name"] in n for n in d.notes)  # the hidden one is said
+
+
+def test_the_hidden_parts_of_a_strake_are_dashed(wreck):
+    import shapely
+
+    ch = wreck
+    d = drawings.make(ch, "wreck_plan")
+    frames = shapely.union_all([_sheet_polygon(ch, r) for r in timbers.timbers_of(ch)
+                                if r["kind"] in ("frame", "keelson", "stringer")]).buffer(0.002)
+    dashed = [shapely.LinearRing(ring) for lay, ring, _c, _h, dashed in d.fills if lay == "LEGNI_PLANK" and dashed]
+    solid = [shapely.Polygon(ring) for lay, ring, _c, _h, dashed in d.fills if lay == "LEGNI_PLANK" and not dashed]
+    assert dashed and solid
+    assert all(p.difference(frames).length < 1e-6 for p in dashed)  # outlines under a frame or the keelson
+    assert sum(p.length for p in dashed) > 5.0 and all(p.intersection(frames).area < 0.5 * p.area for p in solid)
+    from ppg_shipwreck import tracing
+
+    planks = [r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and timbers.is_measured(r)]
+    visible = sum(abs(shapely.Polygon(ring).area) * (1 if shapely.LinearRing(ring).is_ccw else -1)
+                  for r in planks for ring in r["visible_xy"])
+    filled = sum(p.area * (1 if p.exterior.is_ccw else -1) for p in solid)
+    assert filled == pytest.approx(visible, rel=1e-6)  # the filled parts are the visible ones
+    assert tracing.CUT == ("plank",)
+
+
+def test_the_wreck_plan_is_never_a_mirror_image(wreck):
+    """Port on the sheet's sign * y side, as on :func:`drawings.plan`, for both bows."""
+    import shapely
+
+    ch = wreck
+    frame = ship.need_frame(ch)
+    for f in (frame, frame.other_bow()):
+        ship.set_frame(ch, f)
+        d = drawings.wreck_plan(ch, background="none")
+        assert d.raster is None
+        for r in [r for r in timbers.timbers_of(ch) if r["kind"] == "frame"][:3]:
+            w = np.asarray(r["geometry"]["xy"], float)
+            want = f.to_ship(np.column_stack([w, np.zeros(len(w))]))[:, :2] * [1.0, f.sign]
+            poly = shapely.Polygon(want)
+            assert any(shapely.Polygon(ring).symmetric_difference(poly).area < 1e-7
+                       for lay, ring, _c, _h, _d in d.fills if lay == "LEGNI_FRAME")
+        from ppg_shipwreck import tracing
+
+        planks = [r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and timbers.is_measured(r)]
+        assert {r["side"] for r in planks} == {"port", "starboard"}
+        for r in planks:  # port (positive ship y) up on the sheet when sign is 1, down when the frame is a mirror
+            ship_y = float(tracing.ship_xy_of(ch, r, f)[:, 1].mean())
+            x, y = next((x, y) for x, y, text, _c in d.labels if text == r["name"])
+            assert np.sign(y) == f.sign * np.sign(ship_y)
+
+
+def test_the_traced_strakes_on_the_body_plan(wreck):
+    from hulls import seam_y
+
+    ch = wreck
+    d = drawings.make(ch, "body_plan")
+    marks = [p for layer, p, _c in d.lines if layer == "FASCE_RICALCATE"]
+    assert len(marks) >= 8 * len(WRECK_STATIONS)
+    centres = np.array([p[2] for p in marks])  # left, right, centre, down, up
+    arms = np.array([np.ptp(p[:, 0]) for p in marks])
+    assert np.allclose(arms, 2 * drawings.LAND_MARK)
+    data = lines.load(ch)
+    for s in [s for s in data["sections"] if s["kind"] == "station"]:
+        for y in seam_y(s["value"]):
+            for side in (1.0, -1.0):
+                near = np.abs(centres[:, 0] - (-side * y))
+                assert near.min() < 0.01, (s["name"], y, side)
+    assert drawings.LAYERS["FASCE_RICALCATE"] != drawings.LAYERS["Fasce"]
+    assert not any(layer == "FASCE_RICALCATE" for layer, _p, _c in drawings.make(ch, "profile").lines)
+
+
+def test_keelson_keel_and_sheer_on_the_profile(wreck):
+    from hulls import KEELSON_HEIGHT, KEELSON_X
+
+    ch = wreck
+    d = drawings.make(ch, "profile")
+    layers = {layer for layer, _p, _c in d.lines}
+    assert {"KEELSON", "SHEER", "LONGITUDINALS"} <= layers
+    top = np.vstack([p for layer, p, _c in d.lines if layer == "KEELSON"])
+    assert top[:, 0].min() > max(KEELSON_X[0], 3.0) - 0.05 and top[:, 0].max() < min(KEELSON_X[1], 9.0) + 0.05
+    assert float(np.median(top[:, 1])) == pytest.approx(-1.5 + KEELSON_HEIGHT, abs=0.015)
+    keel = [(ring, h) for layer, ring, _c, h, _dashed in d.fills if layer == "KEEL"]
+    assert len(keel) == 1 and keel[0][1] == "////"
+    ring = np.asarray(keel[0][0])
+    assert np.ptp(ring[:, 1]) == pytest.approx(0.15 + np.ptp(ring[len(ring) // 2:, 1]), abs=0.02)
+    assert ring[:, 1].max() < float(np.median(top[:, 1]))  # under the keelson
+    sheer = next(p for layer, p, _c in d.lines if layer == "SHEER")
+    data = lines.load(ch)
+    for s in [s for s in data["sections"] if s["kind"] == "station"]:
+        ends = [q[[0, -1], 1] for q in lines.shown(s)]
+        want = max(float(e.max()) for e in ends)
+        assert np.interp(s["value"], sheer[:, 0], sheer[:, 1]) == pytest.approx(want, abs=1e-9)
+    assert any("parti tratteggiate: ricostruzione (ipotesi)" in n.lower() for n in d.notes)
+    import ezdxf
+
+    out = drawings.write_dxf(d, Path(ship.folder(ch)) / "profile_test.dxf")
+    msp = ezdxf.readfile(out).modelspace()
+    assert {"KEELSON", "SHEER"} <= {e.dxf.layer for e in msp}
+    assert any(e.dxftype() == "HATCH" and e.dxf.layer == "KEEL" for e in msp)
+    out.unlink()
+
+
+def test_a_survey_without_traced_timbers_draws_as_before(tmp_path):
+    """0.2.0 projects: no new layer, fill or legend on the four drawings, no wreck plan without timbers."""
+    _doc, ch, frame = _ready(tmp_path, water=True)
+    for kind in ("body_plan", "half_breadth", "profile", "plan"):
+        d = drawings.make(ch, kind)
+        assert d.fills == [] and d.legend == []
+        assert not {layer for layer, _p, _c in d.lines} & {"KEELSON", "SHEER", "FASCE_RICALCATE"}
+        assert not any("parti tratteggiate" in n.lower() for n in d.notes)
+    with pytest.raises(drawings.Empty):
+        drawings.make(ch, "wreck_plan")
+    names = {p.stem for p in drawings.write_all(ch)}
+    assert "wreck_plan" not in names and "profile" in names
+    import ezdxf
+
+    msp = ezdxf.readfile(ch.data_dir / "shipwreck" / "drawings" / "profile.dxf")
+    assert not {"KEELSON", "SHEER", "FASCE_RICALCATE"} & {layer.dxf.name for layer in msp.layers}
