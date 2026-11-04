@@ -87,18 +87,25 @@ def test_redirect_rules():
 
 
 # ------------------------------------------------------------------ never pay twice, never lose what was paid
-def test_the_upload_is_not_sent_again_on_a_5xx(monkeypatch):
+def test_the_upload_is_not_sent_again_on_a_5xx_but_again_on_429_and_a_lost_connection(monkeypatch):
     fake = fakecad.FakePhotoCAD(fail={"POST /convert": [502]})
     monkeypatch.setattr(client, "_urlopen", fake)
     c = client.Client(fakecad.KEY)
     with pytest.raises(client.PhotoCADError) as err:
-        c.convert(b"x", "image.jpg", "image/jpeg")
+        c.convert(b"x", "image.jpg", "image/jpeg", idempotency_key="k1")
     assert len(fake.calls("POST")) == 1 and err.value.status == 502
     fake = fakecad.FakePhotoCAD(fail={"POST /convert": [429]})  # the rate limit: not processed, asked again
     monkeypatch.setattr(client, "_urlopen", fake)
-    assert client.Client(fakecad.KEY).convert(b"x", "image.jpg", "image/jpeg") == "conv_0001"
+    assert client.Client(fakecad.KEY).convert(b"x", "image.jpg", "image/jpeg", idempotency_key="k2") == "conv_0001"
     assert len(fake.calls("POST")) == 2
-    fake = fakecad.FakePhotoCAD(fail={"POST /convert": [0]})  # a broken connection: not sent again either
+    # the connection lost AFTER the server made the conversion: asked again with the same key, charged once
+    fake = fakecad.FakePhotoCAD(fail={"POST /convert": [-1]})
+    monkeypatch.setattr(client, "_urlopen", fake)
+    assert client.Client(fakecad.KEY).convert(b"x", "image.jpg", "image/jpeg", idempotency_key="k3") == "conv_0001"
+    keys_sent = [h.get("idempotency-key") for m, _p, h in fake.requests if m == "POST"]
+    assert keys_sent == ["k3", "k3"] and fake.charged == 1
+    # without a key a lost connection is not asked again
+    fake = fakecad.FakePhotoCAD(fail={"POST /convert": [0]})
     monkeypatch.setattr(client, "_urlopen", fake)
     with pytest.raises(client.PhotoCADError):
         client.Client(fakecad.KEY).convert(b"x", "image.jpg", "image/jpeg")
@@ -121,36 +128,61 @@ def test_a_failed_download_keeps_the_paid_conversion_and_fetch_gets_it(tmp_path,
         project.convert(ch, "ortho", fakecad.KEY)
     assert "conv_0001" in str(err.value) and "fetch" in str(err.value)
     (rec,) = project.records(ch)
-    assert rec["status"] == "complete" and rec["photocad_id"] == "conv_0001"
+    assert rec["status"] == "complete" and rec["tiles"][0]["photocad_id"] == "conv_0001"
     folder = project.folder_of(ch, rec)
     on_disk = json.loads((folder / "conversion.json").read_text())
-    assert on_disk["photocad_id"] == "conv_0001" and (folder / "image.jpg").exists()
+    assert on_disk["tiles"][0]["photocad_id"] == "conv_0001" and (folder / "t0" / "image.jpg").exists()
     assert fake.deleted == [] and project.features(ch, rec) == []
     # fetched again: no new upload, the drawing in place
     rec = project.fetch(ch, rec["id"], fakecad.KEY)
     assert rec["status"] == "done" and len(fake.calls("POST")) == 1
     (square,) = [g for g, _a in project.features(ch, rec) if g.geom_type == "Polygon"]
-    assert np.allclose(square.bounds, fakecad.square_world(), rtol=0, atol=fakecad.RES / 2)
+    assert np.abs(np.asarray(square.bounds) - fakecad.square_world()).max() <= 1.5 * fakecad.RES / 2
     assert len(project.records(ch)) == 1
 
 
-def test_written_right_after_the_upload(tmp_path, monkeypatch):
-    """The PhotoCAD id is on disk before the first poll."""
+def test_written_before_the_upload_and_with_the_id_after_it(tmp_path, monkeypatch):
+    """The idempotency key is on disk before the POST, the PhotoCAD id before the first poll."""
     fake = fakecad.FakePhotoCAD()
     monkeypatch.setattr(client, "_urlopen", fake)
     doc, ch = fakecad.project(tmp_path)
     seen = {}
-    real = client.Client.conversion
+    real_convert, real_poll = client.Client.convert, client.Client.conversion
+
+    def read():
+        files = list((ch.data_dir / "photocad").rglob("conversion.json"))
+        return json.loads(files[0].read_text()) if files else None
+
+    def convert(self, *a, **k):
+        seen["before_post"] = read()
+        return real_convert(self, *a, **k)
 
     def first_poll(self, cid):
-        if not seen:
-            files = list((ch.data_dir / "photocad").rglob("conversion.json"))
-            seen["json"] = json.loads(files[0].read_text()) if files else None
-        return real(self, cid)
+        seen.setdefault("first_poll", read())
+        return real_poll(self, cid)
 
+    monkeypatch.setattr(client.Client, "convert", convert)
     monkeypatch.setattr(client.Client, "conversion", first_poll)
     project.convert(ch, "ortho", fakecad.KEY)
-    assert seen["json"]["photocad_id"] == "conv_0001" and seen["json"]["status"] == "pending"
+    tile = seen["before_post"]["tiles"][0]
+    assert tile["idempotency_key"] and tile.get("photocad_id") is None and tile["status"] == "new"
+    tile = seen["first_poll"]["tiles"][0]
+    assert tile["photocad_id"] == "conv_0001" and tile["status"] == "pending"
+    sent = [h.get("idempotency-key") for m, _p, h in fake.requests if m == "POST"]
+    assert sent == [seen["before_post"]["tiles"][0]["idempotency_key"]]
+
+
+def test_a_lost_upload_is_sent_again_by_fetch_with_the_same_key(tmp_path, monkeypatch):
+    fake = fakecad.FakePhotoCAD(fail={"POST /convert": [-1, -1, -1, -1]})  # made on the server, the answer lost
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path)
+    with pytest.raises(client.PhotoCADError) as err:
+        project.convert(ch, "ortho", fakecad.KEY)
+    assert "fetch" in str(err.value)
+    (rec,) = project.records(ch)
+    assert rec["status"] == "uploading" and rec["tiles"][0]["status"] == "new"
+    rec = project.fetch(ch, rec["id"], fakecad.KEY)
+    assert rec["status"] == "done" and fake.charged == 1 and len(set(fake.keys)) == 1
 
 
 def test_cancel_after_completion_keeps_it_cancel_before_deletes_it(tmp_path, monkeypatch):
@@ -170,7 +202,7 @@ def test_cancel_after_completion_keeps_it_cancel_before_deletes_it(tmp_path, mon
         project.convert(ch, "ortho", fakecad.KEY, progress=report)
     (rec,) = project.records(ch)
     assert rec["status"] == "complete" and fake.deleted == []
-    assert project.fetch(ch, rec["photocad_id"], fakecad.KEY)["status"] == "done"  # by the PhotoCAD id too
+    assert project.fetch(ch, rec["tiles"][0]["photocad_id"], fakecad.KEY)["status"] == "done"  # by the PhotoCAD id
     # before completion: deleted on PhotoCAD, nothing kept
     fake = fakecad.FakePhotoCAD(polls=50)
     monkeypatch.setattr(client, "_urlopen", fake)
@@ -228,29 +260,24 @@ def test_fetch_from_the_command_line(tmp_path, monkeypatch, capsys):
     assert rec["status"] == "done"
 
 
-# ------------------------------------------------------------------ the frame of the drawing
-def test_a_drawing_away_from_the_edges_is_placed_when_the_page_is_scaled(tmp_path, monkeypatch):
-    fake = fakecad.FakePhotoCAD(diagonal=False)
+def test_a_conversion_of_version_0_1_0_dev_is_fetched(tmp_path, monkeypatch):
+    """A record made before the tiles (one PhotoCAD id, files in the folder itself), refused by the old frame check:
+    fetch places it by registration."""
+    fake = fakecad.FakePhotoCAD()
     monkeypatch.setattr(client, "_urlopen", fake)
     doc, ch = fakecad.project(tmp_path)
     rec = project.convert(ch, "ortho", fakecad.KEY)
-    assert rec["check"]["ok"] and abs(rec["check"]["scale_ratio"] - 1) < 0.01
-    (square,) = [g for g, _a in project.features(ch, rec)]
-    assert np.allclose(square.bounds, fakecad.square_world(), rtol=0, atol=fakecad.RES / 2)
-
-
-def test_content_scaled_instead_of_the_page_is_caught(tmp_path, monkeypatch):
-    fake = fakecad.FakePhotoCAD(scale="content", diagonal=False)
-    monkeypatch.setattr(client, "_urlopen", fake)
-    doc, ch = fakecad.project(tmp_path)
-    with pytest.raises(project.FrameMismatch) as err:
-        project.convert(ch, "ortho", fakecad.KEY)
-    assert "conv_0001" in str(err.value) and "PhotoCAD" in str(err.value)
-    (rec,) = project.records(ch)
-    assert rec["status"] == "mismatch" and not rec["check"]["ok"] and rec["check"]["problems"]
     folder = project.folder_of(ch, rec)
-    assert (folder / "photocad.dxf").exists() and (folder / "photocad_mm.dxf").exists()
-    assert not (folder / "drawing.gpkg").exists() and project.features(ch, rec) == []
+    tile = rec["tiles"][0]
+    (folder / "image.jpg").write_bytes((folder / "t0" / "image.jpg").read_bytes())
+    old = {k: v for k, v in rec.items() if k not in ("tiles", "counts", "files")}
+    old.update(photocad_id=tile["photocad_id"], status="mismatch", image=dict(tile["image"]),
+               files={"image": "image.jpg"})
+    ch.meta["photocad"]["conversions"] = [old]
+    rec = project.fetch(ch, tile["photocad_id"], fakecad.KEY)
+    assert rec["status"] == "done" and len(fake.calls("POST")) == 1
+    (square,) = [g for g, _a in project.features(ch, rec) if g.geom_type == "Polygon"]
+    assert np.abs(np.asarray(square.bounds) - fakecad.square_world()).max() <= 1.5 * fakecad.RES / 2
 
 
 # ------------------------------------------------------------------ minors
@@ -263,9 +290,10 @@ def test_minors(tmp_path, monkeypatch, capsys):
     doc, ch = fakecad.project(tmp_path)
     rec = project.convert(ch, "ortho", fakecad.KEY)
     h = ezdxf.readfile(project.path_of(ch, rec, "dxf")).header
-    assert h["$EXTMIN"][0] == pytest.approx(fakecad.X0) and h["$EXTMAX"][0] == pytest.approx(
-        fakecad.X0 + fakecad.W * fakecad.RES, abs=1e-6)
-    assert h["$EXTMAX"][1] == pytest.approx(fakecad.Y1, abs=1e-6)
+    x0, y0, x1, y1 = fakecad.square_world()
+    tol = 1.5 * fakecad.RES / 2
+    assert abs(h["$EXTMIN"][0] - x0) <= tol and abs(h["$EXTMIN"][1] - y0) <= tol
+    assert abs(h["$EXTMAX"][0] - x1) <= tol and abs(h["$EXTMAX"][1] - y1) <= tol
     # Retry-After as an HTTP date
     assert client.retry_after("Wed, 21 Oct 2015 07:28:00 GMT") == 1.0 and client.retry_after("7") == 7.0
     # a short key never shown whole
@@ -289,24 +317,27 @@ def test_minors(tmp_path, monkeypatch, capsys):
     assert len(fake.calls("POST")) == posts
 
 
-def test_the_dem_nodata_at_the_partial_edge(tmp_path):
-    """A DEM with numeric nodata, reduced by k > 1: the partial edge blocks average the valid cells only."""
+def test_the_dem_nodata_is_white_not_a_cliff(tmp_path):
+    """A DEM with numeric nodata: those cells white in the hillshade, the valid ones untouched (no cliff)."""
+    import io
+
     import rasterio
+    from PIL import Image
     from rasterio.transform import from_origin
 
     from ppg_photocad import source
 
     doc, ch = fakecad.project(tmp_path)
     path = ch.data_dir / "dem2.tif"
-    z = np.full((10, 7301), 50.0, np.float32)
-    z[:, -1] = -9999.0  # the last column (in the partial block of k = 4) is nodata
+    z = np.full((700, 900), 50.0, np.float32)
+    z[:, -50:] = -9999.0
     with rasterio.open(path, "w", driver="GTiff", width=z.shape[1], height=z.shape[0], count=1, dtype="float32",
                        crs=fakecad.CRS, transform=from_origin(fakecad.X0, fakecad.Y1, 0.01, 0.01), nodata=-9999) as d:
         d.write(z, 1)
-    with rasterio.open(path) as src:
-        c0, r0, nc, nr, k = source._window(src, None, 2400)
-        a = source._read(src, [1], c0, r0, nc, nr, k, np.nan, src.nodata)[0]
-    assert k == 4 and np.nanmax(a) == pytest.approx(50.0) and np.nanmin(a) == pytest.approx(50.0)
+    ch._set_product("dem", path)
+    img = source.render(ch, "dem", window=(0, 0, 900, 700), zoom=1, fmt="png")
+    a = np.asarray(Image.open(io.BytesIO(img.data)).convert("L"), float)
+    assert a[:, -40:].min() >= 250 and np.ptp(a[5:-5, 5:-60]) <= 2
 
 
 def test_failed_detail_is_masked(monkeypatch):

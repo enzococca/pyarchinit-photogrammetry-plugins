@@ -77,7 +77,7 @@ def test_convert_list_units_export_remove(plugin, monkeypatch, capsys, tmp_path)
     assert (tmp_path / "e.dxf").exists() and fake.options["conv_0002"] == {"detailed": "false",
                                                                            "remove_background": "true"}
     x0, y0, x1, y1 = fakecad.square_world()
-    assert plugin.command("convert", path, "--source", "ortho", "--bbox", f"{x0 - 0.2},{y0 - 0.2},{x1 + 0.2},{y1 + 0.2}",
+    assert plugin.command("convert", path, "--source", "ortho", "--bbox", f"{x0 - 1.0},{y0 - 1.0},{x1 + 1.0},{y1 + 1.0}",
                           "--out", str(tmp_path / "b.svg"), "--yes") == 0
     assert (tmp_path / "b.svg").exists()
     assert plugin.command("convert", path, "--source", "elevation:zz", "--yes") == 1

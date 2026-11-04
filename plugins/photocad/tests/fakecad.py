@@ -1,17 +1,16 @@
 """A fake PhotoCAD and the projects the tests send to it.
 
-:class:`FakePhotoCAD` answers as the API is documented: ``POST /convert`` (multipart
-``image_file``) -> 202 ``{id, status: processing}``, ``GET /conversions/{id}`` processing then
-complete (``width_mm``, ``height_mm``, ``files``), ``GET /conversions/{id}/files/{format}`` with
-``units``, ``longest``, ``margin``, ``GET /account``, ``DELETE /conversions/{id}``, errors as
-``{"errors": [{code, title, detail}]}``. The drawing it returns is made from the image it received:
-the outline of every dark blob as a closed polyline on the layer ``OUTLINE`` and the diagonal of the
-image as a line on ``DETAIL``, in the units asked, Y up, origin at the lower-left corner of the
-image, the longest side of the image = ``longest`` - so the tests can see where a known square of
-the orthophoto comes back.
+:class:`FakePhotoCAD` answers as the API is documented and as photocad.ai behaved on the real test: ``POST
+/convert`` (multipart ``image_file``, ``Idempotency-Key``) -> 202 ``{id, status: processing}``, ``GET
+/conversions/{id}`` processing then complete (``width_mm``, ``height_mm`` = the page, the SUBJECT's box),
+``GET /conversions/{id}/files/{format}``, ``GET /account``, ``DELETE /conversions/{id}``, errors as ``{"errors":
+[{code, title, detail}]}``. The drawing is made from the image it received: the outline of every dark blob
+(closed, layer ``OUTLINE``) and an open line along the top of the first one (``DETAIL``), in millimetres from the
+lower-left corner of the subject's box - so the tests see where a known square of the orthophoto comes back after
+the plugin's registration.
 
-The projects: a chunk in EPSG:32633 with an orthophoto (white, a black square at known pixels) and
-a DEM; an elevation of a wall (its orthophoto in (u, v) metres, a black square, a flat relief).
+The projects: a chunk in EPSG:32633 with an orthophoto (white, black squares at known pixels) and a DEM; an
+elevation of a wall (its orthophoto in (u, v) metres, black squares, a flat relief).
 """
 from __future__ import annotations
 
@@ -91,28 +90,40 @@ def dark_boxes(image_bytes: bytes):
     return boxes, a.shape[1], a.shape[0]
 
 
+NATURAL = 0.125  # mm per pixel of the image: the natural size of the drawing (2400 px -> 300 mm, as at Khutm)
+
+
 class FakePhotoCAD:
-    """The opener given to the client instead of urllib: ``fake(request, timeout)``."""
+    """The opener given to the client instead of urllib: ``fake(request, timeout)``.
+
+    It behaves as photocad.ai did on the real test (Khutm, 2026-11-04): the page of the drawing is the box of the
+    SUBJECT (here: of the dark blobs), not the image; the coordinates are millimetres from the lower-left corner of
+    that page at a natural size (:data:`NATURAL`), whatever ``units`` says ($INSUNITS 4); ``longest`` scales the page
+    so that its long side is ``longest`` x 1000 (the unit asked, written in mm). ``page_pad`` (left, bottom, right,
+    top, in pixels) makes the subject box larger than the blobs, as a photo's subject never matches our content box
+    exactly; ``garbage`` draws outlines that are not in the image. ``Idempotency-Key``: a POST with a key seen
+    before gives the same conversion again, not charged."""
 
     def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False,
-                 scale: str = "page", diagonal: bool = True, free: int = 5, account: str = "real"):
+                 free: int = 5, account: str = "real", page_pad=(0, 0, 0, 0), garbage: bool = False):
         self.credits = credits
         self.free = free  # free conversions left
         self.account = account  # "real": the shape photocad.ai gives (2026-11-04); "flat": an older guess
         self.polls = polls  # "processing" answers before "complete"
-        # "METHOD path-prefix" -> list of HTTP codes to answer first (0: a broken connection, URLError)
+        # "METHOD path-prefix" -> list of codes to answer first: an HTTP status, 0 a connection broken before the
+        # server saw the request, -1 a connection broken after the server did what was asked
         self.fail = dict(fail or {})
-        # "page": ``longest`` scales the page (the whole image); "content": only the drawing's extents, moved to 0
-        # (the other reading of the documentation, which the plugin must catch)
-        self.scale = scale
-        self.diagonal = diagonal  # the image's diagonal on DETAIL: without it the drawing does not reach the edges
         self.status_failed = status_failed
+        self.page_pad = tuple(page_pad)
+        self.garbage = garbage
         self.requests: list[tuple[str, str, dict]] = []  # method, path?query, headers
         self.images: dict[str, bytes] = {}
         self.options: dict[str, dict] = {}
+        self.keys: dict[str, str] = {}  # idempotency key -> conversion id
         self._seen: dict[str, int] = {}
         self.deleted: list[str] = []
         self.n = 0
+        self.charged = 0
 
     def calls(self, method: str, prefix: str = "") -> list[str]:
         return [p for m, p, _ in self.requests if m == method and p.startswith(prefix)]
@@ -126,16 +137,26 @@ class FakePhotoCAD:
         method = request.get_method()
         headers = {k.lower(): v for k, v in request.header_items()}
         self.requests.append((method, path + ("?" + parts.query if parts.query else ""), headers))
+        drop_after = False
         for rule, codes in self.fail.items():
             m, prefix = rule.split(" ", 1)
             if m == method and path.startswith(prefix) and codes:
                 code = codes.pop(0)
                 if code == 0:
                     raise urllib.error.URLError("connection reset by peer")
+                if code == -1:
+                    drop_after = True
+                    break
                 slugs = {401: "unauthorized", 402: "out_of_credits", 413: "payload_too_large",
                          422: "unprocessable", 429: "rate_limited", 500: "server_error"}
                 extra = {"Retry-After": "2"} if code == 429 else None
                 raise _error(url, code, slugs.get(code, "error"), f"Error {code}", f"detail {code}", extra)
+        answer = self._answer(url, path, query, method, headers, request)
+        if drop_after:
+            raise urllib.error.URLError("connection reset by peer")
+        return answer
+
+    def _answer(self, url, path, query, method, headers, request):
         if headers.get("authorization") != f"Bearer {KEY}":
             raise _error(url, 401, "unauthorized", "Unauthorized", "Invalid API key")
         if method == "GET" and path == "/account":
@@ -145,6 +166,9 @@ class FakePhotoCAD:
                                        "plan": "free", "ceiling": {"limit": None, "used": 0},
                                        "free_conversions": {"granted": 5, "remaining": self.free}}).encode())
         if method == "POST" and path == "/convert":
+            key = headers.get("idempotency-key")
+            if key and key in self.keys:
+                return _Answer(json.dumps({"id": self.keys[key], "status": "processing"}).encode(), 202)
             ctype = headers.get("content-type", "")
             msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
                 f"Content-Type: {ctype}\r\n\r\n".encode() + request.data)
@@ -154,9 +178,15 @@ class FakePhotoCAD:
                 fields[name] = part.get_payload(decode=True)
             self.n += 1
             cid = f"conv_{self.n:04d}"
+            if key:
+                self.keys[key] = cid
             self.images[cid] = fields["image_file"]
             self.options[cid] = {k: v.decode() for k, v in fields.items() if k != "image_file"}
-            self.credits -= 1
+            self.charged += 1
+            if self.free > 0:
+                self.free -= 1
+            else:
+                self.credits -= 1
             return _Answer(json.dumps({"id": cid, "status": "processing"}).encode(), 202)
         m = re.fullmatch(r"/conversions/([^/]+)(?:/files/([a-z]+))?", path)
         if m is None:
@@ -169,59 +199,76 @@ class FakePhotoCAD:
             raise _error(url, 404, "not_found", "Not found")
         if fmt is None:
             n = self._seen[cid] = self._seen.get(cid, 0) + 1
-            if self.status_failed:
+            boxes, _w, _h = dark_boxes(self.images[cid]) if self.images[cid] else ([], 0, 0)
+            if self.status_failed or (n > self.polls and not boxes):
                 return _Answer(json.dumps({"id": cid, "status": "failed", "credits_remaining": self.credits,
-                                           "error": {"code": "conversion_failed",
+                                           "error": {"code": "general_error",
                                                      "detail": "No drawing found in the image"}}).encode())
             if n <= self.polls:
                 return _Answer(json.dumps({"id": cid, "status": "processing"}).encode())
-            _boxes, w, h = dark_boxes(self.images[cid])
+            page = self.page(cid)
             return _Answer(json.dumps({
-                "id": cid, "status": "complete", "credits_remaining": self.credits,
-                "width_mm": w * 0.5, "height_mm": h * 0.5,
+                "id": cid, "status": "complete", "credits_remaining": self.credits, "title": "Squares",
+                "width_mm": round((page[2] - page[0]) * NATURAL, 3), "height_mm": round((page[3] - page[1]) * NATURAL, 3),
                 "files": {f: f"{BASE}/conversions/{cid}/files/{f}" for f in ("dxf", "dwg", "svg", "pdf", "geometry")},
             }).encode())
         return _Answer(self.file(cid, fmt, query))
 
-    def file(self, cid: str, fmt: str, query: dict) -> bytes:
+    def page(self, cid):
+        """The subject box in image pixels (c0, r0, c1, r1, edges), padded."""
         boxes, w, h = dark_boxes(self.images[cid])
-        # the drawing in image pixels, Y up from the lower-left corner
-        px = [np.array([(c0, h - r0), (c1, h - r0), (c1, h - r1), (c0, h - r1)], float) for c0, r0, c1, r1 in boxes]
-        diag = np.array([(0.0, 0.0), (w, h)], float)
-        unit = {"mm": 1.0, "cm": 0.1, "m": 0.001}[query.get("units", "mm")]
-        if "longest" not in query:  # the natural size: 0.5 mm a pixel (width_mm = w * 0.5)
-            shift, s = np.zeros(2), 0.5 * unit
-        elif self.scale == "content":
-            allp = np.vstack(px + ([diag] if self.diagonal else []))
-            shift = allp.min(axis=0)
-            s = float(query["longest"]) / float((allp.max(axis=0) - shift).max())
-        else:
-            shift, s = np.zeros(2), float(query["longest"]) / max(w, h)
-        outlines = [[tuple(v) for v in (p - shift) * s] for p in px]
-        diagonal = [tuple(v) for v in (diag - shift) * s]
+        c0 = min(b[0] for b in boxes) - self.page_pad[0]
+        r1 = max(b[3] for b in boxes) + self.page_pad[1]
+        c1 = max(b[2] for b in boxes) + self.page_pad[2]
+        r0 = min(b[1] for b in boxes) - self.page_pad[3]
+        return c0, r0, c1, r1
+
+    def drawing(self, cid, query):
+        """Closed outlines of the blobs and an open line along the top of the first one, in the units PhotoCAD
+        writes (mm from the page's lower-left corner; ``longest`` x 1000 on the long side when given)."""
+        boxes, w, h = dark_boxes(self.images[cid])
+        pc0, pr0, pc1, pr1 = self.page(cid)
+        s = NATURAL
+        if "longest" in query:
+            s = float(query["longest"]) * 1000.0 / max(pc1 - pc0, pr1 - pr0)
+
+        def mm(c, r):
+            return ((c - pc0) * s, (pr1 - r) * s)
+
+        outlines = []
+        for c0, r0, c1, r1 in boxes:
+            if self.garbage:  # somewhere else: shifted by a third of the page and mirrored
+                c0, c1 = pc1 - (c1 - pc0) + (pc1 - pc0) // 3, pc1 - (c0 - pc0) + (pc1 - pc0) // 3
+            outlines.append([mm(c0, r0), mm(c1, r0), mm(c1, r1), mm(c0, r1)])
+        c0, r0, c1, _r1 = boxes[0]
+        line = [mm(c0, r0), mm((c0 + c1) / 2, r0), mm(c1, r0)]
+        return outlines, line, (pc1 - pc0) * s, (pr1 - pr0) * s
+
+    def file(self, cid: str, fmt: str, query: dict) -> bytes:
+        outlines, line, pw, ph = self.drawing(cid, query)
         if fmt == "dxf":
             import ezdxf
 
             doc = ezdxf.new("R2000")
+            doc.header["$INSUNITS"] = 4  # always millimetres, whatever "units" asked
             doc.layers.add("OUTLINE")
             doc.layers.add("DETAIL")
             msp = doc.modelspace()
             for outline in outlines:
                 msp.add_lwpolyline(outline, close=True, dxfattribs={"layer": "OUTLINE"})
-            if self.diagonal:
-                msp.add_line(diagonal[0], diagonal[1], dxfattribs={"layer": "DETAIL"})
+            msp.add_lwpolyline(line, close=False, dxfattribs={"layer": "DETAIL"})
             out = io.StringIO()
             doc.write(out)
             return out.getvalue().encode()
         if fmt == "svg":
-            polys = "".join('<polygon points="' + " ".join(f"{x:.4f},{h * s - y:.4f}" for x, y in o)
+            polys = "".join('<polygon points="' + " ".join(f"{x:.4f},{ph - y:.4f}" for x, y in o)
                             + '" fill="none" stroke="black"/>' for o in outlines)
-            return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w * s}{query.get("units", "mm")}" '
-                    f'height="{h * s}{query.get("units", "mm")}" viewBox="0 0 {w * s} {h * s}">{polys}</svg>').encode()
+            return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{pw}mm" height="{ph}mm" '
+                    f'viewBox="0 0 {pw} {ph}">{polys}</svg>').encode()
         if fmt == "pdf":
             return b"%PDF-1.4\n% fake\n"
         if fmt == "geometry":
-            return json.dumps({"units": "mm", "paths": outlines}).encode()
+            return json.dumps({"units": "mm", "width": pw, "height": ph, "paths": outlines + [line]}).encode()
         raise ValueError(fmt)
 
 
@@ -270,10 +317,10 @@ def project(tmp_path: Path, w: int = W, h: int = H, square=SQUARE):
     _write_rgb(ortho, square_image(w, h, square), tr, CRS)
     ch._set_product("orthomosaic", ortho)
     dem = ch.data_dir / "dem.tif"
-    yy, xx = np.mgrid[0:h // 4, 0:w // 4]
-    z = 100.0 + 0.5 * np.exp(-(((xx - w / 8) / 20.0) ** 2 + ((yy - h / 8) / 15.0) ** 2))
-    with rasterio.open(dem, "w", driver="GTiff", width=w // 4, height=h // 4, count=1, dtype="float32", crs=CRS,
-                       transform=from_origin(X0, Y1, RES * 4, RES * 4), nodata=float("nan")) as dst:
+    yy, xx = np.mgrid[0:h // 2, 0:w // 2]
+    z = 100.0 + 0.5 * np.exp(-(((xx - w / 4) / 40.0) ** 2 + ((yy - h / 4) / 30.0) ** 2))
+    with rasterio.open(dem, "w", driver="GTiff", width=w // 2, height=h // 2, count=1, dtype="float32", crs=CRS,
+                       transform=from_origin(X0, Y1, RES * 2, RES * 2), nodata=float("nan")) as dst:
         dst.write(z.astype(np.float32), 1)
     ch._set_product("dem", dem)
     doc.save()
