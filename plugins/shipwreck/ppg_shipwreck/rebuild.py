@@ -199,8 +199,9 @@ def _clean(chunk, folder: Path) -> None:
 
 def build(chunk, progress=None) -> dict:
     """The whole reconstruction (see the module): mirror, extension, frames by spacing, loft, the new parts' solids.
-    Returns ``{"mirrored", "extended", "spaced", "loft", "built", "refused", "open_ends", "warnings", "table"}``
-    (``warnings``: the extension's and the loft's)."""
+    Returns ``{"mirrored", "extended", "spaced", "loft", "built", "refused", "open_ends", "warnings", "notes",
+    "table"}`` (``warnings``: the extension's and the loft's; ``notes``: the loft's). The stored disagreement of
+    the two sides (``disagreement``) is kept with the user's ends."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     from . import reconstruct
@@ -226,7 +227,7 @@ def build(chunk, progress=None) -> dict:
         new = {"params": {"step": STEP, "samples": SAMPLES},
                "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "timbers": [r for r in st.get("timbers", []) if r.get("status") in STATUSES]}
-        for key in ("mirror", "extension", "spacing", "loft", "ends"):
+        for key in ("mirror", "extension", "spacing", "loft", "ends", "disagreement"):
             if key in st:
                 new[key] = st[key]
         new["open_ends"] = list((st.get("loft") or {}).get("open_ends") or [])
@@ -251,6 +252,7 @@ def build(chunk, progress=None) -> dict:
             "built": built, "refused": refused, "open_ends": new["open_ends"],
             "warnings": list((new.get("extension") or {}).get("warnings") or [])
             + list((new.get("loft") or {}).get("warnings") or []),
+            "notes": list((new.get("loft") or {}).get("notes") or []),
             "table": new["table"]}
 
 

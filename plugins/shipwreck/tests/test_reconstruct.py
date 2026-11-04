@@ -945,5 +945,38 @@ def test_build_minor_guards(lost, monkeypatch):
     reconstruct.build(ch)
     assert reads and max(reads.values()) <= 2, sorted(reads.values())[-3:]  # once per build
     table = copy.deepcopy(reconstruct.state(ch)["table"])
-    reconstruct.disagreement(ch)
+    rows = reconstruct.disagreement(ch)
     assert reconstruct.state(ch)["table"] == table
+    reconstruct.build(ch)  # the rows kept where the docstring says
+    assert reconstruct.state(ch)["disagreement"] == rows
+
+
+def test_a_typed_keel_standing_proud_is_the_keel_not_a_keelson(tmp_path, monkeypatch):
+    """The keel a narrow ridge (7 cm wide, 5 cm proud) along the whole keel line, the frames running over it, no
+    keelson, the keel typed with its siding: the loft follows the planking, with a neutral note, no warning to
+    trace a keelson."""
+    import hulls
+
+    from ppg_shipwreck import lines
+
+    monkeypatch.setattr(hulls, "KEELSON_HALF", 0.035)
+    monkeypatch.setattr(hulls, "KEELSON_X", (0.25, 11.75))
+    monkeypatch.setattr(hulls, "KEELSON_HEIGHT", 0.05)
+    v, f = hulls.framed_hull()
+    c = v[f].mean(axis=1)
+    drop = (c[:, 0] > LOST_BOTH[0]) & (c[:, 0] < LOST_BOTH[1])
+    _doc, ch, ends = _project(tmp_path, v, f[~drop], 35.0, hulls.UTM, "EPSG:32633", 2.0)
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    relief.build(ch, cell=0.01)
+    proposals_mod.build(ch)
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"] if "?" not in i["name"]])
+    timbers.remove(ch, [r["id"] for r in timbers.timbers_of(ch) if r["kind"] == "keelson"])
+    solids.set_keel(ch, 0.07, 0.15)
+    ship.set_stations(ch, [{"name": f"S{k}", "x": float(x)} for k, x in enumerate(STATIONS)])
+    lines.build(ch)
+    solid = reconstruct.loft(ch)
+    st = reconstruct.state(ch)["loft"]
+    assert not any("paramezzale" in w for w in st["warnings"]), st["warnings"]
+    assert any("la chiglia è il suo solido" in n for n in st["notes"]), st
+    errors = _clinker_errors(solid.vertices, 8.45, 9.25)
+    assert len(errors) > 100 and np.percentile(errors, 95) < 0.025, np.percentile(errors, [50, 95, 100])

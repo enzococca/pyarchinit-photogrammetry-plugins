@@ -20,7 +20,9 @@ the wreck exists, a stated hypothesis like the rest of the reconstruction.
 - A station whose keel no traced keelson covers, and whose section's lowest point lies more than :data:`KEEL_STEP`
   below the relief across the keel, has an untraced timber standing on the keel: the keel is read from the
   section's lowest point, the points standing over it at the keel are left out, and ``warnings`` names the
-  stations (trace the timber).
+  stations (trace the timber). Unless the ridge is the typed keel itself (:func:`_is_keel`: a keel typed, the
+  ridge seen over at least :data:`KEEL_RUN` of the stations, no wider than its siding and two cells, the frames
+  running over it): the loft follows the planking all the same and ``notes`` says the keel is its own solid.
 - Refused (:class:`NotReady`) without station sections, or with sections cut on another frame or model.
 
 An open surface: ``volume`` 0, status ``reconstructed:fairing``, name ``carenatura``, kind ``hull``, written to
@@ -41,6 +43,9 @@ MIN_POINTS = 5  # a half-section with fewer points is missing: the other side's 
 COVER = 0.01  # m: the timbers over the planking buffered by this when their points are left out of a section
 KEEL_SIDING = 0.10  # m: the band across the keel line where the keel's height is read without a keelson
 KEEL_STEP = 0.03  # m: a section this much lower than the relief across the keel: a timber on the keel, not traced
+RIDGE_SEEN = 0.01  # m: the relief across the keel this much over the section's lowest point: a ridge on the keel line
+KEEL_RUN = 0.8  # share of the stations a ridge runs over to be the keel's run
+OVER_FRAME = 0.01  # m: a ridge this much over a frame's top beside it stands over the frames (a keelson)
 
 
 def _cover(chunk, frame):
@@ -119,6 +124,86 @@ def _keel_heights(chunk, frame, xs: np.ndarray, halves) -> tuple[np.ndarray, np.
     z = np.where(covered & np.isfinite(line), line, np.fmin(line, lowest))
     untraced = ~covered & np.isfinite(line) & (lowest < line - KEEL_STEP)
     return z, untraced
+
+
+def _band_low(chunk, xs: np.ndarray, siding: float) -> np.ndarray:
+    """The lowest relief across the keel line, ``siding`` wide, at ``xs`` (NaN where the relief has none)."""
+    import warnings as _w
+
+    grid = solids._Grid(chunk, (float(xs.min()), -siding / 2.0, float(xs.max()), siding / 2.0), margin=1)
+    band = np.abs(grid.y) <= max(siding / 2.0, grid.cell)
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", RuntimeWarning)
+        low = np.nanmin(np.where(band[:, None], grid.z, np.nan), axis=0)
+    ok = np.isfinite(low)
+    out = np.full(len(xs), np.nan)
+    if ok.any():
+        near = np.abs(xs[:, None] - grid.x[ok][None]).min(axis=1) <= grid.cell
+        out[near] = np.interp(xs[near], grid.x[ok], low[ok])
+    return out
+
+
+def _ridge_width(pair, keel_z: float) -> float:
+    """The width across of what stands more than :data:`KEEL_STEP` over the keel at the start of the half-sections
+    (0 when nothing does: a timber traced and left out)."""
+    half = 0.0
+    for pts in pair:
+        if pts is None:
+            continue
+        high = pts[:, 1] > keel_z + KEEL_STEP
+        first = int(np.argmin(high)) if not high.all() else len(pts)
+        if first:
+            half = max(half, float(pts[:first, 0].max()))
+    return 2.0 * half
+
+
+def _over_frames(chunk, frame, half: float) -> bool:
+    """Whether the ridge on the keel line stands over the frames' tops (a keelson over the frames) rather than under
+    them (the keel, the frames running over it): at most of the traced frames crossing the keel line."""
+    import shapely
+
+    z, a = relief.load(chunk, "height")
+    cell = float(abs(a.a))
+    band = shapely.box(-1e4, -half - 3 * cell, 1e4, half + 3 * cell)
+    votes = []
+    for r in ship.state(chunk).get("timbers", []):
+        if r["kind"] != "frame" or r["geometry"]["type"] != "polygon" or r.get("loose"):
+            continue
+        part = solids._polygon(tracing.ship_xy_of(chunk, r, frame)).intersection(band)
+        if part.is_empty or part.area <= 0:
+            continue
+        ys = np.arange(-half - 3 * cell, half + 3 * cell + 1e-9, cell / 2.0)
+        row, col, ok = relief.cells_at(z.shape, a, frame.sign, np.full(len(ys), part.centroid.x), ys)
+        vals = np.full(len(ys), np.nan)
+        vals[ok] = z[row[ok], col[ok]]
+        inner = vals[np.abs(ys) <= half]
+        outer = vals[(np.abs(ys) > half + cell) & (np.abs(ys) <= half + 3 * cell)]
+        inner, outer = inner[np.isfinite(inner)], outer[np.isfinite(outer)]
+        if len(inner) and len(outer):
+            votes.append(float(inner.max()) - float(np.median(outer)) > OVER_FRAME)
+    return bool(votes) and sum(votes) > len(votes) / 2.0
+
+
+def _is_keel(chunk, frame, xs, halves, keel, untraced) -> bool:
+    """Whether the ridge the untraced stations show is the typed keel itself: a keel typed (:func:`solids.set_keel`),
+    the ridge seen over at least :data:`KEEL_RUN` of the stations, no wider than the siding and two cells, and
+    running under the frames, not over them."""
+    typed = ship.state(chunk).get("keel") or {}
+    siding = typed.get("siding")
+    if not siding:
+        return False
+    lowest = np.array([min(float(h[:, 1].min()) for h in pair if h is not None) for pair in halves])
+    try:
+        seen = _band_low(chunk, xs, float(siding)) - lowest > RIDGE_SEEN
+    except NotReady:
+        return False
+    if seen.mean() < KEEL_RUN:
+        return False
+    cell = float(abs(relief.load(chunk, "height")[1].a))
+    widths = [_ridge_width(pair, zk) for pair, zk, u in zip(halves, keel, untraced) if u]
+    if any(w > float(siding) + 2 * cell for w in widths):
+        return False
+    return not _over_frames(chunk, frame, float(siding) / 2.0)
 
 
 def _off_the_keel(pts: np.ndarray | None, keel_z: float) -> np.ndarray | None:
@@ -233,18 +318,22 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
         halves.append(pair)
         names.append(s.get("name") or f"x {x:.2f}")
     warnings: list[str] = []
+    notes: list[str] = []
 
     def nothing(reason):
         path.unlink(missing_ok=True)
         st["loft"] = {"file": None, "open_ends": [], "stations": xs, "faces": 0, "area": 0.0, "length": 0.0,
-                      "reason": reason, "warnings": warnings}
+                      "reason": reason, "warnings": warnings, "notes": notes}
         return None
 
     if len(xs) < 2:
         return nothing(t("meno di due stazioni con una mezza sezione", "fewer than two stations with a half-section"))
     xs_a = np.asarray(xs)
     keel, untraced = _keel_heights(chunk, frame, xs_a, halves)
-    if untraced.any():
+    if untraced.any() and _is_keel(chunk, frame, xs_a, halves, keel, untraced):
+        notes.append(t("La carenatura segue il fasciame; la chiglia è il suo solido.",
+                       "The faired hull follows the planking; the keel is its own solid."))
+    elif untraced.any():
         listed = ", ".join(n for n, u in zip(names, untraced) if u)
         warnings.append(t(f"Un legno sopra la chiglia non tracciato alle stazioni {listed}: lì la chiglia è letta dal "
                           "punto più basso della sezione e i punti sopra di essa sono lasciati fuori; traccialo (il "
@@ -252,6 +341,7 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
                           f"A timber over the keel not traced at the stations {listed}: there the keel is read from "
                           "the lowest point of the section and the points over it are left out; trace it (the "
                           "keelson) so that the faired hull does not follow it."))
+    if untraced.any():
         halves = [(_off_the_keel(hp, zk), _off_the_keel(hs, zk)) if u else (hp, hs)
                   for (hp, hs), zk, u in zip(halves, keel, untraced)]
     port, star = [], []
@@ -325,5 +415,6 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
                   "stations": [float(v) for v in xs_a],
                   "faces": int(len(faces)),
                   "area": float(np.abs(_cross2(plan[:, 1] - plan[:, 0], plan[:, 2] - plan[:, 0])).sum() / 2.0),
-                  "length": float(np.ptp(vertices[:, 0])), "warnings": warnings}
+                  "length": float(np.ptp(vertices[:, 0])), "warnings": warnings,
+                  "notes": notes}
     return solid
