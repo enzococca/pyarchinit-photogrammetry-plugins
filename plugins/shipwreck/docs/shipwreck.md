@@ -34,6 +34,14 @@ The cell comes from the model's density; 5 mm suits a close-range model of a hul
 about a minute). The drawings made on the relief stay with it when you build it again, also after the ship frame
 changed.
 
+The relief is a height field: one height per cell, the highest. Whatever cannot be seen from above in the ship frame is
+not in it, and so not in the proposals nor in the 3D timbers: an undercut, a side steeper than vertical, the underside of
+a timber, a timber lying under another, the outer face of the planking. For a wreck seen from inside this means: the
+planking is its inner face (its thickness comes from the steps of the seams, the strake model or the value you type),
+the keel is not seen (hence the keel of given dimensions), the frames are their visible part above the planking, and
+whatever lies under the frames is interpolated. A hull lying on its side needs a ship frame of its own so that the part
+you want is seen from above.
+
 ### The proposals
 
 ![The relief of the synthetic hull with the proposals](img/shipwreck-relief-proposals.png)
@@ -43,10 +51,16 @@ The plugin reads on the height raster:
 - **seams** (the lands of a clinker planking): steps across the hull, followed along x, broken at gaps, a line each;
   numbered from the keel (`comento B1`, `B2`, ... to port, `T1`, ... to starboard); a piece that falls between two lands
   already there is a doubtful `comento B?` with a score of 0.1;
-- **frames**, the **keelson** and the **stringers**: what stands above the planking (the heights above an opening), as
-  polygons, classified by length and direction; the frames named from the bow, with their room and the frame space
-  per side;
-- **strakes**: the bands between consecutive seams, a polygon each, `fascia B1`, ...
+- **frames**, the **keelson** and the **stringers**: what stands above the planking (the heights above an opening along
+  x, on the floor's rise along x taken out first, so that a frame keeps its whole outline where the hull rises toward
+  stem and stern), as polygons, classified by length and direction; the frames named from the bow, with their room and
+  the frame space per side. A transverse item that fails only the elongation test (between 1.8 and 3 times as long as
+  wide: most often a frame merged with its neighbour or with raised planking) is a doubtful `ordinata ?` with a score of
+  0.1: accept it and correct its outline;
+- **strakes**: the bands between consecutive seams, a polygon each, `fascia B1`, ...; band 1 runs from the keel line
+  (offset by the keel's half width) to seam 1, and each band starts and stops where the pieces of its seams do, so where
+  the inner seams are not read the bands are boxes. A band more than 1.5 times as wide as the side's other bands
+  between seams, or lying mostly over the proposed keelson and stringers, is a doubtful `fascia B?` with a score of 0.1.
 
 | Parameter | Default | When to change it |
 |---|---|---|
@@ -66,8 +80,11 @@ proposes again what was accepted or rejected. The limits, plainly:
 - a land missing along the whole hull gives one band over two strakes;
 - noise of the model beyond 2 mm breaks the seams into pieces and may add a strake;
 - strays at the bow may take rank 1;
-- on a real wreck frames lying close together, or with planking between them, are read as one wide item and proposed
-  as *other*: trace them again as frames with *Add...*; flat patches of sediment may be proposed as a keelson.
+- on a real wreck frames lying close together, or with planking between them, are read as one wide item, proposed as
+  `ordinata ?` (or *other* when even shorter): correct the outline, or trace the frames by hand with *Add...*; splitting
+  merged frames is planned for version 0.4.0; flat patches of sediment may be proposed as a keelson;
+- the strakes are bands between the seams read, not the outlines of the planks: where seams are missing they are boxes
+  over whatever lies there (sediment, longitudinal timbers); correct or trace them by hand.
 
 ### The 3D timbers
 
@@ -84,9 +101,11 @@ proposes again what was accepted or rejected. The limits, plainly:
 
 Limits: trace every timber touching the one you build (an untraced one ends up in the ring the planking under it is read
 from); the files are large on long hulls (about 100 bytes per cell, no decimation); a hidden span with cells on one side
-only is held constant; a timber traced where nothing stands on the hull gives a mesh of zero thickness; on the steep
-sides at the ends of a deep hull the volumes of the frames come out smaller (on the synthetic hull 10-40 % at the four
-frames nearest each end, within 5 % elsewhere). A cancelled build is said in the pane and the tree (*interrupted*): its
+only is held constant; a timber traced where nothing stands on the hull gives a mesh of zero thickness. Across a long
+timber the hull under it is a curve through the heights and slopes of the planking on both sides (a chord where the
+slopes are those of another timber's side). On the synthetic hull all 23 frames, from stem to stern, come within 2 %
+of their true volume, the keelson within 1 %, the strakes within 1.4 % of the clinker surface's (the garboard, a strip
+2 cm wide seen from above, within 10 %). A cancelled build is said in the pane and the tree (*interrupted*): its
 files are partial. When the catalogue, the keel or the relief changes after the build the pane says *to build again*,
 and an export warns that the files say what the catalogue said then.
 

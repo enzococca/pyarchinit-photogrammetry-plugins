@@ -48,10 +48,13 @@ l'esterno dello scafo vuole la vista "esterno"; un legno lungo a filo di quasi t
 di lui; un avanzo in una fascia di larghezza normale è proposto come `comento ?` (accettarlo divide la fascia); un comento
 che manca lungo tutto lo scafo dà una banda sola su due fasce; un rumore oltre 2 mm spezza i comenti e può aggiungere una
 fascia; pezzi spuri a prua possono prendere il rango 1; su un relitto vero ordinate vicine sono spesso proposte come un
-elemento largo di tipo *altro* e il sedimento piatto come paramezzale: ricalcali a mano. Ricalca tutti i legni che toccano
-quello che costruisci in 3D; i file 3D sono grandi sugli scafi lunghi (circa 100 byte per cella); sui fianchi ripidi alle
-estremità di uno scafo profondo i volumi delle ordinate escono più piccoli; una costruzione interrotta o superata viene
-detta e l'esportazione avvisa. I nomi possono affollarsi dove fasce strette o più serrette finiscono insieme.
+elemento largo dubbio (`ordinata ?`) e il sedimento piatto come paramezzale; le fasce sono bande fra i comenti letti,
+rettangoli dove mancano comenti (una banda molto più larga delle vicine o sopra i legni longitudinali è una dubbia
+`fascia B?`): correggile a mano. Il rilievo è un campo di altezze: ciò che dall'alto nel sistema della nave non si vede
+(sottosquadri, la faccia di sotto di un legno, un legno sotto un altro, la faccia esterna del fasciame di un relitto
+visto dall'interno) non è né nelle proposte né nei solidi. Ricalca tutti i legni che toccano
+quello che costruisci in 3D; i file 3D sono grandi sugli scafi lunghi (circa 100 byte per cella); una costruzione
+interrotta o superata viene detta e l'esportazione avvisa. I nomi possono affollarsi dove fasce strette o più serrette finiscono insieme.
 
 Il Clinker Boat Tool è un Houdini Digital Asset di Fred Fröhlich e Sigurd Solhaug Nielsen (MIT,
 [10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), descritto in *From Photogrammetry to Construction

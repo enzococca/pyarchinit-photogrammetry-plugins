@@ -248,6 +248,7 @@ def test_the_pane_builds_the_timbers_exports_them_and_draws_the_plan(window, mon
     plugin._requested("model_export")
     wait()
     assert out.exists() and (out.parent / "timbers_3d.xlsx").exists()
+    assert ship.state(ch)["model_export"] == str(out)  # kept in the interface thread, after the worker
     assert not [s for s in said if s.startswith("warning")]
 
     # a record changed after the build: the export warns, the pane says so
@@ -267,8 +268,18 @@ def test_the_pane_builds_the_timbers_exports_them_and_draws_the_plan(window, mon
     ship.state(ch)["relief"]["model"] = "another"
     assert relief.is_stale(ch)
     answers[("choice", "Pianta del relitto")] = None  # cancel
+    written = (folder / "wreck_plan.pdf").stat().st_mtime_ns
     plugin._requested("wreck_plan")
+    wait()
     assert chosen and "rilievo" in chosen[-1].lower()
+    assert (folder / "wreck_plan.pdf").stat().st_mtime_ns == written  # nothing drawn
+    rebuilt = []
+    monkeypatch.setattr(plugin, "_do_relief_build", lambda: rebuilt.append(True))
+    answers[("choice", "Pianta del relitto")] = 0  # build the relief again first
+    plugin._requested("wreck_plan")
+    wait()
+    assert rebuilt and (folder / "wreck_plan.pdf").stat().st_mtime_ns == written
+    assert any("non è stato fatto" in s for s in said)
 
     # deactivate takes the relief layers away
     plugin._requested("relief_show")
@@ -310,6 +321,29 @@ def test_a_mixed_delete_is_one_undo_entry(window):
     view.select_items(picked)
     assert w.delete_selected(confirm=False) == 2
     assert len(w.history.entries) == before + 1
+    assert "proposte e legni eliminati" in w.history.undo_text()
     w.history.undo()
     assert record["id"] in {r["id"] for r in timbers.timbers_of(ch)}
     assert plank["id"] in {i["id"] for i in ship.state(ch)["proposals"]["items"]}
+
+
+def test_a_cancelled_build_in_the_window_marks_the_project_modified(window, monkeypatch):
+    from pyarchinit_photogrammetry.core.progress import Cancelled
+
+    w, ch, plugin, wait, answers, said, chosen = window
+
+    def cancelled(chunk, thickness=None, progress=None):
+        ship.state(chunk)["solids"] = {"built": "2026-11-04T00:00:00+00:00", "count": 1, "refused": [],
+                                       "cancelled": True, "frame_key": None}
+        raise Cancelled()
+
+    monkeypatch.setattr(solids, "build", cancelled)
+    w.setWindowModified(False)
+    plugin.build_solids(ch)
+    w.runner.wait()
+    from PySide6.QtWidgets import QApplication
+
+    for _ in range(5):
+        QApplication.processEvents()
+    assert w.isWindowModified()
+    assert "interrotto" in plugin.pane.states["relief"].text()

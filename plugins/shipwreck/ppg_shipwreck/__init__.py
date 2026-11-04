@@ -184,6 +184,8 @@ class ShipwreckPlugin(Plugin):
                 joined[0].after = copy.deepcopy(after)
                 history.entries[-1].text = t("Relitto: proposte e legni eliminati", "Shipwreck: proposals and timbers "
                                              "deleted")
+                if getattr(history, "on_change", None) is not None:  # the menu says the new text
+                    history.on_change()
                 self._deleting = None
             else:
                 step = _Step(self, chunk, before, after)
@@ -1188,7 +1190,8 @@ class ShipwreckPlugin(Plugin):
         def job(p):
             try:
                 return solids.build(chunk, thickness, progress=p)
-            finally:  # also cancelled: the pane and the tree say what was built ("interrotto")
+            finally:  # also cancelled: files and meta changed, the pane and the tree say what was built ("interrotto")
+                self.context.call_in_gui(self.context.mark_modified)
                 self.context.call_in_gui(self.refresh_pane)
                 self.context.call_in_gui(self.context.refresh_tree)
 
@@ -1235,11 +1238,14 @@ class ShipwreckPlugin(Plugin):
 
         def job(p):
             p(0.0, t(f"Scrittura {fmt}...", f"Writing {fmt}..."))  # the writers have no progress of their own
-            out = export_3d(chunk, path, system, tables)
+            out = export_3d(chunk, path, system, tables, remember=False)  # the chunk's meta: in done, not here
             p(1.0, str(out["path"]))
             return out
 
         def done(out):
+            from . import ship
+
+            ship.state(chunk)["model_export"] = str(out["path"])
             self._status(t(f"Legni in 3D: {out['path']}", f"Timbers in 3D: {out['path']}"))
             if out.get("note"):
                 self._message("information", out["note"])
@@ -1263,6 +1269,8 @@ class ShipwreckPlugin(Plugin):
                          [t("Rifai il rilievo", "Build the relief again"), t("Disegna lo stesso", "Draw anyway")])
         if k == 0:
             self._do_relief_build()
+            self._message("information", t("Il disegno non è stato fatto: rifallo quando il rilievo è pronto.",
+                                           "The drawing was not made: make it again when the relief is ready."))
         return k == 1
 
     def _do_wreck_plan(self) -> None:
@@ -1983,9 +1991,10 @@ def check_export_path(path) -> None:
         raise NotReady(t("Esporta in .obj, .glb o .ifc.", "Export to .obj, .glb or .ifc."))
 
 
-def export_3d(chunk, path, system: str = "ship", tables: bool = True) -> dict:
+def export_3d(chunk, path, system: str = "ship", tables: bool = True, remember: bool = True) -> dict:
     """The timbers in 3D as ``path`` (.obj, .glb, .ifc by its suffix) in ``system``, with the tables beside it.
-    Returns ``{"path", "note", "csv"?, "xlsx"?}``; the last path is remembered for the next export."""
+    Returns ``{"path", "note", "csv"?, "xlsx"?}``; with ``remember`` the path is kept in the chunk's meta for the next
+    export (False from a worker thread: the caller keeps it in the interface thread)."""
     from . import models3d, ship
 
     path = Path(path)
@@ -2002,7 +2011,8 @@ def export_3d(chunk, path, system: str = "ship", tables: bool = True) -> dict:
         out["elements"] = result.get("elements")
     if tables:
         out.update({k: v for k, v in models3d.write_tables(chunk, path.parent).items() if k in ("csv", "xlsx")})
-    ship.state(chunk)["model_export"] = str(path)
+    if remember:
+        ship.state(chunk)["model_export"] = str(path)
     return out
 
 

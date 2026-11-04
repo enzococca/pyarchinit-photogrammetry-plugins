@@ -459,3 +459,45 @@ def test_a_long_plank_flush_on_a_land_renames_nothing(framed, length, thickness)
             width = sum(shapely.Polygon(b["ship_xy"]).intersection(cut).length
                         for b in port_bands if b["name"] == f"fascia B{k}")
             assert width == pytest.approx(widths[k - 1], rel=0.05), (at, k)
+
+
+def test_a_frame_that_fails_only_the_elongation_is_a_doubtful_frame():
+    from rasterio.transform import from_origin
+
+    z = np.zeros((300, 300))
+    xs = (np.arange(300) + 0.5) * 0.01
+    X, Y = np.meshgrid(xs, 3.0 - xs)
+    z[(X > 1.4) & (X < 1.7) & (Y > 0.5) & (Y < 1.2)] = 0.05  # 0.3 x 0.7 m across x: two frames merged
+    z[(X > 2.2) & (X < 2.28) & (Y > 0.5) & (Y < 1.5)] = 0.05  # a frame
+    z[(X > 0.5) & (X < 0.75) & (Y > 2.0) & (Y < 2.25)] = 0.05  # a lump
+    found = proposals.ridges(z, from_origin(0, 3, 0.01, 0.01), 1)
+    by_x = {round(r["x"], 1): r for r in found}
+    assert by_x[2.2]["kind"] == "frame" and not by_x[2.2].get("doubtful")
+    merged = by_x[1.6]
+    assert merged["kind"] == "frame" and merged["doubtful"] and merged["score"] <= proposals.DOUBTFUL_SCORE
+    assert by_x[0.6]["kind"] == "other"
+    assert len(found) == 3  # the merged frame is not proposed a second time as an other item
+
+
+def test_wide_bands_and_bands_over_longitudinals_are_doubtful():
+    def band(side, y0, y1, edge="seam"):
+        return {"side": side, "edge": edge, "ship_xy": [[0, y0], [4, y0], [4, y1], [0, y1]]}
+
+    bands = [band("port", 0.1, 0.7, "keel line"), band("port", 0.7, 0.9), band("port", 0.9, 1.1),
+             band("port", 1.1, 1.3), band("port", 1.3, 3.0, "model"), band("starboard", -0.3, -0.1, "keel line"),
+             band("starboard", -0.5, -0.3)]
+    keelson = [{"ship_xy": [[0, -0.32], [4, -0.32], [4, -0.48], [0, -0.48]]}]
+    assert proposals.doubtful_bands(bands, keelson) == {0, 6}  # 0.6 m against 0.2 m; the one over the keelson
+
+
+def test_the_end_frames_keep_their_whole_outline(framed):
+    """On a floor rising toward stem and stern a horizontal opening would taper the frames there: the floor is taken
+    out along x first (the frames' footprints reach the sheer at their full room)."""
+    _ch, _frame, prop = framed
+    frames = sorted(_of(prop, "frame"), key=lambda f: _centroid(f).x)
+    for f in frames[:3] + frames[-3:]:
+        poly = shapely.Polygon(f["ship_xy"])
+        x0, _y0, x1, _y1 = poly.bounds
+        assert poly.area == pytest.approx((x1 - x0) * (poly.bounds[3] - poly.bounds[1]), rel=0.12), f["name"]
+        assert abs(f["room"] - 0.08) < 0.01
+    assert not _of(prop, "other")

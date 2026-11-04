@@ -395,6 +395,42 @@ def _axes(cells: np.ndarray):
     return centre, along, across, bool(np.ptp(u) >= ELONGATED * max(np.ptp(w), 1e-9))
 
 
+MAX_SLOPE = 6.0  # the steepest floor read in a ring (80 degrees): steeper is the side of a timber
+SAG = 0.5  # the bottom across a timber leaves the chord by at most this share of the run between the ring's edges
+
+
+def _across(w: np.ndarray, z: np.ndarray, near: np.ndarray, far: np.ndarray, at: np.ndarray, cell: float) -> np.ndarray:
+    """The hull under a strip of a long footprint at ``at`` (positions across) from the ring's points of the strip
+    (``w``, ``z``; ``near`` and ``far``: those on either side). The outer edge of the ring on each side carries the
+    height (an outline traced a cell or two inside the timber leaves its top in the inner edge of the ring) and the
+    slope there, read on the outer cells of that side (from :data:`RING` [0] + 1 cells out): a cubic through both ends
+    with both slopes, so that a floor curving under a timber (the rocker at stem and stern) is followed and not cut by
+    a chord. A side with one cell only, or slopes that disagree with the chord by more than its own run, gives the
+    chord."""
+    i, j = np.flatnonzero(near)[0], np.flatnonzero(far)[-1]
+    w0, z0, w1, z1 = w[i], z[i], w[j], z[j]
+    run = w1 - w0
+    chord = z0 + (at - w0) * (z1 - z0) / run
+    fits = []
+    for side, outer in ((near, w0), (far, w1)):
+        k = side & (np.abs(w - outer) <= (RING[1] - RING[0]) * cell + 1e-9)
+        if np.ptp(w[k]) < cell * 0.99 if k.sum() >= 2 else True:
+            return chord
+        fits.append((np.polyfit(w[k], z[k], 1)[0], float(w[k].mean())))
+    # a line's slope is the floor's at the middle of its cells: carried to the outer edge with the curvature that the
+    # two sides' slopes give (exact on a parabola)
+    curvature = (fits[1][0] - fits[0][0]) / (fits[1][1] - fits[0][1])
+    slopes = [fits[0][0] + curvature * (w0 - fits[0][1]), fits[1][0] + curvature * (w1 - fits[1][1])]
+    if any(abs(sl) > MAX_SLOPE for sl in slopes):  # a wall of another timber in the ring, not the floor
+        return chord
+    u = (at - w0) / run  # Hermite cubic on [0, 1]
+    h00, h10, h01, h11 = 2 * u**3 - 3 * u**2 + 1, u**3 - 2 * u**2 + u, -2 * u**3 + 3 * u**2, u**3 - u**2
+    curve = h00 * z0 + h10 * run * slopes[0] + h01 * z1 + h11 * run * slopes[1]
+    if np.abs(curve - chord).max(initial=0.0) > SAG * abs(run):
+        return chord
+    return curve
+
+
 def _hull_under(cells: np.ndarray, ring: np.ndarray, zs: np.ndarray, cell: float) -> np.ndarray:
     """The hull's height at ``cells`` from the ``ring`` points (heights ``zs``). A long footprint is read across its
     short axis, in strips one cell wide along the long one: linear between the outer edges of the ring on its two
@@ -418,10 +454,7 @@ def _hull_under(cells: np.ndarray, ring: np.ndarray, zs: np.ndarray, cell: float
             near, far = w < cw[here].min(), w > cw[here].max()
             if not (near.any() and far.any()):
                 continue
-            # the outer edge of the ring on each side: an outline traced a cell or two inside the timber leaves its
-            # top in the inner edge of the ring
-            i, j = np.flatnonzero(near)[0], np.flatnonzero(far)[-1]
-            out[here] = z[i] + (cw[here] - w[i]) * (z[j] - z[i]) / (w[j] - w[i])
+            out[here] = _across(w, z, near, far, cw[here], cell)
         keep = (ru >= cu.min()) & (ru <= cu.max())
         if keep.sum() >= 3:
             ring, zs = ring[keep], zs[keep]

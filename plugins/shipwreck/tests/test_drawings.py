@@ -666,7 +666,9 @@ def test_the_hidden_parts_of_a_strake_are_dashed(wreck):
     solid = [shapely.Polygon(ring) for lay, ring, _c, _h, dashed in d.fills if lay == "LEGNI_PLANK" and not dashed]
     assert dashed and solid
     assert all(p.difference(frames).length < 1e-6 for p in dashed)  # outlines under a frame or the keelson
-    assert sum(p.length for p in dashed) > 5.0 and all(p.intersection(frames).area < 0.5 * p.area for p in solid)
+    # a frame ending a cell short of the strake's outline leaves a visible corner of a few millimetres beside it
+    assert sum(p.length for p in dashed) > 5.0 and all(p.intersection(frames).area < 0.5 * p.area for p in solid
+                                                       if p.area > 1e-4)
     planks = [_sheet_polygon(ch, r) for r in timbers.timbers_of(ch) if r["kind"] == "plank" and timbers.is_measured(r)]
     visible = shapely.union_all(planks).difference(frames.buffer(-0.002))
     assert _filled(d, "LEGNI_PLANK").symmetric_difference(visible).area < 1e-4  # the filled parts are the visible ones

@@ -282,3 +282,35 @@ def test_a_name_with_a_line_break_keeps_the_header(hull, tmp_path):
     s.name = "fascia\nB1\r\nend_header"
     mesh = PlyMesh(solids.write_ply(tmp_path / "x.ply", s))
     assert mesh.n_faces == len(s.faces) and mesh._faces["hidden"].sum() == s.hidden.sum()
+
+
+def test_every_frame_of_the_whole_hull_within_five_percent(tmp_path):
+    """The end frames stand on a floor rising toward stem and stern: their footprint is read whole (proposals) and
+    their bottom follows the floor's curve across the timber (:func:`solids._across`), not a chord."""
+    from hulls import framed_truth
+
+    _doc, ch, ends = framed_project(tmp_path, heading_deg=35)
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    relief.build(ch, cell=0.01)
+    proposals_mod.build(ch)
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"] if i["kind"] in ("frame", "keelson")])
+    out = solids.build(ch)
+    assert not out["refused"]
+    by_x = dict(zip(FRAMES, framed_truth()["volumes"]["frames"]))
+    frames = _records(ch, "frame")
+    assert len(frames) == len(FRAMES)
+    for r in frames:
+        x = float(np.mean(tracing.ship_xy_of(ch, r)[:, 0]))
+        expected = by_x[min(by_x, key=lambda f: abs(f - x))]
+        assert r["volume"] == pytest.approx(expected, rel=0.05), (r["name"], r["volume"], expected)
+
+
+def test_the_bottom_across_a_timber_follows_a_curved_floor():
+    w = np.array([-0.06, -0.055, -0.05, 0.05, 0.055, 0.06])
+    z = 10.0 * w**2  # a floor curving up on both sides
+    near, far = w < 0, w > 0
+    at = np.linspace(-0.04, 0.04, 9)
+    got = solids._across(w, z, near, far, at, 0.005)
+    assert np.abs(got - 10.0 * at**2).max() < 5e-4  # the chord is up to 36 mm off
+    flat = solids._across(w, np.zeros(6), near, far, at, 0.005)
+    assert np.abs(flat).max() < 1e-12

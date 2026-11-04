@@ -34,6 +34,14 @@ programma fa per un DEM. La cella viene dalla densità del modello; 5 mm va bene
 (un modello di 15 milioni di facce richiede circa un minuto). I disegni fatti sul rilievo restano con lui quando lo
 rifai, anche dopo un cambio del sistema della nave.
 
+Il rilievo è un campo di altezze: una quota per cella, la più alta. Ciò che dall'alto, nel sistema della nave, non si
+vede non c'è, e quindi non c'è nelle proposte né nei legni 3D: un sottosquadro, un fianco più ripido della verticale, la
+faccia di sotto di un legno, un legno sotto un altro, la faccia esterna del fasciame. Per un relitto visto dall'interno
+significa: il fasciame è la sua faccia interna (lo spessore viene dai gradini dei comenti, dal modello delle fasce o dal
+valore che scrivi), la chiglia non si vede (per questo la chiglia di dimensioni date), le ordinate sono la loro parte
+visibile sopra il fasciame e ciò che sta sotto le ordinate è interpolato. Uno scafo adagiato su un fianco vuole un
+sistema della nave suo, perché la parte che interessa si veda dall'alto.
+
 ### Le proposte
 
 ![Il rilievo dello scafo sintetico con le proposte](img/shipwreck-relief-proposals.png)
@@ -43,10 +51,17 @@ Il plugin legge sul raster delle altezze:
 - i **comenti** (i gradini del fasciame a clinker): salti di traverso allo scafo, seguiti lungo x, interrotti nelle
   lacune, una linea ciascuno; numerati dalla chiglia (`comento B1`, `B2`, ... a babordo, `T1`, ... a tribordo); un pezzo
   che cade fra due comenti già presenti è un dubbio `comento B?` con punteggio 0,1;
-- le **ordinate**, il **paramezzale** e le **serrette**: ciò che sporge dal fasciame (l'altezza sopra un'apertura),
-  come poligoni, classificati per lunghezza e direzione; le ordinate nominate dalla prua, con la loro larghezza e il
-  passo per lato;
-- le **fasce**: le bande fra comenti consecutivi, un poligono ciascuna, `fascia B1`, ...
+- le **ordinate**, il **paramezzale** e le **serrette**: ciò che sporge dal fasciame (l'altezza sopra un'apertura lungo x,
+  tolta prima la salita del fondo lungo x, così che un'ordinata tenga tutto il suo contorno dove lo scafo sale verso
+  prua e poppa), come poligoni, classificati per lunghezza e direzione; le ordinate nominate dalla prua, con la loro
+  larghezza e il passo per lato. Un elemento di traverso che manca solo la prova dell'allungamento (lungo fra 1,8 e 3
+  volte la larghezza: quasi sempre un'ordinata unita alla vicina o a fasciame rialzato) è un dubbio `ordinata ?` con
+  punteggio 0,1: accettalo e correggine il contorno;
+- le **fasce**: le bande fra comenti consecutivi, un poligono ciascuna, `fascia B1`, ...; la banda 1 va dalla linea di
+  chiglia (spostata di metà larghezza della chiglia) al comento 1, e ogni banda comincia e finisce dove cominciano e
+  finiscono i pezzi dei suoi comenti, così dove i comenti interni non si leggono le bande sono rettangoli. Una banda
+  larga più di 1,5 volte le altre bande fra comenti del suo lato, o stesa per lo più sopra paramezzale e serrette
+  proposti, è una dubbia `fascia B?` con punteggio 0,1.
 
 | Parametro | Predefinito | Quando cambiarlo |
 |---|---|---|
@@ -66,8 +81,12 @@ ripropone ciò che è stato accettato o scartato. I limiti, detti chiaramente:
 - un comento che manca lungo tutto lo scafo dà una banda sola su due fasce;
 - un rumore del modello oltre 2 mm spezza i comenti e può aggiungere una fascia;
 - pezzi spuri a prua possono prendere il rango 1;
-- su un relitto vero ordinate vicine, o con il fasciame fra di loro, sono lette come un elemento largo e proposte come
-  *altro*: ricalcale come ordinate con *Aggiungi...*; zone piatte di sedimento possono essere proposte come paramezzale.
+- su un relitto vero ordinate vicine, o con il fasciame fra di loro, sono lette come un elemento largo, proposto come
+  `ordinata ?` (o *altro* se ancora più corto): correggine il contorno o ricalca le ordinate a mano con *Aggiungi...*;
+  separare le ordinate unite è previsto per la versione 0.4.0; zone piatte di sedimento possono essere proposte come
+  paramezzale;
+- le fasce sono bande fra i comenti letti, non i contorni delle tavole: dove mancano comenti sono rettangoli sopra
+  qualsiasi cosa ci sia (sedimento, legni longitudinali); correggile o ricalcale a mano.
 
 ### I legni 3D
 
@@ -85,8 +104,10 @@ ripropone ciò che è stato accettato o scartato. I limiti, detti chiaramente:
 Limiti: ricalca tutti i legni che toccano quello che costruisci (uno non ricalcato finisce nell'anello da cui si legge il
 fasciame sotto); i file sono grandi sugli scafi lunghi (circa 100 byte per cella, nessuna decimazione); un tratto nascosto
 con celle da un lato solo è tenuto costante; un legno ricalcato dove sullo scafo non c'è niente dà una mesh di spessore
-nullo; sui fianchi ripidi alle estremità di uno scafo profondo i volumi delle ordinate escono più piccoli (sullo scafo
-sintetico 10-40 % alle quattro ordinate più vicine a ciascuna estremità, entro il 5 % altrove). Una costruzione
+nullo. Di traverso a un legno lungo lo scafo sotto di lui è una curva per le quote e le pendenze del fasciame ai due
+lati (una corda dove le pendenze sono quelle del fianco di un altro legno). Sullo scafo sintetico tutte le 23 ordinate,
+da prua a poppa, stanno entro il 2 % del loro volume vero, il paramezzale entro l'1 %, le fasce entro l'1,4 % di quello
+sulla superficie a clinker (il torello, una striscia larga 2 cm vista dall'alto, entro il 10 %). Una costruzione
 interrotta è detta nel pannello e nell'albero (*interrotto*): i suoi file sono parziali. Quando catalogo, chiglia o
 rilievo cambiano dopo la costruzione il pannello dice *da rifare*, e un'esportazione avvisa che i file dicono ciò che il
 catalogo diceva allora.

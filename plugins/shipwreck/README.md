@@ -46,10 +46,12 @@ a false seam; a timber narrower than 5 cm beside a land may be missed; a model s
 view "outside"; a long timber flush along almost a whole land renames the lands beyond it; a remnant in a strake of normal
 width is proposed as `comento ?` (accepting it splits the strake); a land missing along the whole hull gives one band over
 two strakes; noise beyond 2 mm breaks the seams and may add a strake; strays at the bow may take rank 1; on a real wreck
-frames close together are often proposed as one wide item of kind *other* and flat sediment as a keelson: trace them
-again by hand. Trace every timber touching the one you build in 3D; the 3D files are large on long hulls (about 100 bytes
-per cell); on the steep sides at the ends of a deep hull the frames' volumes come out smaller; a cancelled or stale build
-is said, and an export warns. Names may crowd where narrow strakes or several stringers end together.
+frames close together are often proposed as one wide doubtful frame (`ordinata ?`) and flat sediment as a keelson;
+the strakes are bands between the seams read, boxes where seams are missing (a band far wider than its neighbours or
+over the longitudinals is a doubtful `fascia B?`): correct them by hand. The relief is a height field: what is not seen
+from above in the ship frame (undercuts, the underside of a timber, a timber under another, the outer face of the
+planking of a wreck seen from inside) is in neither the proposals nor the solids. Trace every timber touching the one you build in 3D; the 3D files are large on long hulls (about 100 bytes
+per cell); a cancelled or stale build is said, and an export warns. Names may crowd where narrow strakes or several stringers end together.
 
 The Clinker Boat Tool is a Houdini Digital Asset by Fred Fröhlich and Sigurd Solhaug Nielsen (MIT,
 [10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), described in *From Photogrammetry to Construction

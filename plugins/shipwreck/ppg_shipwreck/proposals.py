@@ -143,6 +143,8 @@ class _Grid:
 
 
 VIEWS = ("inside", "outside")
+DOUBTFUL_ELONGATION = 1.8  # a transverse item this elongated (but less than ``elongation``) is a doubtful frame
+DOUBTFUL_SCORE = 0.1  # the score of a doubtful frame (``ordinata ?``) and of a doubtful strake (``fascia B?``)
 
 
 def _params(params) -> dict:
@@ -181,13 +183,46 @@ def _fill_along(z: np.ndarray, axis: int) -> np.ndarray:
     return np.moveaxis(filled, -1, axis)
 
 
-def _top_hat(grid: _Grid, length: float, axis: int) -> np.ndarray:
-    """The height above its grey opening by a line of ``length`` along ``axis`` (1: x, 0: y); NaN off the model."""
+GROW_SHARE = 1.0 / 3.0  # of the opening: how far the detrended outline of a frame may grow beyond the plain one
+FLOOR_STEP = 4  # cells: the floor's slope along x is read on every FLOOR_STEP-th column and interpolated between
+
+
+def _floor_along_x(z: np.ndarray, size: int, ok: np.ndarray | None = None) -> np.ndarray:
+    """The rise of the floor of ``z`` (no NaN) along x in each row, up to a constant: the running median of the slope
+    dz/dx over ``size`` columns (the opening: a frame's sides and a land crossing the row are a few cells of
+    slope and leave the median), integrated along x. Off the model (``ok`` False) the slope at its nearest edge goes on,
+    so that the end of the hull is not read as level. Each row is opened by itself, so subtracting it changes no row's
+    steps, only the slope they stand on."""
+    from scipy import ndimage
+
+    g = np.gradient(z, axis=1) if z.shape[1] > 1 else np.zeros_like(z)
+    if ok is not None:
+        inner = ok.copy()
+        inner[:, 1:] &= ok[:, :-1]
+        inner[:, :-1] &= ok[:, 1:]
+        if inner.any():
+            g = _fill_along(np.where(inner, g, np.nan), 1)
+    step = FLOOR_STEP if z.shape[1] > 4 * FLOOR_STEP else 1
+    med = ndimage.median_filter(g[:, ::step], size=(1, max(3, (size // step) | 1)), mode="nearest")
+    if step > 1:
+        xs = np.arange(z.shape[1], dtype=float)
+        xc = xs[::step]
+        med = np.vstack([np.interp(xs, xc, row) for row in med])
+    rise = np.cumsum(med, axis=1)
+    return rise - rise[:, :1]
+
+
+def _top_hat(grid: _Grid, length: float, axis: int, detrend: bool = False) -> np.ndarray:
+    """The height above its grey opening by a line of ``length`` along ``axis`` (1: x, 0: y); NaN off the model.
+    ``detrend`` (along x only): the floor's rise along x (:func:`_floor_along_x`) taken out of each row first."""
     from scipy import ndimage
 
     n = grid.cells(length)
     size = (1, n) if axis == 1 else (n, 1)
     filled = _fill_along(grid.z, axis)
+    if detrend and axis == 1:  # the floor rising along x (toward stem and stern) taken out first: on a slope a
+        # horizontal line opens the uphill edge of a frame by the rise over the rest of the line, and its outline tapers
+        filled = filled - _floor_along_x(filled, n, grid.ok)
     # the raster's border carried on for a whole line first: the hull rising to its rim one cell from the border would
     # else be opened as a ridge (a reflection mirrors it, the border mode of each pass is too short a plateau)
     pad = [(0, 0), (0, 0)]
@@ -307,6 +342,31 @@ def _union_others(others: list[dict]) -> list[dict]:
     return out
 
 
+def _across_residue(grid: _Grid, p: dict) -> np.ndarray:
+    """The residue of the opening along x on the floor detrended along x (:func:`_top_hat` ``detrend``), kept only in
+    the components (over ``top_hat``) that hold a part over ``top_hat`` of the plain opening: the detrended floor
+    gives the frames their whole outline where the hull rises toward stem and stern, the plain one decides what is a
+    timber (at the very ends the detrended floor alone makes ridges of the converging lands). Elsewhere the plain
+    residue."""
+    from scipy import ndimage
+
+    plain = _top_hat(grid, p["opening"], axis=1)
+    level = _top_hat(grid, p["opening"], axis=1, detrend=True)
+    seeds = np.nan_to_num(plain, nan=0.0) > p["top_hat"]
+    grown = np.nan_to_num(level, nan=0.0) > p["top_hat"]
+    labels, count = ndimage.label(grown, structure=np.ones((3, 3), bool))
+    if not count:
+        return plain
+    held = np.zeros(count + 1, bool)
+    held[np.unique(labels[seeds & grown])] = True
+    held[0] = False
+    # grown only near what the plain opening found (a frame's tapered uphill edge is within a room of it): on a
+    # cluttered wreck the detrended floor would else join a frame to its neighbours and the planking between
+    near = ndimage.distance_transform_edt(~seeds) <= grid.cells(p["opening"] * GROW_SHARE)
+    keep = held[labels] & near
+    return np.where(keep, np.maximum(level, plain), np.where(grown, np.minimum(plain, p["top_hat"]), plain))
+
+
 def ridges(z, transform, sign: int, params=None) -> list[dict]:
     """The frames and longitudinal timbers on the height raster ``z`` (relief (u, v) with ``transform``; v = ``sign``
     * y): dicts with ``kind`` (frame, keelson, stringer, other), ``side``, ``ship_xy`` (the polygon's ring in the ship
@@ -316,9 +376,9 @@ def ridges(z, transform, sign: int, params=None) -> list[dict]:
     grid = _Grid(z, transform, sign)
     if not grid.ok.any():
         return []
-    across = _top_hat(grid, p["opening"], axis=1)  # narrow along x: frames
+    across = _across_residue(grid, p)  # narrow along x: frames
     along = _top_hat(grid, p["opening"], axis=0)  # narrow along y: longitudinals
-    out, pieces, others = [], [], []
+    out, pieces, others, doubtful = [], [], [], []
     for residue, direction in ((across, "x"), (along, "y")):
         mask = np.nan_to_num(residue, nan=0.0) > p["top_hat"]
         comps, labels = _components(grid, mask, p["min_area"])
@@ -329,19 +389,29 @@ def ridges(z, transform, sign: int, params=None) -> list[dict]:
             score = float(min(1.0, height / (3.0 * p["top_hat"])))
             item = {"poly": poly, "room": short_side, "x": float(poly.centroid.x), "height": height, "score": score,
                     "length": long_side}
-            if direction == "x" and elongated and angle >= 90.0 - p["frame_deg"] and long_side >= p["min_frame"]:
+            transverse = angle >= 90.0 - p["frame_deg"] and long_side >= p["min_frame"]
+            if direction == "x" and elongated and transverse:
                 pieces.append({**item, "kind": "frame"})
+            elif (direction == "x" and transverse and short_side > 0
+                  and long_side / short_side >= DOUBTFUL_ELONGATION):
+                # it fails the elongation only: a frame merged with its neighbour or with raised planking, most often;
+                # proposed as a doubtful frame so that it is accepted and corrected as one, not lost among the others
+                doubtful.append({**item, "kind": "frame", "doubtful": True,
+                                 "score": min(item["score"], DOUBTFUL_SCORE)})
             elif direction == "y" and elongated and angle <= p["frame_deg"] and long_side >= p["min_longitudinal"]:
                 kind = "keelson" if abs(poly.centroid.y) <= p["keel_band"] else "stringer"
                 out.append({**item, "kind": kind})
             else:
                 others.append({**item, "kind": "other"})
-    out = _join_frames(pieces, 2.0 * p["keel_band"], grid.cell) + out + _union_others(others)
+    others = [o for o in _union_others(others)  # the other reading of a doubtful frame's lump is not proposed twice
+              if not any(o["poly"].intersection(d["poly"]).area > 0.5 * o["poly"].area for d in doubtful)]
+    out = _join_frames(pieces, 2.0 * p["keel_band"], grid.cell) + doubtful + out + others
     result = []
     for r in out:
         side = "centre" if r.get("joined") or r["kind"] == "keelson" else _side_of(float(r["poly"].centroid.y))
         result.append({"kind": r["kind"], "side": side, "ship_xy": _ring(r["poly"]), "room": float(r["room"]),
-                       "x": float(r["x"]), "height": float(r["height"]), "score": float(r["score"])})
+                       "x": float(r["x"]), "height": float(r["height"]), "score": float(r["score"]),
+                       **({"doubtful": True} if r.get("doubtful") else {})})
     return sorted(result, key=lambda r: (KINDS.index(r["kind"]), r["x"]))
 
 
@@ -905,6 +975,36 @@ def _covered(item: dict, taken: list) -> bool:
     return False
 
 
+LONGITUDINAL_SHARE = 0.5  # a strake lying over longitudinal timbers by more than this share of its area is doubtful
+
+
+def doubtful_bands(bands: list[dict], longitudinals: list[dict]) -> set[int]:
+    """The indexes of the strakes (:func:`strakes`) that are doubtful: a band bounded by the keel line or two seams
+    more than :data:`WIDE_BAND` times as wide (its area over its length) as the median of the side's other bands
+    between seams (a land missed, the keel-line band over sediment or a longitudinal timber), or lying over the
+    proposed keelson and stringers by more than :data:`LONGITUDINAL_SHARE` of its area. The band at the model's edge
+    is as wide as what is left of the hull: never judged by its width."""
+    import shapely
+
+    polys = [shapely.Polygon(b["ship_xy"]) for b in bands]
+    widths = []
+    for poly in polys:
+        x0, _y0, x1, _y1 = poly.bounds
+        widths.append(poly.area / max(x1 - x0, 1e-9))
+    over = shapely.union_all([shapely.Polygon(r["ship_xy"]) for r in longitudinals]) if longitudinals else None
+    out = set()
+    for k, (b, poly) in enumerate(zip(bands, polys)):
+        if over is not None and poly.area > 0 and poly.intersection(over).area > LONGITUDINAL_SHARE * poly.area:
+            out.add(k)
+            continue
+        if b.get("edge") == "model":
+            continue
+        ref = [widths[j] for j, o in enumerate(bands) if j != k and o["side"] == b["side"] and o.get("edge") == "seam"]
+        if ref and widths[k] > WIDE_BAND * float(np.median(ref)):
+            out.add(k)
+    return out
+
+
 def frame_space(frames: list[dict]) -> float:
     """The median space of the frames, read on each side by itself (``x`` of dicts with ``side``; a frame on the
     centre counts on both): mixed, the two pieces of one frame a little apart would make the space their distance."""
@@ -973,8 +1073,9 @@ def build(chunk, params=None, progress=None) -> dict:
         score = s["score"] if rank else min(s["score"], STRAY_SCORE)  # a stray: proposed, unnamed, doubtful
         items.append({"kind": "seam", "side": s["side"], "name": f"{words['seam']} {code}", "ship_xy": s["ship_xy"],
                       "score": score, "step_mm": s["step_mm"], "room": None})
-    frames = [dict(r) for r in found if r["kind"] == "frame"]
+    frames = [dict(r) for r in found if r["kind"] == "frame" and not r.get("doubtful")]
     _name_frames(frames, frame.bow_x)
+    frames += [{**r, "name": t("ordinata ?", "frame ?")} for r in found if r["kind"] == "frame" and r.get("doubtful")]
     counters: dict[str, int] = {}
     keelsons = sum(1 for r in found if r["kind"] == "keelson")
     for r in frames + [r for r in found if r["kind"] != "frame"]:
@@ -985,13 +1086,19 @@ def build(chunk, params=None, progress=None) -> dict:
             numbered = r["kind"] != "keelson" or keelsons > 1  # one keelson is the keelson; pieces of it are numbered
             name = f"{words[r['kind']]} {counters[r['kind']]}" if numbered else words[r["kind"]]
         items.append({"kind": r["kind"], "side": r["side"], "name": name, "ship_xy": r["ship_xy"], "score": r["score"],
-                      "step_mm": None, "room": r["room"]})
-    for b in bands:
+                      "step_mm": None, "room": r["room"], **({"doubtful": True} if r.get("doubtful") else {})})
+    unsure = doubtful_bands(bands, [r for r in found if r["kind"] in ("keelson", "stringer")])
+    for k, b in enumerate(bands):
         steps = [seam_list[i]["step_mm"] for i in b["seams"]]
         scores = [seam_list[i]["score"] for i in b["seams"]]
-        items.append({"kind": "plank", "side": b["side"], "name": b["name"], "ship_xy": b["ship_xy"],
-                      "score": float(min(scores)) if scores else 0.0,
-                      "step_mm": float(np.median(steps)) if steps else None, "room": None})
+        score = float(min(scores)) if scores else 0.0
+        name = b["name"]
+        extra = {}
+        if k in unsure:
+            name = f"{t('fascia', 'strake')} {clinker.SIDE_CODES[b['side']][0]}?"
+            score, extra = min(score, DOUBTFUL_SCORE), {"doubtful": True}
+        items.append({"kind": "plank", "side": b["side"], "name": name, "ship_xy": b["ship_xy"], "score": score,
+                      "step_mm": float(np.median(steps)) if steps else None, "room": None, **extra})
     st = ship.state(chunk)
     previous = st.get("proposals") or {}
     if previous:
@@ -1016,9 +1123,11 @@ def summary(chunk) -> str:
     prop = (chunk.meta.get(ship.KEY) or {}).get("proposals")
     if not prop:
         return t("Nessuna proposta: leggi prima il rilievo dello scafo.", "No proposals: read the relief of the hull first.")
-    count = {k: sum(1 for i in prop["items"] if i["kind"] == k) for k in KINDS}
+    sure = [i for i in prop["items"] if not i.get("doubtful")]
+    count = {k: sum(1 for i in sure if i["kind"] == k) for k in KINDS}
+    unsure = {k: sum(1 for i in prop["items"] if i.get("doubtful") and i["kind"] == k) for k in ("frame", "plank")}
     named = {}  # a frame in two pieces (one name on both sides) is one frame
-    for i in prop["items"]:
+    for i in sure:
         if i["kind"] == "frame":
             named.setdefault(i["name"], []).append(float(np.mean(np.asarray(i["ship_xy"])[:, 0])))
     count["frame"] = len(named)
@@ -1034,9 +1143,13 @@ def summary(chunk) -> str:
                          ("other", ("altro elemento", "altri elementi"), ("other item", "other items"))):
         if count[kind]:
             parts.append(plural(count[kind], it, en))
+    if unsure["frame"]:
+        parts.append(plural(unsure["frame"], ("ordinata dubbia", "ordinate dubbie"), ("doubtful frame", "doubtful frames")))
+    if unsure["plank"]:
+        parts.append(plural(unsure["plank"], ("fascia dubbia", "fasce dubbie"), ("doubtful strake", "doubtful strakes")))
     text = t("Proposte: ", "Proposals: ") + ", ".join(parts)
     xs = sorted(float(np.mean(v)) for v in named.values())
-    if len(xs) > 1:
+    if len(xs) > 2:  # two frames far apart give no frame space
         space = num(float(np.median(np.diff(xs))), 2)
         text += t(f" (passo mediano delle ordinate {space} m)", f" (median frame space {space} m)")
     return text + "."
