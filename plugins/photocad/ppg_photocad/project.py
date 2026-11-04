@@ -123,8 +123,10 @@ def summary(rec: dict) -> str:
     where = t("pianta", "plan") if rec.get("frame") is None else t("prospetto {0}", "elevation {0}").format(rec["frame"])
     n = len(rec.get("tiles") or [1])
     tiles = "" if n == 1 else t(", {0} tessere", ", {0} tiles").format(n)
-    return t("{0}: {1} poligoni, {2} linee ({3}, {4} cm/px{5})", "{0}: {1} polygons, {2} lines ({3}, {4} cm/px{5})").format(
-        rec.get("name"), c.get("polygons", 0), c.get("lines", 0), where, f"{_pixel(rec) * 100:.2f}", tiles)
+    stones = "" if c.get("stones") is None else t(", {0} pietre", ", {0} stones").format(c["stones"])
+    return t("{0}: {1} poligoni, {2} linee{6} ({3}, {4} cm/px{5})",
+             "{0}: {1} polygons, {2} lines{6} ({3}, {4} cm/px{5})").format(
+        rec.get("name"), c.get("polygons", 0), c.get("lines", 0), where, f"{_pixel(rec) * 100:.2f}", tiles, stones)
 
 
 # ------------------------------------------------------------------ the conversion
@@ -479,8 +481,141 @@ def _merge(chunk, rec: dict, progress) -> None:
         "tiles_placed": len(placed), "tiles_failed": sum(1 for tl in rec["tiles"] if tl.get("status") == "failed"),
         "residual_px": [round(float(tl["registration"]["residual_px"]), 3) for tl in placed]})
     rec.pop("error", None)
+    try:
+        progress(0.99, t("Ricavo le pietre dalle linee", "Making the stones from the lines"))
+        polygonize(chunk, rec)
+    except Exception as exc:  # noqa: BLE001 - the drawing is there: the stones can be made again (polygonize)
+        rec["polygonize"] = {"error": f"{type(exc).__name__}: {exc}"}
     _write_json(chunk, rec)
     progress(1.0, summary(rec))
+
+
+# ------------------------------------------------------------------ stones from the lines
+SNAP_PX = 2.0  # ends of lines this close (in pixels of the image) are joined
+MIN_AREA_PX = 50.0  # smaller faces are left out (pixels of the image)
+BACKGROUND_SHARE = 0.5  # faces with more of their pixels white (no data) are background
+STONES_TABLE = "polygons"
+
+
+def _tile_of(rec: dict, point) -> dict:
+    placed = [tl for tl in rec["tiles"] if tl.get("status") == "placed"]
+    return min(placed, key=lambda tl: (_centre(tl)[0] - point[0]) ** 2 + (_centre(tl)[1] - point[1]) ** 2)
+
+
+def _background_share(grey, image: dict, face) -> float:
+    """The share of white (no data) pixels of the tile image under ``face``."""
+    import numpy as np
+    from rasterio.features import geometry_mask
+    from rasterio.transform import Affine
+
+    p, h, w = float(image["pixel"]), grey.shape[0], grey.shape[1]
+    top = image["y0"] + h * p
+    minx, miny, maxx, maxy = face.bounds
+    c0, c1 = max(0, int((minx - image["x0"]) / p)), min(w, int(np.ceil((maxx - image["x0"]) / p)))
+    r0, r1 = max(0, int((top - maxy) / p)), min(h, int(np.ceil((top - miny) / p)))
+    if c1 <= c0 or r1 <= r0:
+        return 1.0
+    tr = Affine(p, 0, image["x0"] + c0 * p, 0, -p, top - r0 * p)
+    inside = geometry_mask([face], out_shape=(r1 - r0, c1 - c0), transform=tr, invert=True, all_touched=False)
+    if not inside.any():
+        return 0.0
+    return float((grey[r0:r1, c0:c1][inside] >= 250).mean())
+
+
+def polygonize(chunk, rec: dict, snap_px: float = SNAP_PX, min_area_px: float = MIN_AREA_PX) -> int:
+    """The stones of a conversion: its lines (and the outlines of its polygons) noded - each end within ``snap_px``
+    pixels of the image of another line, or of its own other end, joined to it - and polygonized; faces smaller than
+    ``min_area_px`` pixels and faces mostly on white (no data) left out. Written in ``polygons.gpkg`` (table
+    ``polygons``); the record says how many and what was left out. Returns the number of stones."""
+    import cv2
+    import shapely
+    from shapely.geometry import LineString
+    from shapely.ops import nearest_points
+
+    feats = features(chunk, rec)
+    placed = [tl for tl in rec["tiles"] if tl.get("status") == "placed"]
+    pixel = min(float(tl["image"]["pixel"]) for tl in placed)
+    tol, min_area = snap_px * pixel, min_area_px * pixel * pixel
+    lines = []
+    for g, _a in feats:
+        if g.geom_type == "Polygon":
+            lines.append(LineString(g.exterior.coords))
+        elif g.geom_type == "LineString" and g.length > 0:
+            lines.append(g)
+    tree = shapely.STRtree(lines)
+    connectors = []
+    for i, line in enumerate(lines):
+        coords = list(line.coords)
+        if line.is_closed:
+            continue
+        for end, other in ((coords[0], coords[-1]), (coords[-1], coords[0])):
+            p = shapely.Point(end)
+            best = None
+            if 0 < p.distance(shapely.Point(other)) <= tol:
+                best = (p.distance(shapely.Point(other)), other)
+            for j in tree.query(p.buffer(tol)):
+                if j == i:
+                    continue
+                d = lines[j].distance(p)
+                if d <= tol and (best is None or d < best[0]):
+                    q = nearest_points(lines[j], p)[0]
+                    best = (d, (q.x, q.y))
+            if best is not None and best[0] > 0:
+                connectors.append(LineString([end, best[1]]))
+    noded = shapely.unary_union(lines + connectors)
+    faces = list(shapely.get_parts(shapely.polygonize(list(shapely.get_parts(noded)))))
+    greys: dict = {}
+    kept, small, background = [], 0, 0
+    for face in faces:
+        if face.area < min_area:
+            small += 1
+            continue
+        c = face.representative_point()
+        tile = _tile_of(rec, (c.x, c.y))
+        if tile["n"] not in greys:
+            path = _tile_dir(chunk, rec, tile) / tile["files"].get("image", "image.jpg")
+            greys[tile["n"]] = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if _background_share(greys[tile["n"]], tile["image"], face) > BACKGROUND_SHARE:
+            background += 1
+            continue
+        kept.append(face)
+    from pyarchinit_photogrammetry.io import gpkg
+
+    path = folder_of(chunk, rec) / "polygons.gpkg"
+    if path.exists():
+        path.unlink()
+    gpkg.write_table(path, STONES_TABLE, "POLYGON", {"n": "INTEGER", "area_m2": "REAL", "perimeter_m": "REAL",
+                                                      "source": "TEXT"},
+                     [(f, {"n": i + 1, "area_m2": float(f.area), "perimeter_m": float(f.exterior.length),
+                           "source": "polygonize"}) for i, f in enumerate(kept)], rec.get("crs"), identifier="pietre")
+    rec.setdefault("files", {})["polygons"] = "polygons.gpkg"
+    rec.setdefault("counts", {})["stones"] = len(kept)
+    rec["polygonize"] = {"snap_m": tol, "snap_px": snap_px, "min_area_m2": min_area, "min_area_px": min_area_px,
+                         "lines": len(lines), "connectors": len(connectors), "faces": len(faces), "small": small,
+                         "background": background, "stones": len(kept)}
+    _write_json(chunk, rec)
+    return len(kept)
+
+
+def stone_features(chunk, rec: dict):
+    """``(polygon, attributes)`` of the stones of a conversion (:func:`polygonize`), in its frame."""
+    from pyarchinit_photogrammetry.io import gpkg
+
+    path = path_of(chunk, rec, "polygons")
+    if rec.get("status", "done") != "done" or path is None or not path.exists():
+        return []
+    return [(g, a) for g, a in gpkg.read_table(path, STONES_TABLE) if g is not None]
+
+
+def unit_features(chunk, rec: dict, source: str | None = None):
+    """What becomes units: ``polygons`` (the stones), ``lines`` (the drawing as PhotoCAD gave it), None: the stones
+    when there are some, else the drawing."""
+    if source == "lines":
+        return features(chunk, rec)
+    stones = stone_features(chunk, rec)
+    if source == "polygons" or stones:
+        return stones
+    return features(chunk, rec)
 
 
 def find(chunk, ident: str) -> dict | None:

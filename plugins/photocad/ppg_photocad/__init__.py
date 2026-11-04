@@ -28,6 +28,7 @@ __version__ = "0.1.0"
 
 POLYGON_COLOUR = "#e040fb"
 LINE_COLOUR = "#ff4081"
+STONE_COLOUR = "#ffab00"
 
 
 def _has_free_drawings() -> bool:
@@ -355,8 +356,14 @@ class PhotoCADPlugin(Plugin):
                                          layer=name, attrs=attrs)
                     else:
                         view.add_line(list(g.coords), LINE_COLOUR, "", layer=name, attrs=attrs, width=1.5)
-                if name in hidden and name in view.layers:  # hidden in the Layer pane: stays hidden on a refresh (a new raster shows it again)
-                    view.set_layer_visible(name, False)
+                stones = name + t(" (pietre)", " (stones)")
+                for i, (g, a) in enumerate(project.stone_features(chunk, rec)):
+                    view.add_polygon([list(p) for p in list(g.exterior.coords)[:-1]], "", STONE_COLOUR, 60,
+                                     layer=stones, attrs={"photocad": rec["id"], "n": i, "photocad_layer": "pietre",
+                                                          "area_m2": round(float(a.get("area_m2") or 0), 4)})
+                for n in (name, stones):
+                    if n in hidden and n in view.layers:  # hidden in the Layer pane: stays hidden on a refresh
+                        view.set_layer_visible(n, False)
 
     # ------------------------------------------------------------------ units
     def units_dialog(self) -> None:
@@ -395,6 +402,11 @@ class PhotoCADPlugin(Plugin):
         if here:
             fields.append(Field("layer", t("Layer", "Layer"), here[-1]["id"],
                                 choices=[(r["id"], layer_name(r)) for r in here]))
+        if any(project.stone_features(chunk, r) for r in here):
+            fields.append(Field("from", t("Dal layer", "From the layer"), "polygons", choices=[
+                ("polygons", t("le pietre (poligoni ricavati dalle linee)", "the stones (polygons made from the lines)")),
+                ("lines", t("il disegno di PhotoCAD (solo i contorni chiusi)",
+                            "PhotoCAD's drawing (closed outlines only)"))]))
         fields += [Field("tipo", t("Tipo", "Kind"), "USM" if frame is not None else "US",
                          choices=[(k, k) for k in US_TYPES]),
                    Field("start", t("Primo numero (0: senza numero)", "First number (0: no number)"), 0,
@@ -408,7 +420,7 @@ class PhotoCADPlugin(Plugin):
             return
         if v.get("which") == "layer":
             rec = project.record(chunk, v.get("layer"))
-            feats = project.features(chunk, rec) if rec is not None else []
+            feats = project.unit_features(chunk, rec, v.get("from")) if rec is not None else []
         else:
             feats = selected
         polygons, attrs, skipped = project.unit_polygons(feats, v.get("tipo") or "US", int(v.get("start") or 0) or None)
@@ -417,13 +429,14 @@ class PhotoCADPlugin(Plugin):
                     "{0} units added ({1}); {2} open lines (not closed) skipped.").format(
             made, v.get("tipo") or "US", skipped))
 
-    def make_units(self, chunk, rec: dict, tipo: str = "US", start: int | None = None) -> tuple[int, int]:
+    def make_units(self, chunk, rec: dict, tipo: str = "US", start: int | None = None,
+                   source: str | None = None) -> tuple[int, int]:
         """The closed outlines of a conversion into units without the window (command line): on the plan through
         ``context.add_units``; on an elevation into its drawings (``chunk.meta["drawings"]["frames"][id]``).
         ``(made, skipped)``."""
         from . import project
 
-        polygons, attrs, skipped = project.unit_polygons(project.features(chunk, rec), tipo, start)
+        polygons, attrs, skipped = project.unit_polygons(project.unit_features(chunk, rec, source), tipo, start)
         if not polygons:
             return 0, skipped
         if rec.get("frame") is None:
@@ -585,6 +598,14 @@ class PhotoCADPlugin(Plugin):
         p.add_argument("--chunk")
         p.add_argument("--tipo", default="US", help="US, USM, ...")
         p.add_argument("--start", type=int, default=0, help="first number (0: no numbers)")
+        p.add_argument("--from", dest="source", choices=("lines", "polygons"), default=None,
+                       help="the stones made from the lines (default when there are some) or PhotoCAD's own outlines")
+        p = sub.add_parser("polygonize", help="make the stones of a conversion again from its lines")
+        p.add_argument("project")
+        p.add_argument("id")
+        p.add_argument("--chunk")
+        p.add_argument("--snap-px", type=float, default=2.0, help="ends this close (image pixels) are joined")
+        p.add_argument("--min-area-px", type=float, default=50.0, help="smaller faces are left out (image pixels)")
         p = sub.add_parser("export", help="a conversion as FILE.dxf, .gpkg, .svg or .pdf")
         p.add_argument("project")
         p.add_argument("id")
@@ -696,12 +717,22 @@ class PhotoCADPlugin(Plugin):
             if ns.out:
                 print(project.export(chunk, rec["id"], ns.out))
             return 0
+        if ns.what == "polygonize":
+            rec = project.record(chunk, ns.id)
+            if rec is None or rec.get("status", "done") != "done":
+                print(t("Nessuna conversione finita «{0}».", "No finished conversion '{0}'.").format(ns.id))
+                return 1
+            n = project.polygonize(chunk, rec, ns.snap_px, ns.min_area_px)
+            doc.save()
+            print(json.dumps(rec["polygonize"], indent=1))
+            print(t("{0} pietre in {1}", "{0} stones in {1}").format(n, project.path_of(chunk, rec, "polygons")))
+            return 0
         if ns.what == "units":
             rec = project.record(chunk, ns.id)
             if rec is None:
                 print(t("Nessuna conversione «{0}».", "No conversion '{0}'.").format(ns.id))
                 return 1
-            made, skipped = self.make_units(chunk, rec, ns.tipo, ns.start or None)
+            made, skipped = self.make_units(chunk, rec, ns.tipo, ns.start or None, ns.source)
             doc.save()
             print(t("{0} unità aggiunte ({1}); {2} linee aperte (non chiuse) saltate.",
                     "{0} units added ({1}); {2} open lines (not closed) skipped.").format(made, ns.tipo, skipped))
