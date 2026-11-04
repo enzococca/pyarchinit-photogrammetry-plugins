@@ -705,13 +705,15 @@ def find(chunk, ident: str) -> dict | None:
 
 def fetch(chunk, ident: str, key: str, progress=None, search_px: float | None = None) -> dict:
     """Go on with a conversion already made (by its id or a PhotoCAD id): tiles not sent are sent with their
-    idempotency key (never charged twice), running ones waited for, finished ones downloaded and placed again.
+    idempotency key, running ones waited for, finished ones (also those placed already) downloaded and placed again.
     The record, status ``done``."""
     rec = find(chunk, ident)
     if rec is None:
         raise ValueError(t("Nessuna conversione «{0}» in questo chunk.", "No conversion '{0}' in this chunk.")
                          .format(ident))
-    _tiles(rec)
+    for tile in _tiles(rec):
+        if tile.get("status") == "placed":  # downloaded and placed again (free): a newer registration, --search-px
+            tile["status"] = "complete"
     return dict(_complete(chunk, rec, _client(key), progress or (lambda *a: None), search_px))
 
 

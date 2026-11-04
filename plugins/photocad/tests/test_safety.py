@@ -272,6 +272,10 @@ def test_a_conversion_of_version_0_1_0_dev_is_fetched(tmp_path, monkeypatch):
     ch.meta["photocad"]["conversions"] = [old]
     rec = project.fetch(ch, tile["photocad_id"], fakecad.KEY)
     assert rec["status"] == "done" and len(fake.calls("POST")) == 1
+    gets = len(fake.calls("GET", "/conversions/conv_0001/files/dxf"))
+    rec = project.fetch(ch, rec["id"], fakecad.KEY, search_px=30)  # a placed conversion placed again, free
+    assert rec["status"] == "done" and len(fake.calls("POST")) == 1
+    assert len(fake.calls("GET", "/conversions/conv_0001/files/dxf")) == gets + 1
     (square,) = [g for g, _a in project.features(ch, rec) if g.geom_type == "Polygon"]
     assert np.abs(np.asarray(square.bounds) - fakecad.square_world()).max() <= 1.5 * fakecad.RES / 2
 
