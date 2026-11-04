@@ -105,7 +105,8 @@ class FakePhotoCAD:
     before gives the same conversion again, not charged."""
 
     def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False,
-                 free: int = 5, account: str = "real", page_pad=(0, 0, 0, 0), garbage: bool = False):
+                 free: int = 5, account: str = "real", page_pad=(0, 0, 0, 0), garbage: bool = False,
+                 open_lines: bool = False, ring: bool = False, tiny: bool = False):
         self.credits = credits
         self.free = free  # free conversions left
         self.account = account  # "real": the shape photocad.ai gives (2026-11-04); "flat": an older guess
@@ -116,6 +117,10 @@ class FakePhotoCAD:
         self.status_failed = status_failed
         self.page_pad = tuple(page_pad)
         self.garbage = garbage
+        # as PhotoCAD draws stones: each side an open polyline, the ends 0.5 px short of the corners (a 1 px gap)
+        self.open_lines = open_lines
+        self.ring = ring  # four open lines around a white rectangle (background: never a stone)
+        self.tiny = tiny  # a 4 x 4 px closed loop inside the first blob (smaller than the minimum area)
         self.requests: list[tuple[str, str, dict]] = []  # method, path?query, headers
         self.images: dict[str, bytes] = {}
         self.options: dict[str, dict] = {}
@@ -242,6 +247,17 @@ class FakePhotoCAD:
             outlines.append([mm(c0, r0), mm(c1, r0), mm(c1, r1), mm(c0, r1)])
         c0, r0, c1, _r1 = boxes[0]
         line = [mm(c0, r0), mm((c0 + c1) / 2, r0), mm(c1, r0)]
+        self._open = []
+        if self.ring:  # a white rectangle inside the page, between the blobs
+            a0, a1 = pc0 + 0.45 * (pc1 - pc0), pc0 + 0.75 * (pc1 - pc0)
+            b0, b1 = pr0 + 0.05 * (pr1 - pr0), pr0 + 0.35 * (pr1 - pr0)
+            self._open += _sides([mm(a0, b0), mm(a1, b0), mm(a1, b1), mm(a0, b1)], 0.5 * s)
+        if self.tiny:
+            outlines.append([mm(c0 + 10, r0 + 10), mm(c0 + 14, r0 + 10), mm(c0 + 14, r0 + 14), mm(c0 + 10, r0 + 14)])
+        if self.open_lines:
+            for o in list(outlines):
+                self._open += _sides(o, 0.5 * s)
+            outlines = []
         return outlines, line, (pc1 - pc0) * s, (pr1 - pr0) * s
 
     def file(self, cid: str, fmt: str, query: dict) -> bytes:
@@ -257,6 +273,8 @@ class FakePhotoCAD:
             for outline in outlines:
                 msp.add_lwpolyline(outline, close=True, dxfattribs={"layer": "OUTLINE"})
             msp.add_lwpolyline(line, close=False, dxfattribs={"layer": "DETAIL"})
+            for side in self._open:
+                msp.add_lwpolyline(side, close=False, dxfattribs={"layer": "OUTLINE"})
             out = io.StringIO()
             doc.write(out)
             return out.getvalue().encode()
@@ -270,6 +288,16 @@ class FakePhotoCAD:
         if fmt == "geometry":
             return json.dumps({"units": "mm", "width": pw, "height": ph, "paths": outlines + [line]}).encode()
         raise ValueError(fmt)
+
+
+def _sides(corners, gap):
+    """The four sides of a box as open lines, each ``gap`` short of the corners at both ends."""
+    out = []
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        u = (b - a) / np.hypot(*(b - a))
+        out.append([tuple(a + u * gap), tuple(b - u * gap)])
+    return out
 
 
 # ---------------------------------------------------------------- projects

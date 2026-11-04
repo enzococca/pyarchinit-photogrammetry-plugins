@@ -65,7 +65,11 @@ def window(tmp_path, monkeypatch):
 
 
 def _photocad_layers(view):
-    return [n for n in view.layers if n.startswith("PhotoCAD: ")]
+    return [n for n in view.layers if n.startswith("PhotoCAD: ") and not n.endswith(" (pietre)")]
+
+
+def _stone_layers(view):
+    return [n for n in view.layers if n.startswith("PhotoCAD: ") and n.endswith(" (pietre)")]
 
 
 def test_plan_layer_units_and_elevation(window, monkeypatch):
@@ -92,6 +96,7 @@ def test_plan_layer_units_and_elevation(window, monkeypatch):
     (layer,) = _photocad_layers(v)
     feats = v.features(layer)
     assert sorted(f["_geom"][0] for f in feats) == ["LineString", "Polygon", "Polygon"]
+    assert _stone_layers(v) == [layer + " (pietre)"] and len(v.features(layer + " (pietre)")) == 2
     assert w.isWindowModified()
     # drawn again when the raster is loaded again (the DEM, then the orthophoto)
     plugin.context.show_raster("dem")
@@ -113,7 +118,7 @@ def test_plan_layer_units_and_elevation(window, monkeypatch):
     # the elevation: its own layer there, not on the plan; USM in its drawings
     w.show_elevation(entry)
     qapp.processEvents()
-    assert _photocad_layers(v) == []
+    assert _photocad_layers(v) == [] and _stone_layers(v) == []
     monkeypatch.setattr(dialogs.ParamDialog, "ask", lambda *a, **k: dict(answers))
     plugin.convert_dialog("elevation")
     _wait(w, qapp)
@@ -123,7 +128,7 @@ def test_plan_layer_units_and_elevation(window, monkeypatch):
     rec = plugin.records()[-1]
     assert rec["frame"] == "e1"
     monkeypatch.setattr(dialogs.ParamDialog, "ask", lambda *a, **k: {"which": "layer", "layer": rec["id"],
-                                                                     "tipo": "USM", "start": 0})
+                                                                     "tipo": "USM", "start": 0, "from": "polygons"})
     n = len(w.frame_units)
     v.select_items([])
     plugin.units_dialog()
@@ -136,7 +141,7 @@ def test_plan_layer_units_and_elevation(window, monkeypatch):
     # removed: the layer goes
     monkeypatch.setattr(dialogs, "choice", lambda *a, **k: 0)
     plugin.remove_conversion(plugin.records()[0]["id"])
-    assert _photocad_layers(v) == [] and len(plugin.records()) == 1
+    assert _photocad_layers(v) == [] and _stone_layers(v) == [] and len(plugin.records()) == 1
     assert not errors
 
 
