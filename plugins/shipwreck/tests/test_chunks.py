@@ -202,6 +202,16 @@ def test_frames_from_markers_of_the_same_names(tmp_path):
     frame = chunks.use_frame_of(e, c)
     assert ship.state(e)["frame_markers"] == ["K1", "K2"] and frame == ship.state(e)["frame"]
     assert chunks.compatible(c, e) == (True, "")
+    # the bow swapped on the command line in both: the markers kept, the chunks still compatible
+    from ppg_shipwreck import ShipwreckPlugin
+
+    doc.save()
+    for label in ("Uno", "Due"):
+        assert ShipwreckPlugin().command("frame", str(doc.path), "--chunk", label, "--other-bow") == 0
+    again = ppg.Document.open(doc.path)
+    c2, d2 = (next(x for x in again.chunks if x.label == label) for label in ("Uno", "Due"))
+    assert ship.state(c2)["frame_markers"] == ["K1", "K2"] and ship.frame_of(c2).bow == "end"
+    assert chunks.compatible(c2, d2) == (True, "")
     # a frame set again by hand forgets its markers
     ship.set_frame(c, ship.frame_of(c).flipped())
     assert "frame_markers" not in ship.state(c) and chunks.compatible(c, d)[0] is False
@@ -363,3 +373,39 @@ def test_the_loft_reads_the_sections_of_every_member(tmp_path):
     # past B's last station (9.225) the breadth follows the hull: the taper starts from B's breadth and slope, not
     # from A's last station (6.975: 1.65 m here)
     assert abs(breadth - plan_half_breadth(x)) < 0.05, (x, breadth, plan_half_breadth(x))
+
+
+def test_the_finer_chunk_gives_the_heights_where_it_overlaps_a_wider_one(tmp_path):
+    """The whole hull at 2 cm (the widest coverage) and a close-range model of the bow at 5 mm: in the merged relief
+    the bow's cells come from the bow's chunk, the finer survey, and the rest from the whole hull."""
+    import rasterio
+
+    bow = {"N1": (1.6, 0.3), "N2": (2.2, -0.4), "N3": (1.9, 0.5), "N4": (2.5, -0.1)}
+    doc = ppg.Document()
+    doc.save(tmp_path / "relitto.ppg")
+    a = _add_chunk(doc, "Tutto", (0.0, 12.0), 35.0, UTM, 2.0, markers=bow)
+    b = _add_chunk(doc, "Prua", (0.0, 3.0), 80.0, UTM + [37.5, -12.25, 3.0], 1.6, markers=bow)
+    assert doc.align_chunks(a, [b], method="markers")["chunks"][0]["rmse"] < 1e-6
+    ends = a.to_world(np.array([[0.0, 0.0, 0.0], [12.0 / 2.0, 0.0, 0.0]]))
+    ship.set_frame(a, ship.Frame(ends[0], ends[1], "start"))
+    chunks.use_frame_of(b, a)
+    relief.build(a, cell=0.02)
+    relief.build(b, cell=0.005)
+    found, refused = chunks.members(doc, a)
+    assert [m["chunk"].label for m in found] == ["Tutto", "Prua"] and not refused
+    assert found[0]["coverage"] > 2 * found[1]["coverage"]
+    entry = chunks.prepare(doc, a, found=found)
+    with rasterio.open(a.data_dir / entry["raster"]) as src:
+        merged, affine = src.read(1), src.transform
+    cell = abs(affine.a)
+    assert cell == pytest.approx(0.005)
+    h, w = merged.shape
+    us = affine.c + (np.arange(w) + 0.5) * cell
+    vs = affine.f - (np.arange(h) + 0.5) * cell
+    fine = chunks._resample(chunks._Source(*relief.load(b, "height")), us, vs)
+    coarse = chunks._resample(chunks._Source(*relief.load(a, "height")), us, vs)
+    both = np.isfinite(fine) & np.isfinite(coarse)
+    assert both.sum() > 10000 and np.nanmax(np.abs(fine - coarse)[both]) > 0.002  # the two surveys differ there
+    assert np.allclose(merged[both], fine[both].astype(np.float32), atol=1e-6, equal_nan=False)
+    only = np.isfinite(coarse) & ~np.isfinite(fine)
+    assert np.allclose(merged[only], coarse[only].astype(np.float32), atol=1e-6)

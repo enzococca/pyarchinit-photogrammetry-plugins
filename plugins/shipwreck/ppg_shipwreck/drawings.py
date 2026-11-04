@@ -15,12 +15,13 @@ strake edges at each station (``FASCE_RICALCATE``) and the profile draws the kee
 hatched (``KEEL``) and the sheer (``SHEER``); a survey without traced timbers is drawn as in 0.2.0.
 
 The reconstruction of :mod:`reconstruct` (0.4.0: mirrored, extended and spaced timbers, the faired hull) is drawn with
-``reconstruction=True`` (the default): on the plan of the wreck each of its records hatched and lighter still
+``reconstruction=True`` (asked for: the default is False): on the plan of the wreck each of its records hatched and lighter still
 (:data:`FAINT`) on ``RICOSTRUZIONE_PLANK``, ``RICOSTRUZIONE_FRAME`` (... per kind) with the hatch of how it was
 reconstructed (:data:`STATUS_HATCHES`), the faired hull's plan as a dashed outline only on ``RICOSTRUZIONE_HULL`` (the
 part past the last station lighter), its open ends marked "carenatura aperta", a legend entry per way of reconstructing
-present and the areas measured and reconstructed in the notes; on the body plan the faired hull's sections where the
-model has no side of a section, on the profile the extended upper edge, both dashed on ``RICOSTRUZIONE_HULL``. ``reconstruction=False`` draws exactly what 0.3.0 drew."""
+present and the areas measured and reconstructed (the faired hull left out, overlaps once) in the notes, and a note
+when the reconstruction is out of date (:func:`reconstruct.stale`); on the body plan the faired hull's sections where the
+model has no side of a section, on the profile the extended upper edge, both dashed on ``RICOSTRUZIONE_HULL``. ``reconstruction=False``, the default everywhere, draws exactly what 0.3.0 drew."""
 from __future__ import annotations
 
 import hashlib
@@ -237,7 +238,7 @@ def _of(data: dict, kind: str) -> list[dict]:
     return [s for s in data["sections"] if s["kind"] == kind]
 
 
-def body_plan(chunk, data: dict, frame: ship.Frame, reconstruction: bool = True) -> Drawing:
+def body_plan(chunk, data: dict, frame: ship.Frame, reconstruction: bool = False) -> Drawing:
     """Seen from aft: port on the left whichever way x runs; with ``reconstruction``, the faired hull's sections where
     the model has no side of a section (:func:`_loft_sections`)."""
     d = Drawing("body_plan", t(*KIND_TITLES["body_plan"]), axes=(t("babordo", "port"), t("tribordo", "starboard")))
@@ -271,7 +272,7 @@ def _station_ticks(data: dict, y0: float, y1: float, d: Drawing) -> None:
         d.label(s["value"], y1, s["name"])
 
 
-def half_breadth(chunk, data: dict, frame: ship.Frame, reconstruction: bool = True) -> Drawing:
+def half_breadth(chunk, data: dict, frame: ship.Frame, reconstruction: bool = False) -> Drawing:
     d = Drawing("half_breadth", t(*KIND_TITLES["half_breadth"]), north=_north(chunk, frame))
     sections = _of(data, "horizontal")
     for s, tint in zip(sections, _tints(len(sections))):
@@ -287,7 +288,7 @@ def half_breadth(chunk, data: dict, frame: ship.Frame, reconstruction: bool = Tr
     return d
 
 
-def profile(chunk, data: dict, frame: ship.Frame, reconstruction: bool = True) -> Drawing:
+def profile(chunk, data: dict, frame: ship.Frame, reconstruction: bool = False) -> Drawing:
     """The longitudinals; with ``reconstruction``, the extended upper edge (:func:`_extended_sheer`)."""
     d = Drawing("profile", t(*KIND_TITLES["profile"]))
     sections = _of(data, "longitudinal")
@@ -751,7 +752,7 @@ def _legend_text(kind: str, status: str) -> str:
     return f"{timbers.kind_title(kind)} - {timbers.status_title(status)}"
 
 
-def wreck_plan(chunk, scale: int | None = None, background: str = "relief", reconstruction: bool = True) -> Drawing:
+def wreck_plan(chunk, scale: int | None = None, background: str = "relief", reconstruction: bool = False) -> Drawing:
     """The plan of the wreck ("Pianta del relitto"): every record of the catalogue on the sheet of a plan (x to the
     right, ``sign`` * y up, as :func:`plan`). A polygon is outlined and lightly filled in its kind's colour
     (:data:`models3d.KIND_COLOURS`; the planking lighter still, the relief under it stays readable) and named
@@ -884,11 +885,16 @@ def _rebuilt(chunk) -> dict:
 
 
 def _loft_mesh(chunk):
-    """The faired hull's mesh in the ship frame and its entry: ``(vertices, faces, entry)``, None without one."""
-    from . import models3d
+    """The faired hull's mesh in the ship frame and its entry: ``(vertices, faces, entry)``, None without one, and None
+    when the reconstruction was built in another ship frame (its mesh would lie elsewhere: :func:`make` says it is to
+    be built again)."""
+    from . import models3d, relief
 
-    loft = _rebuilt(chunk).get("loft") or {}
+    rebuilt = _rebuilt(chunk)
+    loft = rebuilt.get("loft") or {}
     if not loft.get("file"):
+        return None
+    if rebuilt.get("frame_key") != relief.frame_key(ship.frame_of(chunk)):
         return None
     path = chunk.data_dir / loft["file"]
     if not path.exists():
@@ -1094,8 +1100,10 @@ def _reconstruction_plan(chunk, frame: ship.Frame, d: Drawing) -> tuple[list, li
     totals = (st.get("table") or {}).get("totals") or {}
     if totals:
         a, b = (num((totals.get(k) or {}).get("area") or 0.0, 2) for k in ("measured", "reconstructed"))
-        notes.insert(0, t(f"Aree in pianta, alla ricostruzione: misurato {a} m², ricostruito {b} m² (ipotesi).",
-                          f"Areas in plan, when reconstructed: measured {a} m², reconstructed {b} m² (hypothesis)."))
+        notes.insert(0, t(f"Aree in pianta, alla ricostruzione: misurato {a} m²; ricostruito: {b} m² senza la "
+                          "carenatura (ipotesi; dove due legni ricostruiti si sovrappongono, contata una volta).",
+                          f"Areas in plan, when reconstructed: measured {a} m²; reconstructed: {b} m² without the "
+                          "faired hull (hypothesis; where two reconstructed timbers overlap, counted once)."))
     members = (st.get("members") or {}).get("chunks") or []
     if len(members) > 1:
         labels = ", ".join(str(m.get("label") or m.get("chunk")) for m in members)
@@ -1106,13 +1114,15 @@ def _reconstruction_plan(chunk, frame: ship.Frame, d: Drawing) -> tuple[list, li
 MAKERS = {"body_plan": body_plan, "half_breadth": half_breadth, "profile": profile}
 
 
-def make(chunk, kind: str, scale: int | None = None, background: str = "relief", reconstruction: bool = True) -> Drawing:
+def make(chunk, kind: str, scale: int | None = None, background: str = "relief", reconstruction: bool = False) -> Drawing:
     """One drawing of the sections of the chunk (up to date ones: else :class:`ship.NotReady`); the plan of the wreck
     (:func:`wreck_plan`, over ``background``) needs no sections. ``reconstruction``: draw the reconstruction too (the
-    plan of the wreck, the body plan, the profile); False draws as 0.3.0."""
+    plan of the wreck, the body plan, the profile), with a note when it is out of date (:func:`reconstruct.stale`);
+    False (the default) draws as 0.3.0."""
     if kind == "wreck_plan":
         d = wreck_plan(chunk, scale, background, reconstruction)
         _hatch_note(d)
+        _stale_note(chunk, d, reconstruction)
         return d
     ship.check_metric(chunk)
     frame = ship.need_frame(chunk)
@@ -1129,10 +1139,23 @@ def make(chunk, kind: str, scale: int | None = None, background: str = "relief",
         raise Empty(t(f"Nessuna linea per il disegno «{d.title}».", f"No lines for the drawing '{d.title}'."))
     d.notes = _notes(chunk, data, frame, kind, d.faired) + d.notes
     _hatch_note(d)
+    if kind != "plan":
+        _stale_note(chunk, d, reconstruction)
     d.block = _block(chunk, frame)
     x0, x1, y0, y1 = d.extent
     d.scale = int(scale or drawing_scale(x1 - x0, y1 - y0))
     return d
+
+
+def _stale_note(chunk, d: Drawing, reconstruction: bool) -> None:
+    """With the reconstruction drawn: a note when it no longer says what the chunk says (:func:`reconstruct.stale`)."""
+    if not reconstruction or not _rebuilt(chunk):
+        return
+    from . import reconstruct
+
+    reason = reconstruct.stale(chunk)
+    if reason:
+        d.notes.append(t(f"La ricostruzione è da rifare: {reason}", f"The reconstruction is to be built again: {reason}"))
 
 
 def _hatch_note(d: Drawing) -> None:
@@ -1345,7 +1368,7 @@ def write_dxf(d: Drawing, path) -> Path:
     return Path(path)
 
 
-def _signature(chunk, kind: str, reconstruction: bool = True) -> dict:
+def _signature(chunk, kind: str, reconstruction: bool = False) -> dict:
     """What a drawing was made from: the sections (with their water and what they were cut from), and for the plan the
     catalogue; with ``reconstruction``, the reconstruction drawn on it (when there is one). It is out of date when any
     of these changes."""
@@ -1391,14 +1414,14 @@ def _relief_signature(chunk) -> dict | None:
 def out_of_date(chunk) -> list[str]:
     """The drawings written that no longer say what the chunk says."""
     made = chunk.meta.get(ship.KEY, {}).get("drawings") or {}
-    return [k for k, v in made.items() if v.get("signature") != _signature(chunk, k, v.get("reconstruction", True))]
+    return [k for k, v in made.items() if v.get("signature") != _signature(chunk, k, v.get("reconstruction", False))]
 
 
 def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progress=None,
-              background: str = "relief", reconstruction: bool = True) -> list[Path]:
+              background: str = "relief", reconstruction: bool = False) -> list[Path]:
     """Each drawing in ``<chunk data>/shipwreck/drawings`` (or ``folder``) as SVG, PDF, PNG and DXF; a kind with no lines
     is left out when others are made; ``background`` is the plan of the wreck's; ``reconstruction`` draws the
-    reconstruction too (False: as 0.3.0). The drawings written in the chunk's
+    reconstruction too (False, the default: as 0.3.0; noted with each drawing). The drawings written in the chunk's
     folder are noted in ``chunk.meta`` (those of the other kinds stay noted as they were)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
@@ -1420,9 +1443,7 @@ def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progres
         names.append(write_dxf(d, out / f"{kind}.dxf"))
         written += names
         kept[kind] = {"scale": d.scale, "files": [p.name for p in names], "water": lines.is_on(chunk),
-                      "signature": _signature(chunk, kind, reconstruction)}
-        if not reconstruction:
-            kept[kind]["reconstruction"] = False
+                      "signature": _signature(chunk, kind, reconstruction), "reconstruction": bool(reconstruction)}
     if not written:
         raise ship.NotReady(" ".join(skipped.values()) or t("Nessun disegno.", "No drawing."))
     if folder is None:

@@ -201,6 +201,13 @@ def set_frame(chunk, frame: Frame, markers=None) -> Frame:
     return frame
 
 
+def frame_markers(chunk, reverse: bool = False) -> list | None:
+    """The names of the two markers the chunk's ship frame was taken from (None when it was set another way), to keep
+    them when only the bow, the datum or x0 changes (``reverse``: the frame flipped, its first end the other marker)."""
+    markers = ((chunk.meta.get(KEY) or {}).get("frame_markers")) or None
+    return list(reversed(markers)) if markers and reverse else markers
+
+
 def marker_label(chunk, name) -> str:
     """The label of the marker ``name`` (a label or a key), or ``name`` itself when there is none."""
     marker = next((m for m in chunk.markers if str(name) in (m.label, str(m.key))), None)

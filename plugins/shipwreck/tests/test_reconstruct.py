@@ -1085,3 +1085,96 @@ def test_a_lost_side_takes_the_other_sides_half_breadth(lost):
     b4 = [r for r in out if r["name"] == "fascia B4"]
     assert all(np.asarray(r["ship_xy"])[:, 0].max() < 11.6 for r in b4), [np.asarray(r["ship_xy"])[:, 0].max() for r in b4]
     assert any("fascia B4" in w and "tagliat" in w for w in reconstruct.state(ch)["extension"]["warnings"])
+
+
+# ----------------------------------------------------------------------------- a stored reconstruction checked when used
+def test_a_strake_corrected_after_the_build_makes_the_reconstruction_stale(lost, tmp_path):
+    """After the build a traced strake is corrected by hand: the reconstruction says it is to be built again, with
+    the reason, in the pane's state, in the table (CSV column, workbook title), on the plan drawn with it and in the
+    3D export's note; built again it is current; the ends changed after the build make it stale too."""
+    import csv
+
+    from openpyxl import load_workbook
+
+    import ppg_shipwreck as plugin
+    from ppg_shipwreck import drawings
+
+    ch = lost
+    reconstruct.build(ch)
+    assert reconstruct.stale(ch) is None
+    assert "ricostruire" not in plugin.reconstruction_state(ch)
+    frame = ship.frame_of(ch)
+    strake = next(r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and r["side"] == "starboard"
+                  and r["geometry"]["type"] == "polygon")
+    xy = tracing.ship_xy_of(ch, strake, frame) + [0.0, 0.05]
+    tracing.correct(ch, strake["id"], relief.uv_of_ship(xy, frame.sign))
+    reason = reconstruct.stale(ch)
+    assert reason and "catalogo" in reason, reason
+    state = plugin.reconstruction_state(ch)
+    assert "Da ricostruire: " + reason in state, state
+    tab = reconstruct.table(ch)
+    assert tab["stale"] == reason
+    out = reconstruct.write_table(ch, tmp_path)
+    assert out["stale"] == reason
+    with open(out["csv"], newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert all(r["stale"] == (reason if r["status"] != "measured" else "") for r in rows)
+    assert "da rifare" in load_workbook(out["xlsx"]).properties.title
+    d = drawings.make(ch, "wreck_plan", reconstruction=True)
+    assert any(reason in n for n in d.notes), d.notes
+    assert not any(reason in n for n in drawings.make(ch, "wreck_plan").notes)
+    exported = plugin.export_3d(ch, tmp_path / "r.obj", tables=False, reconstruction=True)
+    assert reason in exported["note"]
+    reconstruct.build(ch)
+    assert reconstruct.stale(ch) is None and reconstruct.table(ch)["stale"] is None
+    reconstruct.set_ends(ch, stern=12.3)
+    assert "estremit" in (reconstruct.stale(ch) or "")
+
+
+def test_after_a_bow_swap_the_reconstruction_is_refused_in_3d(lost, tmp_path):
+    """The bow swapped after the build (y and the sides exchanged): the reconstruction's solids lie in the old ship
+    frame, so the 3D files refuse them (the catalogue's alone still go) and say why; the plan leaves the faired hull
+    out and says the reconstruction is to be built again."""
+    import ppg_shipwreck as plugin
+    from ppg_shipwreck import drawings, models3d
+
+    ch = lost
+    reconstruct.build(ch)
+    frame = ship.set_frame(ch, ship.need_frame(ch).other_bow())
+    ship.state(ch)["solids"]["frame_key"] = relief.frame_key(frame)  # as if the catalogue's solids were built again
+    reason = reconstruct.stale(ch)
+    assert reason and "sistema della nave" in reason, reason
+    assert models3d.items(ch, "ship", reconstruction=False)
+    with pytest.raises(ship.NotReady, match="sistema della nave"):
+        models3d.items(ch, "ship", reconstruction=True)
+    with pytest.raises(ship.NotReady, match="sistema della nave"):
+        plugin.export_3d(ch, tmp_path / "r.obj", tables=False, reconstruction=True)
+    assert drawings._loft_mesh(ch) is None
+
+
+def test_the_reconstructed_total_leaves_out_the_faired_hull_and_counts_overlaps_once(lost):
+    """The faired hull (3.9 m² here) is given apart and the mirrored frames lie over the mirrored strakes: the
+    reconstructed total is the area of the union of the reconstructed timbers in the ship plan, not the sum of the
+    rows (10.4 m² on this hull); the rows, the totals per kind and per status keep their own areas."""
+    from ppg_shipwreck import drawings
+    from ppg_shipwreck.texts import num
+
+    ch = lost
+    reconstruct.build(ch)
+    tab = reconstruct.table(ch)
+    frame = ship.frame_of(ch)
+    rows = [r for r in tab["rows"] if r["status"] != "measured"]
+    summed = sum(r["reconstructed_area"] or 0.0 for r in rows)
+    hull = next(r for r in rows if r["kind"] == "hull")["reconstructed_area"]
+    assert summed == pytest.approx(10.42, abs=0.1) and hull == pytest.approx(3.89, abs=0.1)
+    union = shapely.union_all([solids._polygon(tracing.ship_xy_of(ch, r, frame)) for r in reconstruct.records_of(ch)
+                               if r["geometry"]["type"] == "polygon"]).area
+    total = tab["totals"]["reconstructed"]["area"]
+    assert total == pytest.approx(union, abs=1e-4)
+    assert total < summed - hull - 0.3, (total, summed, hull)  # what lies over other reconstructed timbers once
+    assert tab["totals"]["status"]["reconstructed:fairing"]["area"] == pytest.approx(hull)
+    assert tab["totals"]["kind"]["hull"]["reconstructed_area"] == pytest.approx(hull)
+    assert tab["totals"]["reconstructed"]["length"] == pytest.approx(
+        sum(r["reconstructed_length"] or 0.0 for r in rows if r["kind"] != "hull"), abs=1e-4)
+    d = drawings.make(ch, "wreck_plan", reconstruction=True)
+    assert any(f"ricostruito: {num(total, 2)} m² senza la carenatura" in n for n in d.notes), d.notes

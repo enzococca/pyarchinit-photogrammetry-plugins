@@ -315,7 +315,8 @@ def test_the_reconstruction_translucent_in_the_3d_files(rebuilt, tmp_path):
 
     ch = rebuilt
     measured = models3d.items(ch, "ship", reconstruction=False)
-    whole = models3d.items(ch, "ship")
+    whole = models3d.items(ch, "ship", reconstruction=True)
+    assert [e["name"] for e in models3d.items(ch, "ship")] == [e["name"] for e in measured]  # the default: without
     built = [r for r in reconstruct.records_of(ch) if r.get("solid")]
     assert built
     assert len(whole) == len(measured) + len(built) + 1
@@ -327,7 +328,7 @@ def test_the_reconstruction_translucent_in_the_3d_files(rebuilt, tmp_path):
     assert loft["name"] == "carenatura_ric" and loft["kind"] == "hull" and loft["status"] == "reconstructed:fairing"
     assert len({e["name"] for e in whole}) == len(whole)
     # GLB: a node per measured timber, reconstructed part and the faired hull; the reconstruction translucent
-    scene = trimesh.load(models3d.write_glb(ch, tmp_path / "r.glb"), force="scene")
+    scene = trimesh.load(models3d.write_glb(ch, tmp_path / "r.glb", reconstruction=True), force="scene")
     assert set(scene.graph.nodes_geometry) == {e["name"] for e in whole}
     for e in added:
         mat = scene.geometry[scene.graph[e["name"]][1]].visual.material
@@ -337,14 +338,14 @@ def test_the_reconstruction_translucent_in_the_3d_files(rebuilt, tmp_path):
     off = trimesh.load(models3d.write_glb(ch, tmp_path / "m.glb", reconstruction=False), force="scene")
     assert set(off.graph.nodes_geometry) == {e["name"] for e in measured}
     # OBJ: the reconstructed objects with their translucent materials
-    objects, _v = _obj_objects(models3d.write_obj(ch, tmp_path / "r.obj"))
+    objects, _v = _obj_objects(models3d.write_obj(ch, tmp_path / "r.obj", reconstruction=True))
     assert set(objects) == {e["name"] for e in whole}
     mtl = _mtl(tmp_path / "r.mtl")
     assert all(mtl[objects[e["name"]][0]]["d"] == [0.5] for e in added)
     objects, _v = _obj_objects(models3d.write_obj(ch, tmp_path / "m.obj", reconstruction=False))
     assert set(objects) == {e["name"] for e in measured}
     # IFC: one element per item, the status said, stable GlobalIds
-    out = models3d.write_ifc(ch, tmp_path / "r.ifc")
+    out = models3d.write_ifc(ch, tmp_path / "r.ifc", reconstruction=True)
     assert out["elements"] == len(whole)
     model = ifcopenshell.open(str(out["path"]))
     elements = model.by_type("IfcPlate") + model.by_type("IfcMember")
@@ -361,7 +362,7 @@ def test_the_reconstruction_translucent_in_the_3d_files(rebuilt, tmp_path):
     assert closed["carenatura_ric"] is False  # an open surface, never a solid
     assert closed[next(i["name"] for i in added if i["id"] == mirrored["id"])] is True
     assert len({e.GlobalId for e in elements}) == len(elements)
-    again = models3d.write_ifc(ch, tmp_path / "w.ifc", system="world")
+    again = models3d.write_ifc(ch, tmp_path / "w.ifc", system="world", reconstruction=True)
     other = ifcopenshell.open(str(again["path"]))
     assert sorted(e.GlobalId for e in other.by_type("IfcPlate") + other.by_type("IfcMember")) == sorted(
         e.GlobalId for e in elements)

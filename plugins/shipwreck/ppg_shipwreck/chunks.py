@@ -22,8 +22,8 @@ Either way the ship plan of every member is the same, so their records and relie
   is joined end to end along x, the better member's points where both have some; a point is kept as it is. ``id``:
   the main's record's, else ``<chunk key>:<id>``; ``sources``: ``[{"chunk", "id", "coverage", "cell"}]``, the better
   first. The main's records that are not measured or are loose are passed on as they are;
-- :func:`prepare`: the merged height raster on the ship plan at the finest member's cell, each cell from the best
-  member covering it (``<main data>/shipwreck/reconstruction/members/height.tif``), which the reconstruction reads
+- :func:`prepare`: the merged height raster on the ship plan at the finest member's cell, each cell from the finest
+  member covering it (:func:`finest`: the finer cell first, the wider coverage only between equal cells) (``<main data>/shipwreck/reconstruction/members/height.tif``), which the reconstruction reads
   through :func:`reconstruct.height_path` while it is current (:func:`is_current`; :func:`stale` says why not);
 - :func:`station_sections`: the stations' sections of all the members, each station from the member that surveys it
   best, for the faired hull.
@@ -269,6 +269,14 @@ def ranked(found: list[dict]) -> list[dict]:
     """The members best first: the coverage (a tie within :data:`SHARE_TIE` to the finer cell)."""
     order = {m["chunk"].key: i for i, m in enumerate(found)}
     return sorted(found, key=functools.cmp_to_key(lambda a, b: _better(a, b, a["coverage"], b["coverage"], order)))
+
+
+def finest(found: list[dict]) -> list[dict]:
+    """The members finest first: the cell of the relief (a close-range model of a part over the whole wreck), the
+    wider coverage among members of the same cell, then the project's order. The order the merged raster is filled
+    in (:func:`prepare`)."""
+    order = {m["chunk"].key: i for i, m in enumerate(found)}
+    return sorted(found, key=lambda m: (round(float(m["cell"]), 9), -float(m["coverage"]), order[m["chunk"].key]))
 
 
 # ----------------------------------------------------------------------------- the merged records
@@ -685,7 +693,7 @@ def prepare(doc, main, progress=None, found: list[dict] | None = None) -> dict:
     out = np.full((h, w), np.nan, np.float32)
     us = affine.c + (np.arange(w) + 0.5) * cell
     block = max(1, min(h, 4_000_000 // max(1, w)))
-    best = ranked(found)
+    best = finest(found)  # each cell from the finest member that has it
     for k, m in enumerate(best):
         progress(k / len(best), t(f"Rilievo dei chunk: {m['chunk'].label}", f"Relief of the chunks: {m['chunk'].label}"))
         src = _Source(*relief.load(m["chunk"], "height"))

@@ -918,7 +918,7 @@ def test_the_reconstruction_hatched_and_lighter_on_the_wreck_plan(rebuilt, tmp_p
 
     ch = rebuilt
     before = copy.deepcopy(ch.meta[ship.KEY])
-    d = drawings.make(ch, "wreck_plan")
+    d = drawings.make(ch, "wreck_plan", reconstruction=True)
     assert ch.meta[ship.KEY] == before  # drawing writes nothing
     records = [r for r in reconstruct.records_of(ch) if r["geometry"]["type"] == "polygon"]
     statuses = {r["status"] for r in records}
@@ -960,7 +960,8 @@ def test_the_reconstruction_hatched_and_lighter_on_the_wreck_plan(rebuilt, tmp_p
     assert "----" not in hatch_notes[0]  # no imported plank on this plan: not named
     assert not any(n.startswith("Ricostruzione (ipotesi): campitura") for n in d.notes)
     totals = reconstruct.state(ch)["table"]["totals"]
-    said = f"misurato {num(totals['measured']['area'], 2)} m², ricostruito {num(totals['reconstructed']['area'], 2)} m² (ipotesi)"
+    said = (f"misurato {num(totals['measured']['area'], 2)} m²; ricostruito: {num(totals['reconstructed']['area'], 2)} m² "
+            "senza la carenatura (ipotesi")
     assert any(said in n for n in d.notes), d.notes
     assert not any("oltre l'ultima stazione" in n.lower() for n in d.notes)  # no end given: the loft stops at the stations
     assert not any("dai chunk" in n for n in d.notes)  # one chunk
@@ -976,7 +977,7 @@ def test_the_reconstruction_hatched_and_lighter_on_the_wreck_plan(rebuilt, tmp_p
                and e.dxf.layer == "RICOSTRUZIONE_HULL")
     drawings.figure(d)  # the sheet draws
     # written and noted: out of date when the reconstruction changes
-    drawings.write_all(ch, kinds=("wreck_plan", "body_plan", "profile"))
+    drawings.write_all(ch, kinds=("wreck_plan", "body_plan", "profile"), reconstruction=True)
     assert drawings.out_of_date(ch) == []
     reconstruct.state(ch)["timbers"] = reconstruct.records_of(ch)[1:]
     assert {"wreck_plan", "body_plan", "profile"} <= set(drawings.out_of_date(ch))
@@ -988,7 +989,7 @@ def test_the_loft_past_the_last_station_and_the_chunks_said(rebuilt):
     ch = rebuilt
     reconstruct.set_ends(ch, stem=-0.3, stern=12.3)
     reconstruct.loft(ch)
-    d = drawings.make(ch, "wreck_plan")
+    d = drawings.make(ch, "wreck_plan", reconstruction=True)
     from ppg_shipwreck import models3d
 
     assert not any(text == "carenatura aperta" for _x, _y, text, _c in d.labels)
@@ -1000,7 +1001,7 @@ def test_the_loft_past_the_last_station_and_the_chunks_said(rebuilt):
     assert any("oltre l'ultima stazione la carenatura è un'ipotesi della sola larghezza" in n.lower() for n in d.notes)
     reconstruct.state(ch)["members"] = {"chunks": [{"chunk": ch.key, "label": "Scavo A"},
                                                    {"chunk": "k2", "label": "Scavo B"}]}
-    d = drawings.make(ch, "wreck_plan")
+    d = drawings.make(ch, "wreck_plan", reconstruction=True)
     assert any("dai chunk: Scavo A, Scavo B" in n for n in d.notes)
 
 
@@ -1013,7 +1014,7 @@ def test_the_loft_on_the_body_plan_and_the_extended_sheer_on_the_profile(rebuilt
     from ppg_shipwreck import reconstruct
 
     ch = rebuilt
-    d = drawings.make(ch, "body_plan")
+    d = drawings.make(ch, "body_plan", reconstruction=True)
     hull = [p for lay, p, _c in d.lines if lay == "RICOSTRUZIONE_HULL"]
     assert hull
     lost = [s["value"] for s in lines.load(ch)["sections"] if s["kind"] == "station" and LOST_BOTH[0] < s["value"] < LOST_BOTH[1]]
@@ -1030,7 +1031,7 @@ def test_the_loft_on_the_body_plan_and_the_extended_sheer_on_the_profile(rebuilt
     assert any("Senza linea del modello, carenatura (ipotesi): S17, S18." in n for n in d.notes), d.notes
     assert not any(n.startswith("Senza linea, fuori dal modello") for n in d.notes)
     # the top strakes (T5, B5) are not extended on this hull: no extended upper edge, never a lower strake's
-    p = drawings.make(ch, "profile")
+    p = drawings.make(ch, "profile", reconstruction=True)
     assert not [q for lay, q, _c in p.lines if lay == "RICOSTRUZIONE_HULL"]
     assert drawings._top_strakes(ch, timbers.timbers_of(ch)) == {"port": "fascia B5", "starboard": "fascia T5"}
     # a piece of the top strake extended: its upper edge, where it has a height
@@ -1040,7 +1041,7 @@ def test_the_loft_on_the_body_plan_and_the_extended_sheer_on_the_profile(rebuilt
     piece.update(id="R99", name="fascia T5")
     piece["edges"]["upper"][3][2] = None  # a point without a height breaks the line
     st["timbers"].append(piece)
-    p = drawings.make(ch, "profile")
+    p = drawings.make(ch, "profile", reconstruction=True)
     sheer = [q for lay, q, _c in p.lines if lay == "RICOSTRUZIONE_HULL"]
     assert len(sheer) == 2
     upper = np.array([[x, z] for x, _y, z in piece["edges"]["upper"] if z is not None])
@@ -1062,17 +1063,35 @@ def test_without_the_reconstruction_the_drawings_of_0_3_0(_rebuilt, tmp_path):
             old = drawings.make(ch, kind)
             ch.meta[ship.KEY] = copy.deepcopy(after)
             off = drawings.make(ch, kind, reconstruction=False)
-            on = drawings.make(ch, kind)
+            on = drawings.make(ch, kind, reconstruction=True)
+            default = drawings.make(ch, kind)  # one default everywhere: without the reconstruction
             a = _dxf_entities(drawings.write_dxf(old, tmp_path / f"{kind}_old.dxf"))
             b = _dxf_entities(drawings.write_dxf(off, tmp_path / f"{kind}_off.dxf"))
             c = _dxf_entities(drawings.write_dxf(on, tmp_path / f"{kind}_on.dxf"))
             assert a == b, kind
+            assert _dxf_entities(drawings.write_dxf(default, tmp_path / f"{kind}_default.dxf")) == b, kind
             if kind != "profile":  # the profile draws only the top strake's extension: none on this hull
                 assert a != c, kind  # the reconstruction is drawn when asked
             assert _png_hash(old) == _png_hash(off), kind
             assert off.faint == set() and not any(lay.endswith("_HULL") for lay, *_r in off.fills + off.lines)
     finally:
         ch.meta[ship.KEY] = copy.deepcopy(after)
+
+
+def test_written_drawings_note_whether_the_reconstruction_is_on_them(rebuilt):
+    """The drawings written note ``reconstruction`` always (False by default, the 0.3.0 output); a drawing noted
+    without the key (written by 0.3.0) is compared without the reconstruction, so it is not out of date."""
+    ch = rebuilt
+    kinds = ("wreck_plan", "body_plan", "profile")
+    drawings.write_all(ch, kinds=kinds)
+    made = ship.state(ch)["drawings"]
+    assert all(made[k]["reconstruction"] is False for k in kinds)
+    assert drawings.out_of_date(ch) == []
+    for k in kinds:
+        made[k].pop("reconstruction")
+    assert drawings.out_of_date(ch) == []
+    drawings.write_all(ch, kinds=("body_plan",), reconstruction=True)
+    assert ship.state(ch)["drawings"]["body_plan"]["reconstruction"] is True and drawings.out_of_date(ch) == []
 
 
 def test_imported_planks_have_their_own_hatch(rebuilt, tmp_path):
@@ -1094,7 +1113,7 @@ def test_imported_planks_have_their_own_hatch(rebuilt, tmp_path):
         return {hatch for lay, ring, _c, hatch, dashed in d.fills if lay == "RICOSTRUZIONE_PLANK" and not dashed
                 and shapely.Polygon(ring).buffer(0).intersection(poly).area > 0.5 * poly.area}
 
-    d = drawings.make(ch, "wreck_plan")
+    d = drawings.make(ch, "wreck_plan", reconstruction=True)
     assert drawings.IMPORTED_HATCH == "----" and hatches(d) == {"----"}
     note = next(n for n in d.notes if "////" in n)
     assert "(----)" in note and "Houdini" in note

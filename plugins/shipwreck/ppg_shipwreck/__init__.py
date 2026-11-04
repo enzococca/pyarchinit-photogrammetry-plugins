@@ -51,6 +51,7 @@ REC_HATCHES = {"reconstructed:mirror": "BDiagPattern", "reconstructed:extension"
 UNDO_FOLDER = "reconstruction.undo"  # the reconstruction's files before and after each build, for Annulla
 _UNDO_DIRS: set = set()  # the copies the steps of Annulla of this process hold (module level: a plugin turned off
 _LAST_AFTER: dict = {}   # and on again keeps them); per chunk key: (the copy after the last build, its meta)
+_HELD: dict = {}  # per copy, how many steps of Annulla hold it (the "before" of a build is the "after" of the one before)
 KIND_COLOURS = {"seam": "#00e5ff", "frame": "#ff8c00", "keelson": "#d040ff", "keel": "#8d6e63", "stringer": "#ffd000",
                 "plank": "#30c060", "ceiling": "#9ccc65", "fastening": "#ff3030", "other": "#b0b0b0"}
 UNDO_KEYS = ("timbers", "proposals", "keel")  # what a step of the tracing changes, kept for *Modifica > Annulla*
@@ -91,6 +92,18 @@ class _RebuildStep:
     def __init__(self, plugin, chunk, before, after, before_dir=None, after_dir=None):
         self.plugin, self.chunk = plugin, chunk
         self.before, self.after, self.before_dir, self.after_dir = before, after, before_dir, after_dir
+        for d in {before_dir, after_dir} - {None}:
+            _HELD[d] = _HELD.get(d, 0) + 1
+
+    def drop(self) -> None:
+        """The history forgets this step (trimmed, or cut by a new step after an undo): its copies go when no other
+        step holds them and the next build will not reuse them."""
+        for d in {self.before_dir, self.after_dir} - {None}:
+            _HELD[d] = _HELD.get(d, 1) - 1
+            if _HELD[d] <= 0:
+                _HELD.pop(d, None)
+                _forget_copy(self.chunk, d)
+        self.before_dir = self.after_dir = None
 
     def _put(self, state, folder) -> None:
         from . import ship
@@ -279,6 +292,7 @@ class ShipwreckPlugin(Plugin):
         chunk = self._chunk()
         self.pane.set_states(self.states(chunk) if chunk is not None else {k: "" for k in self.pane.states})
         self.pane.set_rows(self._rows(chunk) if chunk is not None else [])
+        self.pane.set_notes(rebuild_notes(chunk))
 
     def _rows(self, chunk) -> list:
         from . import ship, timbers
@@ -402,21 +416,22 @@ class ShipwreckPlugin(Plugin):
             Field("z0", t("Quota del datum z = 0 (quota del chunk, m)", "Height of the datum z = 0 (height of the chunk, m)"),
                   frame.z0, minimum=-1e4, maximum=1e5, decimals=3)])
         if v:
-            ship.set_frame(chunk, ship.Frame(frame.start, frame.end, frame.bow, v["z0"], v["x0"]))
+            ship.set_frame(chunk, ship.Frame(frame.start, frame.end, frame.bow, v["z0"], v["x0"]),
+                           markers=ship.frame_markers(chunk))
             self._changed()
 
     def _do_frame_flip(self) -> None:
         from . import ship
 
         chunk = self._need_chunk()
-        ship.set_frame(chunk, ship.need_frame(chunk).flipped())
+        ship.set_frame(chunk, ship.need_frame(chunk).flipped(), markers=ship.frame_markers(chunk, reverse=True))
         self._changed()
 
     def _do_frame_bow(self) -> None:
         from . import ship
 
         chunk = self._need_chunk()
-        ship.set_frame(chunk, ship.need_frame(chunk).other_bow())
+        ship.set_frame(chunk, ship.need_frame(chunk).other_bow(), markers=ship.frame_markers(chunk))
         self._status(t("Babordo e tribordo scambiati: rifai sezioni e disegni.",
                        "Port and starboard exchanged: make the sections and drawings again."))
         self._changed()
@@ -539,23 +554,35 @@ class ShipwreckPlugin(Plugin):
             Field("surveyed", t("Rilievo", "Survey"), f["surveyed"], kind="text"),
             Field("drawn", t("Disegno", "Drawn by"), f["drawn"], kind="text"),
             Field("date", t("Data", "Date"), f["date"], kind="text"),
-            Field("notes", t("Note", "Notes"), f["notes"], kind="text")])
+            Field("notes", t("Note", "Notes"), f["notes"], kind="text")] + _with_reconstruction(chunk, False))
         if not v:
             return
         scale = int(v.pop("scale")) or None
-        self.drawings(chunk, scale, v)
+        reconstruction = bool(v.pop("reconstruction", False))
+        self.drawings(chunk, scale, v, reconstruction)
 
-    def drawings(self, chunk, scale=None, title=None) -> None:
+    def drawings(self, chunk, scale=None, title=None, reconstruction: bool = False) -> None:
+        """The drawings of the hull in the background; ``reconstruction``: with the reconstruction (a hypothesis) on
+        the plan of the wreck, the body plan and the profile."""
         from . import drawings, ship
 
         if title:
             ship.state(chunk)["title"] = title
+        if reconstruction:
+            self._warn_stale(chunk)
 
         def done(paths):
             self._status(t(f"{len(paths)} file dei disegni in {paths[0].parent}", f"{len(paths)} drawing files in {paths[0].parent}"))
             self._changed()
 
-        self._run(t("Disegni dello scafo", "Drawings of the hull"), lambda p: drawings.write_all(chunk, scale=scale, progress=p), done)
+        self._run(t("Disegni dello scafo", "Drawings of the hull"),
+                  lambda p: drawings.write_all(chunk, scale=scale, progress=p, reconstruction=reconstruction), done)
+
+    def _warn_stale(self, chunk) -> None:
+        """A drawing, a table or an export with the reconstruction: said when it is out of date."""
+        warning = reconstruction_warning(chunk)
+        if warning:
+            self._message("warning", warning)
 
     def _do_drawings_open(self) -> None:
         from PySide6.QtCore import QUrl
@@ -1271,7 +1298,7 @@ class ShipwreckPlugin(Plugin):
                                                                                     "z up from the datum)")),
                 ("world", t("Del chunk (per GIS e BIM)", "Of the chunk (for GIS and BIM)"))]),
             Field("tables", t("Anche le tabelle dei legni in 3D (CSV, Excel)", "The tables of the timbers in 3D too "
-                              "(CSV, Excel)"), True)],
+                              "(CSV, Excel)"), True)] + _with_reconstruction(chunk, reconstruction),
             intro=t("Un oggetto per legno con il suo nome: OBJ (un materiale per tipo), GLB (un nodo per legno), IFC "
                     "(un elemento per legno con Pset_PyArchInit_Timber). Le ipotesi finiscono in _ric, più chiare e "
                     "trasparenti. Un IFC di uno scafo lungo può richiedere decine di secondi.",
@@ -1283,6 +1310,7 @@ class ShipwreckPlugin(Plugin):
                  "the table of the measured and the reconstructed beside.") if reconstruction else ""))
         if not v:
             return
+        reconstruction = bool(v.get("reconstruction", reconstruction))
         last = ship.state(chunk).get("model_export") or (str(reconstruct.folder(chunk).parent / "ricostruzione.obj")
                                                          if reconstruction else "legni.obj")
         path, _ = QFileDialog.getSaveFileName(self.context.window, title, str(last),
@@ -1296,6 +1324,11 @@ class ShipwreckPlugin(Plugin):
         warning = solids_warning(chunk)
         if warning:
             self._message("warning", warning)
+        if reconstruction:
+            from . import models3d
+
+            models3d.check_reconstruction(chunk)
+            self._warn_stale(chunk)
         fmt = path.suffix[1:].upper()
 
         def job(p):
@@ -1354,7 +1387,7 @@ class ShipwreckPlugin(Plugin):
                 ("relief", t("L'ombreggiatura del rilievo dello scafo", "The hillshade of the relief of the hull")),
                 ("ortho", t("L'ortofoto", "The orthophoto")), ("none", t("Niente", "Nothing"))]),
             Field("scale", t("Scala 1: (0 = automatica)", "Scale 1: (0 = automatic)"), 20, minimum=0, maximum=100000,
-                  decimals=0)],
+                  decimals=0)] + _with_reconstruction(chunk, reconstruction),
             intro=t("Ogni legno del catalogo contornato, colorato per tipo e nominato; le ipotesi campite a righe "
                     "oblique; legenda, scala, nord, cartiglio. SVG, PDF, PNG e DXF (un layer per tipo) in "
                     "shipwreck/drawings.",
@@ -1367,6 +1400,9 @@ class ShipwreckPlugin(Plugin):
         if not v:
             return
         scale = int(v["scale"]) or None
+        reconstruction = bool(v.get("reconstruction", reconstruction))
+        if reconstruction:
+            self._warn_stale(chunk)
 
         def done(paths):
             self._status(t(f"Pianta del relitto: {paths[0].parent}", f"Plan of the wreck: {paths[0].parent}"))
@@ -1391,6 +1427,8 @@ class ShipwreckPlugin(Plugin):
                 _LAST_AFTER[chunk.key] = (after_dir, copy.deepcopy(after))
             history.push(t(f"Relitto: {text}", f"Shipwreck: {text}"),
                          _RebuildStep(self, chunk, before, after, before_dir, after_dir), document=False)
+        else:
+            _forget_copy(chunk, before_dir)  # no step holds it
         self._changed()
 
     def _keep_folder(self, chunk, reuse: bool = False):
@@ -1524,8 +1562,14 @@ class ShipwreckPlugin(Plugin):
                 self._message("warning", text)
             self._rec_step(chunk, before, t("ricostruzione", "reconstruction"), before_dir)
 
-        self._run(t("Ricostruzione (ipotesi)", "Reconstruction (hypothesis)"),
-                  lambda p: rebuild.build(chunk, progress=p, doc=doc, steps=steps or REBUILD_STEPS), done)
+        def job(p):
+            try:
+                return rebuild.build(chunk, progress=p, doc=doc, steps=steps or REBUILD_STEPS)
+            except BaseException:  # a build that failed or was cancelled: its "before" copy is held by nothing
+                _forget_copy(chunk, before_dir)
+                raise
+
+        self._run(t("Ricostruzione (ipotesi)", "Reconstruction (hypothesis)"), job, done)
 
     def _do_rec_frame_of(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field
@@ -1574,6 +1618,7 @@ class ShipwreckPlugin(Plugin):
             return
         out = rebuild.write_table(chunk, folder)
         self._status(t(f"Tabella: {out['csv']}", f"Table: {out['csv']}"))
+        self._warn_stale(chunk)
 
     def _do_rec_export(self) -> None:
         self._do_model_export(reconstruction=True)
@@ -1829,10 +1874,13 @@ class ShipwreckPlugin(Plugin):
         if not _has_reconstruction(chunk):
             return []
         n = len(reconstruct.records_of(chunk))
-        return [{"label": t(f"Ricostruzione ({n}, ipotesi)", f"Reconstruction ({n}, hypothesis)"), "icon": "plugin",
-                 "activate": self.show_pane,
-                 "tooltip": t("Simmetria, prolungamenti, ordinate al passo, carenatura: ipotesi, mai misure",
-                              "Mirror, extensions, frames at the spacing, faired hull: hypotheses, never measures")}]
+        stale = reconstruct.stale(chunk)
+        label = (t(f"Ricostruzione ({n}, ipotesi, da rifare)", f"Reconstruction ({n}, hypothesis, to build again)")
+                 if stale else t(f"Ricostruzione ({n}, ipotesi)", f"Reconstruction ({n}, hypothesis)"))
+        tip = t("Simmetria, prolungamenti, ordinate al passo, carenatura: ipotesi, mai misure",
+                "Mirror, extensions, frames at the spacing, faired hull: hypotheses, never measures")
+        return [{"label": label, "icon": "plugin", "activate": self.show_pane,
+                 "tooltip": tip + (" " + t("Da ricostruire: ", "To reconstruct again: ") + stale if stale else "")}]
 
     def _open(self, path) -> None:
         from PySide6.QtCore import QUrl
@@ -1876,6 +1924,9 @@ class ShipwreckPlugin(Plugin):
         parser.add_argument("--on", action="store_true", help="water: correct the heights under the level")
         parser.add_argument("--scale", type=int, help="drawings: 1:SCALE (default: automatic)")
         parser.add_argument("--out", help="drawings: a folder; export: the file (.csv, .xlsx, .gpkg)")
+        parser.add_argument("--reconstruction", action="store_true",
+                            help="drawings: with the reconstruction (a hypothesis) on the plan of the wreck, the body "
+                                 "plan and the profile")
         ns = parser.parse_args(joined_values([str(a) for a in args]))
         import pyarchinit_photogrammetry as ppg
 
@@ -1887,9 +1938,10 @@ class ShipwreckPlugin(Plugin):
         try:
             if ns.what == "frame":
                 if ns.flip:
-                    ship.set_frame(chunk, ship.need_frame(chunk).flipped())
+                    ship.set_frame(chunk, ship.need_frame(chunk).flipped(),
+                                   markers=ship.frame_markers(chunk, reverse=True))
                 elif ns.other_bow:
-                    ship.set_frame(chunk, ship.need_frame(chunk).other_bow())
+                    ship.set_frame(chunk, ship.need_frame(chunk).other_bow(), markers=ship.frame_markers(chunk))
                 elif ns.markers:
                     ship.set_frame(chunk, ship.frame_from_markers(chunk, ns.start, ns.end, ns.bow, ns.z0, ns.x0),
                                    markers=[ship.marker_label(chunk, ns.start), ship.marker_label(chunk, ns.end)])
@@ -1922,7 +1974,10 @@ class ShipwreckPlugin(Plugin):
                 if drawings._traced(chunk) and relief.entry(chunk) is not None and relief.is_stale(chunk):
                     print(t("Il rilievo dello scafo è da rifare: sul profilo mancano paramezzale e chiglia.",
                             "The relief of the hull is to be built again: the profile lacks the keelson and the keel."))
-                for path in drawings.write_all(chunk, scale=ns.scale, folder=ns.out, progress=_print_progress):
+                if ns.reconstruction and reconstruction_warning(chunk):
+                    print(reconstruction_warning(chunk))
+                for path in drawings.write_all(chunk, scale=ns.scale, folder=ns.out, progress=_print_progress,
+                                               reconstruction=ns.reconstruction):
                     print(path)
             elif ns.what == "timbers":
                 if ns.table:
@@ -2107,6 +2162,8 @@ class ShipwreckPlugin(Plugin):
                 if relief.entry(chunk) is not None and relief.is_stale(chunk):
                     print(t("Il rilievo dello scafo è da rifare: lo sfondo è quello vecchio.",
                             "The relief of the hull is to be built again: the background is the old one."))
+                if ns.reconstruction and reconstruction_warning(chunk):
+                    print(reconstruction_warning(chunk))
                 for path in drawings.write_all(chunk, kinds=("wreck_plan",), scale=ns.scale, folder=ns.out,
                                                progress=_print_progress, background=ns.background,
                                                reconstruction=ns.reconstruction):
@@ -2272,11 +2329,13 @@ def _rebuild_command(doc, chunk, what: str, action, ns) -> int:
                     f"{m['chunk'].label}: cell {num(m['cell'] * 1000.0, 1)} mm, coverage {num(m['coverage'] * 100, 0)} %"))
         for r in refused:
             print(t(f"Escluso «{r['chunk'].label}»: {r['reason']}", f"Left out «{r['chunk'].label}»: {r['reason']}"))
-        return 0 if found else 1
+        return 1 if refused and len(found) < 2 else 0  # every other chunk left out: nothing to merge
     elif action == "table":
         out = rebuild.write_table(chunk, ns.out, doc=doc)
         print(out["csv"])
         print(out["xlsx"])
+        if out.get("stale"):
+            print(reconstruction_warning(chunk))
     else:
         steps = [s for s in REBUILD_STEPS if not getattr(ns, f"no_{s}")]
         out = rebuild.build(chunk, progress=_print_progress, doc=doc, steps=steps)
@@ -2336,10 +2395,42 @@ def reconstruction_state(chunk) -> str:
         text += " " + t(f"Dai chunk: {labels}.", f"From the chunks: {labels}.")
     if members.get("refused"):
         text += " " + t(f"Chunk esclusi: {len(members['refused'])}.", f"Chunks left out: {len(members['refused'])}.")
-    stale = reconstruct.members_stale(chunk)
+    stale = reconstruct.stale(chunk)
     if stale:
-        text += " " + t("Da rifare: ", "To build again: ") + " ".join(stale)
+        text += " " + t("Da ricostruire: ", "To reconstruct again: ") + stale
     return " ".join(x for x in (text, ends) if x)
+
+
+def _with_reconstruction(chunk, default: bool) -> list:
+    """The checkbox "con la ricostruzione (ipotesi)" of a dialog of drawings or of a 3D export, when the chunk has a
+    reconstruction (else no field: the 0.3.0 output)."""
+    from pyarchinit_photogrammetry.gui.dialogs import Field
+
+    if not _has_reconstruction(chunk):
+        return []
+    return [Field("reconstruction", t("Con la ricostruzione (ipotesi)", "With the reconstruction (hypothesis)"),
+                  bool(default), tip=t("Le parti ricostruite campite (nei disegni) o trasparenti _ric (nei file 3D)",
+                                       "The reconstructed parts hatched (drawings) or translucent _ric (3D files)"))]
+
+
+def rebuild_notes(chunk) -> dict:
+    """The notes under step 9's buttons: "Da ricostruire: <why>" on the build, the table, the export and the plan
+    while the stored reconstruction is out of date (:func:`reconstruct.stale`); "" otherwise."""
+    from . import reconstruct
+
+    reason = reconstruct.stale(chunk) if chunk is not None else None
+    text = t("Da ricostruire: ", "To reconstruct again: ") + reason if reason else ""
+    return {name: text for name in ("rec_build", "rec_table", "rec_export", "rec_plan")}
+
+
+def reconstruction_warning(chunk) -> str:
+    """What a table, a drawing or a 3D export with the reconstruction should say: why it is out of date
+    (:func:`reconstruct.stale`), "" while it is current or there is none."""
+    from . import reconstruct
+
+    reason = reconstruct.stale(chunk)
+    return t(f"La ricostruzione è da rifare (Ricostruisci, passo 9): {reason}",
+             f"The reconstruction is to be built again (Reconstruct, step 9): {reason}") if reason else ""
 
 
 def reconstruction_summary(out: dict) -> str:
@@ -2363,6 +2454,15 @@ def reconstruction_summary(out: dict) -> str:
     lines_ += [t("Nota: ", "Note: ") + n for n in out.get("notes") or []]
     lines_ += [f"  {r['name']}: {r['reason']}" for r in out.get("refused") or []]
     return "\n".join(lines_)
+
+
+def _forget_copy(chunk, folder) -> None:
+    """A copy for Annulla no step holds removed, unless the next build of ``chunk`` reuses it as its "before"."""
+    last = _LAST_AFTER.get(chunk.key)
+    if folder is None or _HELD.get(folder) or (last is not None and last[0] == folder):
+        return
+    _UNDO_DIRS.discard(folder)
+    _remove(folder)
 
 
 def _rec_folder(chunk) -> Path:
@@ -2507,7 +2607,8 @@ def export_3d(chunk, path, system: str = "ship", tables: bool = True, remember: 
               reconstruction: bool = False) -> dict:
     """The timbers in 3D as ``path`` (.obj, .glb, .ifc by its suffix) in ``system``, with the tables beside it.
     ``reconstruction``: the reconstruction too (``_ric``, translucent; with the tables, ``tabella.csv`` and
-    ``.xlsx`` of the measured and the reconstructed beside). Returns ``{"path", "note", "csv"?, "xlsx"?, "table"?}``;
+    ``.xlsx`` of the measured and the reconstructed beside; refused in another ship frame, and ``note`` says when it
+    is out of date: :func:`reconstruction_warning`). Returns ``{"path", "note", "csv"?, "xlsx"?, "table"?}``;
     with ``remember`` the path is kept in the chunk's meta for the next export (False from a worker thread: the
     caller keeps it in the interface thread)."""
     from . import models3d, rebuild, ship
@@ -2515,6 +2616,7 @@ def export_3d(chunk, path, system: str = "ship", tables: bool = True, remember: 
     path = Path(path)
     check_export_path(path)
     out = {"path": path, "note": ""}
+    warning = reconstruction_warning(chunk) if reconstruction else ""
     suffix = path.suffix.lower()
     if suffix == ".obj":
         models3d.write_obj(chunk, path, system, reconstruction=reconstruction)
@@ -2528,6 +2630,8 @@ def export_3d(chunk, path, system: str = "ship", tables: bool = True, remember: 
         out.update({k: v for k, v in models3d.write_tables(chunk, path.parent).items() if k in ("csv", "xlsx")})
         if reconstruction:
             out["table"] = rebuild.write_table(chunk, path.parent)["csv"]
+    if warning:
+        out["note"] = " ".join(x for x in (out["note"], warning) if x)
     if remember:
         ship.state(chunk)["model_export"] = str(path)
     return out

@@ -133,6 +133,7 @@ class ShipwreckPane(QWidget):
         lay.addWidget(intro)
         self.states: dict[str, QLabel] = {}
         self.buttons: dict[str, QPushButton] = {}
+        self.tips: dict[str, str] = {}  # each button's own tooltip, before a note is added
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels([t(*c) for c in COLUMNS])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -147,6 +148,7 @@ class ShipwreckPane(QWidget):
                 b = QPushButton(t(*text))
                 if tip_it:
                     b.setToolTip(t(tip_it, tip_en))
+                self.tips[name] = b.toolTip()
                 b.clicked.connect(lambda _=False, n=name: self.requested.emit(n))
                 flow.addWidget(b)
                 self.buttons[name] = b
@@ -162,6 +164,12 @@ class ShipwreckPane(QWidget):
     def set_states(self, states: dict) -> None:
         for key, text in states.items():
             self.states[key].setText(text)
+
+    def set_notes(self, notes: dict) -> None:
+        """A note under the buttons' own tooltips (``{name: text}``; "" takes it away)."""
+        for name, text in notes.items():
+            base = self.tips.get(name, "")
+            self.buttons[name].setToolTip("\n".join(x for x in (base, text) if x))
 
     def set_rows(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))

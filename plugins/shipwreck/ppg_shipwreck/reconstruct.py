@@ -144,6 +144,62 @@ def members_stale(chunk) -> list[str]:
     return chunks.stale(chunk, members)
 
 
+def built_from(chunk) -> dict:
+    """What a build of the reconstruction reads, kept with it (``inputs``, ``frame_key``, ``ends_built``) for
+    :func:`stale`: per chunk of the build (this one, then the members) :func:`solids.inputs_key` - the records, the
+    typed keel and the relief - the ship frame's key and the ends given."""
+    import copy
+
+    st = state(chunk)
+    doc = getattr(chunk, "document", None)
+    by_key = {c.key: c for c in (doc.chunks if doc is not None else [])}
+    inputs = {chunk.key: solids.inputs_key(chunk)}
+    for m in (st.get("members") or {}).get("chunks") or []:
+        other = by_key.get(m["chunk"])
+        if other is not None and m["chunk"] not in inputs:
+            inputs[m["chunk"]] = solids.inputs_key(other)
+    return {"inputs": inputs, "frame_key": relief.frame_key(ship.frame_of(chunk)),
+            "ends_built": copy.deepcopy(st.get("ends"))}
+
+
+def stale(chunk) -> str | None:
+    """Why the stored reconstruction no longer says what the chunk says, in words for the user; None while it does
+    (or when there is none). It is out of date when, since it was built, the ship frame changed (its solids lie in the
+    old frame: the 3D files refuse them), the catalogue, the typed keel or the relief of this chunk or of one of its
+    members changed, the ends given changed, or the members no longer match (:func:`members_stale`)."""
+    st = (chunk.meta.get(ship.KEY) or {}).get("reconstruction") or {}  # read, never created
+    if not (st.get("timbers") or (st.get("loft") or {}).get("file")):
+        return None
+    if "frame_key" not in st or "inputs" not in st:
+        return t("È stata fatta da una versione di prova del plugin.", "It was made by a trial version of the plugin.")
+    out = []
+    frame = ship.frame_of(chunk)
+    if frame is None or st["frame_key"] != relief.frame_key(frame):
+        out.append(t("Il sistema della nave è cambiato dopo la ricostruzione: i suoi legni in 3D sono nel sistema di "
+                     "prima.",
+                     "The ship frame changed after the reconstruction: its timbers in 3D are in the earlier frame."))
+    doc = getattr(chunk, "document", None)
+    by_key = {c.key: c for c in (doc.chunks if doc is not None else [])} | {chunk.key: chunk}
+    labels = {m["chunk"]: m.get("label") or m["chunk"] for m in (st.get("members") or {}).get("chunks") or []}
+    for key, value in st["inputs"].items():
+        other = by_key.get(key)
+        if other is None or solids.inputs_key(other) == value:
+            continue  # a member gone from the project: members_stale says it
+        if key == chunk.key:
+            out.append(t("Il catalogo dei legni, la chiglia data o il rilievo sono cambiati dopo la ricostruzione.",
+                         "The timber catalogue, the given keel or the relief changed after the reconstruction."))
+        else:
+            out.append(t(f"Il catalogo, la chiglia o il rilievo del chunk «{labels.get(key, key)}» sono cambiati dopo "
+                         "la ricostruzione.",
+                         f"The catalogue, the keel or the relief of chunk «{labels.get(key, key)}» changed after the "
+                         "reconstruction."))
+    if st.get("ends_built") != st.get("ends"):
+        out.append(t("La prua o la poppa date (le estremità) sono cambiate.", "The stem or the stern given (the ends) "
+                                                                              "changed."))
+    out += members_stale(chunk)
+    return " ".join(out) or None
+
+
 def height_load(chunk):
     """:func:`relief.load` of :func:`height_path`: the heights (NaN off the model) and the affine in (u, v)."""
     import rasterio

@@ -23,12 +23,13 @@ an ``IfcTriangulatedFaceSet``; ``IfcMapConversion`` when the chunk has a project
 eastings, northings and rotation are the ship frame's); GlobalIds stable across exports and systems
 (:func:`stable_global_id` of ``(chunk key, "shipwreck", record id)``, in the namespace of the plugin suite).
 
-The reconstruction of :mod:`reconstruct` (0.4.0) goes in with ``reconstruction=True`` (the default): after the
+The reconstruction of :mod:`reconstruct` (0.4.0) goes in with ``reconstruction=True`` (asked for: the default is False): after the
 catalogue's timbers (and the typed keel) every reconstruction record with a solid (its name and :data:`RIC`, its own
 status: ``ricostruito: simmetria`` ...), then the faired hull ``carenatura_ric`` (kind ``hull``, an open surface, an
 ``IfcMember`` with ``ObjectType`` "carenatura (ipotesi)", a face set not ``Closed``, no volume in its Pset), all
 translucent like every hypothesis; GlobalIds stable from
-the record's id ("carenatura" for the faired hull). ``reconstruction=False`` writes what 0.3.0 wrote.
+the record's id ("carenatura" for the faired hull); refused (:class:`NotReady`) when it was built in another ship
+frame, its solids lying elsewhere. ``reconstruction=False``, the default everywhere, writes what 0.3.0 wrote.
 
 Only the files asked for are written (and the OBJ's ``.mtl`` beside it): the records, the chunk's transform, model and
 products are never changed.
@@ -203,7 +204,7 @@ def _names(entries: list[dict], taken: set[str] | None = None) -> set[str]:
     return taken
 
 
-def items(chunk, system: str = "ship", reconstruction: bool = True) -> list[dict]:
+def items(chunk, system: str = "ship", reconstruction: bool = False) -> list[dict]:
     """The timbers built in 3D, in ``system``: ``[{"id", "name" (the object's), "label" (the record's name), "kind",
     "side", "status", "material", "colour", "vertices", "faces" (outward), "hidden", "volume", "thickness_mm",
     "hidden_share", "record" (None for the typed keel and the faired hull), "ship_vertices"}]``; the typed keel after
@@ -242,12 +243,30 @@ def items(chunk, system: str = "ship", reconstruction: bool = True) -> list[dict
     return out
 
 
+def check_reconstruction(chunk) -> None:
+    """:class:`NotReady` when the stored reconstruction was built in another ship frame than the chunk's now: its solids
+    lie in that frame and would stand elsewhere in the 3D files (other changes only make it out of date:
+    :func:`reconstruct.stale`)."""
+    st = (chunk.meta.get(ship.KEY) or {}).get("reconstruction") or {}
+    if (st.get("timbers") or (st.get("loft") or {}).get("file")) and \
+            st.get("frame_key") != relief.frame_key(ship.need_frame(chunk)):
+        raise NotReady(t("La ricostruzione è di un altro sistema della nave: ricostruisci (passo 9) prima di esportarla "
+                         "in 3D.",
+                         "The reconstruction belongs to another ship frame: reconstruct (step 9) before exporting it "
+                         "in 3D."))
+
+
 def _reconstruction_items(chunk) -> list[dict]:
     """The reconstruction's records with a solid (their status, ``sources``), then the faired hull (id
-    "carenatura", kind "hull", volume 0: an open surface), in the ship frame, unnamed yet."""
+    "carenatura", kind "hull", volume 0: an open surface), in the ship frame, unnamed yet. :class:`NotReady` when the
+    reconstruction was built in another ship frame than the chunk's now (a bow swapped, the keel traced again): its
+    solids lie in that frame, and placed with this one they would stand elsewhere."""
     from . import loft as loft_mod
 
     st = ship.state(chunk).get("reconstruction") or {}
+    if not (st.get("timbers") or (st.get("loft") or {}).get("file")):
+        return []
+    check_reconstruction(chunk)
     out = []
     for r in st.get("timbers", []):
         if not r.get("solid") or not (chunk.data_dir / r["solid"]).exists():
@@ -294,7 +313,7 @@ def _rows_text(fmt: str, values: np.ndarray, block: int = 100_000) -> str:
     return "".join(parts).rstrip("\n")
 
 
-def write_obj(chunk, path, system: str = "ship", reconstruction: bool = True) -> Path:
+def write_obj(chunk, path, system: str = "ship", reconstruction: bool = False) -> Path:
     """An OBJ of the timbers in ``system``: ``o <name>`` per timber, ``usemtl <kind>`` (``<kind>_ric`` for a
     hypothesis), the ``.mtl`` beside it (``Kd`` per kind, ``d 0.5`` and a lighter colour for the hypotheses),
     comments with the system and the ship frame; ``reconstruction``: the reconstruction too (:func:`items`). Returns
@@ -332,7 +351,7 @@ def write_obj(chunk, path, system: str = "ship", reconstruction: bool = True) ->
 
 
 # ----------------------------------------------------------------------------- GLB
-def write_glb(chunk, path, system: str = "ship", reconstruction: bool = True) -> Path:
+def write_glb(chunk, path, system: str = "ship", reconstruction: bool = False) -> Path:
     """A GLB of the timbers in ``system`` (Y up, as glTF wants: (x, z, -y)): a node per timber named as in the OBJ, a
     PBR colour per kind, the hypotheses lighter and translucent (``alphaMode`` BLEND, alpha 0.5). In "world" a round
     origin is taken off (float32) and given in the scene's ``extras`` with the system, the CRS and the ship frame;
@@ -478,7 +497,7 @@ def _typed(model, props: dict) -> dict:
 
 
 def write_ifc(chunk, path, system: str = "ship", project: str | None = None, site: str | None = None,
-              reconstruction: bool = True) -> dict:
+              reconstruction: bool = False) -> dict:
     """An IFC4 of the timbers in ``system`` (see the module), written with a decimal point whatever the numeric locale;
     ``reconstruction``: the reconstruction too (:func:`items`).
     Returns ``{"path", "elements", "map_conversion" (bool), "note" (why there is none), "not_built"}``."""
@@ -491,7 +510,7 @@ def write_ifc(chunk, path, system: str = "ship", project: str | None = None, sit
         return _write_ifc(chunk, path, system, project, site, reconstruction)
 
 
-def _write_ifc(chunk, path, system, project, site, reconstruction=True) -> dict:
+def _write_ifc(chunk, path, system, project, site, reconstruction=False) -> dict:
     import ifcopenshell
     import ifcopenshell.api.aggregate
     import ifcopenshell.api.context

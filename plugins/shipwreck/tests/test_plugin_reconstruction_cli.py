@@ -454,6 +454,16 @@ def test_the_reconstruction_step_from_the_command_line(tmp_path, monkeypatch):
     plan = tmp_path / "pianta"
     run("plan", p, "--chunk", "A", "--reconstruction", "--out", str(plan))
     assert (plan / "wreck_plan.pdf").exists()
+    import ezdxf
+
+    drawn, plain = tmp_path / "disegni_ric", tmp_path / "disegni"
+    run("drawings", p, "--chunk", "A", "--reconstruction", "--out", str(drawn))
+    run("drawings", p, "--chunk", "A", "--out", str(plain))
+
+    def layers(folder):
+        return {e.dxf.layer for e in ezdxf.readfile(folder / "body_plan.dxf").modelspace()}
+
+    assert "RICOSTRUZIONE_HULL" in layers(drawn) and "RICOSTRUZIONE_HULL" not in layers(plain)
     status = json.loads(run("status", p, "--chunk", "A"))
     assert "ipotesi" in status["reconstruction"]
 
@@ -493,6 +503,17 @@ def test_the_pane_reconstructs_and_an_undo_takes_a_build_back(rebuild_window, mo
     for name, text in names.items():
         assert pane.buttons[name].text() == text
     assert "Nessuna ricostruzione" in pane.states["reconstruction"].text()
+    asked = {}
+    ask = plugin._ask
+
+    def recording(title, fields, intro=""):
+        asked[title] = [f.name for f in fields]
+        return ask(title, fields, intro)
+
+    monkeypatch.setattr(plugin, "_ask", recording)
+    plugin._requested("drawings")
+    wait()
+    assert "reconstruction" not in asked["Disegni"]  # nothing to draw it with: the 0.3.0 dialog
 
     answers["Prua e poppa"] = {"stem_on": False, "stern_on": True, "stern": 12.3}
     plugin._requested("rec_ends")
@@ -523,6 +544,36 @@ def test_the_pane_reconstructs_and_an_undo_takes_a_build_back(rebuild_window, mo
     w.history.redo()
     assert reconstruct.state(ch) == second and _files(reconstruct.folder(ch)) == second_files
 
+    # step 5's drawings: without the reconstruction unless the box is ticked
+    plugin._requested("drawings")
+    wait()
+    assert "reconstruction" in asked["Disegni"]
+    made = ship.state(ch)["drawings"]
+    assert made["body_plan"]["reconstruction"] is False and made["wreck_plan"]["reconstruction"] is False
+    answers["Disegni"] = {"reconstruction": True}
+    plugin._requested("drawings")
+    wait()
+    made = ship.state(ch)["drawings"]
+    assert made["body_plan"]["reconstruction"] is True and made["wreck_plan"]["reconstruction"] is True
+    del answers["Disegni"]
+
+    # a strake corrected after the build: "da ricostruire" with the reason in the state, under the buttons, in the tree
+    from ppg_shipwreck import relief, timbers, tracing
+
+    frame = ship.frame_of(ch)
+    strake = next(r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and r["side"] == "starboard"
+                  and r["geometry"]["type"] == "polygon")
+    tracing.correct(ch, strake["id"], relief.uv_of_ship(tracing.ship_xy_of(ch, strake, frame) + [0.0, 0.05],
+                                                        frame.sign))
+    plugin.refresh_pane()
+    reason = reconstruct.stale(ch)
+    assert reason and "Da ricostruire: " + reason in pane.states["reconstruction"].text()
+    for name in ("rec_build", "rec_table", "rec_export", "rec_plan"):
+        assert reason in pane.buttons[name].toolTip(), name
+    assert reason not in pane.buttons["rec_ends"].toolTip()
+    tree = plugin._tree_items(ch)[0]["children"]
+    assert any(i["label"].endswith("ipotesi, da rifare)") for i in tree), [i["label"] for i in tree]
+
     # the layer of the reconstruction only on the relief
     plugin._need_view(ch)
     plugin.draw_layer()
@@ -535,6 +586,7 @@ def test_the_pane_reconstructs_and_an_undo_takes_a_build_back(rebuild_window, mo
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(folder))
     plugin._requested("rec_table")
     assert (folder / "tabella.csv").exists() and (folder / "tabella.xlsx").exists()
+    assert any(s.startswith("warning: La ricostruzione è da rifare") for s in said), said
 
     from ppg_shipwreck import solids
 
@@ -549,7 +601,7 @@ def test_the_pane_reconstructs_and_an_undo_takes_a_build_back(rebuild_window, mo
     plugin._requested("rec_plan")
     wait()
     made = ship.state(ch)["drawings"]["wreck_plan"]
-    assert made.get("reconstruction", True) is True and (ship.folder(ch) / "drawings" / "wreck_plan.pdf").exists()
+    assert made["reconstruction"] is True and (ship.folder(ch) / "drawings" / "wreck_plan.pdf").exists()
     # step 8's plan is the 0.3.0 one
     plugin._requested("wreck_plan")
     wait()
