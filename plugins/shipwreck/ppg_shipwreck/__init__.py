@@ -8,15 +8,18 @@
   Fröhlich & Nielsen's Clinker Boat Tool for Houdini), the relief of the hull from above (an elevation of the
   program in the ship frame, its hillshade or local relief in grey over it) and the tracing on it (the proposals
   accepted, rejected, corrected, added by hand, named from a table, flagged loose; each change a step of *Modifica >
-  Annulla*);
+  Annulla*), a keel from given dimensions (a hypothesis), every traced timber a closed 3D object (OBJ, GLB, IFC with
+  the tables) and the plan of the wreck with every timber outlined, coloured by kind and named;
 * the products in the workspace tree, the timbers and the land lines in layers of the raster view on the plan, the
   proposals and the traced timbers in layers of the relief while it is shown;
 * *File > Esporta > Relitto: catalogo dei legni*;
-* ``ppg plugin shipwreck frame|stations|sections|water|drawings|timbers|export|status`` and
-  ``ppg plugin shipwreck clinker detect|strakes|export|import|status``.
+* ``ppg plugin shipwreck frame|stations|sections|water|drawings|timbers|export|status``,
+  ``ppg plugin shipwreck clinker detect|strakes|export|import|status`` and
+  ``ppg plugin shipwreck relief|propose|trace|keel|solids|export3d|plan``.
 
-It measures what is there and reconstructs nothing. It reads the model: the transform, the model and the products of
-the chunk are never changed, and nothing is written outside ``<chunk data>/shipwreck/`` but what the user exports.
+It measures what is there; what it adds (the keel of given dimensions, the strake model of the sections) is a stated
+hypothesis, apart from the measures. It reads the model: the transform, the model and the products of the chunk are
+never changed, and nothing is written outside ``<chunk data>/shipwreck/`` but what the user exports.
 """
 from __future__ import annotations
 
@@ -31,7 +34,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, num, plural, t
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 NEGATIVE_VALUES = ("--start", "--end", "--longitudinals", "--horizontals")  # may begin with a minus: "-0.2;-0.5", "-1.5,2"
 LAYER = "Legni del relitto"
 CLINKER_LAYER = "Fasce"  # the land lines, in the chunk's x, y
@@ -40,7 +43,7 @@ PROPOSALS_LAYER = "Proposte (relitto)"  # on the relief, in its (u, v): dashed
 TRACED_LAYER = "Legni ricalcati"  # on the relief, in its (u, v): solid, labelled with the name
 KIND_COLOURS = {"seam": "#00e5ff", "frame": "#ff8c00", "keelson": "#d040ff", "keel": "#8d6e63", "stringer": "#ffd000",
                 "plank": "#30c060", "ceiling": "#9ccc65", "fastening": "#ff3030", "other": "#b0b0b0"}
-UNDO_KEYS = ("timbers", "proposals")  # what a step of the tracing changes, kept for *Modifica > Annulla*
+UNDO_KEYS = ("timbers", "proposals", "keel")  # what a step of the tracing changes, kept for *Modifica > Annulla*
 OVERLAY_TITLES = {"height": ("Altezze", "Heights"), "hillshade": ("Ombreggiatura", "Hillshade"),
                   "slrm": ("Rilievo locale", "Local relief")}
 
@@ -76,13 +79,15 @@ class ShipwreckPlugin(Plugin):
     def __init__(self):
         self.title = t(*NAME)
         self.description = t("Il disegno tecnico di uno scafo scavato dal suo modello 3D: sistema della nave, sezioni, "
-                             "piani, catalogo dei legni, fasce del fasciame a clinker", "The technical drawing of an "
-                             "excavated hull from its 3D model: ship frame, sections, plans, timber catalogue, clinker "
-                             "strakes")
+                             "piani, catalogo dei legni, fasce del fasciame a clinker, rilievo dello scafo e ricalco, "
+                             "legni in 3D, pianta del relitto", "The technical drawing of an excavated hull from its 3D "
+                             "model: ship frame, sections, plans, timber catalogue, clinker strakes, relief of the hull "
+                             "and tracing, 3D timbers, plan of the wreck")
         self.context = None
         self.pane = None
         self.overlay = None  # the grey raster over the relief (:class:`overlay.Overlay`)
         self.overlay_kind = "hillshade"  # which one: a kind of :data:`relief.KINDS`, or "photo" for none
+        self._deleting = None  # (step, layer group) of a deletion on the view while the event is being handled
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
@@ -114,6 +119,10 @@ class ShipwreckPlugin(Plugin):
         if self.overlay is not None:
             self.overlay.remove()
         self.overlay = None
+        view = getattr(self.context.window, "ortho_view", None) if self.context else None
+        if view is not None:
+            for name in (LAYER, CLINKER_LAYER, PROPOSALS_LAYER, TRACED_LAYER):
+                view.remove_layer(name)
         self.pane = None
 
     def show_pane(self) -> None:
@@ -158,17 +167,36 @@ class ShipwreckPlugin(Plugin):
         st = chunk.meta.get(ship.KEY) or {}
         return copy.deepcopy({key: st.get(key) for key in UNDO_KEYS})
 
-    def _step(self, chunk, before: dict, text: str) -> None:
+    def _step(self, chunk, before: dict, text: str, deleted: str | None = None) -> None:
         """After a change of the catalogue or the proposals: an entry of *Modifica > Annulla* (``text``), then the
-        project modified and the pane, the tree and the layers shown again."""
+        project modified and the pane, the tree and the layers shown again. ``deleted``: the group of layers ("timbers",
+        "proposals") of a deletion on the view; the window tells the plugin layer by layer, so the second group of the
+        same deletion joins the first's entry (one *Annulla* brings both back)."""
         window = self.context.window
         history = getattr(window, "history", None) if window is not None else None
         scripted = bool(getattr(window, "_script_running", False))  # a script's own entry covers it
         after = self._snapshot(chunk)
         changed = _without_caches(before) != _without_caches(after)  # a plan cache refreshed is no change
         if history is not None and not scripted and changed and chunk is getattr(window, "chunk", None):
-            history.push(t(f"Relitto: {text}", f"Shipwreck: {text}"), _Step(self, chunk, before, after), document=False)
+            joined = self._deleting
+            if (deleted and joined and joined[1] != deleted and history.entries
+                    and history.index == len(history.entries) and history.entries[-1].action is joined[0]):
+                joined[0].after = copy.deepcopy(after)
+                history.entries[-1].text = t("Relitto: proposte e legni eliminati", "Shipwreck: proposals and timbers "
+                                             "deleted")
+                self._deleting = None
+            else:
+                step = _Step(self, chunk, before, after)
+                history.push(t(f"Relitto: {text}", f"Shipwreck: {text}"), step, document=False)
+                if deleted:
+                    from PySide6.QtCore import QTimer
+
+                    self._deleting = (step, deleted)
+                    QTimer.singleShot(0, self._deletion_handled)
         self._changed()
+
+    def _deletion_handled(self) -> None:
+        self._deleting = None
 
     def _guarded(self, function, *args) -> None:
         """A step of the user: what it needs and is missing is said, not raised."""
@@ -190,6 +218,12 @@ class ShipwreckPlugin(Plugin):
         from pyarchinit_photogrammetry.gui.dialogs import ParamDialog
 
         return ParamDialog.ask(self.context.window, title, fields, intro=intro)
+
+    def _choose(self, title: str, text: str, options: list[str]) -> int | None:
+        """The index of the option pressed, None for *Annulla* (a non-native box)."""
+        from pyarchinit_photogrammetry.gui.dialogs import choice
+
+        return choice(self.context.window, "question", title, text, options)
 
     # ------------------------------------------------------------------ the pane
     def refresh_pane(self) -> None:
@@ -446,6 +480,8 @@ class ShipwreckPlugin(Plugin):
         from . import drawings
 
         chunk = self._need_chunk()
+        if drawings._traced(chunk) and not self._relief_still_right(chunk, t("Disegni", "Drawings")):
+            return
         f = drawings.title_fields(chunk)
         v = self._ask(t("Disegni", "Drawings"), [
             Field("scale", t("Scala 1: (0 = automatica)", "Scale 1: (0 = automatic)"), 0, minimum=0, maximum=100000, decimals=0),
@@ -564,7 +600,7 @@ class ShipwreckPlugin(Plugin):
                 tracing.update_visible(chunk)
             except ship.NotReady:
                 pass
-            self._step(chunk, before, t("legni eliminati", "timbers deleted"))
+            self._step(chunk, before, t("legni eliminati", "timbers deleted"), deleted="timbers")
 
     # ------------------------------------------------------------------ 7 the clinker strakes
     def _do_clinker_detect(self) -> None:
@@ -954,13 +990,13 @@ class ShipwreckPlugin(Plugin):
                                   "Select on the view the proposals to reject (the Select tool)."))
         self.reject(chunk, ids)
 
-    def reject(self, chunk, ids) -> None:
+    def reject(self, chunk, ids, deleted: str | None = None) -> None:
         from . import tracing
 
         before = self._snapshot(chunk)
         count = tracing.reject(chunk, ids)
         self._status(plural(count, ("proposta scartata", "proposte scartate"), ("proposal rejected", "proposals rejected")))
-        self._step(chunk, before, t("proposte scartate", "proposals rejected"))
+        self._step(chunk, before, t("proposte scartate", "proposals rejected"), deleted=deleted)
 
     def _proposals_deleted(self, features) -> None:
         """Proposals deleted on the view: rejected (a stale relief or frame refuses it: said, and they come back)."""
@@ -974,7 +1010,7 @@ class ShipwreckPlugin(Plugin):
         ids = [i for i in ids if i in known]
         try:
             if ids:
-                self.reject(chunk, ids)
+                self.reject(chunk, ids, deleted="proposals")
         except ship.NotReady as exc:
             self._message("warning", str(exc))
             self.draw_layer()
@@ -1069,6 +1105,197 @@ class ShipwreckPlugin(Plugin):
         tracing.update_visible(chunk)
         self._step(chunk, before, t("legni sciolti", "loose timbers") if flag else
                    t("legni non più sciolti", "timbers no longer loose"))
+
+    # ------------------------------------------------------------------ 8 the keel, the timbers in 3D, the plan
+    def _do_keel_set(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import ship, solids
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        keel = ship.state(chunk).get("keel") or {}
+        v = self._ask(t("Chiglia (dimensioni)", "Keel (dimensions)"), [
+            Field("siding", t("Larghezza (mm)", "Siding (mm)"), round(keel.get("siding", 0.15) * 1000.0, 1),
+                  minimum=1.0, maximum=2000.0, decimals=1, tip=t("Di traverso", "Across")),
+            Field("moulding", t("Altezza (mm)", "Moulding (mm)"), round(keel.get("moulding", 0.20) * 1000.0, 1),
+                  minimum=1.0, maximum=2000.0, decimals=1, tip=t("In verticale, sotto il paramezzale",
+                                                                 "Upright, under the keelson")),
+            Field("auto", t("Lungo tutto il paramezzale (senza: tutto il rilievo)", "Along the whole keelson (without "
+                            "one: the whole relief)"), not keel),
+            Field("x0", t("Altrimenti da x (m)", "Otherwise from x (m)"), float(keel.get("x0", 0.0)), minimum=-1e4,
+                  maximum=1e4, decimals=3),
+            Field("x1", t("a x (m)", "to x (m)"), float(keel.get("x1", 0.0)), minimum=-1e4, maximum=1e4, decimals=3),
+            Field("remove", t("Nessuna chiglia (toglie quella data)", "No keel (removes the given one)"), False)],
+            intro=t("Il modello mostra l'interno dello scafo: la chiglia non si vede. Con larghezza e altezza date "
+                    "diventa un parallelepipedo lungo la linea di chiglia sotto il paramezzale, stato «ricostruito: "
+                    "dimensioni date»: un'ipotesi, campita nei disegni e trasparente nei file 3D. Un legno di chiglia "
+                    "ricalcato (un chunk che mostra l'esterno) la sostituisce. Arriva con i prossimi Legni 3D.",
+                    "The model shows the inside of the hull: the keel is not seen. With a given siding and moulding it "
+                    "becomes a box along the keel line under the keelson, status 'reconstructed: given dimensions': a "
+                    "hypothesis, hatched in the drawings and translucent in the 3D files. A traced keel record (a chunk "
+                    "showing the outside) replaces it. It comes with the next 3D timbers."))
+        if not v:
+            return
+        before = self._snapshot(chunk)
+        if v["remove"]:
+            solids.set_keel(chunk, None, None)
+            text = t("chiglia tolta", "keel removed")
+        else:
+            x0, x1 = (None, None) if v["auto"] else (float(v["x0"]), float(v["x1"]))
+            solids.set_keel(chunk, float(v["siding"]) / 1000.0, float(v["moulding"]) / 1000.0, x0, x1)
+            text = t("chiglia data", "keel given")
+        self._step(chunk, before, text)
+
+    def _do_solids_build(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import ship, tracing
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        self._relief_entry(chunk)
+        tracing.need_fresh_relief(chunk)
+        v = self._ask(t("Legni in 3D", "Timbers in 3D"), [
+            Field("thickness", t("Spessore delle fasce che non ne hanno uno (mm, 0 = nessuno)", "Thickness of the "
+                                 "strakes that have none (mm, 0 = none)"), 0.0, minimum=0.0, maximum=500.0, decimals=1,
+                  tip=t("Lo spessore di una fascia viene dal suo record, dal modello delle fasce o dai gradini dei "
+                        "comenti; questo vale solo per quelle senza", "A strake's thickness comes from its record, the "
+                        "strake model or the steps of the seams; this one only for those without"))],
+            intro=t("Ogni legno ricalcato come poligono diventa un oggetto 3D chiuso nel sistema della nave: una "
+                    "fascia è la superficie del modello con il suo spessore (sotto le ordinate interpolata e segnata "
+                    "nascosta), un'ordinata o un legno longitudinale un solido dal fasciame sotto di lui alla sua "
+                    "cima. Ricalca prima tutti i legni che toccano quello che costruisci: uno non ricalcato finisce "
+                    "nell'anello da cui si legge il fasciame sotto.",
+                    "Every timber traced as a polygon becomes a closed 3D object in the ship frame: a strake is the "
+                    "model's surface with its thickness (interpolated under the frames and flagged hidden), a frame or "
+                    "a longitudinal timber a solid from the planking under it to its top. Trace first every timber "
+                    "touching the one you build: an untraced one ends up in the ring the planking under it is read "
+                    "from."))
+        if v:
+            self.build_solids(chunk, float(v["thickness"]) or None)
+
+    def build_solids(self, chunk, thickness=None) -> None:
+        from . import solids
+
+        def done(out):
+            self._status(solids_summary(out))
+            if out["refused"]:
+                self._message("warning", solids_summary(out) + "\n" + "\n".join(
+                    f"{r['name']}: {r['reason']}" for r in out["refused"]))
+            self._changed()
+
+        def job(p):
+            try:
+                return solids.build(chunk, thickness, progress=p)
+            finally:  # also cancelled: the pane and the tree say what was built ("interrotto")
+                self.context.call_in_gui(self.refresh_pane)
+                self.context.call_in_gui(self.context.refresh_tree)
+
+        self._run(t("Legni in 3D", "Timbers in 3D"), job, done)
+
+    def _do_model_export(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import ship
+
+        chunk = self._need_chunk()
+        if not ship.state(chunk).get("solids"):
+            raise ship.NotReady(t("Costruisci prima i legni in 3D.", "Build the timbers in 3D first."))
+        v = self._ask(t("Esporta 3D", "Export 3D"), [
+            Field("system", t("Coordinate", "Coordinates"), "ship", choices=[
+                ("ship", t("Della nave (x lungo la chiglia, z in alto dal datum)", "Of the ship (x along the keel, "
+                                                                                    "z up from the datum)")),
+                ("world", t("Del chunk (per GIS e BIM)", "Of the chunk (for GIS and BIM)"))]),
+            Field("tables", t("Anche le tabelle dei legni in 3D (CSV, Excel)", "The tables of the timbers in 3D too "
+                              "(CSV, Excel)"), True)],
+            intro=t("Un oggetto per legno con il suo nome: OBJ (un materiale per tipo), GLB (un nodo per legno), IFC "
+                    "(un elemento per legno con Pset_PyArchInit_Timber). Le ipotesi finiscono in _ric, più chiare e "
+                    "trasparenti. Un IFC di uno scafo lungo può richiedere decine di secondi.",
+                    "One object per timber with its name: OBJ (a material per kind), GLB (a node per timber), IFC (an "
+                    "element per timber with Pset_PyArchInit_Timber). Hypotheses end in _ric, lighter and translucent. "
+                    "An IFC of a long hull may take tens of seconds."))
+        if not v:
+            return
+        last = ship.state(chunk).get("model_export") or "legni.obj"
+        path, _ = QFileDialog.getSaveFileName(self.context.window, t("Esporta i legni in 3D", "Export the timbers in 3D"),
+                                              str(last), "OBJ (*.obj);;GLB (*.glb);;IFC (*.ifc)")
+        if path:
+            self.export_model(chunk, path, v["system"], bool(v["tables"]))
+
+    def export_model(self, chunk, path, system: str = "ship", tables: bool = True) -> None:
+        path = Path(path)
+        check_export_path(path)
+        warning = solids_warning(chunk)
+        if warning:
+            self._message("warning", warning)
+        fmt = path.suffix[1:].upper()
+
+        def job(p):
+            p(0.0, t(f"Scrittura {fmt}...", f"Writing {fmt}..."))  # the writers have no progress of their own
+            out = export_3d(chunk, path, system, tables)
+            p(1.0, str(out["path"]))
+            return out
+
+        def done(out):
+            self._status(t(f"Legni in 3D: {out['path']}", f"Timbers in 3D: {out['path']}"))
+            if out.get("note"):
+                self._message("information", out["note"])
+            self._changed()
+
+        self._run(t(f"Legni in 3D: {fmt}", f"Timbers in 3D: {fmt}"), job, done)
+
+    def _relief_still_right(self, chunk, title: str) -> bool:
+        """A stale relief before a drawing of the traced timbers: the user rebuilds it (False: the drawing waits),
+        draws anyway (True) or cancels (False)."""
+        from . import relief
+
+        if relief.entry(chunk) is None or not relief.is_stale(chunk):
+            return True
+        k = self._choose(title, t("Il rilievo dello scafo è di un altro sistema della nave o di un altro modello: lo "
+                                  "sfondo sarebbe sbagliato e sul profilo mancherebbero paramezzale e chiglia. Rifarlo "
+                                  "prima?",
+                                  "The relief of the hull is of another ship frame or another model: the background "
+                                  "would be wrong and the profile would lack the keelson and the keel. Build it again "
+                                  "first?"),
+                         [t("Rifai il rilievo", "Build the relief again"), t("Disegna lo stesso", "Draw anyway")])
+        if k == 0:
+            self._do_relief_build()
+        return k == 1
+
+    def _do_wreck_plan(self) -> None:
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import drawings, ship
+
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        title = t("Pianta del relitto", "Plan of the wreck")
+        if not self._relief_still_right(chunk, title):
+            return
+        v = self._ask(title, [
+            Field("background", t("Sotto i legni", "Under the timbers"), "relief", choices=[
+                ("relief", t("L'ombreggiatura del rilievo dello scafo", "The hillshade of the relief of the hull")),
+                ("ortho", t("L'ortofoto", "The orthophoto")), ("none", t("Niente", "Nothing"))]),
+            Field("scale", t("Scala 1: (0 = automatica)", "Scale 1: (0 = automatic)"), 20, minimum=0, maximum=100000,
+                  decimals=0)],
+            intro=t("Ogni legno del catalogo contornato, colorato per tipo e nominato; le ipotesi campite a righe "
+                    "oblique; legenda, scala, nord, cartiglio. SVG, PDF, PNG e DXF (un layer per tipo) in "
+                    "shipwreck/drawings.",
+                    "Every timber of the catalogue outlined, coloured by kind and named; the hypotheses hatched; "
+                    "legend, scale, north, title block. SVG, PDF, PNG and DXF (a layer per kind) in shipwreck/drawings."))
+        if not v:
+            return
+        scale = int(v["scale"]) or None
+
+        def done(paths):
+            self._status(t(f"Pianta del relitto: {paths[0].parent}", f"Plan of the wreck: {paths[0].parent}"))
+            self._changed()
+
+        self._run(title, lambda p: drawings.write_all(chunk, kinds=("wreck_plan",), scale=scale, progress=p,
+                                                      background=v["background"]), done)
 
     def _draw_relief(self, view, chunk) -> None:
         """The proposals (dashed, a colour per kind) and the traced timbers (solid, labelled) in the relief's (u, v):
@@ -1224,6 +1451,7 @@ class ShipwreckPlugin(Plugin):
                      "activate": lambda f=folder / f"{k}.pdf": self._open(f)} for k in made]
             children.append({"label": t("Disegni", "Drawings"), "icon": "plugin", "children": kids})
         children += self._relief_items(chunk)
+        children += self._solids_items(chunk)
         records = timbers.timbers_of(chunk)
         if records:
             count: dict[str, int] = {}
@@ -1267,6 +1495,23 @@ class ShipwreckPlugin(Plugin):
             out.append({"label": t(f"Proposte ({n})", f"Proposals ({n})"), "icon": "plugin", "activate": show})
         return out
 
+    def _solids_items(self, chunk) -> list:
+        """"Legni 3D (n)" in the workspace tree, "(interrotto)" for a cancelled build, "(da rifare)" for a stale one;
+        it opens the folder of the files."""
+        from . import ship, solids
+
+        done = ship.state(chunk).get("solids")
+        if not done:
+            return []
+        label = t(f"Legni 3D ({done.get('count', 0)})", f"3D timbers ({done.get('count', 0)})")
+        if done.get("cancelled"):
+            label += t(" (interrotto)", " (interrupted)")
+        elif solids.is_stale(chunk):
+            label += t(" (da rifare)", " (to build again)")
+        folder = ship.folder(chunk) / solids.FOLDER
+        return [{"label": label, "icon": "plugin", "activate": lambda: self._open(folder),
+                 "tooltip": t("Un PLY per legno in shipwreck/timbers", "A PLY per timber in shipwreck/timbers")}]
+
     def _open(self, path) -> None:
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
@@ -1279,9 +1524,13 @@ class ShipwreckPlugin(Plugin):
 
         if args and str(args[0]) == "clinker":
             return self._clinker_command([str(a) for a in args[1:]])
+        if args and str(args[0]) in RECONSTRUCTION:
+            return self._reconstruction_command([str(a) for a in args])
         parser = argparse.ArgumentParser(prog="ppg plugin shipwreck", description="the technical drawing of a hull from its 3D model")
         parser.add_argument("what", choices=["frame", "stations", "sections", "water", "drawings", "timbers", "export", "status",
-                                             "clinker"], help="clinker: see 'ppg plugin shipwreck clinker --help'")
+                                             "clinker", *RECONSTRUCTION],
+                            help="clinker, relief, propose, trace, keel, solids, export3d, plan: see "
+                                 "'ppg plugin shipwreck <what> --help'")
         parser.add_argument("project", help="the .ppg file")
         parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
         parser.add_argument("--start", help="frame: first end of the keel, X,Y[,Z] world, or a marker with --markers")
@@ -1364,6 +1613,159 @@ class ShipwreckPlugin(Plugin):
         doc.save()
         return 0
 
+
+    def _reconstruction_command(self, args: list[str]) -> int:
+        """``relief build|export``, ``propose``, ``trace list|accept|reject|names``, ``keel``, ``solids``,
+        ``export3d``, ``plan`` (0.3.0)."""
+        from . import drawings, proposals, relief, ship, solids, tracing
+
+        what, rest = args[0], args[1:]
+        parser = argparse.ArgumentParser(prog=f"ppg plugin shipwreck {what}", description=RECONSTRUCTION[what])
+        if what in ("relief", "trace"):
+            actions = {"relief": ["build", "export"], "trace": ["list", "accept", "reject", "names"]}[what]
+            parser.add_argument("action", choices=actions)
+        parser.add_argument("project", help="the .ppg file")
+        parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
+        if what == "relief":
+            parser.add_argument("--cell", type=float, help="build: the cell, mm (default: from the model's density)")
+            parser.add_argument("--kind", choices=list(relief.KINDS), default="hillshade", help="export: which raster")
+            parser.add_argument("--out", help="export: the GeoTIFF")
+            parser.add_argument("--world", action="store_true", help="export: north up in the chunk's system (default: "
+                                                                     "ship metres, the frame in the tags)")
+        elif what == "propose":
+            parser.add_argument("--view", choices=list(proposals.VIEWS), help="the model shows the inside (default) or "
+                                                                               "the outside of the hull")
+            parser.add_argument("--min-step", type=float, help="least step of a seam, mm (8)")
+            parser.add_argument("--opening", type=float, help="the opening, m (0.3)")
+            parser.add_argument("--top-hat", type=float, help="least height of a timber over the planking, mm (20)")
+        elif what == "trace":
+            parser.add_argument("ids", nargs="*", help="accept, reject: the proposals' ids (P12 ...)")
+            parser.add_argument("--kind", choices=list(proposals.KINDS), help="accept: every proposal of this kind")
+            parser.add_argument("--min-score", type=float, default=0.5, help="accept --kind: least score (0.5)")
+            parser.add_argument("--name", help="accept: the name of the timber (one id)")
+            parser.add_argument("--table", help="names: a table nome, x (name, x) for the frames")
+        elif what == "keel":
+            parser.add_argument("--siding", type=float, help="across, mm")
+            parser.add_argument("--moulding", type=float, help="upright, mm")
+            parser.add_argument("--from", dest="x0", type=float, help="ship x of one end, m (default: the keelson's)")
+            parser.add_argument("--to", dest="x1", type=float, help="ship x of the other end, m")
+            parser.add_argument("--none", action="store_true", help="no keel: the given one removed")
+        elif what == "solids":
+            parser.add_argument("--thickness", type=float, help="mm, for the strakes that have none of their own")
+        elif what == "export3d":
+            parser.add_argument("--out", help="the file: .obj, .glb or .ifc")
+            parser.add_argument("--world", action="store_true", help="the chunk's coordinates (default: the ship's)")
+            parser.add_argument("--no-tables", action="store_true", help="without timbers_3d.csv and .xlsx beside it")
+        elif what == "plan":
+            parser.add_argument("--background", choices=list(drawings.BACKGROUNDS), default="relief")
+            parser.add_argument("--scale", type=int, help="1:SCALE (default: automatic)")
+            parser.add_argument("--out", help="a folder (default: shipwreck/drawings of the chunk)")
+        ns = parser.parse_args(joined_values(rest))
+        import pyarchinit_photogrammetry as ppg
+
+        doc = ppg.Document.open(ns.project)
+        chunk = next((c for c in doc.chunks if c.label == ns.chunk), None) if ns.chunk else doc.chunk
+        if chunk is None:
+            print(f"no chunk {ns.chunk!r} in the project")
+            return 1
+        try:
+            if what == "relief" and ns.action == "build":
+                relief.build(chunk, ns.cell / 1000.0 if ns.cell else None, progress=_print_progress)
+                print(relief_state(chunk))
+            elif what == "relief":
+                if not ns.out:
+                    raise ship.NotReady("--out FILE.tif")
+                if relief.entry(chunk) is None:
+                    raise ship.NotReady(t("Costruisci prima il rilievo dello scafo.", "Build the relief of the hull first."))
+                print((relief.export_world if ns.world else relief.export_ship)(chunk, ns.kind, ns.out))
+                return 0
+            elif what == "propose":
+                params = {}
+                if ns.view:
+                    params["view"] = ns.view
+                if ns.min_step is not None:
+                    params["min_step"] = ns.min_step / 1000.0
+                if ns.opening is not None:
+                    params["opening"] = ns.opening
+                if ns.top_hat is not None:
+                    params["top_hat"] = ns.top_hat / 1000.0
+                proposals.build(chunk, params or None, progress=_print_progress)
+                print(proposals.summary(chunk))
+            elif what == "trace" and ns.action == "list":
+                for i in (ship.state(chunk).get("proposals") or {}).get("items", []):
+                    xs = np.asarray(i["ship_xy"], float)[:, 0]
+                    print(f"{i['id']}\t{i['kind']}\t{i['side']}\t{i['name']}\tscore {i.get('score') or 0:.2f}\t"
+                          f"x {xs.min():.2f}-{xs.max():.2f}")
+                print(proposals.summary(chunk))
+                return 0
+            elif what == "trace" and ns.action == "accept":
+                ids = list(ns.ids)
+                if ns.kind:
+                    ids += [i["id"] for i in (ship.state(chunk).get("proposals") or {}).get("items", [])
+                            if i["kind"] == ns.kind and float(i.get("score") or 0.0) >= ns.min_score and i["id"] not in ids]
+                if not ids:
+                    raise ship.NotReady(t("Nessuna proposta da accettare: dai gli id o --kind.",
+                                          "No proposal to accept: give the ids or --kind."))
+                if ns.name and len(ids) != 1:
+                    raise ship.NotReady("--name: one id")
+                records = tracing.accept(chunk, ids, [ns.name] if ns.name else None)
+                tracing.update_visible(chunk)
+                for r in records:
+                    print(f"{r['id']}\t{r['kind']}\t{r['name']}")
+                print(plural(len(records), ("legno accettato", "legni accettati"), ("timber accepted", "timbers accepted")))
+            elif what == "trace" and ns.action == "reject":
+                if not ns.ids:
+                    raise ship.NotReady(t("Dai gli id delle proposte da scartare.", "Give the ids of the proposals to reject."))
+                count = tracing.reject(chunk, ns.ids)
+                print(plural(count, ("proposta scartata", "proposte scartate"), ("proposal rejected", "proposals rejected")))
+            elif what == "trace":
+                if not ns.table:
+                    raise ship.NotReady("--table FILE")
+                named, unmatched = tracing.rename_frames(chunk, ns.table)
+                print(t(f"Ordinate rinominate: {named}; righe senza ordinata: {unmatched}",
+                        f"Frames renamed: {named}; rows matching no frame: {unmatched}"))
+            elif what == "keel":
+                if ns.none:
+                    solids.set_keel(chunk, None, None)
+                    print(t("Nessuna chiglia.", "No keel."))
+                else:
+                    if ns.siding is None or ns.moulding is None:
+                        raise ship.NotReady("--siding MM --moulding MM, or --none")
+                    keel = solids.set_keel(chunk, ns.siding / 1000.0, ns.moulding / 1000.0, ns.x0, ns.x1)
+                    print(t(f"Chiglia data (ipotesi): {num(ns.siding, 0)} x {num(ns.moulding, 0)} mm, x da "
+                            f"{num(keel['x0'])} a {num(keel['x1'])} m",
+                            f"Given keel (hypothesis): {num(ns.siding, 0)} x {num(ns.moulding, 0)} mm, x from "
+                            f"{num(keel['x0'])} to {num(keel['x1'])} m"))
+            elif what == "solids":
+                out = solids.build(chunk, ns.thickness, progress=_print_progress)
+                print(solids_summary(out))
+                for r in out["refused"]:
+                    print(f"  {r['name']}: {r['reason']}")
+            elif what == "export3d":
+                if not ns.out:
+                    raise ship.NotReady("--out FILE (.obj, .glb, .ifc)")
+                check_export_path(ns.out)
+                warning = solids_warning(chunk)
+                if warning:
+                    print(warning)
+                out = export_3d(chunk, ns.out, "world" if ns.world else "ship", not ns.no_tables)
+                for key in ("path", "csv", "xlsx"):
+                    if out.get(key):
+                        print(out[key])
+                if out.get("note"):
+                    print(out["note"])
+            elif what == "plan":
+                if relief.entry(chunk) is not None and relief.is_stale(chunk):
+                    print(t("Il rilievo dello scafo è da rifare: lo sfondo è quello vecchio.",
+                            "The relief of the hull is to be built again: the background is the old one."))
+                for path in drawings.write_all(chunk, kinds=("wreck_plan",), scale=ns.scale, folder=ns.out,
+                                               progress=_print_progress, background=ns.background):
+                    print(path)
+        except ship.NotReady as exc:
+            print(exc)
+            return 1
+        doc.save()
+        return 0
 
     def _clinker_command(self, args: list[str]) -> int:
         from . import clinker, houdini, ship
@@ -1473,6 +1875,15 @@ def clinker_state(chunk) -> str:
     return text
 
 
+RECONSTRUCTION = {
+    "relief": "the relief of the hull from above: build it (--cell MM), export a raster (--kind, --out, --world)",
+    "propose": "read the proposals on the relief: seams, frames, keelson, stringers, strakes",
+    "trace": "the proposals: list, accept (ids or --kind, --name), reject (ids), names of the frames (--table)",
+    "keel": "a keel from a given siding and moulding (a hypothesis): --siding MM --moulding MM [--from X --to X] | --none",
+    "solids": "every traced polygon a closed 3D object (--thickness MM for the strakes without one)",
+    "export3d": "the timbers in 3D: --out FILE.obj|.glb|.ifc [--world]",
+    "plan": "the plan of the wreck: [--background relief|ortho|none] [--scale N] [--out FOLDER]",
+}
 CACHES = ("ship_xy", "frame_key", "visible_xy")  # the fields of a record that are its plan in a frame, a cache
 
 
@@ -1495,7 +1906,7 @@ def relief_state(chunk) -> str:
         if st:
             text = t("Il rilievo è stato tolto nel programma: costruiscilo di nuovo.",
                      "The relief was removed in the program: build it again.")
-        return text
+        return " ".join([text] + _solids_texts(chunk))
     size = e.get("size") or ("?", "?")
     text = t(f"Rilievo: {size[0]} x {size[1]} celle di {num(st['cell'] * 1000.0, 1)} mm.",
              f"Relief: {size[0]} x {size[1]} cells of {num(st['cell'] * 1000.0, 1)} mm.")
@@ -1507,7 +1918,92 @@ def relief_state(chunk) -> str:
     traced = [r for r in timbers.timbers_of(chunk) if r.get("elevation") or r.get("source")]
     if traced:
         text += " " + t("Ricalcati: ", "Traced: ") + plural(len(traced), ("legno", "legni"), ("timber", "timbers")) + "."
-    return text
+    return " ".join([text] + _solids_texts(chunk))
+
+
+def _solids_texts(chunk) -> list[str]:
+    """The typed keel and the timbers in 3D in words, for the state of step 8."""
+    from . import ship, solids
+
+    st = chunk.meta.get(ship.KEY) or {}
+    out = []
+    keel = st.get("keel")
+    if keel:
+        out.append(t(f"Chiglia data {num(keel['siding'] * 1000.0, 0)} x {num(keel['moulding'] * 1000.0, 0)} mm "
+                     f"(ipotesi).", f"Given keel {num(keel['siding'] * 1000.0, 0)} x {num(keel['moulding'] * 1000.0, 0)} "
+                     f"mm (hypothesis)."))
+    done = st.get("solids")
+    if done:
+        text = t(f"Legni 3D: {done.get('count', 0)}", f"3D timbers: {done.get('count', 0)}")
+        if done.get("refused"):
+            text += t(f", rifiutati {len(done['refused'])}", f", refused {len(done['refused'])}")
+        if done.get("cancelled"):
+            text += t(" (interrotto: parziali)", " (interrupted: partial)")
+        elif solids.is_stale(chunk):
+            text += t(" (da rifare: il catalogo, la chiglia o il rilievo sono cambiati)",
+                      " (to build again: the catalogue, the keel or the relief changed)")
+        out.append(text + ".")
+    return out
+
+
+def solids_summary(out: dict) -> str:
+    """A line on a build of the timbers in 3D: built, refused, the volume."""
+    volume = sum(b["volume"] for b in out["built"]) + (out["keel"]["volume"] if out.get("keel") else 0.0)
+    return t(f"Legni in 3D: {len(out['built'])} costruiti, {len(out['refused'])} rifiutati, {num(volume, 3)} m³"
+             + (", chiglia data" if out.get("keel") else ""),
+             f"Timbers in 3D: {len(out['built'])} built, {len(out['refused'])} refused, {num(volume, 3)} m³"
+             + (", given keel" if out.get("keel") else ""))
+
+
+def solids_warning(chunk) -> str:
+    """What an export of the timbers in 3D should know: a cancelled build, solids older than the records."""
+    from . import ship, solids
+
+    done = ship.state(chunk).get("solids")
+    if not done:
+        return ""
+    if done.get("cancelled"):
+        return t("La costruzione dei legni in 3D è stata interrotta: i file sono parziali. Costruiscili di nuovo.",
+                 "The build of the timbers in 3D was interrupted: the files are partial. Build them again.")
+    if solids.is_stale(chunk):
+        return t("I legni in 3D sono più vecchi del catalogo, della chiglia o del rilievo: i file esportati dicono ciò "
+                 "che il catalogo diceva allora. Costruiscili di nuovo per avere quello di adesso.",
+                 "The timbers in 3D are older than the catalogue, the keel or the relief: the files exported say what "
+                 "the catalogue said then. Build them again for what it says now.")
+    return ""
+
+
+EXPORT_3D = (".obj", ".glb", ".ifc")
+
+
+def check_export_path(path) -> None:
+    from .ship import NotReady
+
+    if Path(path).suffix.lower() not in EXPORT_3D:
+        raise NotReady(t("Esporta in .obj, .glb o .ifc.", "Export to .obj, .glb or .ifc."))
+
+
+def export_3d(chunk, path, system: str = "ship", tables: bool = True) -> dict:
+    """The timbers in 3D as ``path`` (.obj, .glb, .ifc by its suffix) in ``system``, with the tables beside it.
+    Returns ``{"path", "note", "csv"?, "xlsx"?}``; the last path is remembered for the next export."""
+    from . import models3d, ship
+
+    path = Path(path)
+    check_export_path(path)
+    out = {"path": path, "note": ""}
+    suffix = path.suffix.lower()
+    if suffix == ".obj":
+        models3d.write_obj(chunk, path, system)
+    elif suffix == ".glb":
+        models3d.write_glb(chunk, path, system)
+    else:
+        result = models3d.write_ifc(chunk, path, system)
+        out["note"] = result.get("note") or ""
+        out["elements"] = result.get("elements")
+    if tables:
+        out.update({k: v for k, v in models3d.write_tables(chunk, path.parent).items() if k in ("csv", "xlsx")})
+    ship.state(chunk)["model_export"] = str(path)
+    return out
 
 
 def strake_counts(chunk) -> dict:

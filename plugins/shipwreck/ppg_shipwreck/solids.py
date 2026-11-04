@@ -665,6 +665,7 @@ def build(chunk, thickness: float | None = None, progress=None) -> dict:
             out["without_solid"].append({"id": r["id"], "name": _label(r), "kind": r["kind"],
                                          "type": r["geometry"]["type"]})
     total = len(polygons) + 1
+    complete = False
     try:
         for k, r in enumerate(polygons):
             progress(k / total, t(f"Legni in 3D: {_label(r)} ({k + 1}/{len(polygons)})",
@@ -710,16 +711,46 @@ def build(chunk, thickness: float | None = None, progress=None) -> dict:
             except Exception as exc:  # noqa: BLE001
                 reason = str(exc) if isinstance(exc, NotReady) else f"{type(exc).__name__}: {exc}"
                 out["refused"].append({"id": "keel", "name": t("chiglia", "keel"), "kind": "keel", "reason": reason})
+        complete = True
     finally:
         _clean(chunk, folder)
         ship.state(chunk)["solids"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                        "count": len(out["built"]), "refused": [r["id"] for r in out["refused"]],
-                                       "frame_key": relief.frame_key(frame)}
+                                       "frame_key": relief.frame_key(frame), "inputs": inputs_key(chunk)}
+        if not complete:  # cancelled (or failed): what was built so far, said as partial
+            ship.state(chunk)["solids"]["cancelled"] = True
     volume = sum(b["volume"] for b in out["built"]) + (out["keel"]["volume"] if out["keel"] else 0.0)
     progress(1.0, t(f"Legni in 3D: {len(out['built'])} costruiti, {len(out['refused'])} rifiutati, "
                     f"{num(volume, 3)} m³",
                     f"Timbers in 3D: {len(out['built'])} built, {len(out['refused'])} refused, {num(volume, 3)} m³"))
     return out
+
+
+CACHES = ("ship_xy", "visible_xy", "frame_key", "solid", "volume")  # fields of a record no solid depends on
+
+
+def inputs_key(chunk) -> str:
+    """What the solids are built from: the records (without their plan caches and their own solids), the typed keel
+    and the relief (its elevation and when it was built). A change of any makes the solids older than the records."""
+    import hashlib
+    import json
+
+    st = ship.state(chunk)
+    value = {"timbers": [{k: v for k, v in r.items() if k not in CACHES} for r in st.get("timbers", [])],
+             "keel": {k: v for k, v in (st.get("keel") or {}).items() if k not in ("solid", "volume")},
+             "relief": {k: (st.get("relief") or {}).get(k) for k in ("elevation", "built", "cell")}}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def is_stale(chunk) -> bool:
+    """Whether the solids were built (also partly: :func:`build` cancelled) from records, a keel, a relief or a ship
+    frame other than the present ones: the 3D files no longer say what the catalogue says. False when none was built."""
+    done = ship.state(chunk).get("solids")
+    if not done:
+        return False
+    frame = ship.frame_of(chunk)
+    return (done.get("inputs") != inputs_key(chunk)
+            or (frame is not None and done.get("frame_key") != relief.frame_key(frame)))
 
 
 def _clean(chunk, folder: Path) -> None:

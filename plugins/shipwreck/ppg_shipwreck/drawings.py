@@ -358,6 +358,11 @@ def _hash(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _traced_records(records) -> bool:
+    """Whether any record was traced on the relief (accepted from a proposal or drawn on it)."""
+    return any(r.get("elevation") or r.get("source") for r in records)
+
+
 def _traced(chunk) -> bool:
     """Whether the chunk has timbers traced on the relief (records with a plan cache) or a typed keel: the 0.3.0
     additions of the body plan and the profile are drawn only then, so a 0.2.0 survey is drawn as it was."""
@@ -726,7 +731,7 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
         if seen.area >= 0.5 * keel.area:  # under the keelson its name would sit on the keelson's: the legend names it
             at = _to_sheet(seen, sign).representative_point()
             d.label(at.x, at.y, t("chiglia", "keel"), models3d.KIND_COLOURS["keel"])
-        shown[("keel", "reconstructed:given")] = (colour, HATCH)
+        shown[("keel", "reconstructed:given")] = (colour, HATCH if not seen.is_empty else "")  # wholly covered: no hatch
     for r in sorted(records, key=lambda r: order.get(r["kind"], len(order))):
         status = timbers.status_of(r)
         measured = status == "measured"
@@ -774,11 +779,14 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
     scale = int(scale or drawing_scale(x1 - x0, y1 - y0))
     raster, said = _background(chunk, frame, background, (x0, x1), (y0, y1), scale * 0.00025)  # 4 pixels per mm
     d.raster = raster
-    notes = [t("Legni ricalcati sul rilievo dello scafo, nel sistema della nave. Contorno pieno e campitura leggera nel "
-               "colore del tipo: legno misurato; contorno a trattini: parte nascosta sotto un'ordinata, il paramezzale o "
-               "una serretta.",
-               "Timbers traced on the relief of the hull, in the ship frame. Solid outline and a light fill in the kind's "
-               "colour: a measured timber; dashed outline: a part hidden under a frame, the keelson or a stringer.")]
+    notes = [t("Legni ricalcati sul rilievo dello scafo, nel sistema della nave. " if _traced_records(records) else
+               "Legni del catalogo, nel sistema della nave. ",
+               "Timbers traced on the relief of the hull, in the ship frame. " if _traced_records(records) else
+               "Timbers of the catalogue, in the ship frame. ")
+             + t("Contorno pieno e campitura leggera nel colore del tipo: legno misurato; contorno a trattini: parte "
+                 "nascosta sotto un'ordinata, il paramezzale o una serretta.",
+                 "Solid outline and a light fill in the kind's colour: a measured timber; dashed outline: a part hidden "
+                 "under a frame, the keelson or a stringer.")]
     if said:
         notes.append(said)
     if hidden_names:
@@ -801,11 +809,11 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
 MAKERS = {"body_plan": body_plan, "half_breadth": half_breadth, "profile": profile}
 
 
-def make(chunk, kind: str, scale: int | None = None) -> Drawing:
+def make(chunk, kind: str, scale: int | None = None, background: str = "relief") -> Drawing:
     """One drawing of the sections of the chunk (up to date ones: else :class:`ship.NotReady`); the plan of the wreck
-    (:func:`wreck_plan`) needs no sections."""
+    (:func:`wreck_plan`, over ``background``) needs no sections."""
     if kind == "wreck_plan":
-        d = wreck_plan(chunk, scale)
+        d = wreck_plan(chunk, scale, background)
         _hatch_note(d)
         return d
     ship.check_metric(chunk)
@@ -1064,9 +1072,11 @@ def out_of_date(chunk) -> list[str]:
     return [k for k, v in made.items() if v.get("signature") != _signature(chunk, k)]
 
 
-def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progress=None) -> list[Path]:
+def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progress=None,
+              background: str = "relief") -> list[Path]:
     """Each drawing in ``<chunk data>/shipwreck/drawings`` (or ``folder``) as SVG, PDF, PNG and DXF; a kind with no lines
-    is left out when others are made. The drawings written are noted in ``chunk.meta``."""
+    is left out when others are made; ``background`` is the plan of the wreck's. The drawings written in the chunk's
+    folder are noted in ``chunk.meta`` (those of the other kinds stay noted as they were)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
@@ -1076,7 +1086,7 @@ def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progres
     for i, kind in enumerate(kinds):
         progress(i / len(kinds), t(*KIND_TITLES[kind]))
         try:
-            d = make(chunk, kind, scale)
+            d = make(chunk, kind, scale, background)
         except Empty as exc:
             skipped[kind] = str(exc)
             continue
@@ -1091,6 +1101,7 @@ def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progres
     if not written:
         raise ship.NotReady(" ".join(skipped.values()) or t("Nessun disegno.", "No drawing."))
     if folder is None:
-        ship.state(chunk)["drawings"] = kept
+        noted = {k: v for k, v in (ship.state(chunk).get("drawings") or {}).items() if k not in kinds}
+        ship.state(chunk)["drawings"] = {**noted, **kept}
     progress(1.0, t("Disegni pronti", "Drawings ready"))
     return written

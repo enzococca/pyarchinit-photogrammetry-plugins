@@ -81,7 +81,19 @@ STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
             "nome, x: le ordinate prendono i nomi del cantiere", "name, x: the frames take the field's names"),
            ("trace_loose", ("Sciolto", "Loose"),
             "I legni selezionati segnati come sciolti, fuori posto (di nuovo: tolto il segno)",
-            "The timbers selected flagged as loose, out of place (again: the flag taken off)"))))
+            "The timbers selected flagged as loose, out of place (again: the flag taken off)"),
+           ("keel_set", ("Chiglia (dimensioni)...", "Keel (dimensions)..."),
+            "Una chiglia da larghezza e altezza date, sotto il paramezzale: un'ipotesi, non una misura",
+            "A keel from a given siding and moulding, under the keelson: a hypothesis, not a measure"),
+           ("solids_build", ("Legni 3D...", "3D timbers..."),
+            "Ogni legno ricalcato un oggetto 3D chiuso: fasce con il loro spessore, ordinate e legni longitudinali pieni",
+            "Every traced timber a closed 3D object: strakes with their thickness, frames and longitudinal timbers solid"),
+           ("model_export", ("Esporta 3D...", "Export 3D..."),
+            "I legni in 3D come OBJ, GLB o IFC, un oggetto per legno, con le tabelle",
+            "The timbers in 3D as OBJ, GLB or IFC, one object per timber, with the tables"),
+           ("wreck_plan", ("Pianta del relitto...", "Plan of the wreck..."),
+            "Ogni legno contornato, colorato per tipo e nominato sopra il rilievo o l'ortofoto: SVG, PDF, PNG, DXF",
+            "Every timber outlined, coloured by kind and named over the relief or the orthophoto: SVG, PDF, PNG, DXF"))))
 COLUMNS = (("Id", "Id"), ("Tipo", "Kind"), ("Lato", "Side"), ("Nome", "Name"), ("Stato", "Status"), ("Chunk", "Chunk"),
            ("Sciolto", "Loose"), ("x (m)", "x (m)"), ("Lungh. (m)", "Length (m)"), ("Largh. (m)", "Width (m)"),
            ("z max (m)", "z max (m)"), ("Avviso", "Warning"))
@@ -95,9 +107,10 @@ class ShipwreckPane(QWidget):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
-        intro = QLabel(t("Il disegno tecnico di uno scafo scavato, misurato sul modello 3D: niente di ciò che manca viene "
-                         "ricostruito.", "The technical drawing of an excavated hull, measured on the 3D model: nothing "
-                         "missing is reconstructed."))
+        intro = QLabel(t("Il disegno tecnico di uno scafo scavato, misurato sul modello 3D: ciò che manca non viene "
+                         "inventato e ogni ipotesi (la chiglia data, le fasce delle sezioni) è dichiarata.",
+                         "The technical drawing of an excavated hull, measured on the 3D model: nothing missing is "
+                         "invented and every hypothesis (the given keel, the strakes of the sections) is stated."))
         intro.setWordWrap(True)
         lay.addWidget(intro)
         self.states: dict[str, QLabel] = {}
