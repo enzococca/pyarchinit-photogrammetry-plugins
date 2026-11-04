@@ -30,6 +30,12 @@ Where both sides are measured the two are compared, not averaged (the wreck is c
 :func:`disagreement` lists per station and seam the port and starboard half-breadths and their difference
 (``state["reconstruction"]["table"]["mirror"]``).
 
+The EXTENSION (``ricostruito: prolungamento``, :func:`extend`) continues each strake between two seams along the
+hull with a fair spline through its seams, inside the surveyed length (:func:`surveyed_range`) and beyond it only to
+the stem and stern the user gives (:func:`set_ends`); the FRAMES BY SPACING (``ricostruito: passo delle ordinate``,
+:func:`frames_by_spacing`) add the frames missing between two frames at the measured room and space. Both are records
+of the same list, each kind replaced as a whole when built again, without solids (the extension's edges keep their z).
+
 Only ``chunk.meta["shipwreck"]["reconstruction"]`` and ``<chunk data>/shipwreck/reconstruction/`` are written; the
 measured records, the chunk's transform, model and products never."""
 from __future__ import annotations
@@ -468,3 +474,639 @@ def disagreement(chunk) -> list[dict]:
                          "difference_mm": (p - q) * 1000.0})
     state(chunk).setdefault("table", {})["mirror"] = rows
     return rows
+
+
+# ----------------------------------------------------------------------------- the ends and the surveyed length
+EXTENSION = "reconstructed:extension"
+SPACING = "reconstructed:spacing"
+STEP = 0.05  # m: the bins along x of a seam's points, and of a mirrored strake's edges
+GRID = 0.02  # m: the step along x of the extended edges
+BLEND = 0.5  # m: past the last traced point the derivative goes over into the trend over this length
+MIN_GAP = 0.05  # m: a shorter gap of a strake is not filled
+GAP_FACTOR = 1.5  # a space between two frames longer than this many median spaces has frames missing
+_STRAKE = re.compile(r"([BT])(\d+)(?:\s*\(\d+\))?\s*$")
+_FRAME_NUMBER = re.compile(r"^(?:ordinata|frame)\s+(\d+)\s*$")
+_FAR = 1.0e4
+
+
+def _end(value) -> dict | None:
+    """An end as stored: ``{"x": ship x}`` (a number, or a dict with ``x``) or ``{"line": [[x, y], ...]}`` (a dict
+    with ``line``, or the points themselves: a line traced in the ship plan)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return {"x": float(value)}
+    if isinstance(value, dict) and "x" in value:
+        return {"x": float(value["x"])}
+    pts = value.get("line") if isinstance(value, dict) else value
+    xy = np.asarray(pts, float)
+    if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 2 or not np.isfinite(xy).all():
+        raise ValueError(t("Un'estremità è una x della nave o una linea di almeno due punti (x, y).",
+                           "An end is a ship x or a line of at least two points (x, y)."))
+    return {"line": xy.tolist()}
+
+
+def set_ends(chunk, stem=None, stern=None) -> dict:
+    """The stem and the stern of the hull, as far as the strakes may be extended beyond the surveyed length: a ship
+    x typed (a number) or a line traced in the ship plan (``{"line": [[x, y], ...]}``); None: no such end. Both
+    are set by each call (``state["ends"]``); returns them."""
+    ends = {key: e for key, e in (("stem", _end(stem)), ("stern", _end(stern))) if e is not None}
+    st = state(chunk)
+    if ends:
+        st["ends"] = ends
+    else:
+        st.pop("ends", None)
+    return dict(ends)
+
+
+def surveyed_range(chunk) -> tuple[float, float]:
+    """The ship x range of the relief's cells with a value, both sides taken together (the surveyed wreck)."""
+    ship.need_frame(chunk)
+    if relief.entry(chunk) is None:
+        raise NotReady(t("Costruisci prima il rilievo dello scafo.", "Build the relief of the hull first."))
+    z, affine = relief.load(chunk, "height")
+    cols = np.flatnonzero(np.isfinite(z).any(axis=0))
+    if not len(cols):
+        raise NotReady(t("Il rilievo dello scafo è vuoto.", "The relief of the hull is empty."))
+    u = affine.c + affine.a * (np.array([cols[0], cols[-1]], float) + 0.5)
+    return float(u.min()), float(u.max())
+
+
+def _limits(chunk, surveyed: tuple[float, float]):
+    """How far the strakes may go: the surveyed range, each end given setting its own side (the one beyond the
+    middle of the surveyed range: the stem typed inside the range shortens it); the regions past a traced end."""
+    lo, hi = surveyed
+    mid = 0.5 * (lo + hi)
+    cuts, sides = [], set()
+    for key, e in (state(chunk).get("ends") or {}).items():
+        if "x" in e:
+            x, line = float(e["x"]), None
+        else:
+            line = np.asarray(e["line"], float)
+            x = float(line[:, 0].mean())
+        side = 1 if x > mid else -1
+        if side in sides:
+            raise NotReady(t("Prua e poppa stanno dalla stessa parte del relitto.",
+                             "Stem and stern lie on the same side of the wreck."))
+        sides.add(side)
+        if line is None:
+            lo, hi = (lo, x) if side > 0 else (x, hi)
+            continue
+        if side > 0:
+            hi = float(line[:, 0].max())
+        else:
+            lo = float(line[:, 0].min())
+        cuts.append(_beyond(line, side))
+    return lo, hi, cuts
+
+
+def _beyond(line: np.ndarray, side: int):
+    """The region of the plan past a traced end (``side`` +1: larger x): the line continued across at its ends."""
+    import shapely
+
+    pts = line[np.argsort(line[:, 1])]
+    far = side * _FAR
+    ring = [(pts[0, 0], -_FAR)] + [tuple(p) for p in pts] + [(pts[-1, 0], _FAR), (far, _FAR), (far, -_FAR)]
+    poly = shapely.Polygon(ring)
+    return poly if poly.is_valid else poly.buffer(0)
+
+
+# ----------------------------------------------------------------------------- the curves along x
+class _Curve:
+    """A value along x fitted on its points: a smoothing spline (GCV), a polynomial for a few points; its derivative
+    and, outside the points, the line of its end (the derivative held)."""
+
+    def __init__(self, x: np.ndarray, v: np.ndarray):
+        from scipy.interpolate import make_smoothing_spline
+
+        self.lo, self.hi = float(x[0]), float(x[-1])
+        self.spline = None
+        if len(x) >= 5:
+            try:
+                self.spline = make_smoothing_spline(x, v)
+                self.slope = self.spline.derivative()
+                self.bend = self.slope.derivative()
+            except Exception:  # noqa: BLE001 - GCV on awkward points: a polynomial instead
+                self.spline = None
+        if self.spline is None:
+            self.poly = np.polyfit(x, v, min(2, len(x) - 1)) if len(x) > 1 else np.array([float(v[0])])
+
+    def __call__(self, x):
+        x = np.asarray(x, float)
+        if self.spline is not None:
+            return self.spline(x)
+        return np.polyval(self.poly, x)
+
+    def d(self, x):
+        x = np.asarray(x, float)
+        if self.spline is not None:
+            return self.slope(x)
+        return np.polyval(np.polyder(self.poly), x) if len(self.poly) > 1 else np.zeros_like(x)
+
+    def trend(self, x):
+        """The derivative as a trend: the spline's inside its points, outside them its end's derivative going on
+        with the end's bending for up to 1 m, then held."""
+        x = np.asarray(x, float)
+        if self.spline is None:
+            return self.d(x)
+        e = np.clip(x, self.lo, self.hi)
+        reach = np.clip(x - e, -1.0, 1.0)
+        return self.slope(e) + self.bend(e) * reach
+
+
+def _curve(x, v):
+    x, v = np.asarray(x, float), np.asarray(v, float)
+    ok = np.isfinite(x) & np.isfinite(v)
+    if ok.sum() < 2:
+        return None
+    x, v = x[ok], v[ok]
+    order = np.argsort(x)
+    x, v = x[order], v[order]
+    keep = np.r_[True, np.diff(x) > 1e-9]
+    return _Curve(x[keep], v[keep]) if keep.sum() >= 2 else None
+
+
+# ----------------------------------------------------------------------------- the seams' points
+def _strake_rank(name: str) -> tuple[str, int] | None:
+    m = _STRAKE.search(str(name))
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def _base_name(name: str) -> str:
+    return re.sub(r"\s*\(\d+\)\s*$", "", str(name))
+
+
+def _densify(xy: np.ndarray, step: float = 0.01) -> np.ndarray:
+    seg = np.hypot(*np.diff(xy, axis=0).T)
+    s = np.r_[0.0, np.cumsum(seg)]
+    if s[-1] <= 0:
+        return xy[:1]
+    at = np.linspace(0.0, s[-1], max(2, int(np.ceil(s[-1] / step)) + 1))
+    return np.column_stack([np.interp(at, s, xy[:, 0]), np.interp(at, s, xy[:, 1])])
+
+
+def _edge_points(poly, outer: bool) -> np.ndarray:
+    """Points of a strake's edge across x (``outer``: the edge farthest from the keel), every :data:`STEP`."""
+    import shapely
+
+    x0, _y0, x1, _y1 = poly.bounds
+    out = []
+    for x in np.arange(x0 + 0.02, x1 - 0.02 + 1e-9, STEP):
+        cut = poly.intersection(shapely.LineString([(x, -1e3), (x, 1e3)]))
+        if cut.is_empty:
+            continue
+        y = shapely.get_coordinates(cut)[:, 1]
+        a = np.abs(y)
+        out.append([x, float(y[np.argmax(a)] if outer else y[np.argmin(a)])])
+    return np.asarray(out, float).reshape(-1, 2)
+
+
+class _Heights:
+    """Ship z read on the relief at plan points (bilinear, NaN off the model or on a timber over the planking)."""
+
+    def __init__(self, chunk, frame: ship.Frame, records: list[dict]):
+        import shapely
+
+        self.z, self.affine = relief.load(chunk, "height")
+        self.sign = frame.sign
+        cutters = [_polygon(tracing.ship_xy_of(chunk, r, frame)) for r in records
+                   if r["kind"] in tracing.CUTTERS and r["geometry"]["type"] == "polygon" and not r.get("loose")]
+        self.cutters = shapely.union_all(cutters).buffer(0.01) if cutters else None
+
+    def at(self, xy: np.ndarray) -> np.ndarray:
+        import shapely
+        from scipy.ndimage import map_coordinates
+
+        xy = np.asarray(xy, float).reshape(-1, 2)
+        inv = ~self.affine
+        u, v = xy[:, 0], self.sign * xy[:, 1]
+        col, row = inv.a * u + inv.b * v + inv.c, inv.d * u + inv.e * v + inv.f
+        z = map_coordinates(self.z, [row - 0.5, col - 0.5], order=1, mode="constant",
+                            cval=np.nan)
+        if self.cutters is not None and len(xy):
+            z[shapely.contains_xy(self.cutters, xy[:, 0], xy[:, 1])] = np.nan
+        return z
+
+
+def _binned(x: np.ndarray, y: np.ndarray, z: np.ndarray):
+    """Means of |y| and medians of z per :data:`STEP` of x."""
+    if not len(x):
+        return np.zeros(0), np.zeros(0), np.zeros(0)
+    idx = np.floor(x / STEP).astype(int)
+    keys, inv = np.unique(idx, return_inverse=True)
+    n = np.bincount(inv)
+    xb = np.bincount(inv, x) / n
+    yb = np.bincount(inv, np.abs(y)) / n
+    zb = np.full(len(keys), np.nan)
+    for i in range(len(keys)):
+        v = z[inv == i]
+        v = v[np.isfinite(v)]
+        if len(v):
+            zb[i] = float(np.median(v))
+    return xb, yb, zb
+
+
+class _Seam:
+    """The points of the seam ``rank`` of a side (|y|, ship z by x): its measured seam records, where there are none
+    the edges of the strakes beside it (a mirrored strake's z read on the other side, where the wreck is)."""
+
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = x, y, z
+        self.fy = _curve(x, y)
+        self.fz = _curve(x, z)
+        self.lo, self.hi = (float(x.min()), float(x.max())) if len(x) else (None, None)
+
+
+def _seam(chunk, frame, heights: _Heights, records, recon, side: str, rank: int) -> _Seam | None:
+    code = "B" if side == "port" else "T"
+    seams = [r for r in records if r["kind"] == "seam" and r["side"] == side and r["geometry"]["type"] == "line"
+             and not r.get("loose") and timbers.is_measured(r) and _strake_rank(r["name"]) == (code, rank)]
+    xs, ys, zs = [], [], []
+    for r in seams:
+        xy = _densify(tracing.ship_xy_of(chunk, r, frame))
+        xs.append(xy[:, 0])
+        ys.append(xy[:, 1])
+        zs.append(heights.at(xy))
+    seam_bins = set(np.floor(np.concatenate(xs) / STEP).astype(int).tolist()) if xs else set()
+    planks = [(r, _strake_rank(r["name"])) for r in records + recon
+              if r["kind"] == "plank" and r["side"] == side and r["geometry"]["type"] == "polygon"
+              and not r.get("loose") and (r.get("status") == STATUS or timbers.is_measured(r))]
+    above = any(rk == (code, rank + 1) for _r, rk in planks)
+    for r, rk in planks:
+        if rk not in ((code, rank), (code, rank + 1)) or (rk == (code, rank) and not above):
+            continue
+        mirrored = r.get("status") == STATUS
+        if not mirrored and seams:
+            continue  # a measured strake's edge only where its seam was not traced
+        xy = _edge_points(_polygon(tracing.ship_xy_of(chunk, r, frame)), outer=rk == (code, rank))
+        if not len(xy):
+            continue
+        keep = ~np.isin(np.floor(xy[:, 0] / STEP).astype(int), list(seam_bins))
+        xy = xy[keep]
+        xs.append(xy[:, 0])
+        ys.append(xy[:, 1])
+        zs.append(heights.at(xy * [1.0, -1.0] if mirrored else xy))
+    if not xs:
+        return None
+    x, y, z = _binned(np.concatenate(xs), np.concatenate(ys), np.concatenate(zs))
+    return _Seam(x, y, z) if len(x) >= 2 else None
+
+
+# ----------------------------------------------------------------------------- the trends
+class _Trend:
+    """Where a seam goes past its points: the 0.2.0 land line of its rank on its side, else the stations' sheer
+    (|y| in proportion to the seam's at its end, z as the sheer's), else nothing (the seam's own end slope)."""
+
+    def __init__(self, kind: str, fy=None, fz=None):
+        self.kind, self.fy, self.fz = kind, fy, fz
+
+    def dy(self, x, anchor_x: float, anchor_y: float):
+        if self.fy is None:
+            return None
+        d = self.fy.trend(x)
+        if self.kind == "sheer":
+            ref = float(self.fy(np.clip(anchor_x, self.fy.lo, self.fy.hi)))
+            d = d * (anchor_y / ref if ref > 1e-6 else 1.0)
+        return d
+
+    def dz(self, x):
+        return None if self.fz is None else self.fz.trend(x)
+
+
+def _land_lines(chunk) -> list[dict]:
+    from . import clinker
+
+    found = (ship.state(chunk).get("clinker") or {}).get("lines") or []
+    if found and clinker.is_stale(chunk):
+        return []
+    return found
+
+
+def _sheers(chunk) -> dict[str, tuple]:
+    """Per side the sheer at the stations' sections (the highest point of the side's lines): (x, |y|, z)."""
+    out: dict[str, list] = {"port": [], "starboard": []}
+    for s in lines.sections_of(chunk, "station"):
+        pts = [np.asarray(p, float).reshape(-1, 2) for p in s.get("lines") or []]
+        if not pts:
+            continue
+        p = np.vstack(pts)
+        for side, sign in (("port", 1.0), ("starboard", -1.0)):
+            mine = p[sign * p[:, 0] > 0]
+            if len(mine):
+                top = mine[np.argmax(mine[:, 1])]
+                out[side].append((float(s["value"]), abs(float(top[0])), float(top[1])))
+    return {k: np.asarray(sorted(v), float).reshape(-1, 3) for k, v in out.items()}
+
+
+def _trend(chunk, side: str, rank: int, sheers: dict) -> _Trend:
+    for line in _land_lines(chunk):
+        if line.get("side") == side and int(line.get("k") or 0) == rank and len(line.get("points") or []) >= 2:
+            p = np.asarray(line["points"], float)
+            fy = _curve(p[:, 0], np.abs(p[:, 1]))
+            if fy is not None:
+                return _Trend("land line", fy, _curve(p[:, 0], p[:, 2]))
+    p = sheers.get(side)
+    if p is not None and len(p) >= 2:
+        fy = _curve(p[:, 0], p[:, 1])
+        if fy is not None:
+            return _Trend("sheer", fy, _curve(p[:, 0], p[:, 2]))
+    return _Trend("spline")
+
+
+# ----------------------------------------------------------------------------- the extended edges
+def _grid(lo: float, hi: float, extra=()) -> np.ndarray:
+    xs = np.r_[np.arange(lo, hi, GRID), hi, np.asarray(list(extra), float)]
+    return np.unique(np.clip(xs, lo, hi))
+
+
+def _go_on(curve: _Curve, end: float, xs: np.ndarray, trend) -> np.ndarray:
+    """The value of ``curve`` continued from its point ``end`` over ``xs`` (all on one side of it, ordered away from
+    it): the derivative at ``end`` going linearly over :data:`BLEND` into ``trend(x)`` (None: held)."""
+    out = np.empty(len(xs))
+    v, x0 = float(curve(end)), end
+    d_end = float(curve.d(end))
+    for i, x in enumerate(xs):
+        m = 0.5 * (x0 + x)
+        w = min(abs(m - end) / BLEND, 1.0)
+        d = d_end if trend is None else (1.0 - w) * d_end + w * float(trend(m))
+        v += d * (x - x0)
+        out[i], x0 = v, x
+    return out
+
+
+def _edge(seam: _Seam, trend: _Trend, xs: np.ndarray) -> np.ndarray:
+    """The seam over ``xs``: (x, |y|, z), the spline inside its points, continued past them (:func:`_go_on`)."""
+    y, z = np.full(len(xs), np.nan), np.full(len(xs), np.nan)
+    inside = (xs >= seam.lo) & (xs <= seam.hi)
+    y[inside] = seam.fy(xs[inside])
+    if seam.fz is not None:
+        z[inside] = seam.fz(xs[inside])
+    for part, end in ((xs < seam.lo, seam.lo), (xs > seam.hi, seam.hi)):
+        if not part.any():
+            continue
+        order = np.argsort(np.abs(xs[part] - end))
+        sub = xs[part][order]
+        y_end = float(seam.fy(end))
+        yv = _go_on(seam.fy, end, sub, (lambda m, e=end, ye=y_end: trend.dy(m, e, ye)) if trend.fy is not None else None)
+        idx = np.flatnonzero(part)[order]
+        y[idx] = np.maximum(yv, 0.0)
+        if seam.fz is not None:
+            z[idx] = _go_on(seam.fz, end, sub, trend.dz if trend.fz is not None else None)
+    return np.column_stack([xs, y, z])
+
+
+def _intervals(polys) -> list[tuple[float, float]]:
+    spans = sorted((p.bounds[0], p.bounds[2]) for p in polys if not p.is_empty)
+    out: list[list[float]] = []
+    for a, b in spans:
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def _gaps(covered, lo: float, hi: float) -> list[tuple[float, float]]:
+    out, at = [], lo
+    for a, b in covered:
+        if a > at:
+            out.append((at, min(a, hi)))
+        at = max(at, b)
+    if at < hi:
+        out.append((at, hi))
+    return [(a, b) for a, b in out if b - a >= MIN_GAP]
+
+
+def _band(lower: np.ndarray, upper: np.ndarray, sign: float):
+    """The polygon of a band between two edges (x, |y|, z) on the same x, on the side ``sign``."""
+    ylo, yhi = lower[:, 1], np.maximum(upper[:, 1], lower[:, 1])
+    ring = np.vstack([np.column_stack([lower[:, 0], sign * ylo]), np.column_stack([upper[::-1, 0], sign * yhi[::-1]])])
+    return _polygon(ring)
+
+
+def _replace(chunk, status: str, new: list[dict]) -> None:
+    st = state(chunk)
+    st["timbers"] = [r for r in st.get("timbers", []) if r.get("status") != status] + new
+
+
+def _ids(chunk, status: str):
+    """Ids for the new records of ``status``: an earlier record's for the same source and position, else the next
+    free one (never one another record held)."""
+    old = {(r.get("source"), tuple(r.get("position") or ())): r["id"] for r in state(chunk).get("timbers", [])
+           if r.get("status") == status}
+    n = [_next_id(state(chunk).get("timbers", []))]
+
+    def take(source, at) -> str:
+        at = tuple(at)
+        if (source, at) in old:
+            return old.pop((source, at))
+        rid = f"R{n[0]}"
+        n[0] += 1
+        return rid
+
+    return take
+
+
+def extend(chunk, progress=None) -> list[dict]:
+    """Each strake between two seams (measured, or mirrored: its edges are its seams) continued along the hull: its
+    seams (|y|, and z from the relief) fitted in x by a smoothing spline, over the strake's gaps inside
+    :func:`surveyed_range` and, beyond it, only up to the ends :func:`set_ends` gave; past the last point of a seam
+    its derivative goes over linearly in :data:`BLEND` into the trend of the 0.2.0 land line of its rank, else of
+    the stations' sheer. The new parts only, as band polygons (``reconstructed:extension``, named as the strake,
+    ``source`` the strake's record nearest, ``edges`` lower/upper (x, y, z), ``seams``, ``trend``, ``beyond``: past
+    the surveyed range); the earlier extension replaced. No solid yet."""
+    import shapely
+
+    from pyarchinit_photogrammetry.core.progress import as_progress
+
+    progress = as_progress(progress)
+    frame = ship.need_frame(chunk)
+    surveyed = surveyed_range(chunk)
+    tracing.need_fresh_relief(chunk)
+    lo, hi, cuts = _limits(chunk, surveyed)
+    records = timbers.timbers_of(chunk)
+    recon = [r for r in records_of(chunk) if r.get("status") == STATUS]
+    heights = _Heights(chunk, frame, [r for r in records if timbers.is_measured(r)])
+    sheers = _sheers(chunk)
+    beyond = shapely.union_all(cuts) if cuts else None
+    strakes: dict[tuple[str, int], list[dict]] = {}
+    for r in records + recon:
+        rk = _strake_rank(r["name"])
+        if (r["kind"] == "plank" and r["side"] in SIDES and r["geometry"]["type"] == "polygon" and rk
+                and not r.get("loose") and (r.get("status") == STATUS or timbers.is_measured(r))
+                and rk[0] == ("B" if r["side"] == "port" else "T")):
+            strakes.setdefault((r["side"], rk[1]), []).append(r)
+    take = _ids(chunk, EXTENSION)
+    key = relief.frame_key(frame)
+    out, skipped, cache = [], [], {}
+    for i, ((side, rank), members) in enumerate(sorted(strakes.items())):
+        name = _base_name(members[0]["name"])
+        progress(i / max(1, len(strakes)), t(f"Prolungamento: {name}", f"Extension: {name}"))
+        seams = []
+        for r in (rank - 1, rank):
+            if (side, r) not in cache:
+                cache[(side, r)] = (_seam(chunk, frame, heights, records, recon, side, r) if r >= 1 else None,
+                                    _trend(chunk, side, r, sheers))
+            seams.append(cache[(side, r)])
+        if any(s is None or s.fy is None for s, _tr in seams):
+            skipped.append({"name": name, "side": side,
+                            "reason": t("manca un comento su uno dei due lati", "a seam is missing on one edge")})
+            continue
+        polys = {r["id"]: _polygon(tracing.ship_xy_of(chunk, r, frame)) for r in members}
+        gaps = _gaps(_intervals(polys.values()), lo, hi)
+        sign = 1.0 if side == "port" else -1.0
+        for a, b in gaps:
+            xs = _grid(a, b)
+            (s0, tr0), (s1, tr1) = seams
+            lower, upper = _edge(s0, tr0, xs), _edge(s1, tr1, xs)
+            band = _band(lower, upper, sign)
+            if beyond is not None:
+                band = band.difference(beyond)
+            for piece in _pieces(band):
+                if piece.area < MIN_AREA:
+                    continue
+                xy = _ring(piece)
+                px0, _py0, px1, _py1 = piece.bounds
+                source = min(polys, key=lambda rid: max(0.0, polys[rid].bounds[0] - px1, px0 - polys[rid].bounds[2]))
+                at = (round(px0, 2), round(px1, 2))
+                keep = (xs >= px0 - 1e-9) & (xs <= px1 + 1e-9)
+
+                def signed(e, keep=keep, sign=sign):
+                    e = e[keep].copy()
+                    e[:, 1] *= sign
+                    return [[float(v) if np.isfinite(v) else None for v in row] for row in e]
+
+                out.append({"id": take(source, at), "kind": "plank", "side": side, "name": name, "station": "",
+                            "status": EXTENSION, "source": source, "sources": sorted(polys), "ship_xy": xy.tolist(),
+                            "geometry": timbers.geometry("polygon", _world(frame, xy)), "frame_key": key,
+                            "chunk": chunk.key, "edges": {"lower": signed(lower), "upper": signed(upper)},
+                            "seams": [rank - 1, rank], "trend": seams[0][1].kind if seams[0][1].kind == seams[1][1].kind
+                            else f"{seams[0][1].kind}/{seams[1][1].kind}",
+                            "beyond": bool(px0 < surveyed[0] - 1e-6 or px1 > surveyed[1] + 1e-6), "position": list(at)})
+    _replace(chunk, EXTENSION, out)
+    state(chunk)["extension"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": len(out),
+                                 "skipped": skipped, "range": [lo, hi], "surveyed": list(surveyed), "frame_key": key}
+    progress(1.0, t(f"Prolungamento: {len(out)} parti di fasce", f"Extension: {len(out)} parts of strakes"))
+    return out
+
+
+# ----------------------------------------------------------------------------- frames at the measured spacing
+def _room(poly) -> float:
+    """A frame's room: the short side of the rectangle around it."""
+    import shapely
+
+    with np.errstate(invalid="ignore", divide="ignore"):  # shapely's envelope on an axis-aligned rectangle
+        box = shapely.get_coordinates(shapely.minimum_rotated_rectangle(poly))[:4]
+    if len(box) < 4:
+        x0, _y0, x1, _y1 = poly.bounds
+        return float(x1 - x0)
+    sides = np.hypot(*np.diff(np.vstack([box, box[:1]]), axis=0)[:2].T)
+    return float(sides.min())
+
+
+def _span(poly, side: str) -> tuple[float, float] | None:
+    """A frame's outline across on ``side``: (|y| nearest the keel, |y| farthest), None when it has nothing there."""
+    import shapely
+
+    half = shapely.box(-_FAR, 0.0, _FAR, _FAR) if side == "port" else shapely.box(-_FAR, -_FAR, _FAR, 0.0)
+    part = poly.intersection(half)
+    if part.is_empty or part.area <= 0:
+        return None
+    y = np.abs(shapely.get_coordinates(part)[:, 1])
+    return float(y.min()), float(y.max())
+
+
+def _frame_number(name: str) -> int | None:
+    m = _FRAME_NUMBER.match(str(name).strip())
+    return int(m.group(1)) if m else None
+
+
+def frames_by_spacing(chunk) -> list[dict]:
+    """Frames added where they are missing (``reconstructed:spacing``): per side, the measured (not loose) and the
+    mirrored frames in order of x (a centre frame counts for both sides; :func:`timbers.frame_spacing`); a space
+    between two of them longer than :data:`GAP_FACTOR` median spaces gets ``round(space / median) - 1`` frames,
+    evenly (the median space when the space is a multiple of it), each of the median room, its span across
+    interpolated from the two neighbours. A frame added on both sides at one place between centre frames is one
+    centre frame. Named ``ordinata N`` after the highest number (the existing numbers kept), ``notes`` saying where;
+    ``source`` the frame before it, ``sources`` both. The earlier ones replaced; the medians in
+    ``state["reconstruction"]["spacing"]``."""
+    import shapely
+
+    frame = ship.need_frame(chunk)
+    records = timbers.timbers_of(chunk)
+    recon = [r for r in records_of(chunk) if r.get("status") == STATUS]
+    frames = [r for r in records + recon if r["kind"] == "frame" and r["geometry"]["type"] == "polygon"
+              and not r.get("loose") and (r.get("status") == STATUS or timbers.is_measured(r))]
+    polys = {r["id"]: _polygon(tracing.ship_xy_of(chunk, r, frame)) for r in frames}
+    by_id = {r["id"]: r for r in frames}
+    rows = [{"id": r["id"], "name": r["name"], "kind": "frame", "side": r["side"], "x": float(polys[r["id"]].centroid.x)}
+            for r in frames if not polys[r["id"]].is_empty]
+    spacing = timbers.frame_spacing(rows)
+    found: list[dict] = []
+    medians = {}
+    for side, d in spacing.items():
+        median = d["median"]
+        if median is None or median <= 0 or len(d["frames"]) < 3:
+            continue
+        mine = [polys[f["id"]] for f in d["frames"]]
+        room = float(np.median([_room(p) for p in mine]))
+        medians[side] = {"space": median, "room": room}
+        for left, right, space in zip(d["frames"][:-1], d["frames"][1:], d["spaces"]):
+            if space <= GAP_FACTOR * median:
+                continue
+            n = max(1, int(round(space / median)) - 1)
+            a, b = _span(polys[left["id"]], side), _span(polys[right["id"]], side)
+            if a is None or b is None:
+                continue
+            for j in range(1, n + 1):
+                f = j / (n + 1)
+                found.append({"side": side, "x": left["x"] + f * space, "room": room, "left": left, "right": right,
+                              "span": (a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]))})
+    # one centre frame where both sides miss it between the same centre frames
+    merged, used = [], set()
+    for i, p in enumerate(found):
+        if i in used:
+            continue
+        twin = next((j for j, q in enumerate(found) if j not in used and j != i and q["side"] != p["side"]
+                     and abs(q["x"] - p["x"]) < 0.5 * p["room"] and {q["left"]["id"], q["right"]["id"]}
+                     == {p["left"]["id"], p["right"]["id"]}), None)
+        both = (twin is not None and by_id[p["left"]["id"]]["side"] == "centre"
+                and by_id[p["right"]["id"]]["side"] == "centre")
+        if both:
+            used.update((i, twin))
+            q = found[twin]
+            port, starboard = (p, q) if p["side"] == "port" else (q, p)
+            merged.append({**p, "side": "centre", "x": 0.5 * (p["x"] + q["x"]),
+                           "across": (-starboard["span"][1], port["span"][1])})
+        else:
+            used.add(i)
+            sign = 1.0 if p["side"] == "port" else -1.0
+            ys = sorted((sign * p["span"][0], sign * p["span"][1]))
+            merged.append({**p, "across": tuple(ys)})
+    merged.sort(key=lambda p: p["x"])
+    others = records + [r for r in records_of(chunk) if r.get("status") != SPACING]
+    number = 1 + max((n for n in (_frame_number(r.get("name", "")) for r in others) if n is not None), default=0)
+    take = _ids(chunk, SPACING)
+    key = relief.frame_key(frame)
+    word = t("ordinata", "frame")
+    out = []
+    for p in merged:
+        x, half = p["x"], 0.5 * p["room"]
+        y0, y1 = p["across"]
+        xy = _ring(shapely.box(x - half, y0, x + half, y1))
+        left, right = p["left"], p["right"]
+        at = (round(x, 2), round(y0, 2), round(y1, 2))
+        out.append({"id": take(left["id"], at), "kind": "frame", "side": p["side"], "name": f"{word} {number}",
+                    "station": "", "status": SPACING, "source": left["id"], "sources": [left["id"], right["id"]],
+                    "ship_xy": xy.tolist(), "geometry": timbers.geometry("polygon", _world(frame, xy)),
+                    "frame_key": key, "chunk": chunk.key, "room": p["room"], "position": list(at),
+                    "notes": t(f"tra {left['name'] or left['id']} e {right['name'] or right['id']}, a x {x:.2f} m",
+                               f"between {left['name'] or left['id']} and {right['name'] or right['id']}, "
+                               f"at x {x:.2f} m")})
+        number += 1
+    _replace(chunk, SPACING, out)
+    spaces = [m["space"] for m in medians.values()]
+    state(chunk)["spacing"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": len(out),
+                               "sides": medians, "median": float(np.median(spaces)) if spaces else None,
+                               "frame_key": key}
+    return out
