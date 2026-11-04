@@ -557,3 +557,48 @@ def test_the_pane_reconstructs_and_an_undo_takes_a_build_back(rebuild_window, mo
 
     plugin._requested("rec_frame_of")  # one chunk: nothing to take the frame from
     assert any("altro chunk" in s for s in said)
+
+
+def test_undo_copies_and_the_reconstruction_layer(rebuild_window):
+    """Two builds keep three copies (the "before" of a build is the "after" of the one before); the copies of an
+    earlier session are removed, those of this session's steps kept; a missing copy is said, not restored empty;
+    deleting reconstructed features on the relief is said and they come back."""
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_shipwreck import RECONSTRUCTION_LAYER, UNDO_FOLDER, reconstruct
+
+    w, ch, plugin, wait, answers, said, chosen = rebuild_window
+    root = ship.folder(ch) / UNDO_FOLDER
+    stray = root / "di_una_sessione_vecchia"
+    stray.mkdir(parents=True)
+    plugin._clean_undo_copies(ch.document)
+    assert not stray.exists()
+    answers["Ricostruisci"] = {"loft": False}
+    plugin._requested("rec_build")
+    wait()
+    answers["Ricostruisci"] = {"loft": True}
+    plugin._requested("rec_build")
+    wait()
+    copies = sorted(root.iterdir())
+    assert len(copies) == 3, copies
+    plugin._clean_undo_copies(ch.document)  # this session's steps hold them all
+    assert sorted(root.iterdir()) == copies
+
+    plugin._requested("relief_show")
+    view = w.ortho_view
+    feats = _features(view, RECONSTRUCTION_LAYER)
+    assert feats
+    view.select_items([feats[0][0]])
+    w.delete_selected(confirm=False)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert any("non si modifica a mano" in s for s in said)
+    assert len(_features(view, RECONSTRUCTION_LAYER)) == len(feats)
+
+    state = reconstruct.state(ch)
+    step = w.history.entries[w.history.index - 1].action
+    import shutil
+
+    shutil.rmtree(step.before_dir)
+    w.history.undo()
+    assert any("non c'è più" in s for s in said) and reconstruct.state(ch) == state  # nothing restored empty

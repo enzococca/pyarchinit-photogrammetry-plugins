@@ -176,8 +176,11 @@ sections (steps 2 and 3).
 | *Plan with reconstruction...* | The plan of the wreck with the reconstruction hatched. |
 
 Each build, and each change of the stem and the stern, is a step of *Edit > Undo*: undoing a build brings back the
-earlier reconstruction, records and files. The workspace tree shows *Reconstruction (n, hypothesis)*; while the relief
-is shown, the layer *Ricostruzione (ipotesi)* draws the reconstructed timbers hatched and dashed over it.
+earlier reconstruction, records and files. For that the reconstruction folder is copied once per build into
+`shipwreck/reconstruction.undo/` (removed at the next session); the copies are hard links and take almost no space,
+but on a disk without hard links (FAT, exFAT, some network shares) each is a full copy of the folder. The workspace tree shows *Reconstruction (n, hypothesis)*; while the relief
+is shown, the layer *Ricostruzione (ipotesi)* draws the reconstructed timbers hatched and dashed over it (they are not
+edited by hand: deleting them there is refused with a word on how to remove them).
 
 ![The reconstruction of the synthetic hull on the plan of the wreck](img/shipwreck-reconstruction-plan.png)
 
@@ -191,7 +194,10 @@ is shown, the layer *Ricostruzione (ipotesi)* draws the reconstructed timbers ha
 - **Extension of the strakes.** A strake traced over part of the hull is continued along its two seams: within the
   surveyed length (the relief of the chunks), and beyond it only to a stem or a stern you give. The seams follow the
   land lines of the sections (step 7) where there are some, else the bending of the seam's own points for at most a
-  metre, then held straight: those pieces are flagged `uncertain`.
+  metre, then held straight: those pieces are flagged `uncertain`. An extended piece is cut where it grows wider than
+  1.5 times the strake's measured width, or where its outer edge passes the hull's half-breadth at that x (the relief's
+  farthest cell on that side, or the faired hull of the previous build) by more than that width: noisy land lines no
+  longer fan a strake out of the wreck. A cut piece is `uncertain` and named in the warnings.
 - **Frames at the measured spacing.** Where the space between two traced frames is more than 1.5 times the median
   space of their side, the missing frames are put back at that spacing, standing on the hull (from the relief, the
   mirrored solids or the faired hull) as high as their two neighbours.
@@ -202,6 +208,7 @@ is shown, the layer *Ricostruzione (ipotesi)* draws the reconstructed timbers ha
   open*). Untraced timbers lying on the planking enter the sections: trace them (the keelson above all), or the hull
   is lofted over them.
 - **The keel** typed in step 8 stays a solid of its own; it is never lofted.
+- **The profile** shows no sheer over a span lost on both sides: the faired hull's top edge is not drawn as a sheer.
 
 ### Several chunks of the same wreck
 

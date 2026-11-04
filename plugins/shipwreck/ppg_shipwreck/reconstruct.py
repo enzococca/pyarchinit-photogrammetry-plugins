@@ -63,7 +63,7 @@ import numpy as np
 
 from . import lines, relief, ship, solids, timbers, tracing
 from .ship import NotReady
-from .texts import t
+from .texts import num, t
 
 OVERLAP = 0.20  # share of a mirrored piece's area over measured records of the other side: more, not mirrored
 COVERED = 0.20  # share of a mirrored piece's cells with the model under them: more, not mirrored
@@ -594,6 +594,9 @@ BEND_REACH = 1.0  # m: how far past its points a trend's derivative goes on bend
 OPEN_X = 0.25  # m: heights read along a seam opened over this length (a timber's top narrower than it goes)
 NO_TREND_REACH = 1.0  # m: how far a seam without a trend (no land line, no sections) goes past its points
 GAP_FACTOR = 1.5  # a space between two frames longer than this many median spaces has frames missing
+WIDEN = 1.5  # an extended strake is cut where it grows wider than this many times its measured width ...
+"""... or where its outer edge passes the hull's half-breadth (:meth:`_Heights.half_breadth`, the faired hull's when
+built) by more than that width: a seam's trend that runs away (noisy land lines) never fans out of the hull."""
 _STRAKE = re.compile(r"([BT])(\d+)(?:\s*\(\d+\))?\s*$")
 _FRAME_NUMBER = re.compile(r"^(?:ordinata|frame)\s+(\d+)\s*$")
 _FAR = 1.0e4
@@ -833,6 +836,23 @@ class _Heights:
                    if r["kind"] in tracing.CUTTERS and r["geometry"]["type"] == "polygon" and not r.get("loose")]
         self.cutters = shapely.union_all(cutters).buffer(0.01) if cutters else None
         self._ground: dict[str, object] = {}
+        self._breadth: dict[str, tuple] = {}
+
+    def half_breadth(self, side: str, xs: np.ndarray) -> np.ndarray:
+        """The relief's farthest |y| on ``side`` at ``xs`` (column by column, interpolated across the columns with no
+        cell there and held past the relief's ends); inf without any cell on that side."""
+        if side not in self._breadth:
+            a = self.affine
+            u = a.c + a.a * (np.arange(self.z.shape[1]) + 0.5)
+            y = self.sign * (a.f + a.e * (np.arange(self.z.shape[0]) + 0.5))
+            mask = np.isfinite(self.z) & ((y > 0) if side == "port" else (y < 0))[:, None]
+            far = np.where(mask, np.abs(y)[:, None], -np.inf).max(axis=0)
+            has = mask.any(axis=0)
+            order = np.argsort(u[has])
+            self._breadth[side] = (u[has][order], far[has][order])
+        u, b = self._breadth[side]
+        xs = np.asarray(xs, float)
+        return np.interp(xs, u, b) if len(u) else np.full(len(xs), np.inf)
 
     def at(self, xy: np.ndarray) -> np.ndarray:
         import shapely
@@ -1231,6 +1251,7 @@ def extend(chunk, progress=None, records=None) -> list[dict]:
     take = _ids(chunk, EXTENSION)
     key = relief.frame_key(frame)
     out, skipped, cache = [], [], {}
+    loft_breadth = _loft_breadth(chunk)
     for i, ((side, rank), members) in enumerate(sorted(strakes.items())):
         name = _base_name(members[0]["name"])
         progress(i / max(1, len(strakes)), t(f"Prolungamento: {name}", f"Extension: {name}"))
@@ -1257,10 +1278,27 @@ def extend(chunk, progress=None, records=None) -> list[dict]:
         away += [p.buffer(heights.cell) for p in mirrored]
         away = shapely.union_all(away) if away else None
         (s0, tr0), (s1, tr1) = seams
+        width = _measured_width(measured or mirrored)
         for a, b in _gaps(_intervals(measured), a_lim, b_lim):
             xs = _grid(a, b)
             lower, upper = _edge(s0, tr0, xs, heights, sign), _edge(s1, tr1, xs, heights, sign)
             band = _band(lower, upper, sign)
+            cut_at = None
+            if width:
+                limit = heights.half_breadth(side, xs)
+                if loft_breadth.get(side) is not None:
+                    lu, lb = loft_breadth[side]
+                    inside = (xs >= lu[0]) & (xs <= lu[-1])
+                    limit = np.where(inside, np.maximum(limit, np.interp(xs, lu, lb)), limit)
+                bad = ((upper[:, 1] - lower[:, 1] > WIDEN * width)
+                       | (np.maximum(upper[:, 1], lower[:, 1]) > limit + width))
+                kept, cut_at = _kept_runs(xs, bad, a > a_lim + GRID, b < b_lim - GRID)
+                if cut_at is not None:
+                    band = band.intersection(kept) if kept is not None else shapely.Polygon()
+                    warnings.append(t(f"{name}: tagliata a x {num(cut_at)} m dove si allarga oltre {num(WIDEN, 1)} volte la sua "
+                                      "larghezza misurata o esce dallo scafo (incerta)",
+                                      f"{name}: cut at x {num(cut_at)} m where it grows wider than {WIDEN:g} times its "
+                                      "measured width or leaves the hull (uncertain)"))
             if away is not None:
                 band = band.difference(away)
             for piece in _pieces(band):
@@ -1282,7 +1320,8 @@ def extend(chunk, progress=None, records=None) -> list[dict]:
                             "chunk": chunk.key,
                             "edges": {"lower": _edge_of_piece(lower, piece, sign, beyond),
                                       "upper": _edge_of_piece(upper, piece, sign, beyond)},
-                            "seams": [rank - 1, rank], "trend": "/".join(kinds), "uncertain": bool(guessed or held),
+                            "seams": [rank - 1, rank], "trend": "/".join(kinds),
+                            "uncertain": bool(guessed or held or cut_at is not None),
                             "beyond": bool(px0 < surveyed[0] - 1e-6 or px1 > surveyed[1] + 1e-6),
                             "position": list(at)})
                 if guessed:
@@ -1300,6 +1339,60 @@ def extend(chunk, progress=None, records=None) -> list[dict]:
                                  "skipped": skipped, "warnings": list(dict.fromkeys(warnings)), "range": [lo, hi],
                                  "surveyed": list(surveyed), "frame_key": key, "mirror_built": mirror_built}
     progress(1.0, t(f"Prolungamento: {len(out)} parti di fasce", f"Extension: {len(out)} parts of strakes"))
+    return out
+
+
+def _measured_width(polys) -> float | None:
+    """A strake's measured width: the median over its parts of area over length along x."""
+    widths = [p.area / (p.bounds[2] - p.bounds[0]) for p in polys if not p.is_empty and p.bounds[2] > p.bounds[0]]
+    return float(np.median(widths)) if widths else None
+
+
+def _kept_runs(xs: np.ndarray, bad: np.ndarray, from_start: bool, from_end: bool):
+    """Where a gap's extension may go: from each end that touches a measured part the run of good columns up to the
+    first bad one (from neither: every good column). Returns (the polygon of the x kept or None, the x of the first
+    cut) - (None, None) when nothing is bad."""
+    import shapely
+
+    if not bad.any():
+        return None, None
+    keep = np.zeros(len(xs), bool)
+    if from_start:
+        first = int(np.argmax(bad))
+        keep[:first] = True
+    if from_end:
+        last = len(xs) - 1 - int(np.argmax(bad[::-1]))
+        keep[last + 1:] = True
+    if not from_start and not from_end:
+        keep = ~bad
+    cut = float(xs[int(np.argmax(bad))] if from_start or not from_end else xs[len(xs) - 1 - int(np.argmax(bad[::-1]))])
+    boxes = []
+    idx = np.flatnonzero(keep)
+    if len(idx):
+        runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+        boxes = [shapely.box(xs[r[0]] - GRID / 2.0, -_FAR, xs[r[-1]] + GRID / 2.0, _FAR) for r in runs]
+    return (shapely.union_all(boxes) if boxes else None), cut
+
+
+def _loft_breadth(chunk) -> dict:
+    """The faired hull of the earlier build, if any, as each side's farthest |y| per x bin of :data:`STEP`."""
+    entry = state(chunk).get("loft") or {}
+    path = chunk.data_dir / entry["file"] if entry.get("file") else None
+    if path is None or not path.exists():
+        return {}
+    from pyarchinit_photogrammetry.io.mesh_ply import PlyMesh
+
+    mesh = PlyMesh(path)  # the vertices only (the earlier build's file: not the 3D reads of this build)
+    v = np.array(mesh.xyz(), float)
+    del mesh
+    out = {}
+    for side, keep in (("port", v[:, 1] > 0), ("starboard", v[:, 1] < 0)):
+        if keep.sum() < 2:
+            continue
+        bins = np.round(v[keep, 0] / STEP).astype(int)
+        u = np.unique(bins)
+        far = np.array([np.abs(v[keep, 1][bins == k]).max() for k in u])
+        out[side] = (u * STEP, far)
     return out
 
 

@@ -179,8 +179,12 @@ dello scafo e i legni ricalcati sopra (passo 8); la carenatura vuole anche le st
 | *Pianta con ricostruzione...* | La pianta del relitto con la ricostruzione campita. |
 
 Ogni costruzione, e ogni modifica di prua e poppa, è un passo di *Modifica > Annulla*: annullare una costruzione
-riporta la ricostruzione di prima, record e file. L'albero dell'area di lavoro mostra *Ricostruzione (n, ipotesi)*;
-mentre il rilievo è mostrato, il layer *Ricostruzione (ipotesi)* disegna sopra i legni ricostruiti campiti e a trattini.
+riporta la ricostruzione di prima, record e file. Per questo la cartella della ricostruzione è copiata una volta per
+costruzione in `shipwreck/reconstruction.undo/` (tolta alla sessione successiva); le copie sono collegamenti fisici e
+non occupano quasi nulla, ma su un disco senza collegamenti fisici (FAT, exFAT, alcune condivisioni di rete) ognuna è
+una copia intera della cartella. L'albero dell'area di lavoro mostra *Ricostruzione (n, ipotesi)*;
+mentre il rilievo è mostrato, il layer *Ricostruzione (ipotesi)* disegna sopra i legni ricostruiti campiti e a trattini
+(non si modificano a mano: eliminarli lì è rifiutato, con l'indicazione di come toglierli).
 
 ![La ricostruzione dello scafo sintetico sulla pianta del relitto](img/shipwreck-reconstruction-plan.png)
 
@@ -194,7 +198,11 @@ mentre il rilievo è mostrato, il layer *Ricostruzione (ipotesi)* disegna sopra 
 - **Prolungamento delle fasce.** Una fascia ricalcata su una parte dello scafo continua lungo i suoi due comenti:
   entro la lunghezza rilevata (il rilievo dei chunk) e oltre solo fino a una prua o a una poppa date. I comenti seguono
   le linee dei gradini delle sezioni (passo 7) dove ci sono, altrimenti la curvatura dei loro punti per un metro al
-  massimo, poi tenuti dritti: quei pezzi sono segnati `uncertain` (incerti).
+  massimo, poi tenuti dritti: quei pezzi sono segnati `uncertain` (incerti). Un pezzo prolungato è tagliato dove si
+  allarga oltre 1,5 volte la larghezza misurata della fascia, o dove il suo bordo esterno supera di più di quella
+  larghezza la mezza larghezza dello scafo a quella x (la cella più lontana del rilievo da quel lato, o la carenatura
+  della costruzione precedente): linee dei gradini rumorose non aprono più una fascia a ventaglio fuori dal relitto.
+  Un pezzo tagliato è `uncertain` e nominato negli avvisi.
 - **Ordinate al passo misurato.** Dove lo spazio fra due ordinate ricalcate supera di 1,5 volte lo spazio mediano del
   loro lato, le ordinate mancanti sono rimesse a quel passo, in piedi sullo scafo (dal rilievo, dai solidi riflessi o
   dalla carenatura) alte quanto le due vicine.
@@ -205,6 +213,8 @@ mentre il rilievo è mostrato, il layer *Ricostruzione (ipotesi)* disegna sopra 
   stazione (la pianta scrive *carenatura aperta*). I legni non ricalcati sul fasciame entrano nelle sezioni:
   ricalcali (il paramezzale prima di tutto), altrimenti lo scafo passa sopra di loro.
 - **La chiglia** data al passo 8 resta un solido suo; non entra mai nella carenatura.
+- **Il profilo** non mostra l'orlo su un tratto perso da entrambi i lati: il bordo alto della carenatura non è
+  disegnato come orlo.
 
 ### Più chunk dello stesso relitto
 

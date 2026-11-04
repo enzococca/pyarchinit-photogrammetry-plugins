@@ -76,13 +76,14 @@ HATCH_NOTE = ("Parti campite a righe oblique (////): ricostruzione (ipotesi), ma
               "Parts hatched with oblique lines (////): reconstruction (hypothesis), never a measure.")
 RECONSTRUCTION_NOTE = ("Parti campite: ricostruzione (ipotesi), mai una misura; righe oblique (////): dimensioni date, "
                        "ipotesi dalle sezioni e simmetria; righe oblique contrarie (\\\\\\\\): prolungamento delle fasce; "
-                       "righe incrociate (xxxx): ordinate al passo misurato; righe orizzontali (----): tavole importate "
-                       "dal Clinker Boat Tool (Houdini). Carenatura: solo il contorno a trattini.",
+                       "righe incrociate (xxxx): ordinate al passo misurato. Carenatura: solo il contorno a trattini.",
                        "Hatched parts: reconstruction (hypothesis), never a measure; oblique lines (////): given "
                        "dimensions, hypothesis from the sections and mirror; opposite oblique lines (\\\\\\\\): extension of "
-                       "the strakes; crossed lines (xxxx): frames at the measured spacing; horizontal lines (----): planks imported "
-                       "from the Clinker Boat Tool (Houdini). Faired hull: its dashed outline only.")
-"""The note on the hatches when the reconstruction (0.4.0) is drawn: :data:`HATCH_NOTE` with the four hatches."""
+                       "the strakes; crossed lines (xxxx): frames at the measured spacing. Faired hull: its dashed outline only.")
+"""The note on the hatches when the reconstruction (0.4.0) is drawn: :data:`HATCH_NOTE` with the three hatches."""
+IMPORTED_NOTE = ("Righe orizzontali (----): tavole importate dal Clinker Boat Tool (Houdini).",
+                 "Horizontal lines (----): planks imported from the Clinker Boat Tool (Houdini).")
+"""Added to the note on the hatches when an imported plank is drawn with :data:`IMPORTED_HATCH`."""
 ACROSS_RATIO = 3.0  # a polygon this many times as long as wide is named along its length
 NAME_AT = {"frame": 0.85, "line": 0.3, "longitudinal": 0.2}  # where along a timber its name goes
 DRAW_ORDER = ("keel", "plank", "ceiling", "frame", "stringer", "keelson", "other", "fastening", "seam")
@@ -1138,9 +1139,9 @@ def _hatch_note(d: Drawing) -> None:
     """The note on the hatched parts, when a drawing has any (a reconstruction is never presented as measured):
     :data:`RECONSTRUCTION_NOTE` when the reconstruction (0.4.0) is drawn on it (or an imported plank with its own
     hatch), else :data:`HATCH_NOTE`."""
-    if (d.faint or any(layer == HULL_LAYER for layer, *_rest in d.fills)
-            or any(hatch == IMPORTED_HATCH for _l, _r, _c, hatch, _d in d.fills)):
-        d.notes.append(t(*RECONSTRUCTION_NOTE))
+    imported = any(hatch == IMPORTED_HATCH for _l, _r, _c, hatch, _d in d.fills)
+    if d.faint or any(layer == HULL_LAYER for layer, *_rest in d.fills) or imported:
+        d.notes.append(t(*RECONSTRUCTION_NOTE) + (" " + t(*IMPORTED_NOTE) if imported else ""))
     elif any(hatch for _l, _r, _c, hatch, _d in d.fills):
         d.notes.append(t(*HATCH_NOTE))
 

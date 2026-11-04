@@ -58,7 +58,8 @@ relief at 1 cm for the 3D exports of a long hull (decimation is planned for a la
 Limits of the reconstruction. It is a hypothesis built on what is traced: an untraced timber lying on the planking enters
 the sections and the faired hull passes over it; a twisted wreck is mirrored twisted; past the last station the faired
 hull is a hypothesis of the breadth only, its height that of the last section; a seam without land lines is followed for
-at most a metre past its points, then held straight (`uncertain`); with several chunks the frames must carry the field's
+at most a metre past its points, then held straight (`uncertain`); an extended strake is cut where it grows wider
+than 1.5 times its measured width or leaves the hull's half-breadth (`uncertain`); with several chunks the frames must carry the field's
 numbers, and only the active chunk's files are written.
 
 The Clinker Boat Tool is a Houdini Digital Asset by Fred Fröhlich and Sigurd Solhaug Nielsen (MIT,

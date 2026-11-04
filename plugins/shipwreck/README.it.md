@@ -62,7 +62,8 @@ interrotta o superata viene detta e l'esportazione avvisa. I nomi possono affoll
 Limiti della ricostruzione. È un'ipotesi costruita su ciò che è ricalcato: un legno non ricalcato sul fasciame entra
 nelle sezioni e la carenatura gli passa sopra; un relitto torto è riflesso torto; oltre l'ultima stazione la carenatura
 è un'ipotesi della sola larghezza, con l'altezza dell'ultima sezione; un comento senza linee dei gradini è seguito per un
-metro al massimo oltre i suoi punti, poi tenuto dritto (`uncertain`); con più chunk le ordinate devono avere i numeri del
+metro al massimo oltre i suoi punti, poi tenuto dritto (`uncertain`); una fascia prolungata è tagliata dove si allarga
+oltre 1,5 volte la sua larghezza misurata o esce dalla mezza larghezza dello scafo (`uncertain`); con più chunk le ordinate devono avere i numeri del
 cantiere, e si scrivono solo i file del chunk attivo.
 
 Il Clinker Boat Tool è un Houdini Digital Asset di Fred Fröhlich e Sigurd Solhaug Nielsen (MIT,

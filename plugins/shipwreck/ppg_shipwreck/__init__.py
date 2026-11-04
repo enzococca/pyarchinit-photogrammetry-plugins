@@ -49,6 +49,8 @@ RECONSTRUCTION_LAYER = "Ricostruzione (ipotesi)"  # on the relief, in its (u, v)
 REC_HATCHES = {"reconstructed:mirror": "BDiagPattern", "reconstructed:extension": "FDiagPattern",
                "reconstructed:spacing": "DiagCrossPattern"}  # as on the plan of the wreck: ////, \\\\, xxxx
 UNDO_FOLDER = "reconstruction.undo"  # the reconstruction's files before and after each build, for Annulla
+_UNDO_DIRS: set = set()  # the copies the steps of Annulla of this process hold (module level: a plugin turned off
+_LAST_AFTER: dict = {}   # and on again keeps them); per chunk key: (the copy after the last build, its meta)
 KIND_COLOURS = {"seam": "#00e5ff", "frame": "#ff8c00", "keelson": "#d040ff", "keel": "#8d6e63", "stringer": "#ffd000",
                 "plank": "#30c060", "ceiling": "#9ccc65", "fastening": "#ff3030", "other": "#b0b0b0"}
 UNDO_KEYS = ("timbers", "proposals", "keel")  # what a step of the tracing changes, kept for *Modifica > Annulla*
@@ -93,13 +95,17 @@ class _RebuildStep:
     def _put(self, state, folder) -> None:
         from . import ship
 
+        if folder is not None:
+            if not folder.exists():  # never an empty folder under a meta that lists files
+                self.plugin._message("warning", t("La copia per Annulla della ricostruzione non c'è più: ricostruisci.",
+                                                  "The copy of the reconstruction for Undo is gone: reconstruct."))
+                return
+            _restore_folder(folder, _rec_folder(self.chunk))
         root = ship.state(self.chunk)
         if state is None:
             root.pop("reconstruction", None)
         else:
             root["reconstruction"] = copy.deepcopy(state)
-        if folder is not None:
-            _restore_folder(folder, _rec_folder(self.chunk))
         self.plugin._changed()
 
     def undo(self) -> None:
@@ -125,7 +131,6 @@ class ShipwreckPlugin(Plugin):
         self.overlay = None  # the grey raster over the relief (:class:`overlay.Overlay`)
         self.overlay_kind = "hillshade"  # which one: a kind of :data:`relief.KINDS`, or "photo" for none
         self._deleting = None  # (step, layer group) of a deletion on the view while the event is being handled
-        self._undo_dirs: set = set()  # the folders of the reconstruction kept for the steps of Annulla of this session
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
@@ -150,6 +155,8 @@ class ShipwreckPlugin(Plugin):
             context.on_features_deleted(LAYER, self._features_deleted)
             context.on_features_deleted(PROPOSALS_LAYER, self._proposals_deleted)
             context.on_features_deleted(TRACED_LAYER, self._features_deleted)
+            context.on_features_deleted(RECONSTRUCTION_LAYER, self._reconstruction_deleted)
+            self._clean_undo_copies(getattr(context.window, "doc", None) or context.app.document)
             context.add_tree_items(self._tree_items)
             self.refresh_pane()
 
@@ -1380,24 +1387,51 @@ class ShipwreckPlugin(Plugin):
         if (history is not None and not getattr(window, "_script_running", False) and after != before
                 and chunk is getattr(window, "chunk", None)):
             after_dir = self._keep_folder(chunk) if before_dir is not None else None
+            if after_dir is not None:
+                _LAST_AFTER[chunk.key] = (after_dir, copy.deepcopy(after))
             history.push(t(f"Relitto: {text}", f"Shipwreck: {text}"),
                          _RebuildStep(self, chunk, before, after, before_dir, after_dir), document=False)
         self._changed()
 
-    def _keep_folder(self, chunk):
-        """A copy of the reconstruction's folder (hard links) for a step of Annulla; the copies of steps of earlier
-        sessions removed."""
+    def _keep_folder(self, chunk, reuse: bool = False):
+        """A copy of the reconstruction's folder (hard links) for a step of Annulla. ``reuse``: the copy taken after
+        the last build when the reconstruction has not changed since (the "before" of a build is the "after" of the
+        one before it: one copy, not two)."""
         import uuid
 
+        from . import ship
+
+        last = _LAST_AFTER.get(chunk.key)
+        if (reuse and last is not None and last[0].exists()
+                and last[1] == ship.state(chunk).get("reconstruction")):
+            return last[0]
         root = _rec_folder(chunk).parent / UNDO_FOLDER
         root.mkdir(parents=True, exist_ok=True)
-        for old in root.iterdir():
-            if old not in self._undo_dirs:
-                _remove(old)
         dst = root / uuid.uuid4().hex
         _copy_folder(_rec_folder(chunk), dst)
-        self._undo_dirs.add(dst)
+        _UNDO_DIRS.add(dst)
         return dst
+
+    @staticmethod
+    def _clean_undo_copies(doc) -> None:
+        """The copies for Annulla left by an earlier session (or a build that failed) removed: only those the steps
+        of this process hold stay."""
+        for chunk in getattr(doc, "chunks", None) or []:
+            root = chunk.data_dir / "shipwreck" / UNDO_FOLDER
+            if root.exists():
+                for old in root.iterdir():
+                    if old not in _UNDO_DIRS:
+                        _remove(old)
+
+    def _reconstruction_deleted(self, features) -> None:
+        """The reconstruction is not edited by hand on the view: it comes back, and the user is told how."""
+        self._message("information", t("La ricostruzione non si modifica a mano: rimuovila dal pannello (Ricostruisci, "
+                                       "senza quel passo) o con Modifica > Annulla, oppure correggi il ricalco.",
+                                       "The reconstruction is not edited by hand: remove it from the pane (Reconstruct, "
+                                       "without that step) or with Edit > Undo, or correct the tracing."))
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, self.draw_layer)
 
     def _do_rec_ends(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field
@@ -1477,7 +1511,7 @@ class ShipwreckPlugin(Plugin):
 
         before = copy.deepcopy(ship.state(chunk).get("reconstruction"))
         window = self.context.window
-        before_dir = self._keep_folder(chunk) if getattr(window, "history", None) is not None else None
+        before_dir = self._keep_folder(chunk, reuse=True) if getattr(window, "history", None) is not None else None
         doc = getattr(chunk, "document", None)
 
         def done(out):
@@ -1512,6 +1546,13 @@ class ShipwreckPlugin(Plugin):
         if not v:
             return
         source = next(c for c in others if c.key == v["source"])
+        if self._choose(t("Usa il sistema nave di", "Use the ship frame of"),
+                        t(f"Il sistema della nave e le stazioni di «{chunk.label}» saranno sostituiti da quelli di "
+                          f"«{source.label}», e le sezioni rifatte. Continuare?",
+                          f"The ship frame and the stations of «{chunk.label}» will be replaced by those of "
+                          f"«{source.label}», and the sections cut again. Go on?"),
+                        [t("Sostituisci", "Replace")]) != 0:
+            return
         chunks.use_frame_of(chunk, source)
         self._status(t(f"Sistema della nave di «{source.label}»: rifai il rilievo dello scafo.",
                        f"Ship frame of «{source.label}»: build the relief of the hull again."))

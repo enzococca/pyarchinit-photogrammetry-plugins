@@ -957,6 +957,7 @@ def test_the_reconstruction_hatched_and_lighter_on_the_wreck_plan(rebuilt, tmp_p
     # one note on the hatches, naming the three of the reconstruction
     hatch_notes = [n for n in d.notes if "////" in n]
     assert len(hatch_notes) == 1 and "\\\\\\\\" in hatch_notes[0] and "xxxx" in hatch_notes[0]
+    assert "----" not in hatch_notes[0]  # no imported plank on this plan: not named
     assert not any(n.startswith("Ricostruzione (ipotesi): campitura") for n in d.notes)
     totals = reconstruct.state(ch)["table"]["totals"]
     said = f"misurato {num(totals['measured']['area'], 2)} m², ricostruito {num(totals['reconstructed']['area'], 2)} m² (ipotesi)"

@@ -1027,3 +1027,38 @@ def test_a_self_crossing_outline_is_mirrored_by_its_parts(hull):
     plank["geometry"] = timbers.geometry("polygon", frame.to_world(np.column_stack([crossing, np.zeros(len(crossing))]))[:, :2])
     out = reconstruct.mirror(ch)
     assert {reconstruct._base_name(r["name"]) for r in out} == expected
+
+
+def test_an_extension_that_fans_out_is_cut_and_uncertain(cut_at_nine):
+    """A noisy land line bent outwards past the surveyed length (the outer seam of a strake diverging from the inner
+    one): the extended piece stops where its width passes 1.5 times the strake's measured width or its outer edge
+    passes the hull's half-breadth, is flagged uncertain and named in a warning; the other strakes go on to the end."""
+    ch, snapshot = cut_at_nine
+    ch.meta[ship.KEY] = copy.deepcopy(snapshot)
+    stations = np.arange(0.25, 11.76, 0.5)
+    lines_ = _land_lines(stations)
+    rng = np.random.default_rng(3)
+    for ln in lines_:
+        if ln["side"] == "port" and ln["k"] == 3:  # the upper seam of fascia B3: outwards past x 9, with noise
+            for p in ln["points"]:
+                if p[0] > 9.0:
+                    p[1] += 0.6 * (p[0] - 9.0) ** 1.5 + rng.normal(0.0, 0.01)
+    ship.state(ch)["clinker"] = {"lines": lines_}
+    reconstruct.set_ends(ch, stern=11.8)
+    out = reconstruct.extend(ch)
+    frame = ship.frame_of(ch)
+    measured = [shapely.Polygon(tracing.ship_xy_of(ch, r, frame)) for r in timbers.timbers_of(ch)
+                if r["name"] == "fascia B3" and r["kind"] == "plank"]
+    width = float(np.median([p.area / (p.bounds[2] - p.bounds[0]) for p in measured]))
+    b3 = [r for r in out if r["name"] == "fascia B3" and np.asarray(r["ship_xy"])[:, 0].max() > 9.0]
+    assert b3 and all(r["uncertain"] for r in b3)
+    for r in b3:
+        lo, up = np.asarray(r["edges"]["lower"], float), np.asarray(r["edges"]["upper"], float)
+        xs = np.intersect1d(np.round(lo[:, 0], 4), np.round(up[:, 0], 4))
+        w = [np.interp(x, up[:, 0], np.abs(up[:, 1])) - np.interp(x, lo[:, 0], np.abs(lo[:, 1])) for x in xs]
+        assert max(w) <= 1.5 * width + 0.02, (max(w), width)
+        assert np.asarray(r["ship_xy"])[:, 0].max() < 11.0  # stopped before the end
+    warnings = reconstruct.state(ch)["extension"]["warnings"]
+    assert any("fascia B3" in w and "tagliat" in w for w in warnings), warnings
+    b2 = [r for r in out if r["name"] == "fascia B2"]
+    assert max(np.asarray(r["ship_xy"])[:, 0].max() for r in b2) > 11.5  # an untouched strake reaches the end
