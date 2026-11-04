@@ -22,6 +22,8 @@ env:
   # shipwreck 0.3.0 builds the hull's relief with the program's elevations (Open3D ray casting: the trimesh fallback
   # took the job past its 45 minutes) and writes IFC
   PPG_APP_SHIPWRECK: "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
+  # photocad needs 1.7.1 (the elevations' drawings, context.add_units); its tests use a fake PhotoCAD and a fake keychain
+  PPG_APP_PHOTOCAD: "pyarchinit-photogrammetry[gui,postgis]>=1.7.1"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
@@ -48,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [plugins/architecture, plugins/blender-em, plugins/conservation, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/masonry, plugins/mesh-tools,
+        plugin: [plugins/architecture, plugins/blender-em, plugins/conservation, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/masonry, plugins/mesh-tools, plugins/photocad,
                  plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/landscape, plugins/sentinel2, plugins/shipwreck, plugins/spirula,
                  plugins/terrain, plugins/terrio, plugins/underwater, template]
     services:
@@ -78,6 +80,7 @@ jobs:
           # conservation: masonry too, for the IFC test that hosts the features on the masonry wall
           if [ "${{ matrix.plugin }}" = "plugins/conservation" ]; then app="$PPG_APP_CONSERVATION"; extra="-e plugins/masonry"; fi
           if [ "${{ matrix.plugin }}" = "plugins/shipwreck" ]; then app="$PPG_APP_SHIPWRECK"; fi
+          if [ "${{ matrix.plugin }}" = "plugins/photocad" ]; then app="$PPG_APP_PHOTOCAD"; fi
           python -m pip install "$app" pytest -e "${{ matrix.plugin }}" $extra
       - name: MeshLab for the tests of mesh-tools (its other tests run without it)
         if: matrix.plugin == 'plugins/mesh-tools'
