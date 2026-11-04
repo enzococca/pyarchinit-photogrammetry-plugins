@@ -1,5 +1,6 @@
 """The *Relitto* pane: the steps of the drawing of a hull, one under the other, each with its buttons and its
-state, the table of the timbers under the catalogue's step, then the clinker strakes. It only says what the user
+state, the table of the timbers under the catalogue's step, then the clinker strakes, then the relief of the hull and
+the tracing on it. It only says what the user
 asks (``requested``): the plugin does it."""
 from __future__ import annotations
 
@@ -54,9 +55,49 @@ STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
            ("clinker_import", ("Fasce da Houdini...", "Planks from Houdini..."),
             "Le tavole esportate dal Clinker Boat Tool (OBJ) nel catalogo, con la distanza dalla scansione",
             "The planks exported by the Clinker Boat Tool (OBJ) into the catalogue, with their distance from the scan"),
-           ("clinker_open", ("Apri la cartella", "Open the folder"), "", ""))))
-COLUMNS = (("Id", "Id"), ("Tipo", "Kind"), ("Lato", "Side"), ("Nome", "Name"), ("x (m)", "x (m)"), ("Lungh. (m)", "Length (m)"),
-           ("Largh. (m)", "Width (m)"), ("z max (m)", "z max (m)"), ("Avviso", "Warning"))
+           ("clinker_open", ("Apri la cartella", "Open the folder"), "", ""))),
+         ("relief", ("8. Rilievo e ricalco", "8. Relief and tracing"),
+          (("relief_build", ("Rilievo dello scafo...", "Relief of the hull..."),
+            "Lo scafo visto dall'alto nel sistema della nave: un prospetto del programma su cui disegnare",
+            "The hull seen from above in the ship frame: an elevation of the program to draw on"),
+           ("relief_show", ("Mostra", "Show"),
+            "Il rilievo nella vista raster, con le altezze, l'ombreggiatura o il rilievo locale sopra",
+            "The relief in the raster view, with the heights, the hillshade or the local relief over it"),
+           ("proposals_build", ("Proponi...", "Propose..."),
+            "Comenti, ordinate, legni longitudinali e fasce letti sul rilievo: proposte, non misure finché non le accetti",
+            "Seams, frames, longitudinal timbers and strakes read on the relief: proposals, not measures until accepted"),
+           ("trace_accept", ("Accetta", "Accept"),
+            "Le proposte selezionate sulla vista nel catalogo dei legni (senza selezione: chiede quali)",
+            "The proposals selected on the view into the timber catalogue (none selected: asks which)"),
+           ("trace_reject", ("Scarta", "Reject"),
+            "Le proposte selezionate sulla vista scartate: non tornano più (anche Canc sulla vista)",
+            "The proposals selected on the view rejected: they never come back (Delete on the view too)"),
+           ("trace_correct", ("Correggi...", "Correct..."),
+            "Il legno selezionato ridisegnato sul rilievo: stesso id e nome",
+            "The timber selected traced again on the relief: same id and name"),
+           ("trace_add", ("Aggiungi...", "Add..."), "Un legno disegnato a mano sul rilievo",
+            "A timber traced by hand on the relief"),
+           ("trace_names", ("Nomi da tabella...", "Names from a table..."),
+            "nome, x: le ordinate prendono i nomi del cantiere", "name, x: the frames take the field's names"),
+           ("trace_loose", ("Sciolto", "Loose"),
+            "I legni selezionati segnati come sciolti, fuori posto (di nuovo: tolto il segno)",
+            "The timbers selected flagged as loose, out of place (again: the flag taken off)"),
+           ("keel_set", ("Chiglia (dimensioni)...", "Keel (dimensions)..."),
+            "Una chiglia da larghezza e altezza date, sotto il paramezzale: un'ipotesi, non una misura",
+            "A keel from a given siding and moulding, under the keelson: a hypothesis, not a measure"),
+           ("solids_build", ("Legni 3D...", "3D timbers..."),
+            "Ogni legno ricalcato un oggetto 3D chiuso: fasce con il loro spessore, ordinate e legni longitudinali pieni",
+            "Every traced timber a closed 3D object: strakes with their thickness, frames and longitudinal timbers solid"),
+           ("model_export", ("Esporta 3D...", "Export 3D..."),
+            "I legni in 3D come OBJ, GLB o IFC, un oggetto per legno, con le tabelle",
+            "The timbers in 3D as OBJ, GLB or IFC, one object per timber, with the tables"),
+           ("wreck_plan", ("Pianta del relitto...", "Plan of the wreck..."),
+            "Ogni legno contornato, colorato per tipo e nominato sopra il rilievo o l'ortofoto: SVG, PDF, PNG, DXF",
+            "Every timber outlined, coloured by kind and named over the relief or the orthophoto: SVG, PDF, PNG, DXF"))))
+COLUMNS = (("Id", "Id"), ("Tipo", "Kind"), ("Lato", "Side"), ("Nome", "Name"), ("Stato", "Status"), ("Chunk", "Chunk"),
+           ("Sciolto", "Loose"), ("x (m)", "x (m)"), ("Lungh. (m)", "Length (m)"), ("Largh. (m)", "Width (m)"),
+           ("z max (m)", "z max (m)"), ("Avviso", "Warning"))
+NUMBERS = (7, 10)  # the columns of numbers, aligned on the right
 
 
 class ShipwreckPane(QWidget):
@@ -66,9 +107,10 @@ class ShipwreckPane(QWidget):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
-        intro = QLabel(t("Il disegno tecnico di uno scafo scavato, misurato sul modello 3D: niente di ciò che manca viene "
-                         "ricostruito.", "The technical drawing of an excavated hull, measured on the 3D model: nothing "
-                         "missing is reconstructed."))
+        intro = QLabel(t("Il disegno tecnico di uno scafo scavato, misurato sul modello 3D: ciò che manca non viene "
+                         "inventato e ogni ipotesi (la chiglia data, le fasce delle sezioni) è dichiarata.",
+                         "The technical drawing of an excavated hull, measured on the 3D model: nothing missing is "
+                         "invented and every hypothesis (the given keel, the strakes of the sections) is stated."))
         intro.setWordWrap(True)
         lay.addWidget(intro)
         self.states: dict[str, QLabel] = {}
@@ -109,11 +151,13 @@ class ShipwreckPane(QWidget):
             def value(v):
                 return "" if v is None else num(v, 2)
 
-            cells = (r["id"], timbers.kind_title(r["kind"]), timbers.side_title(r["side"]), r["name"], value(r["x"]),
-                     value(r["length"]), value(r["width"]), value(r["z_max"]), r["warning"])
+            cells = (r["id"], timbers.kind_title(r["kind"]), timbers.side_title(r["side"]), r["name"],
+                     timbers.status_title(r.get("status") or "measured"), r.get("chunk") or "",
+                     t("sì", "yes") if r.get("loose") else "", value(r["x"]), value(r["length"]), value(r["width"]),
+                     value(r["z_max"]), r["warning"])
             for j, text in enumerate(cells):
                 item = QTableWidgetItem(str(text))
-                if 4 <= j <= 7:
+                if NUMBERS[0] <= j <= NUMBERS[1]:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(i, j, item)
 

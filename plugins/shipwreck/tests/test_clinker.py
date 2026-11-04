@@ -897,3 +897,30 @@ def test_the_catalogue_never_takes_a_users_record_with_a_reused_id(tmp_path):
     assert clinker.to_catalogue(ch) == 10
     assert any(r["id"] == mine["id"] and r["name"] == "corso 3" for r in timbers.timbers_of(ch))
     assert len(timbers.timbers_of(ch)) == 11
+
+
+def test_section_strakes_never_replace_a_traced_strake(tmp_path):
+    """A strake traced on the relief is a measured record: the strake model of the sections (a hypothesis) skips its
+    name, writes the others with the status ``reconstructed:sections``, and a new reading of the lands, which takes
+    the hypothesis records away, leaves it as it was."""
+    import copy
+
+    from ppg_shipwreck import timbers
+
+    _doc, ch, ends = clinker_project(tmp_path)
+    _ready(ch, ends, STATIONS[2:7])
+    clinker.detect_lands(ch)
+    clinker.build_strakes(ch)
+    frame = ship.need_frame(ch)
+    ring = np.array([[4.0, 0.4, 0.0], [8.0, 0.4, 0.0], [8.0, 0.6, 0.0], [4.0, 0.6, 0.0]])
+    traced = timbers.add(ch, "plank", "port", "fascia B3", timbers.geometry("polygon", frame.to_world(ring)[:, :2]),
+                         notes=clinker.CATALOGUE_NOTES[0], status="measured", ship_xy=ring[:, :2].tolist())
+    kept = copy.deepcopy(traced)
+    assert clinker.to_catalogue(ch) == 9
+    named = [r for r in timbers.timbers_of(ch) if r["name"] == "fascia B3"]
+    assert named == [kept]
+    hypotheses = [r for r in timbers.timbers_of(ch) if r["id"] != kept["id"]]
+    assert len(hypotheses) == 9 and all(r["status"] == "reconstructed:sections" for r in hypotheses)
+    assert clinker.to_catalogue(ch) == 9
+    clinker.detect_lands(ch)
+    assert timbers.timbers_of(ch) == [kept]

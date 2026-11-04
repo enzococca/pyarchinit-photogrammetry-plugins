@@ -471,7 +471,8 @@ def import_planks(chunk, path, side_from: str = "y", deviation: bool = True, pro
         xyz = from_y_up(up, frame.sign)
         world = frame.to_world(xyz)
         y = float(xyz[:, 1].mean())
-        record = timbers.add(chunk, "plank", _side(name, y, side_from), name, _outline(world[:, :2]), notes=note)
+        record = timbers.add(chunk, "plank", _side(name, y, side_from), name, _outline(world[:, :2]), notes=note,
+                             status="reconstructed:imported")
         row = {"id": record["id"], "name": name, "side": record["side"], "vertices": len(xyz),
                "x": float(xyz[:, 0].mean()), "y": y, "median_mm": None, "p90_mm": None, "missing": None}
         if deviation:

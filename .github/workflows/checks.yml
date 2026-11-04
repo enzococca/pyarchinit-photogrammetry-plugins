@@ -19,6 +19,9 @@ env:
   # conservation needs 1.7.1 (engine.elevation.bounds_of), with bim and mesh as masonry: from GitHub main until 1.7.1
   # is on PyPI, then switch to "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
   PPG_APP_CONSERVATION: "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
+  # shipwreck 0.3.0 builds the hull's relief with the program's elevations (Open3D ray casting: the trimesh fallback
+  # took the job past its 45 minutes) and writes IFC
+  PPG_APP_SHIPWRECK: "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
@@ -74,6 +77,7 @@ jobs:
           if [ "${{ matrix.plugin }}" = "plugins/masonry" ]; then app="$PPG_APP_MASONRY"; fi
           # conservation: masonry too, for the IFC test that hosts the features on the masonry wall
           if [ "${{ matrix.plugin }}" = "plugins/conservation" ]; then app="$PPG_APP_CONSERVATION"; extra="-e plugins/masonry"; fi
+          if [ "${{ matrix.plugin }}" = "plugins/shipwreck" ]; then app="$PPG_APP_SHIPWRECK"; fi
           python -m pip install "$app" pytest -e "${{ matrix.plugin }}" $extra
       - name: MeshLab for the tests of mesh-tools (its other tests run without it)
         if: matrix.plugin == 'plugins/mesh-tools'

@@ -1,12 +1,12 @@
 {
   "title": "Shipwreck",
-  "description": "The technical drawing of an excavated hull from its 3D model: ship frame, stations, sections cut from the model, a stated water correction, body plan, plans, timber catalogue; clinker strakes found on the sections with a strake model labelled a hypothesis, and the file link with the Clinker Boat Tool for Houdini. Measures, reconstructs nothing",
+  "description": "The technical drawing of an excavated hull from its 3D model: ship frame, sections, body plan, timber catalogue, clinker strakes; the relief of the hull from above with seams, frames and strakes proposed to trace, every timber a 3D object (OBJ, GLB, IFC) and the plan of the wreck with every timber named; every hypothesis stated as such",
   "i18n": {
     "it": {
       "title": "Relitto",
-      "description": "Il disegno tecnico di uno scafo scavato dal suo modello 3D: sistema della nave, stazioni, sezioni tagliate dal modello, correzione dell'acqua dichiarata, piani, catalogo dei legni; fasce a clinker trovate sulle sezioni con un modello delle fasce dichiarato ipotesi, e i file per il Clinker Boat Tool di Houdini. Misura, non ricostruisce"
+      "description": "Il disegno tecnico di uno scafo scavato dal suo modello 3D: sistema della nave, sezioni, piani, catalogo dei legni, fasce a clinker; il rilievo dello scafo dall'alto con comenti, ordinate e fasce proposti da ricalcare, ogni legno un oggetto 3D (OBJ, GLB, IFC) e la pianta del relitto con ogni legno nominato; ogni ipotesi dichiarata come tale"
     }
   },
-  "min_app": "1.7.0",
+  "min_app": "1.7.1",
   "requires": []
 }

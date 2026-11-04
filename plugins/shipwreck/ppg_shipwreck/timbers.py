@@ -1,7 +1,14 @@
 """The catalogue of the timbers: records in ``chunk.meta["shipwreck"]["timbers"]`` with their geometry in the
 coordinates of the chunk (a line, a polygon or a point drawn on the raster, or a CSV), and the measures computed from
 the geometry and the model: the length along the timber, the width across it, the heights above a datum. The spacing
-of the frames (room and space) comes from their x. Exports: CSV, XLSX, GeoPackage."""
+of the frames (room and space) comes from their x. Exports: CSV, XLSX, GeoPackage.
+
+A record may carry, beside its ``geometry`` (the chunk's coordinates), the fields of the tracing (:mod:`tracing`) and
+of the reconstruction: ``ship_xy`` (the same geometry in the ship plan, x, y), ``visible_xy`` (the parts of a strake
+not under a frame or a longitudinal timber, rings in the ship plan), ``status`` (:data:`STATUS`), ``chunk`` (the key of
+the chunk it was traced in), ``loose`` (a timber found out of place), ``source`` (the proposal it comes from),
+``elevation`` (the relief's elevation entry it was traced on), ``thickness_mm``, ``sources`` and ``corrected`` (traced
+again by hand). A record without ``status`` (0.2.0) is read by :func:`status_of`: nothing on disk is rewritten."""
 from __future__ import annotations
 
 import csv
@@ -12,15 +19,28 @@ import numpy as np
 from . import lines, ship
 from .texts import num, t
 
-KINDS = ("keel", "keelson", "frame", "plank", "ceiling", "stringer", "fastening", "other")
+KINDS = ("keel", "keelson", "frame", "plank", "ceiling", "stringer", "fastening", "seam", "other")
 SIDES = ("port", "starboard", "centre")
 KIND_TITLES = {"keel": ("chiglia", "keel"), "keelson": ("paramezzale", "keelson"), "frame": ("ordinata", "frame"),
                "plank": ("corso di fasciame", "plank"), "ceiling": ("fasciame interno", "ceiling"),
                "stringer": ("serretta", "stringer"), "fastening": ("elemento di fissaggio", "fastening"),
-               "other": ("altro", "other")}
+               "seam": ("comento", "seam"), "other": ("altro", "other")}
 SIDE_TITLES = {"port": ("babordo", "port"), "starboard": ("tribordo", "starboard"), "centre": ("centro", "centre")}
-COLUMNS = ("id", "kind", "side", "name", "station", "x", "y", "length", "width", "z_min", "z_max", "z_min_water",
-           "z_max_water", "notes", "warning")
+COLUMNS = ("id", "kind", "side", "name", "station", "status", "chunk", "loose", "x", "y", "length", "width", "z_min",
+           "z_max", "z_min_water", "z_max_water", "notes", "warning")
+STATUS = {"measured": ("misurato", "measured"),
+          "reconstructed:given": ("ricostruito: dimensioni date", "reconstructed: given dimensions"),
+          "reconstructed:sections": ("ipotesi dalle sezioni", "hypothesis from the sections"),
+          "reconstructed:mirror": ("ricostruito: simmetria", "reconstructed: mirror"),
+          "reconstructed:extension": ("ricostruito: prolungamento", "reconstructed: extension"),
+          "reconstructed:spacing": ("ricostruito: passo delle ordinate", "reconstructed: frame spacing"),
+          "reconstructed:fairing": ("ricostruito: carenatura", "reconstructed: fairing"),
+          "reconstructed:imported": ("ricostruito: importato dal Clinker Boat Tool",
+                                     "reconstructed: imported from the Clinker Boat Tool")}
+"""The status of a record: measured on the model, or reconstructed and how (the codes are stored, the titles shown)."""
+EXTRA = ("ship_xy", "visible_xy", "status", "chunk", "loose", "source", "elevation", "thickness_mm", "sources",
+         "corrected", "frame_key", "kind_before")
+"""The fields :func:`add` keeps beside the 0.2.0 ones."""
 SAMPLE = 0.02  # metres between the points read along a timber
 MAX_SAMPLES = 2000
 SIDE_TOLERANCE = 0.05  # metres from the keel line within which a timber lies on neither side
@@ -32,6 +52,32 @@ def kind_title(kind: str) -> str:
 
 def side_title(side: str) -> str:
     return t(*SIDE_TITLES.get(side, (side, side)))
+
+
+def status_title(code: str) -> str:
+    return t(*STATUS.get(code, (code, code)))
+
+
+def status_of(record: dict) -> str:
+    """The status code of a record; a record of 0.2.0 has none: ``reconstructed:sections`` when its notes are those of
+    the strake model of the sections (:data:`clinker.CATALOGUE_NOTES`), ``reconstructed:imported`` when they are the
+    note of a plank imported from the Clinker Boat Tool (:data:`houdini.NOTE`, either language), else ``measured``."""
+    from .clinker import CATALOGUE_NOTES
+    from .houdini import NOTE
+
+    code = record.get("status")
+    if code:
+        return code
+    notes = str(record.get("notes") or "")
+    if notes in CATALOGUE_NOTES:
+        return "reconstructed:sections"
+    if any(notes.startswith(n.split("{}")[0]) for n in NOTE):
+        return "reconstructed:imported"
+    return "measured"
+
+
+def is_measured(record: dict) -> bool:
+    return status_of(record) == "measured"
 
 
 def timbers_of(chunk) -> list[dict]:
@@ -57,12 +103,19 @@ def _code(value: str, titles: dict, what: tuple) -> str:
                           f"Unknown {what[1]}: {value}. Values: {', '.join(titles)}."))
 
 
-def add(chunk, kind: str, side: str, name: str, geom: dict, station: str = "", notes: str = "") -> dict:
+def add(chunk, /, kind: str, side: str, name: str, geom: dict, station: str = "", notes: str = "", **extra) -> dict:
+    """A new record ``T<n>``; ``extra``: the fields of :data:`EXTRA` (``status`` one of :data:`STATUS`)."""
     kind, side = _code(kind, KIND_TITLES, ("Tipo", "kind")), _code(side, SIDE_TITLES, ("Lato", "side"))
+    unknown = set(extra) - set(EXTRA)
+    if unknown:
+        raise ValueError(f"unknown fields of a timber: {', '.join(sorted(unknown))}")
+    if "status" in extra and extra["status"] not in STATUS:
+        raise ship.NotReady(t(f"Stato sconosciuto: {extra['status']}. Valori: {', '.join(STATUS)}.",
+                              f"Unknown status: {extra['status']}. Values: {', '.join(STATUS)}."))
     store = ship.state(chunk).setdefault("timbers", [])
     n = 1 + max((int(r["id"][1:]) for r in store if r["id"][1:].isdigit()), default=0)
     record = {"id": f"T{n}", "kind": kind, "side": side, "name": str(name), "station": str(station),
-              "geometry": geom, "notes": str(notes)}
+              "geometry": geom, "notes": str(notes), **extra}
     store.append(record)
     return record
 
@@ -194,6 +247,7 @@ def measure(chunk, datum: float | None = None, progress=None) -> list[dict]:
         z = surface.at(s) if surface is not None else np.full(len(s), np.nan)
         ok = np.isfinite(z)
         row = {k: r.get(k, "") for k in ("id", "kind", "side", "name", "station", "notes")}
+        row["status"], row["chunk"], row["loose"] = status_of(r), r.get("chunk"), int(bool(r.get("loose")))
         row["warning"] = _side_warning(r["side"], float(s[:, 1].mean()))
         row.update(x=float(s[:, 0].mean()), y=float(s[:, 1].mean()), length=None, width=None, z_min=None, z_max=None,
                    z_min_water=None, z_max_water=None)
@@ -242,7 +296,7 @@ def _cell(value):
 
 
 def _titled(row: dict) -> dict:
-    return {**row, "kind": kind_title(row["kind"]), "side": side_title(row["side"])}
+    return {**row, "kind": kind_title(row["kind"]), "side": side_title(row["side"]), "status": status_title(row["status"])}
 
 
 def export_csv(chunk, path, datum: float | None = None) -> Path:
@@ -299,8 +353,8 @@ def export_gpkg(chunk, path, datum: float | None = None) -> Path:
     from pyarchinit_photogrammetry.io import gpkg
 
     rows = {r["id"]: r for r in measure(chunk, datum)}
-    columns = {c: ("REAL" if c in ("x", "y", "length", "width", "z_min", "z_max", "z_min_water", "z_max_water") else "TEXT")
-               for c in COLUMNS}
+    columns = {c: ("REAL" if c in ("x", "y", "length", "width", "z_min", "z_max", "z_min_water", "z_max_water") else
+                   "INTEGER" if c in ("loose", "chunk") else "TEXT") for c in COLUMNS}
     makers = {"line": ("LINESTRING", shapely.LineString), "polygon": ("POLYGON", shapely.Polygon),
               "point": ("POINT", lambda xy: shapely.Point(xy[0]))}
     records = timbers_of(chunk)
