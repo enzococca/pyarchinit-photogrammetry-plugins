@@ -347,7 +347,7 @@ def test_mirrored_strakes_over_a_member_hidden_by_its_frames(tmp_path):
 
 def test_the_loft_reads_the_sections_of_every_member(tmp_path):
     """A 0-7, B 6-9.5, the ends given at 0.05 and 11.95: the faired hull goes through B's stations too, and past the
-    last of them it tapers from B's last section, not from A's."""
+    last of them its breadth follows the hull (the taper from B's last section and its slope), not A's."""
     doc, a, b = _pair(tmp_path, (6.0, 9.5))
     assert [s["value"] for s in lines.sections_of(b, "station")] == [s["value"] for s in lines.sections_of(a, "station")]
     reconstruct.set_ends(a, stem=0.05, stern=11.95)
@@ -360,7 +360,6 @@ def test_the_loft_reads_the_sections_of_every_member(tmp_path):
     near = np.abs(v[:, 0] - 9.8) < 0.051
     k = np.flatnonzero(near)[np.argmax(np.abs(v[near, 1]))]
     breadth, x = float(abs(v[k, 1])), float(v[k, 0])
-    # the quarter-ellipse taper of the loft (Task 11) from B's last station, not from A's (6.975: 1.65 m here)
-    taper = plan_half_breadth(9.225) * np.sqrt(1.0 - ((x - 9.225) / (11.95 - 9.225)) ** 2)
-    assert abs(breadth - taper) < 0.05, (x, breadth, taper)
-    assert breadth - plan_half_breadth(x) < 0.20, (x, breadth, plan_half_breadth(x))
+    # past B's last station (9.225) the breadth follows the hull: the taper starts from B's breadth and slope, not
+    # from A's last station (6.975: 1.65 m here)
+    assert abs(breadth - plan_half_breadth(x)) < 0.05, (x, breadth, plan_half_breadth(x))

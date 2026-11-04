@@ -11,8 +11,10 @@ the wreck exists, a stated hypothesis like the rest of the reconstruction.
 - Per side and per sample a natural cubic spline along x (y and z), evaluated every ``step`` from the first to the
   last station; the two sides joined at the keel (the keel point is shared).
 - Ends: a stem or stern given (:func:`reconstruct.set_ends`; a traced line: its x on the keel line) past the last
-  station on its side carries the last section on to it, the breadth tapered to zero by a quarter ellipse
-  (y x sqrt(1 - ((x - x_last) / (x_end - x_last))^2), z kept); one inside the stations' range stops the loft there.
+  station on its side carries the last section on to it, each sample's |y| going to zero on a quadratic from the
+  last station's |y| and its slope along x (the sections' spline) to 0 at the end, its slope there free, never
+  rising again, never wider than at the last station (:func:`_taper`; z kept); one inside the stations' range stops
+  the loft there.
   Without one the loft stops at the last station and that end is listed in ``open_ends`` ("stem", "stern").
 - Faces kept only where the wreck shows nothing: the relief's cell under the face's centre has no value (the empty
   cells opened by :data:`reconstruct.OPENING` cells, as the mirror reads them) and no mirrored timber lies there:
@@ -289,14 +291,24 @@ def _cross2(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
 
 
-def _taper(x_last: float, x_end: float, step: float):
-    """The columns past the last station to an end, and the factor of the breadth at each (a quarter ellipse)."""
+def _taper(x_last: float, x_end: float, step: float, breadth, slope):
+    """The columns past the last station to an end, and the half-breadth of each sample there: a quadratic in x from
+    the last station's ``breadth`` (|y|, any shape) and its ``slope`` along x (d|y|/dx, the same shape) to 0 at the
+    end, its slope there free (a stem meets the keel at an angle): |y| = b + m r - (b + m) r^2, r from 0 to 1, m the
+    slope over the run. Never rising again along r (the running minimum: a steep start does not dip below 0 and come
+    back), never below 0, never wider than the last section. Returns ``(xs, ys)``, ``ys`` of shape
+    ``(len(xs),) + breadth.shape``."""
     side = 1.0 if x_end > x_last else -1.0
     n = max(1, int(np.ceil(abs(x_end - x_last) / step)))
     xs = x_last + side * np.minimum(np.arange(1, n + 1) * step, abs(x_end - x_last))
     xs[-1] = x_end
-    r = (xs - x_last) / (x_end - x_last)
-    return xs, np.sqrt(np.clip(1.0 - r**2, 0.0, 1.0))
+    b = np.asarray(breadth, float)
+    m = np.asarray(slope, float) * (x_end - x_last)  # d|y|/dr over the run to the end
+    r = ((xs - x_last) / (x_end - x_last)).reshape((-1,) + (1,) * b.ndim)
+    ys = b + m * r - (b + m) * r**2
+    ys = np.clip(np.minimum.accumulate(ys, axis=0), 0.0, b)
+    ys[-1] = 0.0
+    return xs, ys
 
 
 def loft(chunk, step: float = 0.10, samples: int = 41, records=None, sections=None) -> solids.Solid | None:
@@ -389,10 +401,10 @@ def loft(chunk, step: float = 0.10, samples: int = 41, records=None, sections=No
             keep = cols >= x_end if side < 0 else cols <= x_end
             cols, values = cols[keep], values[keep]
             continue
-        tx, factor = _taper(last, x_end, step)
         edge = values[0 if side < 0 else -1]
+        tx, ys = _taper(last, x_end, step, edge[..., 0], spline(last, 1)[..., 0])
         more = np.repeat(edge[None], len(tx), axis=0)
-        more[..., 0] *= factor[:, None, None]
+        more[..., 0] = ys
         if side < 0:
             cols, values = np.r_[tx[::-1], cols], np.concatenate([more[::-1], values])
         else:

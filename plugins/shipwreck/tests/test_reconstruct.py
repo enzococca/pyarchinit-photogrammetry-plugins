@@ -734,6 +734,31 @@ def test_the_hull_lofted_where_neither_side_exists(lost):
     assert len(np.unique(v, axis=0)) == len(v)  # the two sides share the tips' vertices
 
 
+def test_the_end_taper_follows_the_last_slope():
+    """Past the last station each sample's |y| goes to 0 at the end on a quadratic in x: the last breadth and its slope
+    along x at the start, 0 at the end (its slope there free: a stem meets the keel at an angle), never wider than the
+    last breadth, never rising again, never below 0; either way along x."""
+    from ppg_shipwreck import loft as loft_mod
+
+    breadth = np.array([0.8, 0.5])  # two samples' |y| at the last station
+    for x_last, x_end, slope in ((10.5, 12.0, -0.5), (1.0, -0.5, 0.4), (10.5, 12.0, 0.3), (10.5, 12.0, -2.0)):
+        xs, ys = loft_mod._taper(x_last, x_end, 0.1, breadth, breadth * slope / 0.8)
+        assert xs[-1] == x_end and np.all(np.abs(ys[-1]) < 1e-12)
+        L = x_end - x_last
+        r = (xs - x_last) / L
+        for k, b in enumerate(breadth):
+            m = b * slope / 0.8 * L
+            quadratic = b + m * r - (b + m) * r**2
+            expected = np.clip(np.minimum.accumulate(quadratic), 0.0, b)
+            assert np.allclose(ys[:, k], expected), (x_last, x_end, slope, k)
+            assert ys[:, k].max() <= b + 1e-12 and ys[:, k].min() >= 0.0
+            assert np.all(np.diff(ys[:, k]) <= 1e-12)  # non-increasing towards the end
+    # a start steeper than -2 b: the quadratic would dip below 0 and come back; it stays at 0 instead
+    xs, ys = loft_mod._taper(10.5, 12.0, 0.1, breadth, breadth * -2.0 / 0.8)
+    zero = np.flatnonzero(ys[:, 0] == 0.0)
+    assert len(zero) > 1 and np.all(ys[zero[0]:, 0] == 0.0)
+
+
 def test_build_the_whole_reconstruction(lost):
     """mirror -> extension -> frames by spacing -> loft -> solids, in one build: the extended strakes and the spaced
     frames closed and on the hull, the measured records and their files untouched, the same table and the same files
