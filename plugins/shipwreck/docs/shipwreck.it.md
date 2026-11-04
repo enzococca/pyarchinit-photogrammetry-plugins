@@ -200,8 +200,8 @@ mentre il rilievo è mostrato, il layer *Ricostruzione (ipotesi)* disegna sopra 
   le linee dei gradini delle sezioni (passo 7) dove ci sono, altrimenti la curvatura dei loro punti per un metro al
   massimo, poi tenuti dritti: quei pezzi sono segnati `uncertain` (incerti). Un pezzo prolungato è tagliato dove si
   allarga oltre 1,5 volte la larghezza misurata della fascia, o dove il suo bordo esterno supera di più di quella
-  larghezza la mezza larghezza dello scafo a quella x (la cella più lontana del rilievo da quel lato, o la carenatura
-  della costruzione precedente): linee dei gradini rumorose non aprono più una fascia a ventaglio fuori dal relitto.
+  larghezza la mezza larghezza dello scafo a quella x (la cella più lontana del rilievo da quel lato; dove quel lato è
+  perso, quella dell'altro lato alla stessa x, come assume la simmetria): linee dei gradini rumorose non aprono più una fascia a ventaglio fuori dal relitto.
   Un pezzo tagliato è `uncertain` e nominato negli avvisi.
 - **Ordinate al passo misurato.** Dove lo spazio fra due ordinate ricalcate supera di 1,5 volte lo spazio mediano del
   loro lato, le ordinate mancanti sono rimesse a quel passo, in piedi sullo scafo (dal rilievo, dai solidi riflessi o

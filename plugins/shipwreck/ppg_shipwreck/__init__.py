@@ -1407,6 +1407,9 @@ class ShipwreckPlugin(Plugin):
             return last[0]
         root = _rec_folder(chunk).parent / UNDO_FOLDER
         root.mkdir(parents=True, exist_ok=True)
+        for old in root.iterdir():  # an earlier session's (the project may be opened after the plugin started)
+            if old not in _UNDO_DIRS:
+                _remove(old)
         dst = root / uuid.uuid4().hex
         _copy_folder(_rec_folder(chunk), dst)
         _UNDO_DIRS.add(dst)

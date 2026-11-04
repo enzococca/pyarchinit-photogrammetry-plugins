@@ -595,8 +595,9 @@ OPEN_X = 0.25  # m: heights read along a seam opened over this length (a timber'
 NO_TREND_REACH = 1.0  # m: how far a seam without a trend (no land line, no sections) goes past its points
 GAP_FACTOR = 1.5  # a space between two frames longer than this many median spaces has frames missing
 WIDEN = 1.5  # an extended strake is cut where it grows wider than this many times its measured width ...
-"""... or where its outer edge passes the hull's half-breadth (:meth:`_Heights.half_breadth`, the faired hull's when
-built) by more than that width: a seam's trend that runs away (noisy land lines) never fans out of the hull."""
+"""... or where its outer edge passes the hull's half-breadth (:meth:`_Heights.half_breadth`: the relief's on that
+side, the other side's where that side is lost) by more than that width: a seam's trend that runs away (noisy land
+lines) never fans out of the hull."""
 _STRAKE = re.compile(r"([BT])(\d+)(?:\s*\(\d+\))?\s*$")
 _FRAME_NUMBER = re.compile(r"^(?:ordinata|frame)\s+(\d+)\s*$")
 _FAR = 1.0e4
@@ -839,17 +840,23 @@ class _Heights:
         self._breadth: dict[str, tuple] = {}
 
     def half_breadth(self, side: str, xs: np.ndarray) -> np.ndarray:
-        """The relief's farthest |y| on ``side`` at ``xs`` (column by column, interpolated across the columns with no
-        cell there and held past the relief's ends); inf without any cell on that side."""
+        """The hull's half-breadth on ``side`` at ``xs``, column by column of the relief: its farthest |y| on that
+        side; where that side has no cell in a column, the other side's (the symmetry the mirror assumes); across the
+        columns where neither side has one, interpolated, and held past the relief's ends; inf without any cell."""
         if side not in self._breadth:
             a = self.affine
             u = a.c + a.a * (np.arange(self.z.shape[1]) + 0.5)
             y = self.sign * (a.f + a.e * (np.arange(self.z.shape[0]) + 0.5))
-            mask = np.isfinite(self.z) & ((y > 0) if side == "port" else (y < 0))[:, None]
-            far = np.where(mask, np.abs(y)[:, None], -np.inf).max(axis=0)
-            has = mask.any(axis=0)
+            ok = np.isfinite(self.z)
+            far = {}
+            for s, here in (("port", y > 0), ("starboard", y < 0)):
+                mask = ok & here[:, None]
+                far[s] = np.where(mask.any(axis=0), np.where(mask, np.abs(y)[:, None], -np.inf).max(axis=0), np.nan)
+            other = "starboard" if side == "port" else "port"
+            b = np.where(np.isfinite(far[side]), far[side], far[other])
+            has = np.isfinite(b)
             order = np.argsort(u[has])
-            self._breadth[side] = (u[has][order], far[has][order])
+            self._breadth[side] = (u[has][order], b[has][order])
         u, b = self._breadth[side]
         xs = np.asarray(xs, float)
         return np.interp(xs, u, b) if len(u) else np.full(len(xs), np.inf)
@@ -1251,7 +1258,6 @@ def extend(chunk, progress=None, records=None) -> list[dict]:
     take = _ids(chunk, EXTENSION)
     key = relief.frame_key(frame)
     out, skipped, cache = [], [], {}
-    loft_breadth = _loft_breadth(chunk)
     for i, ((side, rank), members) in enumerate(sorted(strakes.items())):
         name = _base_name(members[0]["name"])
         progress(i / max(1, len(strakes)), t(f"Prolungamento: {name}", f"Extension: {name}"))
@@ -1286,10 +1292,6 @@ def extend(chunk, progress=None, records=None) -> list[dict]:
             cut_at = None
             if width:
                 limit = heights.half_breadth(side, xs)
-                if loft_breadth.get(side) is not None:
-                    lu, lb = loft_breadth[side]
-                    inside = (xs >= lu[0]) & (xs <= lu[-1])
-                    limit = np.where(inside, np.maximum(limit, np.interp(xs, lu, lb)), limit)
                 bad = ((upper[:, 1] - lower[:, 1] > WIDEN * width)
                        | (np.maximum(upper[:, 1], lower[:, 1]) > limit + width))
                 kept, cut_at = _kept_runs(xs, bad, a > a_lim + GRID, b < b_lim - GRID)
@@ -1372,28 +1374,6 @@ def _kept_runs(xs: np.ndarray, bad: np.ndarray, from_start: bool, from_end: bool
         runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
         boxes = [shapely.box(xs[r[0]] - GRID / 2.0, -_FAR, xs[r[-1]] + GRID / 2.0, _FAR) for r in runs]
     return (shapely.union_all(boxes) if boxes else None), cut
-
-
-def _loft_breadth(chunk) -> dict:
-    """The faired hull of the earlier build, if any, as each side's farthest |y| per x bin of :data:`STEP`."""
-    entry = state(chunk).get("loft") or {}
-    path = chunk.data_dir / entry["file"] if entry.get("file") else None
-    if path is None or not path.exists():
-        return {}
-    from pyarchinit_photogrammetry.io.mesh_ply import PlyMesh
-
-    mesh = PlyMesh(path)  # the vertices only (the earlier build's file: not the 3D reads of this build)
-    v = np.array(mesh.xyz(), float)
-    del mesh
-    out = {}
-    for side, keep in (("port", v[:, 1] > 0), ("starboard", v[:, 1] < 0)):
-        if keep.sum() < 2:
-            continue
-        bins = np.round(v[keep, 0] / STEP).astype(int)
-        u = np.unique(bins)
-        far = np.array([np.abs(v[keep, 1][bins == k]).max() for k in u])
-        out[side] = (u * STEP, far)
-    return out
 
 
 # ----------------------------------------------------------------------------- frames at the measured spacing

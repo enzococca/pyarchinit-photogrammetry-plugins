@@ -1062,3 +1062,26 @@ def test_an_extension_that_fans_out_is_cut_and_uncertain(cut_at_nine):
     assert any("fascia B3" in w and "tagliat" in w for w in warnings), warnings
     b2 = [r for r in out if r["name"] == "fascia B2"]
     assert max(np.asarray(r["ship_xy"])[:, 0].max() for r in b2) > 11.5  # an untouched strake reaches the end
+
+
+def test_a_lost_side_takes_the_other_sides_half_breadth(lost):
+    """Port lost aft of 6.5: where port has no relief the guard reads starboard's half-breadth at that x (the symmetry
+    the mirror assumes), never the midship breadth held to the end. No extended piece leaves the hull by more than its
+    strake's width; fascia B4's tip (x 11.2-11.8) is cut."""
+    from hulls import plan_half_breadth
+
+    ch = lost
+    reconstruct.mirror(ch)
+    heights = reconstruct._Heights(ch, ship.frame_of(ch), timbers.timbers_of(ch))
+    xs = np.array([11.0, 11.5, 11.7])
+    port, starboard = heights.half_breadth("port", xs), heights.half_breadth("starboard", xs)
+    assert np.allclose(port, starboard) and np.all(port < 0.7), (port, starboard)
+    out = reconstruct.extend(ch)
+    for r in out:
+        if r["side"] != "port":
+            continue
+        e = np.asarray(r["edges"]["upper"], float)
+        assert np.all(np.abs(e[:, 1]) <= [plan_half_breadth(x) + 0.25 for x in e[:, 0]]), r["name"]
+    b4 = [r for r in out if r["name"] == "fascia B4"]
+    assert all(np.asarray(r["ship_xy"])[:, 0].max() < 11.6 for r in b4), [np.asarray(r["ship_xy"])[:, 0].max() for r in b4]
+    assert any("fascia B4" in w and "tagliat" in w for w in reconstruct.state(ch)["extension"]["warnings"])

@@ -602,3 +602,42 @@ def test_undo_copies_and_the_reconstruction_layer(rebuild_window):
     shutil.rmtree(step.before_dir)
     w.history.undo()
     assert any("non c'è più" in s for s in said) and reconstruct.state(ch) == state  # nothing restored empty
+
+
+def test_stale_undo_copies_go_when_the_project_is_opened_after_activation(tmp_path, monkeypatch):
+    """The plugins start before a project is opened (start page, File > Open): the copies of an earlier session are
+    removed at the first build of the chunk, not left to grow."""
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_shipwreck import UNDO_FOLDER, ShipwreckPlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import main_window as mwmod
+    from pyarchinit_photogrammetry.plugins import Context
+    from test_reconstruct import HOLE, _wreck_project
+
+    QApplication.instance() or QApplication([])
+    ch = _wreck_project(tmp_path / "p", port_from=HOLE)
+    ch.document.save()
+    stray = ship.folder(ch) / UNDO_FOLDER / "di_una_sessione_vecchia"
+    stray.mkdir(parents=True)
+    app.document = ppg.Document()  # as the program starts: an empty project, the plugins activated on it
+    w = mwmod.MainWindow(None, autoconnect=False, check_updates=False)
+    w.runner.show_dialog = False
+    plugin = ShipwreckPlugin()
+    try:
+        plugin.activate(Context("shipwreck", tmp_path / "plugin", window=w))
+        app.document = ch.document
+        w.set_document(ch.document)
+        assert stray.exists()  # activation saw no project
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: None)
+        plugin.rebuild(w.chunk, ["mirror"])
+        w.runner.wait()
+        QApplication.processEvents()
+        assert not stray.exists()
+        assert len(list((ship.folder(w.chunk) / UNDO_FOLDER).iterdir())) == 2
+    finally:
+        plugin.deactivate()
+        w.setWindowModified(False)
+        w.close()
+        w.deleteLater()
+        app.document = None
