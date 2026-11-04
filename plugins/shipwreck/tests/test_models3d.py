@@ -235,7 +235,7 @@ def test_ifc_without_a_projected_system_has_no_map_conversion(hull, tmp_path, mo
     from pyarchinit_photogrammetry.core import crs as crs_mod
 
     whole = models3d.items
-    monkeypatch.setattr(models3d, "items", lambda ch, system="ship": whole(ch, system)[-2:])  # light: two timbers
+    monkeypatch.setattr(models3d, "items", lambda ch, system="ship", reconstruction=True: whole(ch, system, reconstruction)[-2:])  # light: two timbers
     monkeypatch.setattr(crs_mod, "is_local" if crs_case == "local" else "is_geographic", lambda _crs: True)
     for system in ("ship", "world"):
         out = models3d.write_ifc(hull, tmp_path / f"{system}.ifc", system=system)
@@ -292,3 +292,78 @@ def test_records_and_chunk_untouched(hull, tmp_path):
     models3d.write_tables(ch, tmp_path)
     assert ch.meta[ship.KEY] == before
     assert np.array_equal(np.array(ch.transform), transform)
+
+
+# ----------------------------------------------------------------------------- the reconstruction in the 3D files (0.4.0)
+@pytest.fixture(scope="module")
+def rebuilt(tmp_path_factory):
+    """The project of the reconstruction's tests, built: mirrored, extended and spaced timbers and the faired hull."""
+    from test_reconstruct import HOLE, _wreck_project
+
+    from ppg_shipwreck import reconstruct
+
+    ch = _wreck_project(tmp_path_factory.mktemp("rebuilt3d"), port_from=HOLE)
+    reconstruct.build(ch)
+    return ch
+
+
+def test_the_reconstruction_translucent_in_the_3d_files(rebuilt, tmp_path):
+    ifcopenshell = pytest.importorskip("ifcopenshell")
+    import ifcopenshell.util.element as element
+
+    from ppg_shipwreck import reconstruct
+
+    ch = rebuilt
+    measured = models3d.items(ch, "ship", reconstruction=False)
+    whole = models3d.items(ch, "ship", reconstruction=True)
+    assert [e["name"] for e in models3d.items(ch, "ship")] == [e["name"] for e in measured]  # the default: without
+    built = [r for r in reconstruct.records_of(ch) if r.get("solid")]
+    assert built
+    assert len(whole) == len(measured) + len(built) + 1
+    assert [e["name"] for e in whole[:len(measured)]] == [e["name"] for e in measured]  # the catalogue's names kept
+    added = whole[len(measured):]
+    assert [e["id"] for e in added] == [r["id"] for r in built] + ["carenatura"]
+    assert all(e["name"].endswith("_ric") and e["status"].startswith("reconstructed:") for e in added)
+    loft = added[-1]
+    assert loft["name"] == "carenatura_ric" and loft["kind"] == "hull" and loft["status"] == "reconstructed:fairing"
+    assert len({e["name"] for e in whole}) == len(whole)
+    # GLB: a node per measured timber, reconstructed part and the faired hull; the reconstruction translucent
+    scene = trimesh.load(models3d.write_glb(ch, tmp_path / "r.glb", reconstruction=True), force="scene")
+    assert set(scene.graph.nodes_geometry) == {e["name"] for e in whole}
+    for e in added:
+        mat = scene.geometry[scene.graph[e["name"]][1]].visual.material
+        colour = np.asarray(mat.baseColorFactor, float)
+        colour = colour / 255.0 if colour.max() > 1.0 else colour
+        assert mat.alphaMode == "BLEND" and colour[3] == pytest.approx(0.5, abs=0.01), e["name"]
+    off = trimesh.load(models3d.write_glb(ch, tmp_path / "m.glb", reconstruction=False), force="scene")
+    assert set(off.graph.nodes_geometry) == {e["name"] for e in measured}
+    # OBJ: the reconstructed objects with their translucent materials
+    objects, _v = _obj_objects(models3d.write_obj(ch, tmp_path / "r.obj", reconstruction=True))
+    assert set(objects) == {e["name"] for e in whole}
+    mtl = _mtl(tmp_path / "r.mtl")
+    assert all(mtl[objects[e["name"]][0]]["d"] == [0.5] for e in added)
+    objects, _v = _obj_objects(models3d.write_obj(ch, tmp_path / "m.obj", reconstruction=False))
+    assert set(objects) == {e["name"] for e in measured}
+    # IFC: one element per item, the status said, stable GlobalIds
+    out = models3d.write_ifc(ch, tmp_path / "r.ifc", reconstruction=True)
+    assert out["elements"] == len(whole)
+    model = ifcopenshell.open(str(out["path"]))
+    elements = model.by_type("IfcPlate") + model.by_type("IfcMember")
+    assert len(elements) == len(whole)
+    psets = {element.get_psets(e)[models3d.PSET]["Id"]: (e, element.get_psets(e)[models3d.PSET]) for e in elements}
+    mirrored = next(r for r in built if r["status"] == "reconstructed:mirror")
+    e, pset = psets[mirrored["id"]]
+    assert pset["Status"] == "ricostruito: simmetria" and pset["StatusCode"] == "reconstructed:mirror"
+    assert e.GlobalId == models3d.stable_global_id(ch.key, "shipwreck", mirrored["id"])
+    e, pset = psets["carenatura"]
+    assert e.is_a("IfcMember") and e.ObjectType == "carenatura (ipotesi)"
+    assert pset["Status"] == "ricostruito: carenatura" and "Volume" not in pset and "Thickness" not in pset
+    closed = {e.Name: e.Representation.Representations[0].Items[0].Closed for e in elements}
+    assert closed["carenatura_ric"] is False  # an open surface, never a solid
+    assert closed[next(i["name"] for i in added if i["id"] == mirrored["id"])] is True
+    assert len({e.GlobalId for e in elements}) == len(elements)
+    again = models3d.write_ifc(ch, tmp_path / "w.ifc", system="world", reconstruction=True)
+    other = ifcopenshell.open(str(again["path"]))
+    assert sorted(e.GlobalId for e in other.by_type("IfcPlate") + other.by_type("IfcMember")) == sorted(
+        e.GlobalId for e in elements)
+    assert models3d.write_ifc(ch, tmp_path / "m.ifc", reconstruction=False)["elements"] == len(measured)

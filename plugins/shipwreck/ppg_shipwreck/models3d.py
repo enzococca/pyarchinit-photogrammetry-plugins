@@ -23,6 +23,14 @@ an ``IfcTriangulatedFaceSet``; ``IfcMapConversion`` when the chunk has a project
 eastings, northings and rotation are the ship frame's); GlobalIds stable across exports and systems
 (:func:`stable_global_id` of ``(chunk key, "shipwreck", record id)``, in the namespace of the plugin suite).
 
+The reconstruction of :mod:`reconstruct` (0.4.0) goes in with ``reconstruction=True`` (asked for: the default is False): after the
+catalogue's timbers (and the typed keel) every reconstruction record with a solid (its name and :data:`RIC`, its own
+status: ``ricostruito: simmetria`` ...), then the faired hull ``carenatura_ric`` (kind ``hull``, an open surface, an
+``IfcMember`` with ``ObjectType`` "carenatura (ipotesi)", a face set not ``Closed``, no volume in its Pset), all
+translucent like every hypothesis; GlobalIds stable from
+the record's id ("carenatura" for the faired hull); refused (:class:`NotReady`) when it was built in another ship
+frame, its solids lying elsewhere. ``reconstruction=False``, the default everywhere, writes what 0.3.0 wrote.
+
 Only the files asked for are written (and the OBJ's ``.mtl`` beside it): the records, the chunk's transform, model and
 products are never changed.
 """
@@ -44,6 +52,7 @@ from .texts import t
 
 KIND_COLOURS = {"keel": "#8b3a1a", "keelson": "#c0392b", "frame": "#d68910", "plank": "#2e86c1", "ceiling": "#17a589",
                 "stringer": "#7d3c98", "other": "#7f8c8d"}
+HULL_COLOUR = "#5d6d7e"  # the faired hull (kind "hull": no timber of the catalogue)
 RIC = "_ric"  # the suffix of the objects and materials of a reconstructed part
 SYSTEMS = ("ship", "world")
 PLATES = ("plank", "ceiling")  # IfcPlate; the others IfcMember
@@ -96,12 +105,12 @@ def lighter(colour: str) -> str:
 
 
 def colour_of(kind: str, status: str) -> str:
-    base = KIND_COLOURS.get(kind, KIND_COLOURS["other"])
+    base = HULL_COLOUR if kind == "hull" else KIND_COLOURS.get(kind, KIND_COLOURS["other"])
     return base if status == "measured" else lighter(base)
 
 
 def material_of(kind: str, status: str) -> str:
-    kind = kind if kind in KIND_COLOURS else "other"
+    kind = kind if kind in KIND_COLOURS or kind == "hull" else "other"
     return kind if status == "measured" else kind + RIC
 
 
@@ -176,13 +185,15 @@ def _sources(record: dict) -> str:
     return str(record.get("source") or "")
 
 
-def _names(entries: list[dict]) -> None:
-    """Unique object names: the record's name (made safe), with its id where two share it; :data:`RIC` for a
-    reconstructed part."""
+def _names(entries: list[dict], taken: set[str] | None = None) -> set[str]:
+    """Unique object names: the record's name (made safe), with its id where two share it (or where the name is in
+    ``taken``, the names already given); :data:`RIC` for a reconstructed part. Returns the names taken."""
     bases = [_safe(e["label"]) or _safe(e["id"]) for e in entries]
-    taken: set[str] = set()
+    given = set(taken or ())
+    taken = set(given)
     for e, base in zip(entries, bases):
-        if bases.count(base) > 1:
+        ric = "" if e["status"] == "measured" else RIC
+        if bases.count(base) > 1 or base + ric in given:
             base = f"{base}_{_safe(e['id'])}"
         name, n = base + ("" if e["status"] == "measured" else RIC), 1
         while name in taken:  # a disambiguated name equal to another record's own name
@@ -190,12 +201,14 @@ def _names(entries: list[dict]) -> None:
             name = f"{base}_{n}" + ("" if e["status"] == "measured" else RIC)
         taken.add(name)
         e["name"] = name
+    return taken
 
 
-def items(chunk, system: str = "ship") -> list[dict]:
+def items(chunk, system: str = "ship", reconstruction: bool = False) -> list[dict]:
     """The timbers built in 3D, in ``system``: ``[{"id", "name" (the object's), "label" (the record's name), "kind",
     "side", "status", "material", "colour", "vertices", "faces" (outward), "hidden", "volume", "thickness_mm",
-    "hidden_share", "record" (None for the typed keel), "ship_vertices"}]``; the typed keel last, id "keel".
+    "hidden_share", "record" (None for the typed keel and the faired hull), "ship_vertices"}]``; the typed keel after
+    the catalogue, id "keel"; with ``reconstruction``, then the reconstruction (:func:`_reconstruction_items`).
     :class:`NotReady` when the solids were not built, were built in another ship frame or a file is missing."""
     _system(system)
     _check_solids(chunk)
@@ -216,13 +229,60 @@ def items(chunk, system: str = "ship") -> list[dict]:
                     "status": keel.get("status", "reconstructed:given"), "ship_vertices": v, "faces": f,
                     "hidden": hidden, "volume": float(keel.get("volume") or solids._signed_volume(v, f)),
                     "thickness_mm": None, "record": None})
-    _names(out)
+    taken = _names(out)
+    if reconstruction:
+        more = _reconstruction_items(chunk)
+        _names(more, taken)
+        out += more
     for e in out:
         e["vertices"] = coords(chunk, e["ship_vertices"], system)
         e["faces"] = _turned(chunk, e["faces"])
         e["material"] = material_of(e["kind"], e["status"])
         e["colour"] = colour_of(e["kind"], e["status"])
         e["hidden_share"] = _hidden_share(e["ship_vertices"], e["faces"], e["hidden"])
+    return out
+
+
+def check_reconstruction(chunk) -> None:
+    """:class:`NotReady` when the stored reconstruction was built in another ship frame than the chunk's now: its solids
+    lie in that frame and would stand elsewhere in the 3D files (other changes only make it out of date:
+    :func:`reconstruct.stale`)."""
+    st = (chunk.meta.get(ship.KEY) or {}).get("reconstruction") or {}
+    if (st.get("timbers") or (st.get("loft") or {}).get("file")) and \
+            st.get("frame_key") != relief.frame_key(ship.need_frame(chunk)):
+        raise NotReady(t("La ricostruzione è di un altro sistema della nave: ricostruisci (passo 9) prima di esportarla "
+                         "in 3D.",
+                         "The reconstruction belongs to another ship frame: reconstruct (step 9) before exporting it "
+                         "in 3D."))
+
+
+def _reconstruction_items(chunk) -> list[dict]:
+    """The reconstruction's records with a solid (their status, ``sources``), then the faired hull (id
+    "carenatura", kind "hull", volume 0: an open surface), in the ship frame, unnamed yet. :class:`NotReady` when the
+    reconstruction was built in another ship frame than the chunk's now (a bow swapped, the keel traced again): its
+    solids lie in that frame, and placed with this one they would stand elsewhere."""
+    from . import loft as loft_mod
+
+    st = ship.state(chunk).get("reconstruction") or {}
+    if not (st.get("timbers") or (st.get("loft") or {}).get("file")):
+        return []
+    check_reconstruction(chunk)
+    out = []
+    for r in st.get("timbers", []):
+        if not r.get("solid") or not (chunk.data_dir / r["solid"]).exists():
+            continue
+        v, f, hidden = _read(chunk.data_dir / r["solid"])
+        out.append({"id": r["id"], "label": r.get("name") or r["id"], "kind": r["kind"], "side": r.get("side", ""),
+                    "status": r.get("status") or timbers.status_of(r), "ship_vertices": v, "faces": f,
+                    "hidden": hidden, "volume": float(r.get("volume") or solids._signed_volume(v, f)),
+                    "thickness_mm": r.get("thickness_mm") if r["kind"] in solids.SHELLS else None, "record": r})
+    loft = st.get("loft") or {}
+    if loft.get("file") and (chunk.data_dir / loft["file"]).exists():
+        v, f, hidden = _read(chunk.data_dir / loft["file"])
+        out.append({"id": "carenatura", "label": loft_mod.NAME, "kind": loft_mod.KIND, "side": "centre",
+                    "status": loft_mod.STATUS, "ship_vertices": v, "faces": f, "hidden": hidden, "volume": 0.0,
+                    "thickness_mm": None, "record": None,
+                    "sources": t("sezioni alle stazioni", "the sections at the stations")})
     return out
 
 
@@ -253,11 +313,12 @@ def _rows_text(fmt: str, values: np.ndarray, block: int = 100_000) -> str:
     return "".join(parts).rstrip("\n")
 
 
-def write_obj(chunk, path, system: str = "ship") -> Path:
+def write_obj(chunk, path, system: str = "ship", reconstruction: bool = False) -> Path:
     """An OBJ of the timbers in ``system``: ``o <name>`` per timber, ``usemtl <kind>`` (``<kind>_ric`` for a
     hypothesis), the ``.mtl`` beside it (``Kd`` per kind, ``d 0.5`` and a lighter colour for the hypotheses),
-    comments with the system and the ship frame. Returns the OBJ's path."""
-    entries = items(chunk, system)
+    comments with the system and the ship frame; ``reconstruction``: the reconstruction too (:func:`items`). Returns
+    the OBJ's path."""
+    entries = items(chunk, system, reconstruction)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     mtl = path.with_suffix(".mtl")
@@ -290,14 +351,15 @@ def write_obj(chunk, path, system: str = "ship") -> Path:
 
 
 # ----------------------------------------------------------------------------- GLB
-def write_glb(chunk, path, system: str = "ship") -> Path:
+def write_glb(chunk, path, system: str = "ship", reconstruction: bool = False) -> Path:
     """A GLB of the timbers in ``system`` (Y up, as glTF wants: (x, z, -y)): a node per timber named as in the OBJ, a
     PBR colour per kind, the hypotheses lighter and translucent (``alphaMode`` BLEND, alpha 0.5). In "world" a round
-    origin is taken off (float32) and given in the scene's ``extras`` with the system, the CRS and the ship frame."""
+    origin is taken off (float32) and given in the scene's ``extras`` with the system, the CRS and the ship frame;
+    ``reconstruction``: the reconstruction too (:func:`items`)."""
     import trimesh
     from trimesh.visual.material import PBRMaterial
 
-    entries = items(chunk, system)
+    entries = items(chunk, system, reconstruction)
     origin = None
     if system == "world" and entries:
         allv = np.vstack([e["vertices"] for e in entries])
@@ -368,7 +430,7 @@ def write_tables(chunk, folder) -> dict:
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    entries = items(chunk, "ship")
+    entries = items(chunk, "ship", reconstruction=False)
     rows = _rows(chunk, entries)
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -392,6 +454,16 @@ def write_tables(chunk, folder) -> dict:
 
 
 # ----------------------------------------------------------------------------- IFC
+def _closed(faces) -> bool:
+    """Whether a mesh is closed: every edge shared by exactly two faces (the faired hull is an open surface)."""
+    f = np.asarray(faces, np.int64)
+    if not len(f):
+        return False
+    edges = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    _unique, counts = np.unique(edges, axis=0, return_counts=True)
+    return bool((counts == 2).all())
+
+
 def _pset(chunk, e: dict, row: dict | None) -> dict:
     row = row or {}
     rec = e["record"] or {}
@@ -405,8 +477,11 @@ def _pset(chunk, e: dict, row: dict | None) -> dict:
              "Length": row.get("length"), "Width": row.get("width"), "ZMin": float(z_min), "ZMax": float(z_max),
              "Volume": float(e["volume"]),
              "Thickness": float(e["thickness_mm"]) / 1000.0 if e["thickness_mm"] else None,
-             "HiddenShare": float(e["hidden_share"]), "Sources": _sources(rec) if rec else t(
+             "HiddenShare": float(e["hidden_share"]), "Sources": _sources(rec) if rec else e.get("sources") or t(
                  "dimensioni date", "given dimensions")}
+    if e["kind"] == "hull":  # an open surface: no volume, no thickness
+        props.pop("Volume")
+        props.pop("Thickness")
     return {k: v for k, v in props.items() if v is not None}
 
 
@@ -421,8 +496,10 @@ def _typed(model, props: dict) -> dict:
     return {k: (model.create_entity(MEASURES[k], float(v)) if k in MEASURES else v) for k, v in props.items()}
 
 
-def write_ifc(chunk, path, system: str = "ship", project: str | None = None, site: str | None = None) -> dict:
-    """An IFC4 of the timbers in ``system`` (see the module), written with a decimal point whatever the numeric locale.
+def write_ifc(chunk, path, system: str = "ship", project: str | None = None, site: str | None = None,
+              reconstruction: bool = False) -> dict:
+    """An IFC4 of the timbers in ``system`` (see the module), written with a decimal point whatever the numeric locale;
+    ``reconstruction``: the reconstruction too (:func:`items`).
     Returns ``{"path", "elements", "map_conversion" (bool), "note" (why there is none), "not_built"}``."""
     try:
         import ifcopenshell  # noqa: F401
@@ -430,10 +507,10 @@ def write_ifc(chunk, path, system: str = "ship", project: str | None = None, sit
         raise NotReady(t("Per l'IFC serve IfcOpenShell (installa il programma con l'opzione «bim»).",
                          "The IFC needs IfcOpenShell (install the program with the «bim» option).")) from None
     with c_numbers():
-        return _write_ifc(chunk, path, system, project, site)
+        return _write_ifc(chunk, path, system, project, site, reconstruction)
 
 
-def _write_ifc(chunk, path, system, project, site) -> dict:
+def _write_ifc(chunk, path, system, project, site, reconstruction=False) -> dict:
     import ifcopenshell
     import ifcopenshell.api.aggregate
     import ifcopenshell.api.context
@@ -447,7 +524,7 @@ def _write_ifc(chunk, path, system, project, site) -> dict:
 
     from pyarchinit_photogrammetry.core import crs as crs_mod
 
-    entries = items(chunk, system)
+    entries = items(chunk, system, reconstruction)
     rows = {r["id"]: r for r in _rows(chunk, entries)}
     frame = ship.need_frame(chunk)
     georeferenced = not (crs_mod.is_local(chunk.crs) or crs_mod.is_geographic(chunk.crs))
@@ -503,15 +580,16 @@ def _write_ifc(chunk, path, system, project, site) -> dict:
         el = ifcopenshell.api.root.create_entity(model, ifc_class=ifc_class, name=e["name"],
                                                  predefined_type="USERDEFINED")
         el.GlobalId = stable_global_id(chunk.key, "shipwreck", e["id"])
-        el.ObjectType = timbers.KIND_TITLES.get(e["kind"], (e["kind"], e["kind"]))[1]
+        el.ObjectType = (t("carenatura (ipotesi)", "fairing (hypothesis)") if e["kind"] == "hull" else
+                         timbers.KIND_TITLES.get(e["kind"], (e["kind"], e["kind"]))[1])
         el.Description = timbers.status_title(e["status"])
         ifcopenshell.api.spatial.assign_container(model, products=[el], relating_structure=site_e)
         el.ObjectPlacement = model.createIfcLocalPlacement(None, model.createIfcAxis2Placement3D(
             model.createIfcCartesianPoint((0.0, 0.0, 0.0)), None, None))
         v = e["vertices"] - origin
         pts = model.createIfcCartesianPointList3D(np.asarray(v, float).tolist())
-        faces = model.createIfcTriangulatedFaceSet(pts, None, True, (np.asarray(e["faces"], np.int64) + 1).tolist(),
-                                                   None)
+        faces = model.createIfcTriangulatedFaceSet(pts, None, _closed(e["faces"]),
+                                                   (np.asarray(e["faces"], np.int64) + 1).tolist(), None)
         rep = model.createIfcShapeRepresentation(body, "Body", "Tessellation", [faces])
         ifcopenshell.api.geometry.assign_representation(model, product=el, representation=rep)
         style = styles.get(e["material"])

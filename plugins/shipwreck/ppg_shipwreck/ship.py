@@ -187,10 +187,31 @@ def keeping_bow(old: Frame | None, new: Frame) -> Frame:
     return new.other_bow()
 
 
-def set_frame(chunk, frame: Frame) -> Frame:
+def set_frame(chunk, frame: Frame, markers=None) -> Frame:
+    """The ship frame of the chunk; ``markers``: the names of the two markers it was taken from (first, second),
+    kept in ``state["frame_markers"]`` (another chunk whose frame comes from markers of the same names shares it:
+    :mod:`chunks`); None forgets them (a frame set any other way)."""
     check_metric(chunk)
-    state(chunk)["frame"] = {**frame.to_dict(), "crs": chunk.crs}
+    st = state(chunk)
+    st["frame"] = {**frame.to_dict(), "crs": chunk.crs}
+    if markers is None:
+        st.pop("frame_markers", None)
+    else:
+        st["frame_markers"] = [str(m) for m in markers]
     return frame
+
+
+def frame_markers(chunk, reverse: bool = False) -> list | None:
+    """The names of the two markers the chunk's ship frame was taken from (None when it was set another way), to keep
+    them when only the bow, the datum or x0 changes (``reverse``: the frame flipped, its first end the other marker)."""
+    markers = ((chunk.meta.get(KEY) or {}).get("frame_markers")) or None
+    return list(reversed(markers)) if markers and reverse else markers
+
+
+def marker_label(chunk, name) -> str:
+    """The label of the marker ``name`` (a label or a key), or ``name`` itself when there is none."""
+    marker = next((m for m in chunk.markers if str(name) in (m.label, str(m.key))), None)
+    return str(name) if marker is None else str(marker.label)
 
 
 def world_vertices(chunk) -> np.ndarray:

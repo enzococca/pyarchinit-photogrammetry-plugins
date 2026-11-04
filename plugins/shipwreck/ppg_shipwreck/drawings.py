@@ -12,7 +12,16 @@ hillshade of the hull's relief (or the orthophoto): every polygon outlined and l
 the reconstructed parts (any status but ``measured``) hatched and lighter on their own ``RICOSTRUZIONE_<KIND>`` layers,
 never mixed with the measured ``LEGNI_<KIND>`` ones. With traced timbers the body plan marks the traced seams and
 strake edges at each station (``FASCE_RICALCATE``) and the profile draws the keelson's top (``KEELSON``), the typed keel
-hatched (``KEEL``) and the sheer (``SHEER``); a survey without traced timbers is drawn as in 0.2.0."""
+hatched (``KEEL``) and the sheer (``SHEER``); a survey without traced timbers is drawn as in 0.2.0.
+
+The reconstruction of :mod:`reconstruct` (0.4.0: mirrored, extended and spaced timbers, the faired hull) is drawn with
+``reconstruction=True`` (asked for: the default is False): on the plan of the wreck each of its records hatched and lighter still
+(:data:`FAINT`) on ``RICOSTRUZIONE_PLANK``, ``RICOSTRUZIONE_FRAME`` (... per kind) with the hatch of how it was
+reconstructed (:data:`STATUS_HATCHES`), the faired hull's plan as a dashed outline only on ``RICOSTRUZIONE_HULL`` (the
+part past the last station lighter), its open ends marked "carenatura aperta", a legend entry per way of reconstructing
+present and the areas measured and reconstructed (the faired hull left out, overlaps once) in the notes, and a note
+when the reconstruction is out of date (:func:`reconstruct.stale`); on the body plan the faired hull's sections where the
+model has no side of a section, on the profile the extended upper edge, both dashed on ``RICOSTRUZIONE_HULL``. ``reconstruction=False``, the default everywhere, draws exactly what 0.3.0 drew."""
 from __future__ import annotations
 
 import hashlib
@@ -39,6 +48,17 @@ KIND_TITLES = {"body_plan": ("Piano di costruzione: sezioni trasversali", "Body 
 LAYERS = {"STATIONS": "#111111", "LONGITUDINALS": "#111111", "HORIZONTALS": "#111111", "RAW": "#9a9a9a", "KEEL": "#b02020",
           "LEVEL": "#2060b0", "TIMBERS": "#b06000", "GRID": "#bbbbbb", "Fasce": "#1a8f5a", "KEELSON": "#c0392b",
           "SHEER": "#1f4e79", "FASCE_RICALCATE": "#0b5345"}
+HULL_LAYER = "RICOSTRUZIONE_HULL"  # the faired hull (and the extended upper edge): always dashed
+FAINT = 0.6  # the fill of a part of the reconstruction: this share of its layer's alpha
+STATUS_HATCHES = {"reconstructed:mirror": "////", "reconstructed:extension": "\\\\\\\\", "reconstructed:spacing": "xxxx"}
+"""The hatch of a part of the reconstruction by how it was reconstructed (any other status: :data:`HATCH`)."""
+IMPORTED_HATCH = "----"
+"""The hatch of a plank imported from the Clinker Boat Tool when the reconstruction is drawn (as 0.3.0: :data:`HATCH`
+without it)."""
+DXF_PATTERNS = {"////": "ANSI31", "\\\\\\\\": "ANSI32", "xxxx": "ANSI37", IMPORTED_HATCH: "ANSI33"}  # in the DXF
+DASH_SWATCH = "dashed"  # a legend entry drawn as a dashed outline (the faired hull)
+LOFT_SMOOTH = 0.03  # m: the faired hull's plan closed and opened by this (no saw-tooth along the cells), simplified to a third
+OPEN_OFFSET = 0.15  # m: "carenatura aperta" this far past an open end of the faired hull, on the keel line
 WEIGHTS = {"STATIONS": 0.35, "LONGITUDINALS": 0.35, "HORIZONTALS": 0.35, "RAW": 0.13, "KEEL": 0.35, "LEVEL": 0.35,
            "TIMBERS": 0.5, "GRID": 0.18, "Fasce": 0.3, "KEELSON": 0.5, "SHEER": 0.35,
            "FASCE_RICALCATE": 0.3}  # millimetres of paper
@@ -55,6 +75,16 @@ SLIVER = 1e-5  # metres: thinner than this a hidden part of a strake is rounding
 CACHE_FIELDS = ("ship_xy", "visible_xy", "frame_key", "solid", "volume")  # fields of a record that no drawing depends on
 HATCH_NOTE = ("Parti campite a righe oblique (////): ricostruzione (ipotesi), mai una misura.",
               "Parts hatched with oblique lines (////): reconstruction (hypothesis), never a measure.")
+RECONSTRUCTION_NOTE = ("Parti campite: ricostruzione (ipotesi), mai una misura; righe oblique (////): dimensioni date, "
+                       "ipotesi dalle sezioni e simmetria; righe oblique contrarie (\\\\\\\\): prolungamento delle fasce; "
+                       "righe incrociate (xxxx): ordinate al passo misurato. Carenatura: solo il contorno a trattini.",
+                       "Hatched parts: reconstruction (hypothesis), never a measure; oblique lines (////): given "
+                       "dimensions, hypothesis from the sections and mirror; opposite oblique lines (\\\\\\\\): extension of "
+                       "the strakes; crossed lines (xxxx): frames at the measured spacing. Faired hull: its dashed outline only.")
+"""The note on the hatches when the reconstruction (0.4.0) is drawn: :data:`HATCH_NOTE` with the three hatches."""
+IMPORTED_NOTE = ("Righe orizzontali (----): tavole importate dal Clinker Boat Tool (Houdini).",
+                 "Horizontal lines (----): planks imported from the Clinker Boat Tool (Houdini).")
+"""Added to the note on the hatches when an imported plank is drawn with :data:`IMPORTED_HATCH`."""
 ACROSS_RATIO = 3.0  # a polygon this many times as long as wide is named along its length
 NAME_AT = {"frame": 0.85, "line": 0.3, "longitudinal": 0.2}  # where along a timber its name goes
 DRAW_ORDER = ("keel", "plank", "ceiling", "frame", "stringer", "keelson", "other", "fastening", "seam")
@@ -88,6 +118,8 @@ class Drawing:
     legend: list = field(default_factory=list)  # (text, colour, hatch) in the title block
     bounds: tuple | None = None  # (xmin, xmax, ymin, ymax) the sheet shows at least
     rotations: dict = field(default_factory=dict)  # index of a label -> its angle on the sheet (degrees)
+    faint: set = field(default_factory=set)  # indices of the fills of the reconstruction: lighter (:data:`FAINT`)
+    faired: list = field(default_factory=list)  # the stations where the body plan draws the faired hull
 
     def add(self, layer: str, polylines, colour: str | None = None) -> None:
         self.lines += [(layer, np.asarray(p, float), colour) for p in polylines]
@@ -134,18 +166,30 @@ def _block(chunk, frame: ship.Frame) -> dict:
 SHOWS = {"body_plan": "station", "half_breadth": "horizontal", "profile": "longitudinal", "plan": "station"}
 
 
-def _notes(chunk, data: dict, frame: ship.Frame, kind: str) -> list[str]:
+def _notes(chunk, data: dict, frame: ship.Frame, kind: str, faired=()) -> list[str]:
+    """The notes of a drawing of the sections; ``faired``: the stations where the faired hull is drawn (body plan)."""
     half = num(data["half_width"], 2)
-    notes = [t("Linee di sezione misurate sul modello 3D, senza carenatura; niente di ciò che manca è ricostruito. Tratteggio: "
+    first = (t("Linee di sezione misurate sul modello 3D; a trattini la carenatura (ipotesi) dove manca un lato della "
+               "sezione. Tratteggio: asse del sistema della nave e livello dell'acqua. Legni: dal catalogo, disegnati o "
+               "importati, non tagliati dal modello.",
+               "Section lines measured on the 3D model; dashed, the faired hull (hypothesis) where a side of the section "
+               "is missing. Dashed: the axis of the ship frame and the water level. Timbers: from the catalogue, drawn or "
+               "imported, not cut from the model.") if faired else
+             t("Linee di sezione misurate sul modello 3D, senza carenatura; niente di ciò che manca è ricostruito. Tratteggio: "
                "asse del sistema della nave e livello dell'acqua. Legni: dal catalogo, disegnati o importati, non tagliati dal modello.",
                "Section lines measured on the 3D model, not faired; nothing missing is reconstructed. Dashed: the axis of the "
-               "ship frame and the water level. Timbers: from the catalogue, drawn or imported, not cut from the model."),
+               "ship frame and the water level. Timbers: from the catalogue, drawn or imported, not cut from the model."))
+    notes = [first,
              lines.note(data, raw_layer=kind in ("body_plan", "profile")),
              t(f"Disegno entro ±{half} m dalla linea di chiglia.", f"Drawn within ±{half} m of the keel line.")]
     shown = [s for s in data["sections"] if s["kind"] == SHOWS[kind]]
-    empty = lines.without_line(shown)
+    empty = [n for n in lines.without_line(shown) if n not in faired]
     if empty:
         notes.append(t(f"Senza linea, fuori dal modello: {', '.join(empty)}.", f"With no line, off the model: {', '.join(empty)}."))
+    lofted = [n for n in lines.without_line(shown) if n in faired]
+    if lofted:
+        notes.append(t(f"Senza linea del modello, carenatura (ipotesi): {', '.join(lofted)}.",
+                       f"With no line of the model, faired hull (hypothesis): {', '.join(lofted)}."))
     reached = lines.at_window(shown)
     if reached and kind != "plan":
         notes.append(t(f"Arrivano al limite del disegno, il modello continua oltre: {', '.join(reached)}.",
@@ -194,8 +238,9 @@ def _of(data: dict, kind: str) -> list[dict]:
     return [s for s in data["sections"] if s["kind"] == kind]
 
 
-def body_plan(chunk, data: dict, frame: ship.Frame) -> Drawing:
-    """Seen from aft: port on the left whichever way x runs."""
+def body_plan(chunk, data: dict, frame: ship.Frame, reconstruction: bool = False) -> Drawing:
+    """Seen from aft: port on the left whichever way x runs; with ``reconstruction``, the faired hull's sections where
+    the model has no side of a section (:func:`_loft_sections`)."""
     d = Drawing("body_plan", t(*KIND_TITLES["body_plan"]), axes=(t("babordo", "port"), t("tribordo", "starboard")))
     sections = _of(data, "station")
     for s, tint in zip(sections, _tints(len(sections))):
@@ -212,6 +257,8 @@ def body_plan(chunk, data: dict, frame: ship.Frame) -> Drawing:
             c, a = np.array([-y, z]), LAND_MARK
             d.add("Fasce", [[c - [a, 0], c + [a, 0], c, c - [0, a], c + [0, a]]], LAYERS["Fasce"])
     _traced_lands(chunk, sections, frame, d)
+    if reconstruction:
+        _loft_sections(chunk, data, sections, d)
     if d.lines:
         x0, x1, y0, y1 = d.extent
         d.add("KEEL", [[[0.0, y0], [0.0, y1]]])
@@ -225,7 +272,7 @@ def _station_ticks(data: dict, y0: float, y1: float, d: Drawing) -> None:
         d.label(s["value"], y1, s["name"])
 
 
-def half_breadth(chunk, data: dict, frame: ship.Frame) -> Drawing:
+def half_breadth(chunk, data: dict, frame: ship.Frame, reconstruction: bool = False) -> Drawing:
     d = Drawing("half_breadth", t(*KIND_TITLES["half_breadth"]), north=_north(chunk, frame))
     sections = _of(data, "horizontal")
     for s, tint in zip(sections, _tints(len(sections))):
@@ -241,7 +288,8 @@ def half_breadth(chunk, data: dict, frame: ship.Frame) -> Drawing:
     return d
 
 
-def profile(chunk, data: dict, frame: ship.Frame) -> Drawing:
+def profile(chunk, data: dict, frame: ship.Frame, reconstruction: bool = False) -> Drawing:
+    """The longitudinals; with ``reconstruction``, the extended upper edge (:func:`_extended_sheer`)."""
     d = Drawing("profile", t(*KIND_TITLES["profile"]))
     sections = _of(data, "longitudinal")
     for s, tint in zip(sections, _tints(len(sections))):
@@ -258,6 +306,8 @@ def profile(chunk, data: dict, frame: ship.Frame) -> Drawing:
             d.add("Fasce", [p[:, [0, 2]]], LAYERS["Fasce"])
     if _traced(chunk):
         _profile_timbers(chunk, data, frame, d)
+    if reconstruction:
+        _extended_sheer(chunk, data, d)
     if d.lines:
         x0, x1, y0, y1 = d.extent
         _station_ticks(data, y0, y1, d)
@@ -702,7 +752,7 @@ def _legend_text(kind: str, status: str) -> str:
     return f"{timbers.kind_title(kind)} - {timbers.status_title(status)}"
 
 
-def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> Drawing:
+def wreck_plan(chunk, scale: int | None = None, background: str = "relief", reconstruction: bool = False) -> Drawing:
     """The plan of the wreck ("Pianta del relitto"): every record of the catalogue on the sheet of a plan (x to the
     right, ``sign`` * y up, as :func:`plan`). A polygon is outlined and lightly filled in its kind's colour
     (:data:`models3d.KIND_COLOURS`; the planking lighter still, the relief under it stays readable) and named
@@ -713,7 +763,8 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
     a strake of the sections is left out where a measured strake has its name. Lines and points drawn in the same
     colours, a line named at :data:`NAME_AT` ``["line"]`` of its length. ``background``: "relief" (the hillshade of the
     relief of the hull), "ortho" (the orthophoto, :func:`ortho_in_ship`) or "none". Legend per kind and status, scale
-    bar, north, title block. :class:`Empty` without records or a typed keel. Nothing of the chunk is written."""
+    bar, north, title block. :class:`Empty` without records or a typed keel. With ``reconstruction`` the
+    reconstruction too (:func:`_reconstruction_plan`). Nothing of the chunk is written."""
     import shapely
 
     from . import models3d
@@ -753,6 +804,8 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
         kind, gtype = r["kind"], r["geometry"]["type"]
         base = models3d.KIND_COLOURS.get(kind, models3d.KIND_COLOURS["other"])
         colour, hatch = (base, "") if measured else (models3d.lighter(base), HATCH)
+        if reconstruction and status == "reconstructed:imported":
+            hatch = IMPORTED_HATCH  # its own hatch beside the reconstruction's three
         layer = (MEASURED if measured else RECONSTRUCTED) + kind.upper()
         xy = _ship_xy(chunk, r, frame)
         sheet = xy * [1.0, sign]
@@ -780,12 +833,14 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
             d.label(c[0], c[1], name, colour)
             hatch = LINE_SWATCH
         shown.setdefault((kind, status), (colour, hatch))
+    rebuilt_legend, rebuilt_notes = (_reconstruction_plan(chunk, frame, d) if reconstruction else ([], []))
     if not d.fills and not d.lines:
         raise Empty(t(f"Nessun legno per il disegno «{d.title}».", f"No timbers for the drawing '{d.title}'."))
     statuses = list(timbers.STATUS)
     for (kind, status), (colour, hatch) in sorted(shown.items(), key=lambda kv: (
             order.get(kv[0][0], len(order)), statuses.index(kv[0][1]) if kv[0][1] in statuses else len(statuses))):
         d.legend.append((_legend_text(kind, status), colour, hatch))
+    d.legend += rebuilt_legend
     x0, x1, y0, y1 = d.extent
     x0, x1, y0, y1 = x0 - WRECK_MARGIN, x1 + WRECK_MARGIN, y0 - WRECK_MARGIN, y1 + WRECK_MARGIN
     scale = int(scale or drawing_scale(x1 - x0, y1 - y0))
@@ -809,6 +864,7 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
                        f"{', '.join(sorted(set(hidden_names)))}.",
                        f"Strakes of the sections (hypothesis) not drawn where a traced strake has the same name: "
                        f"{', '.join(sorted(set(hidden_names)))}."))
+    notes += rebuilt_notes
     if not ship.is_scaled(chunk):
         notes.append(t("Modello senza scala nota: le misure non sono metri veri.",
                        "A model without a known scale: the measures are not true metres."))
@@ -821,15 +877,252 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
     return d
 
 
+# ----------------------------------------------------------------------------- the reconstruction (0.4.0)
+def _rebuilt(chunk) -> dict:
+    """The stored reconstruction (read, never created), {} when it has neither records nor a faired hull."""
+    st = chunk.meta.get(ship.KEY, {}).get("reconstruction") or {}
+    return st if st.get("timbers") or (st.get("loft") or {}).get("file") else {}
+
+
+def _loft_mesh(chunk):
+    """The faired hull's mesh in the ship frame and its entry: ``(vertices, faces, entry)``, None without one, and None
+    when the reconstruction was built in another ship frame (its mesh would lie elsewhere: :func:`make` says it is to
+    be built again)."""
+    from . import models3d, relief
+
+    rebuilt = _rebuilt(chunk)
+    loft = rebuilt.get("loft") or {}
+    if not loft.get("file"):
+        return None
+    if rebuilt.get("frame_key") != relief.frame_key(ship.frame_of(chunk)):
+        return None
+    path = chunk.data_dir / loft["file"]
+    if not path.exists():
+        return None
+    v, f, _hidden = models3d._read(path)
+    return np.asarray(v, float), np.asarray(f, np.int64), loft
+
+
+def _hull_colour() -> str:
+    from . import models3d
+
+    return models3d.lighter(models3d.HULL_COLOUR)
+
+
+def _cut_at(v: np.ndarray, f: np.ndarray, x: float) -> np.ndarray:
+    """The segments where the plane at ``x`` crosses the mesh: ``(M, 2, 3)``. An edge is cut from its lower vertex
+    index, so two faces sharing it give the same point (the segments join into polylines)."""
+    d = v[:, 0] - x
+    d = np.where(d == 0.0, 1e-12, d)
+    s = np.sign(d[f])
+    f = f[(s.min(axis=1) < 0) & (s.max(axis=1) > 0)]
+    if not len(f):
+        return np.zeros((0, 2, 3))
+    points, hits = [], []
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        lo, hi = np.minimum(f[:, a], f[:, b]), np.maximum(f[:, a], f[:, b])
+        da, db = d[lo], d[hi]
+        hit = da * db < 0
+        w = np.where(hit, da / np.where(hit, da - db, 1.0), 0.0)
+        points.append(v[lo] + (v[hi] - v[lo]) * w[:, None])
+        hits.append(hit)
+    points, hits = np.stack(points, axis=1), np.stack(hits, axis=1)
+    pick = np.argsort(~hits, axis=1, kind="stable")[:, :2]
+    return np.take_along_axis(points, pick[..., None], axis=1)
+
+
+def _joined(segments: np.ndarray) -> list[np.ndarray]:
+    """Segments ``(M, 2, 2)`` joined into polylines."""
+    import shapely
+
+    if not len(segments):
+        return []
+    merged = shapely.line_merge(shapely.MultiLineString([s.tolist() for s in np.round(segments, 9)]))
+    return [np.asarray(g.coords) for g in getattr(merged, "geoms", [merged]) if not g.is_empty]
+
+
+def _loft_sections(chunk, data: dict, sections: list[dict], d: Drawing) -> None:
+    """On the body plan: the faired hull cut at each station whose section has no side (fewer than
+    :data:`loft.MIN_POINTS` points on it), on that side, dashed on :data:`HULL_LAYER`."""
+    from . import loft as loft_mod
+
+    mesh = _loft_mesh(chunk)
+    if mesh is None:
+        return
+    v, f, _entry = mesh
+    water, colour = _water(data), _hull_colour()
+    for s in sections:
+        shown = [p for p in lines.shown(s) if len(p)]
+        points = np.vstack(shown) if shown else np.zeros((0, 2))
+        missing = [sign for sign in (1.0, -1.0) if int((sign * points[:, 0] > 0).sum()) < loft_mod.MIN_POINTS]
+        if not missing:
+            continue
+        segments = _cut_at(v, f, float(s["value"]))
+        if not len(segments):
+            continue
+        mid = segments[:, :, 1].mean(axis=1)
+        out = [np.column_stack([-p[:, 0], water(p[:, 1])]) for sign in missing
+               for p in _joined(segments[sign * mid > 0][:, :, 1:]) if len(p) > 1]
+        if not out:
+            continue
+        d.add(HULL_LAYER, out, colour)
+        d.faired.append(s["name"])
+        if not shown:  # the station's name, as a section's
+            top = max(out, key=len)
+            top = top[np.argmax(top[:, 1])]
+            d.label(top[0], top[1], s["name"], colour)
+
+
+def _top_strakes(chunk, records: list[dict]) -> dict:
+    """``{side: name}``: each side's top strake, the strake (a plank polygon of the catalogue or of the mirror) whose
+    polygons lie farthest from the keel line in plan (their mean |y|)."""
+    frame = ship.need_frame(chunk)
+    spread: dict = {}
+    for r in records:
+        if r["kind"] != "plank" or r["geometry"]["type"] != "polygon" or not r.get("name"):
+            continue
+        xy = _ship_xy(chunk, r, frame)
+        spread.setdefault((r.get("side"), r["name"]), []).append(float(np.abs(xy[:, 1]).mean()))
+    top: dict = {}
+    for (side, name), ys in sorted(spread.items()):
+        if side not in top or np.mean(ys) > top[side][1]:
+            top[side] = (name, float(np.mean(ys)))
+    return {side: name for side, (name, _y) in top.items()}
+
+
+def _extended_sheer(chunk, data: dict, d: Drawing) -> None:
+    """On the profile: the upper edge of each side's top strake (:func:`_top_strakes`) where the reconstruction extends
+    it and gives it a height, dashed on :data:`HULL_LAYER`. Nothing when the top strake is not extended."""
+    st = _rebuilt(chunk)
+    records = [r for r in st.get("timbers", []) if r.get("status") == "reconstructed:extension"
+               and ((r.get("edges") or {}).get("upper"))]
+    if not records:
+        return
+    top = _top_strakes(chunk, [*timbers.timbers_of(chunk),
+                               *(r for r in st.get("timbers", []) if r.get("status") == "reconstructed:mirror")])
+    water, colour, out = _water(data), _hull_colour(), []
+    for r in records:
+        if top.get(r.get("side")) != r["name"]:
+            continue
+        run = []
+        for x, _y, z in [*r["edges"]["upper"], (None, None, None)]:
+            if z is None:
+                if len(run) > 1:
+                    p = np.asarray(run, float)
+                    out.append(np.column_stack([p[:, 0], water(p[:, 1])]))
+                run = []
+            else:
+                run.append((x, z))
+    if not out:
+        return
+    d.add(HULL_LAYER, out, colour)
+    d.legend.append((t("orlo prolungato: il margine superiore della fascia più alta prolungata (ipotesi)",
+                       "extended upper edge: the upper edge of the top strake extended (hypothesis)"),
+                     colour, LINE_SWATCH))
+    d.notes.append(t("A trattini: l'orlo prolungato con le fasce (ipotesi), dove la ricostruzione ne dà la quota.",
+                     "Dashed: the upper edge extended with the strakes (hypothesis), where the reconstruction gives "
+                     "its height."))
+
+
+def _reconstruction_plan(chunk, frame: ship.Frame, d: Drawing) -> tuple[list, list]:
+    """The reconstruction on the plan of the wreck (see :func:`wreck_plan`): its records hatched and lighter
+    (``faint``) on ``RICOSTRUZIONE_<KIND>`` with the hatch of their status (:data:`STATUS_HATCHES`), the faired hull's
+    plan as a dashed outline on :data:`HULL_LAYER` (smoothed by :data:`LOFT_SMOOTH`; past the last station lighter),
+    "carenatura aperta" just past its open ends on the keel line.
+    Returns the legend entries (one per way of reconstructing present) and the notes."""
+    import shapely
+
+    from . import loft as loft_mod
+    from . import models3d
+
+    st = _rebuilt(chunk)
+    if not st:
+        return [], []
+    sign = float(frame.sign)
+    present, notes = set(), []
+    mesh = _loft_mesh(chunk)
+    if mesh is not None:
+        v, f, entry = mesh
+        tri = v[f][..., :2]
+        e1, e2 = tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
+        double = np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
+        tri = tri[double > 1e-12]
+        rings = np.concatenate([tri, tri[:, :1]], axis=1)
+        plan_ = shapely.union_all(shapely.polygons(rings))
+        plan_ = plan_.buffer(LOFT_SMOOTH).buffer(-2 * LOFT_SMOOTH).buffer(LOFT_SMOOTH).simplify(LOFT_SMOOTH / 3.0)
+        stations = entry.get("stations") or [float(v[:, 0].min()), float(v[:, 0].max())]
+        lo, hi = float(min(stations)), float(max(stations))
+        box = shapely.box(lo, -1e9, hi, 1e9)
+        inside, beyond = plan_.intersection(box), _opened(plan_.difference(box))
+        colour = _hull_colour()
+        _ring_fills(d, HULL_LAYER, _to_sheet(inside, sign), colour, "", True)
+        if not beyond.is_empty:
+            _ring_fills(d, HULL_LAYER, _to_sheet(beyond, sign), models3d.lighter(colour), "", True)
+            notes.append(t("Oltre l'ultima stazione la carenatura è un'ipotesi della sola larghezza (contorno a trattini "
+                           "più chiaro).",
+                           "Past the last station the faired hull is a hypothesis of the breadth alone (the lighter "
+                           "dashed outline)."))
+        present.add(loft_mod.STATUS)
+        open_ends = entry.get("open_ends") or []
+        if open_ends:
+            try:
+                _given, names = loft_mod.ends(chunk, frame, lo, hi)
+            except ship.NotReady:
+                names = {}
+            for side in (-1, 1):
+                if names.get(side) in open_ends:
+                    d.label(lo - OPEN_OFFSET if side < 0 else hi + OPEN_OFFSET, 0.0,
+                            t("carenatura aperta", "faired hull open"), models3d.HULL_COLOUR)
+    order = {k: i for i, k in enumerate(DRAW_ORDER)}
+    for r in sorted(st.get("timbers", []), key=lambda r: order.get(r["kind"], len(order))):
+        status = r.get("status") or timbers.status_of(r)
+        kind, gtype = r["kind"], r["geometry"]["type"]
+        colour = models3d.lighter(models3d.KIND_COLOURS.get(kind, models3d.KIND_COLOURS["other"]))
+        layer = RECONSTRUCTED + kind.upper()
+        xy = _ship_xy(chunk, r, frame)
+        sheet = xy * [1.0, sign]
+        if gtype == "polygon" and len(xy) >= 3:
+            start = len(d.fills)
+            _ring_fills(d, layer, _to_sheet(_valid(shapely.Polygon(xy)), sign), colour,
+                        STATUS_HATCHES.get(status, HATCH), False)
+            d.faint.update(range(start, len(d.fills)))
+        elif gtype == "line" and len(sheet) > 1:
+            d.add(layer, [sheet], colour)
+        elif len(sheet):
+            c, a = sheet[0], POINT_MARK
+            d.add(layer, [[c - [a, 0], c + [a, 0]], [c - [0, a], c + [0, a]]], colour)
+        else:
+            continue
+        present.add(status)
+    swatch = models3d.lighter(models3d.KIND_COLOURS["other"])
+    legend = [(timbers.status_title(s), _hull_colour(), DASH_SWATCH) if s == loft_mod.STATUS else
+              (timbers.status_title(s), swatch, STATUS_HATCHES.get(s, HATCH)) for s in timbers.STATUS if s in present]
+    totals = (st.get("table") or {}).get("totals") or {}
+    if totals:
+        a, b = (num((totals.get(k) or {}).get("area") or 0.0, 2) for k in ("measured", "reconstructed"))
+        notes.insert(0, t(f"Aree in pianta, alla ricostruzione: misurato {a} m²; ricostruito: {b} m² senza la "
+                          "carenatura (ipotesi; dove due legni ricostruiti si sovrappongono, contata una volta).",
+                          f"Areas in plan, when reconstructed: measured {a} m²; reconstructed: {b} m² without the "
+                          "faired hull (hypothesis; where two reconstructed timbers overlap, counted once)."))
+    members = (st.get("members") or {}).get("chunks") or []
+    if len(members) > 1:
+        labels = ", ".join(str(m.get("label") or m.get("chunk")) for m in members)
+        notes.append(t(f"Ricostruzione dai chunk: {labels}.", f"Reconstruction from the chunks: {labels}."))
+    return legend, notes
+
+
 MAKERS = {"body_plan": body_plan, "half_breadth": half_breadth, "profile": profile}
 
 
-def make(chunk, kind: str, scale: int | None = None, background: str = "relief") -> Drawing:
+def make(chunk, kind: str, scale: int | None = None, background: str = "relief", reconstruction: bool = False) -> Drawing:
     """One drawing of the sections of the chunk (up to date ones: else :class:`ship.NotReady`); the plan of the wreck
-    (:func:`wreck_plan`, over ``background``) needs no sections."""
+    (:func:`wreck_plan`, over ``background``) needs no sections. ``reconstruction``: draw the reconstruction too (the
+    plan of the wreck, the body plan, the profile), with a note when it is out of date (:func:`reconstruct.stale`);
+    False (the default) draws as 0.3.0."""
     if kind == "wreck_plan":
-        d = wreck_plan(chunk, scale, background)
+        d = wreck_plan(chunk, scale, background, reconstruction)
         _hatch_note(d)
+        _stale_note(chunk, d, reconstruction)
         return d
     ship.check_metric(chunk)
     frame = ship.need_frame(chunk)
@@ -841,20 +1134,38 @@ def make(chunk, kind: str, scale: int | None = None, background: str = "relief")
                               "georeferenziazione: controlla che la chiglia sia ancora al suo posto e ricalcolale.",
                               "The sections come from another ship frame, another model or another georeference: check "
                               "that the keel is still in its place and compute them again."))
-    d = plan(chunk, data, frame, scale) if kind == "plan" else MAKERS[kind](chunk, data, frame)
+    d = plan(chunk, data, frame, scale) if kind == "plan" else MAKERS[kind](chunk, data, frame, reconstruction)
     if not any(layer not in ("KEEL", "GRID", "LEVEL") for layer, _p, _c in d.lines) and d.raster is None:
         raise Empty(t(f"Nessuna linea per il disegno «{d.title}».", f"No lines for the drawing '{d.title}'."))
-    d.notes = _notes(chunk, data, frame, kind) + d.notes
+    d.notes = _notes(chunk, data, frame, kind, d.faired) + d.notes
     _hatch_note(d)
+    if kind != "plan":
+        _stale_note(chunk, d, reconstruction)
     d.block = _block(chunk, frame)
     x0, x1, y0, y1 = d.extent
     d.scale = int(scale or drawing_scale(x1 - x0, y1 - y0))
     return d
 
 
+def _stale_note(chunk, d: Drawing, reconstruction: bool) -> None:
+    """With the reconstruction drawn: a note when it no longer says what the chunk says (:func:`reconstruct.stale`)."""
+    if not reconstruction or not _rebuilt(chunk):
+        return
+    from . import reconstruct
+
+    reason = reconstruct.stale(chunk)
+    if reason:
+        d.notes.append(t(f"La ricostruzione è da rifare: {reason}", f"The reconstruction is to be built again: {reason}"))
+
+
 def _hatch_note(d: Drawing) -> None:
-    """The note on the hatched parts, when a drawing has any (a reconstruction is never presented as measured)."""
-    if any(hatch for _l, _r, _c, hatch, _d in d.fills):
+    """The note on the hatched parts, when a drawing has any (a reconstruction is never presented as measured):
+    :data:`RECONSTRUCTION_NOTE` when the reconstruction (0.4.0) is drawn on it (or an imported plank with its own
+    hatch), else :data:`HATCH_NOTE`."""
+    imported = any(hatch == IMPORTED_HATCH for _l, _r, _c, hatch, _d in d.fills)
+    if d.faint or any(layer == HULL_LAYER for layer, *_rest in d.fills) or imported:
+        d.notes.append(t(*RECONSTRUCTION_NOTE) + (" " + t(*IMPORTED_NOTE) if imported else ""))
+    elif any(hatch for _l, _r, _c, hatch, _d in d.fills):
         d.notes.append(t(*HATCH_NOTE))
 
 
@@ -890,16 +1201,18 @@ def figure(d: Drawing):
         ax.imshow(image, extent=(a, b, c, e), interpolation="bilinear", zorder=0)
         ax.set_xlim(x0, x1)
         ax.set_ylim(y0, y1)
-    for layer, rings, colour, hatch, dashed in _shapes(d.fills):
+    for start, layer, rings, colour, hatch, dashed in _grouped(d.fills):
         filled = not dashed
-        ax.add_patch(PathPatch(_path(rings), facecolor=(*_rgb(colour), _alpha(layer)) if filled else "none",
-                               edgecolor=colour, hatch=hatch if filled and hatch else None, ls="--" if dashed else "-",
+        alpha = _alpha(layer) * (FAINT if start in d.faint else 1.0)
+        ax.add_patch(PathPatch(_path(rings), facecolor=(*_rgb(colour), alpha) if filled else "none",
+                               edgecolor=colour, hatch=hatch if filled and hatch else None,
+                               ls="--" if dashed or layer == HULL_LAYER else "-",
                                lw=WEIGHTS.get(layer, TIMBER_WEIGHT) / 0.3528, joinstyle="round", clip_on=False,
                                zorder=1.5))
     for layer, p, colour in d.lines:
         if layer == "RAW":  # a sheet shows one line for each section; the raw ones are a layer of the DXF
             continue
-        style = "--" if layer in ("KEEL", "LEVEL") else ":" if layer.startswith(RECONSTRUCTED) else "-"
+        style = "--" if layer in ("KEEL", "LEVEL", HULL_LAYER) else ":" if layer.startswith(RECONSTRUCTED) else "-"
         ax.plot(p[:, 0], p[:, 1], color=colour or LAYERS.get(layer, "#000000"), lw=WEIGHTS.get(layer, TIMBER_WEIGHT) / 0.3528,
                 ls=style, solid_joinstyle="round", clip_on=False, zorder=2)
     halo = [withStroke(linewidth=1.2, foreground="white")]
@@ -924,6 +1237,9 @@ def figure(d: Drawing):
         if hatch == LINE_SWATCH:
             fig.add_artist(Line2D([left, left + 5.0 / width], [y + 0.8 / height] * 2, transform=fig.transFigure,
                                   color=colour, linewidth=1.0))
+        elif hatch == DASH_SWATCH:
+            fig.add_artist(Rectangle((left, y - 0.3 / height), 5.0 / width, 2.2 / height, transform=fig.transFigure,
+                                     facecolor="none", edgecolor=colour, linestyle="--", linewidth=0.7))
         else:
             fig.add_artist(Rectangle((left, y - 0.3 / height), 5.0 / width, 2.2 / height, transform=fig.transFigure,
                                      facecolor=(*_rgb(colour), FILL_ALPHA), edgecolor=colour, hatch=hatch or None,
@@ -966,14 +1282,19 @@ def _alpha(layer: str) -> float:
 def _shapes(fills) -> list:
     """The fills grouped as they were written (:func:`_ring_fills`): an outer ring with the clockwise rings right after
     it on the same layer as its holes; a dashed ring alone. ``[(layer, [rings], colour, hatch, dashed)]``."""
+    return [g[1:] for g in _grouped(fills)]
+
+
+def _grouped(fills) -> list:
+    """:func:`_shapes` with the index of each group's first ring in ``fills`` first."""
     out = []
-    for layer, ring, colour, hatch, dashed in fills:
+    for i, (layer, ring, colour, hatch, dashed) in enumerate(fills):
         ring = np.asarray(ring, float)
         hole = not dashed and _signed_area(ring) < 0
-        if hole and out and not out[-1][4] and out[-1][0] == layer and out[-1][2] == colour:
-            out[-1][1].append(ring)
+        if hole and out and not out[-1][5] and out[-1][1] == layer and out[-1][3] == colour:
+            out[-1][2].append(ring)
         else:
-            out.append((layer, [ring], colour, hatch if not hole else "", dashed))
+            out.append((i, layer, [ring], colour, hatch if not hole else "", dashed))
     return out
 
 
@@ -1013,20 +1334,23 @@ def write_dxf(d: Drawing, path) -> Path:
     for layer, ring, _colour, hatch, dashed in d.fills:
         ring = np.asarray(ring, float)
         attribs = {"layer": layer}
-        if dashed:
+        if dashed or layer == HULL_LAYER:
             attribs.update(linetype="DASHED", ltscale=paper * 4.0)
         msp.add_lwpolyline(ring.tolist(), close=True, dxfattribs=attribs)
     for layer, rings, _colour, hatch, dashed in _shapes(d.fills):
-        if hatch == HATCH and not dashed:  # the outer ring and its holes: the hatch leaves the holes empty
+        if hatch in DXF_PATTERNS and not dashed:  # the outer ring and its holes: the hatch leaves the holes empty
             h = msp.add_hatch(dxfattribs={"layer": layer})
-            h.set_pattern_fill("ANSI31", scale=paper * 2.0 / 3.175)  # a line every 2 mm of paper
+            h.set_pattern_fill(DXF_PATTERNS[hatch], scale=paper * 2.0 / 3.175)  # a line every 2 mm of paper
             for k, ring in enumerate(rings):
                 h.paths.add_polyline_path(ring.tolist(), is_closed=True,
                                           flags=ezdxf.const.BOUNDARY_PATH_EXTERNAL if k == 0 else
                                           ezdxf.const.BOUNDARY_PATH_DEFAULT)
     for layer, p, _colour in d.lines:
         if len(p) > 1:
-            msp.add_lwpolyline(p.tolist(), dxfattribs={"layer": layer})
+            attribs = {"layer": layer}
+            if layer == HULL_LAYER:
+                attribs.update(linetype="DASHED", ltscale=paper * 4.0)
+            msp.add_lwpolyline(p.tolist(), dxfattribs=attribs)
     x0, x1, y0, y1 = d.extent
     size = max(x1 - x0, y1 - y0) * 0.008
     for i, (x, y, text, _colour) in enumerate(d.labels):
@@ -1037,15 +1361,17 @@ def write_dxf(d: Drawing, path) -> Path:
         msp.add_text(line, height=size, dxfattribs={"layer": "TEXT"}).set_placement((x0, y0 - size * 2 * (i + 2)))
     for i, (text, _colour, hatch) in enumerate(d.legend):
         below = y0 - size * 2 * (len(d.notes) + i + 3)
-        msp.add_text(f"{text}{' (////)' if hatch == HATCH else ''}", height=size,
+        mark = f" ({hatch})" if hatch in DXF_PATTERNS else " (- -)" if hatch == DASH_SWATCH else ""
+        msp.add_text(f"{text}{mark}", height=size,
                      dxfattribs={"layer": "TEXT"}).set_placement((x0, below))
     doc.saveas(path)
     return Path(path)
 
 
-def _signature(chunk, kind: str) -> dict:
+def _signature(chunk, kind: str, reconstruction: bool = False) -> dict:
     """What a drawing was made from: the sections (with their water and what they were cut from), and for the plan the
-    catalogue. It is out of date when any of these changes."""
+    catalogue; with ``reconstruction``, the reconstruction drawn on it (when there is one). It is out of date when any
+    of these changes."""
     data = lines.load(chunk) or {}
     frame = ship.frame_of(chunk)
     source = lines.fingerprint(chunk, frame) if frame is not None else None
@@ -1065,6 +1391,10 @@ def _signature(chunk, kind: str) -> dict:
         found = _land_lines(chunk) if frame is not None else []
         if found:
             out["lands"] = hashlib.sha256(json.dumps(found, sort_keys=True).encode()).hexdigest()
+    rebuilt = _rebuilt(chunk) if reconstruction and frame is not None else {}
+    if kind in ("body_plan", "profile", "wreck_plan") and rebuilt:
+        out["reconstruction"] = _hash({k: rebuilt.get(k) for k in ("built", "loft", "ends", "members", "table")}
+                                      | {"timbers": [_clean_record(r) for r in rebuilt.get("timbers", [])]})
     return out
 
 
@@ -1084,13 +1414,14 @@ def _relief_signature(chunk) -> dict | None:
 def out_of_date(chunk) -> list[str]:
     """The drawings written that no longer say what the chunk says."""
     made = chunk.meta.get(ship.KEY, {}).get("drawings") or {}
-    return [k for k, v in made.items() if v.get("signature") != _signature(chunk, k)]
+    return [k for k, v in made.items() if v.get("signature") != _signature(chunk, k, v.get("reconstruction", False))]
 
 
 def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progress=None,
-              background: str = "relief") -> list[Path]:
+              background: str = "relief", reconstruction: bool = False) -> list[Path]:
     """Each drawing in ``<chunk data>/shipwreck/drawings`` (or ``folder``) as SVG, PDF, PNG and DXF; a kind with no lines
-    is left out when others are made; ``background`` is the plan of the wreck's. The drawings written in the chunk's
+    is left out when others are made; ``background`` is the plan of the wreck's; ``reconstruction`` draws the
+    reconstruction too (False, the default: as 0.3.0; noted with each drawing). The drawings written in the chunk's
     folder are noted in ``chunk.meta`` (those of the other kinds stay noted as they were)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
@@ -1101,7 +1432,7 @@ def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progres
     for i, kind in enumerate(kinds):
         progress(i / len(kinds), t(*KIND_TITLES[kind]))
         try:
-            d = make(chunk, kind, scale, background)
+            d = make(chunk, kind, scale, background, reconstruction)
         except Empty as exc:
             skipped[kind] = str(exc)
             continue
@@ -1112,7 +1443,7 @@ def write_all(chunk, kinds=KINDS, scale: int | None = None, folder=None, progres
         names.append(write_dxf(d, out / f"{kind}.dxf"))
         written += names
         kept[kind] = {"scale": d.scale, "files": [p.name for p in names], "water": lines.is_on(chunk),
-                      "signature": _signature(chunk, kind)}
+                      "signature": _signature(chunk, kind, reconstruction), "reconstruction": bool(reconstruction)}
     if not written:
         raise ship.NotReady(" ".join(skipped.values()) or t("Nessun disegno.", "No drawing."))
     if folder is None:

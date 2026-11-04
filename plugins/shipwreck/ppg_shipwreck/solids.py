@@ -25,6 +25,11 @@ the boundary of the cells. :func:`build` writes ``<chunk data>/shipwreck/timbers
 property ``hidden``) and sets the record's ``solid`` (the file, relative to the chunk's data folder) and ``volume``
 (m3); a thickness typed for the build goes into the ``thickness_mm`` of the strakes that had none. Nothing else of a
 record is touched; the chunk's transform, model and products never.
+
+A reconstructed timber lying where the wreck shows nothing (an extended strake, a frame put back at the measured
+spacing) reads its heights through :func:`surface_for` (the relief, else the mirrored solids' hull side, else the
+faired hull), passed as ``surface`` to :func:`strake_shell` and :func:`timber_solid`; the catalogue's :func:`build`
+never does.
 """
 from __future__ import annotations
 
@@ -70,28 +75,33 @@ class Solid:
 # ----------------------------------------------------------------------------- the relief, read by windows
 class _Grid:
     """A window of the relief's height raster around a part of the ship plan: ``z`` (rows, cols) with NaN off the
-    model, the ship ``x`` of each column and ``y`` of each row (cell centres), the corners' ``xe``, ``ye``."""
+    model, the ship ``x`` of each column and ``y`` of each row (cell centres), the corners' ``xe``, ``ye``.
 
-    def __init__(self, chunk, bounds, margin: int = 6):
+    ``surface``: a callable ``(X, Y) -> z`` in the ship plan (:func:`surface_for`) for the parts off the model: the
+    window then goes on past the raster's edges (cells without a value there) and its cells without a value take the
+    surface's (NaN where it has none either). Without it the window stops at the raster and NaN stays NaN.
+
+    ``path``: the height raster to read (the reconstruction's merged one, :func:`reconstruct.height_path`); default
+    the chunk's own relief."""
+
+    def __init__(self, chunk, bounds, margin: int = 6, surface=None, path=None):
         import rasterio
         from rasterio.windows import Window
 
         tracing.need_fresh_relief(chunk)
         frame = ship.need_frame(chunk)
         sign = frame.sign
-        path = relief.path_of(chunk, "height")
-        x0, y0, x1, y1 = bounds
+        path = relief.path_of(chunk, "height") if path is None else path
         with rasterio.open(path) as src:
             a = src.transform
             self.cell = float(abs(a.a))
-            vs = sorted((sign * y0, sign * y1))
-            c0 = int(math.floor((x0 - a.c) / a.a)) - margin
-            c1 = int(math.ceil((x1 - a.c) / a.a)) + margin
-            r0 = int(math.floor((vs[1] - a.f) / a.e)) - margin
-            r1 = int(math.ceil((vs[0] - a.f) / a.e)) + margin
-            c0, r0 = max(0, c0), max(0, r0)
-            c1, r1 = min(src.width, max(c0, c1)), min(src.height, max(r0, r1))
-            z = src.read(1, window=Window(c0, r0, c1 - c0, r1 - r0)).astype(np.float64)
+            c0, r0, c1, r1 = _window(a, bounds, sign, margin)
+            if surface is None:
+                c0, r0 = max(0, c0), max(0, r0)
+                c1, r1 = min(src.width, max(c0, c1)), min(src.height, max(r0, r1))
+                z = src.read(1, window=Window(c0, r0, c1 - c0, r1 - r0)).astype(np.float64)
+            else:
+                z = _read_boundless(src, c0, r0, max(c0, c1), max(r0, r1))
             if src.nodata is not None and np.isfinite(src.nodata):
                 z[z == src.nodata] = np.nan
         self.z = z
@@ -100,6 +110,10 @@ class _Grid:
         self.x = 0.5 * (self.xe[:-1] + self.xe[1:])
         self.y = 0.5 * (self.ye[:-1] + self.ye[1:])
         self.X, self.Y = np.meshgrid(self.x, self.y)
+        if surface is not None:
+            empty = ~np.isfinite(self.z)
+            if empty.any():
+                self.z[empty] = np.asarray(surface(self.X[empty], self.Y[empty]), float)
 
     def inside(self, geom) -> np.ndarray:
         """The cells whose centres lie inside ``geom`` (a shapely geometry in the ship plan)."""
@@ -111,6 +125,172 @@ class _Grid:
         return shapely.contains_xy(geom, self.X, self.Y)
 
 
+def _window(a, bounds, sign: int, margin: int) -> tuple[int, int, int, int]:
+    """The raster's columns ``c0:c1`` and rows ``r0:r1`` around ship plan ``bounds`` and ``margin`` cells more (not
+    clipped to the raster)."""
+    x0, y0, x1, y1 = bounds
+    vs = sorted((sign * y0, sign * y1))
+    return (int(math.floor((x0 - a.c) / a.a)) - margin, int(math.floor((vs[1] - a.f) / a.e)) - margin,
+            int(math.ceil((x1 - a.c) / a.a)) + margin, int(math.ceil((vs[0] - a.f) / a.e)) + margin)
+
+
+def _read_boundless(src, c0: int, r0: int, c1: int, r1: int) -> np.ndarray:
+    """The raster's cells of the window columns ``c0:c1``, rows ``r0:r1``, NaN where the window lies past its edges."""
+    from rasterio.windows import Window
+
+    z = np.full((r1 - r0, c1 - c0), np.nan)
+    a0, b0 = max(0, c0), max(0, r0)
+    a1, b1 = min(src.width, c1), min(src.height, r1)
+    if a1 > a0 and b1 > b0:
+        z[b0 - r0:b1 - r0, a0 - c0:a1 - c0] = src.read(1, window=Window(a0, b0, a1 - a0, b1 - b0)).astype(np.float64)
+    return z
+
+
+# ----------------------------------------------------------------------------- the hull off the model
+def _rasterize(p: np.ndarray, z: np.ndarray, faces: np.ndarray, shape: tuple, highest: bool = True,
+               batch: int = 2_000_000) -> np.ndarray:
+    """The heights of the triangles ``faces`` (vertices ``p`` in the grid's (column, row) units, the cell centres on
+    the whole numbers; heights ``z``) at the centres of a grid of ``shape``: where several cover a centre the
+    highest (``highest``) or the lowest; NaN where none does."""
+    rows, cols = shape
+    out = np.full(shape, -np.inf if highest else np.inf)
+    faces = np.asarray(faces, np.int64).reshape(-1, 3)
+    if not len(faces) or not rows or not cols:
+        return np.full(shape, np.nan)
+    tri, tz = p[faces], z[faces]
+    c0 = np.maximum(np.ceil(tri[..., 0].min(axis=1)), 0).astype(np.int64)
+    c1 = np.minimum(np.floor(tri[..., 0].max(axis=1)), cols - 1).astype(np.int64)
+    r0 = np.maximum(np.ceil(tri[..., 1].min(axis=1)), 0).astype(np.int64)
+    r1 = np.minimum(np.floor(tri[..., 1].max(axis=1)), rows - 1).astype(np.int64)
+    a, b, c = tri[:, 0], tri[:, 1], tri[:, 2]
+    d = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+    ok = np.flatnonzero((c1 >= c0) & (r1 >= r0) & (np.abs(d) > 1e-12) & np.isfinite(tz).all(axis=1))
+    if not len(ok):
+        return np.full(shape, np.nan)
+    w, h = c1[ok] - c0[ok] + 1, r1[ok] - r0[ok] + 1
+    n = w * h
+    ends = np.cumsum(n)
+    put = np.maximum.at if highest else np.minimum.at
+    start = 0
+    while start < len(ok):
+        stop = int(np.searchsorted(ends, (ends[start - 1] if start else 0) + batch, "right"))
+        stop = max(stop, start + 1)
+        k = np.arange(start, stop)
+        counts = n[k]
+        idx = np.repeat(k, counts)
+        local = np.arange(int(counts.sum())) - np.repeat(np.cumsum(counts) - counts, counts)
+        t_ = ok[idx]
+        cc = c0[t_] + local % w[idx]
+        rr = r0[t_] + local // w[idx]
+        l1 = ((b[t_, 1] - c[t_, 1]) * (cc - c[t_, 0]) + (c[t_, 0] - b[t_, 0]) * (rr - c[t_, 1])) / d[t_]
+        l2 = ((c[t_, 1] - a[t_, 1]) * (cc - c[t_, 0]) + (a[t_, 0] - c[t_, 0]) * (rr - c[t_, 1])) / d[t_]
+        l3 = 1.0 - l1 - l2
+        inside = (l1 >= -1e-9) & (l2 >= -1e-9) & (l3 >= -1e-9)
+        values = l1 * tz[t_, 0] + l2 * tz[t_, 1] + l3 * tz[t_, 2]
+        put(out, (rr[inside], cc[inside]), values[inside])
+        start = stop
+    out[~np.isfinite(out)] = np.nan
+    return out
+
+
+class _Surface:
+    """The hull's surface on a grid of the relief's cells around a part of the ship plan (:func:`surface_for`)."""
+
+    def __init__(self, z: np.ndarray, affine, c0: int, r0: int, sign: int):
+        self.z, self.affine, self.c0, self.r0, self.sign = z, affine, c0, r0, sign
+
+    def index(self, x, y):
+        """The (row, column) of the grid's cells under the plan points, -1 off the grid."""
+        from rasterio import windows
+
+        a = windows.transform(windows.Window(self.c0, self.r0, self.z.shape[1], self.z.shape[0]), self.affine)
+        row, col, ok = relief.cells_at(self.z.shape, a, self.sign, x, y)
+        return np.where(ok, row, -1), np.where(ok, col, -1)
+
+    def __call__(self, x, y) -> np.ndarray:
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        row, col = self.index(x.ravel(), y.ravel())
+        out = np.full(row.shape, np.nan)
+        ok = row >= 0
+        out[ok] = self.z[row[ok], col[ok]]
+        return out.reshape(x.shape)
+
+
+SURFACE_MARGIN = 12  # cells: the grid of :func:`surface_for` goes this far around the polygon
+
+
+def surface_for(chunk, polygon, cache: dict | None = None):
+    """The hull's surface for a reconstructed timber over ``polygon`` (ship plan): a callable ``(X, Y) -> z`` (ship
+    plan points, z NaN where nothing gives one), on the relief's cells around the polygon. The relief where it has a
+    value; else the inner (hull-side) surface of the mirrored solids under the point (a strake's inner face: the top
+    of its shell; another timber's bottom where no strake is); else the faired hull (``reconstruction/
+    carenatura.ply``, :func:`reconstruct.loft`); else NaN. ``cache``: a dict kept by the caller over several calls
+    (one build), so that each 3D file is read once. The relief is the reconstruction's
+    (:func:`reconstruct.height_path`: the merged one of several chunks when it is current)."""
+    import rasterio
+
+    from . import reconstruct
+
+    tracing.need_fresh_relief(chunk)
+    frame = ship.need_frame(chunk)
+    sign = frame.sign
+    cache = {} if cache is None else cache
+    with rasterio.open(reconstruct.height_path(chunk)) as src:
+        a = src.transform
+        c0, r0, c1, r1 = _window(a, polygon.bounds, sign, SURFACE_MARGIN)
+        z = _read_boundless(src, c0, r0, max(c0, c1), max(r0, r1))
+        if src.nodata is not None and np.isfinite(src.nodata):
+            z[z == src.nodata] = np.nan
+    inv = ~a
+
+    def grid_units(v):
+        """Ship (x, y) to the window's (column, row), the cell centres on the whole numbers."""
+        u, w = v[:, 0], sign * v[:, 1]
+        return np.column_stack([inv.a * u + inv.b * w + inv.c - 0.5 - c0, inv.d * u + inv.e * w + inv.f - 0.5 - r0])
+
+    import shapely
+
+    box = shapely.box(*(np.asarray(polygon.bounds) + [-1, -1, 1, 1] * np.r_[SURFACE_MARGIN * abs(a.a)]))
+
+    def layer(path, highest):
+        key = str(path)
+        if key not in cache:
+            cache[key] = reconstruct._read_solid(path)
+        v, f, _hidden = cache[key]
+        if not len(f):
+            return None
+        tri = v[f]
+        near = ((tri[..., 0].max(axis=1) >= box.bounds[0]) & (tri[..., 0].min(axis=1) <= box.bounds[2])
+                & (tri[..., 1].max(axis=1) >= box.bounds[1]) & (tri[..., 1].min(axis=1) <= box.bounds[3]))
+        if not near.any():
+            return None
+        return _rasterize(grid_units(v), v[:, 2], f[near], z.shape, highest)
+
+    planks, others = np.full(z.shape, np.nan), np.full(z.shape, np.nan)
+    for r in reconstruct.records_of(chunk):
+        if r.get("status") != reconstruct.STATUS or not r.get("solid"):
+            continue
+        if not _polygon(r["ship_xy"]).intersects(box):
+            continue
+        path = chunk.data_dir / r["solid"]
+        if not path.exists():
+            continue
+        plank = r["kind"] in SHELLS
+        got = layer(path, highest=plank)
+        if got is None:
+            continue
+        target = planks if plank else others
+        target[:] = np.fmax(target, got) if plank else np.fmin(target, got)
+    for fill in (planks, others):
+        z = np.where(np.isfinite(z), z, fill)
+    loft = reconstruct.folder(chunk) / reconstruct.LOFT_FILE
+    if loft.exists():
+        got = layer(loft, highest=True)
+        if got is not None:
+            z = np.where(np.isfinite(z), z, got)
+    return _Surface(z, a, c0, r0, sign)
+
+
 def _polygon(xy):
     import shapely
 
@@ -118,10 +298,11 @@ def _polygon(xy):
     return poly if poly.is_valid else poly.buffer(0)
 
 
-def _polygons(chunk, kinds, frame, exclude=None) -> list:
-    """The polygons in the ship plan of the records of ``kinds`` (all but ``exclude``)."""
+def _polygons(chunk, kinds, frame, exclude=None, records=None) -> list:
+    """The polygons in the ship plan of the records of ``kinds`` (all but ``exclude``); ``records``: the records to
+    read (default the catalogue; the reconstruction passes the ones it reads, those of several chunks merged)."""
     out = []
-    for r in ship.state(chunk).get("timbers", []):
+    for r in ship.state(chunk).get("timbers", []) if records is None else records:
         if r["kind"] in kinds and r["geometry"]["type"] == "polygon" and r["id"] != exclude:
             out.append(_polygon(tracing.ship_xy_of(chunk, r, frame)))
     return out
@@ -347,15 +528,17 @@ def _normals(field: np.ndarray, mask: np.ndarray, grid: _Grid, sigma: float) -> 
     return n / np.linalg.norm(n, axis=-1, keepdims=True)
 
 
-def strake_shell(chunk, record: dict, thickness: float) -> Solid:
+def strake_shell(chunk, record: dict, thickness: float, surface=None, path=None, records=None) -> Solid:
     """The shell of a strake (``thickness`` in mm): see the module. :class:`NotReady` when the relief is missing or
-    stale, or no cell of it lies inside the strake."""
+    stale, or no cell of it lies inside the strake. ``surface``: the heights off the model (:func:`surface_for`, a
+    reconstructed strake); ``path``: the height raster (:class:`_Grid`); ``records``: the timbers that hide it
+    (default the catalogue's)."""
     thickness = _positive(thickness)
     frame = ship.need_frame(chunk)
     poly = _polygon(tracing.ship_xy_of(chunk, record, frame))
-    grid = _Grid(chunk, poly.bounds)
+    grid = _Grid(chunk, poly.bounds, surface=surface, path=path)
     inside = grid.inside(poly)
-    over = _union(_polygons(chunk, HIDING, frame, exclude=record["id"]))
+    over = _union(_polygons(chunk, HIDING, frame, exclude=record["id"], records=records))
     hiding = grid.inside(over.buffer(grid.cell)) if over is not None else np.zeros(inside.shape, bool)
     finite = np.isfinite(grid.z)
     known = inside & ~hiding & finite
@@ -375,11 +558,11 @@ def strake_shell(chunk, record: dict, thickness: float) -> Solid:
 
 
 # ----------------------------------------------------------------------------- solids
-def _footprint(chunk, record, frame):
+def _footprint(chunk, record, frame, records=None):
     """A timber's footprint in the ship plan: its polygon, a frame's less what lies over it (:data:`OVER_FRAMES`)."""
     poly = _polygon(tracing.ship_xy_of(chunk, record, frame))
     if record["kind"] == "frame":
-        over = _union(_polygons(chunk, OVER_FRAMES, frame, exclude=record["id"]))
+        over = _union(_polygons(chunk, OVER_FRAMES, frame, exclude=record["id"], records=records))
         if over is not None:
             poly = poly.difference(over)
     return poly
@@ -464,20 +647,20 @@ def _hull_under(cells: np.ndarray, ring: np.ndarray, zs: np.ndarray, cell: float
     return out
 
 
-def _solid_grid(chunk, record):
+def _solid_grid(chunk, record, surface=None, path=None, records=None):
     """The grid of a timber's solid: (grid, mask, top, bottom) on its cells."""
     from scipy import ndimage
 
     frame = ship.need_frame(chunk)
-    poly = _footprint(chunk, record, frame)
+    poly = _footprint(chunk, record, frame, records)
     if poly.is_empty:
         raise NotReady(t(f"{record['name'] or record['id']}: l'impronta è vuota.",
                          f"{record['name'] or record['id']}: the footprint is empty."))
-    grid = _Grid(chunk, poly.bounds, margin=int(RING[1]) + 3)
+    grid = _Grid(chunk, poly.bounds, margin=int(RING[1]) + 3, surface=surface, path=path)
     finite = np.isfinite(grid.z)
     mask = _no_bowties(grid.inside(poly) & finite)
     _require(mask, record)
-    others = _union([p for p in _polygons(chunk, SOLIDS, frame, exclude=record["id"])])
+    others = _union([p for p in _polygons(chunk, SOLIDS, frame, exclude=record["id"], records=records)])
     taken = grid.inside(others.buffer(grid.cell)) if others is not None else np.zeros(mask.shape, bool)
     if record["kind"] == "frame":  # the part of the frame cut away is not hull either
         taken |= grid.inside(_polygon(tracing.ship_xy_of(chunk, record, frame)).buffer(grid.cell))
@@ -496,9 +679,11 @@ def _solid_grid(chunk, record):
     return grid, mask, top, bottom
 
 
-def timber_solid(chunk, record: dict) -> Solid:
-    """The solid of a frame, the keelson, a stringer, the ceiling or another polygon: see the module."""
-    grid, mask, top, bottom = _solid_grid(chunk, record)
+def timber_solid(chunk, record: dict, surface=None, path=None, records=None) -> Solid:
+    """The solid of a frame, the keelson, a stringer, the ceiling or another polygon: see the module. ``surface``:
+    the heights off the model (:func:`surface_for`, a reconstructed timber); ``path``: the height raster
+    (:class:`_Grid`); ``records``: the other timbers around it (default the catalogue's)."""
+    grid, mask, top, bottom = _solid_grid(chunk, record, surface, path, records)
     v, f, hid, vol = _closed(mask, _plane(grid, _corners(top, mask)), _plane(grid, _corners(bottom, mask)))
     return Solid(v, f, hid, timbers.status_of(record), record["name"], record["kind"], vol, None, record["id"])
 
@@ -562,19 +747,21 @@ def _measured_keel(chunk) -> bool:
                for r in ship.state(chunk).get("timbers", []))
 
 
-def _keel_line(chunk, xs: np.ndarray, siding: float) -> np.ndarray:
+def _keel_line(chunk, xs: np.ndarray, siding: float, path=None, keelsons=None, records=None) -> np.ndarray:
     """The height of the keel's top at ``xs``: the keelson's bottom on the keel line where a keelson lies (its ends
-    held to the stations within its outline), else the lowest of the relief across the keel's siding."""
+    held to the stations within its outline), else the lowest of the relief across the keel's siding. ``path``: the
+    height raster (:class:`_Grid`); ``keelsons``: the keelson records (default the catalogue's); ``records``: the
+    timbers around them (default the catalogue's)."""
     import warnings
 
     top = np.full(len(xs), np.nan)
     covered = np.zeros(len(xs), bool)
     frame = ship.need_frame(chunk)
-    for r in _keelsons(chunk):
+    for r in _keelsons(chunk) if keelsons is None else keelsons:
         x0, _y0, x1, _y1 = _polygon(tracing.ship_xy_of(chunk, r, frame)).bounds
         here = (xs >= x0) & (xs <= x1)
         try:
-            grid, mask, _top, bottom = _solid_grid(chunk, r)
+            grid, mask, _top, bottom = _solid_grid(chunk, r, path=path, records=records)
         except NotReady:
             continue  # not covered: the keel's top there is read on the hull
         row = int(np.argmin(np.abs(grid.y)))
@@ -585,7 +772,7 @@ def _keel_line(chunk, xs: np.ndarray, siding: float) -> np.ndarray:
         top[here] = np.fmin(top[here], np.interp(xs[here], grid.x[ok], bottom[row, ok]))
     missing = ~np.isfinite(top) & ~covered
     if missing.any():
-        grid = _Grid(chunk, (float(xs.min()), -siding / 2.0, float(xs.max()), siding / 2.0), margin=1)
+        grid = _Grid(chunk, (float(xs.min()), -siding / 2.0, float(xs.max()), siding / 2.0), margin=1, path=path)
         band = np.abs(grid.y) <= max(siding / 2.0, grid.cell)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)  # columns off the model

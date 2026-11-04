@@ -23,9 +23,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _plugin_folder(root: Path) -> Path:
     folder = root / "plugins"
-    dist = folder / "shipwreck" / "ppg_shipwreck-0.3.0.dist-info"
+    dist = folder / "shipwreck" / "ppg_shipwreck-0.4.0.dist-info"
     dist.mkdir(parents=True)
-    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: ppg-shipwreck\nVersion: 0.3.0\n")
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: ppg-shipwreck\nVersion: 0.4.0\n")
     (dist / "entry_points.txt").write_text("[pyarchinit_photogrammetry.plugins]\nshipwreck = ppg_shipwreck:ShipwreckPlugin\n")
     return folder
 
@@ -135,19 +135,29 @@ def test_a_cancelled_build_is_flagged_and_an_edit_makes_the_solids_stale(tmp_pat
 def test_version_and_index_entry():
     import ppg_shipwreck
 
-    assert ppg_shipwreck.__version__ == "0.3.0"
+    assert ppg_shipwreck.__version__ == "0.4.0"
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert project["version"] == "0.3.0"
+    assert project["version"] == "0.4.0"
     entry = json.loads((ROOT / "entry.json").read_text())
     assert entry["min_app"] == "1.7.1"
     for text in (entry["description"], entry["i18n"]["it"]["description"]):
         assert len(text) <= 370
     assert re.search(r"3D", entry["description"]) and re.search(r"3D", entry["i18n"]["it"]["description"])
+    assert "reconstruct" in entry["description"] and "ricostru" in entry["i18n"]["it"]["description"]
+    plugin = ppg_shipwreck.ShipwreckPlugin()
+    assert "ricostruzione" in plugin.description.lower()
 
 
 # ------------------------------------------------------------------------------------ the pane
 @pytest.fixture
 def window(tmp_path, monkeypatch):
+    doc, ch, ends = framed_project(tmp_path, heading_deg=35, x_range=(3.0, 9.0))
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    doc.save()
+    yield from _window(doc, ch, tmp_path, monkeypatch)
+
+
+def _window(doc, ch, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication
 
     from ppg_shipwreck import ShipwreckPlugin
@@ -157,9 +167,6 @@ def window(tmp_path, monkeypatch):
     QApplication.instance() or QApplication([])
     from pyarchinit_photogrammetry.gui import main_window as mwmod
 
-    doc, ch, ends = framed_project(tmp_path, heading_deg=35, x_range=(3.0, 9.0))
-    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
-    doc.save()
     app.document = doc
     w = mwmod.MainWindow(doc, autoconnect=False, check_updates=False)
     w.runner.show_dialog = False
@@ -367,3 +374,322 @@ def test_removing_timbers_in_the_table_is_an_undo_step(window):
     assert "legni rimossi" in w.history.undo_text()
     w.history.undo()
     assert len(timbers.timbers_of(ch)) == n
+
+
+# ------------------------------------------------------------------------------------ 0.4.0: the reconstruction
+def test_the_reconstruction_step_from_the_command_line(tmp_path, monkeypatch):
+    """Two campaigns of the hull (A 0-7, B 6-12 with port lost over 8.5-11) and a third chunk never aligned: ``chunks``
+    lists A and B and says why C is left out, ``frame-of`` gives B the frame of A, ``ends`` sets and clears the stem
+    and the stern, ``reconstruct`` builds over both (the flags leave a step out), ``reconstruct table`` writes the
+    table with the kind of each length, ``export3d``/``plan --reconstruction`` add the hypothesis."""
+    import csv
+
+    from test_chunks import _pair
+    from typer.testing import CliRunner
+
+    from ppg_shipwreck import reconstruct
+    from pyarchinit_photogrammetry.cli import app
+
+    doc, a, b = _pair(tmp_path, (6.0, 12.0), missing=(8.5, 11.0, "port"))
+    doc.add_chunk("Altra campagna")
+    doc.save()
+    monkeypatch.setenv("PPG_PLUGINS_DIR", str(_plugin_folder(tmp_path)))
+    monkeypatch.setenv("PPG_PLUGINS_ENVIRONMENT", "0")
+    p = str(doc.path)
+    cli = CliRunner()
+
+    def run(*args, code=0):
+        result = cli.invoke(app, ["plugin", "shipwreck", *args])
+        assert result.exit_code == code, result.output
+        return result.output
+
+    out = run("chunks", p, "--chunk", "A")
+    assert "A" in out and "B" in out
+    assert "Allinea prima il chunk «Altra campagna»" in out
+    assert "Allinea prima" in run("frame-of", p, "A", "--chunk", "Altra campagna", code=1)
+    run("frame-of", p, "A", "--chunk", "B")
+    assert ship.state(ppg.Document.open(p).chunks[1])["frame"]["start"] == ship.state(a)["frame"]["start"]
+
+    out = run("ends", p, "--chunk", "A", "--stem", "-0.3", "--stern", "12.3")
+    ends = reconstruct.state(next(c for c in ppg.Document.open(p).chunks if c.label == "A"))["ends"]
+    assert ends == {"stem": {"x": -0.3}, "stern": {"x": 12.3}}
+    run("ends", p, "--chunk", "A", "--none")
+    assert "ends" not in reconstruct.state(next(c for c in ppg.Document.open(p).chunks if c.label == "A"))
+    run("ends", p, "--chunk", "A", "--stern", "12.3")
+
+    out = run("reconstruct", p, "--chunk", "A", "--no-loft")
+    assert "simmetria" in out
+    ch = next(c for c in ppg.Document.open(p).chunks if c.label == "A")
+    st = reconstruct.state(ch)
+    assert "loft" not in st and st["params"]["steps"] == ["mirror", "extension", "frames"]
+    assert any(r["status"] == "reconstructed:mirror" for r in st["timbers"])
+    run("reconstruct", p, "--chunk", "A", "--no-mirror")
+    st = reconstruct.state(next(c for c in ppg.Document.open(p).chunks if c.label == "A"))
+    assert not any(r["status"] == "reconstructed:mirror" for r in st["timbers"]) and "mirror" not in st
+    out = run("reconstruct", p, "--chunk", "A")
+    ch = next(c for c in ppg.Document.open(p).chunks if c.label == "A")
+    st = reconstruct.state(ch)
+    assert st["loft"]["file"] and st["open_ends"] == ["stem"]
+    assert [m["label"] for m in st["members"]["chunks"]] == ["A", "B"]
+    assert "Altra campagna" in out  # the refused chunk said
+
+    folder = tmp_path / "tabella"
+    run("reconstruct", "table", p, "--chunk", "A", "--out", str(folder))
+    with open(folder / "tabella.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert "length_kind" in rows[0]
+    merged = {r["id"]: r for r in rows}
+    # the table lists the merged records (B's strakes too: ids "<key>:<id>") and says what each length is
+    assert any(":" in i for i in merged), sorted(merged)[:5]
+    assert {r["length_kind"] for r in rows} <= {"3D", "pianta", ""}
+    assert any(r["length_kind"] == "pianta" for r in rows if r["status"] != "measured")
+    assert (folder / "tabella.xlsx").exists()
+
+    run("solids", p, "--chunk", "A")
+    obj, obj0 = tmp_path / "ric" / "legni.obj", tmp_path / "base" / "legni.obj"
+    run("export3d", p, "--chunk", "A", "--out", str(obj), "--reconstruction")
+    run("export3d", p, "--chunk", "A", "--out", str(obj0))
+    assert "_ric" in obj.read_text() and "carenatura" in obj.read_text()
+    assert "carenatura" not in obj0.read_text()
+    plan = tmp_path / "pianta"
+    run("plan", p, "--chunk", "A", "--reconstruction", "--out", str(plan))
+    assert (plan / "wreck_plan.pdf").exists()
+    import ezdxf
+
+    drawn, plain = tmp_path / "disegni_ric", tmp_path / "disegni"
+    run("drawings", p, "--chunk", "A", "--reconstruction", "--out", str(drawn))
+    run("drawings", p, "--chunk", "A", "--out", str(plain))
+
+    def layers(folder):
+        return {e.dxf.layer for e in ezdxf.readfile(folder / "body_plan.dxf").modelspace()}
+
+    assert "RICOSTRUZIONE_HULL" in layers(drawn) and "RICOSTRUZIONE_HULL" not in layers(plain)
+    status = json.loads(run("status", p, "--chunk", "A"))
+    assert "ipotesi" in status["reconstruction"]
+
+
+def test_the_keel_is_no_wider_than_its_siding_and_a_cell():
+    from ppg_shipwreck import loft
+
+    assert not loft.wider_than_keel(0.10 + 0.005, 0.10, 0.01)
+    assert loft.wider_than_keel(0.10 + 0.01, 0.10, 0.01)  # siding + one cell: a keelson, not the keel
+    assert loft.wider_than_keel(0.12, 0.10, 0.01)
+
+
+@pytest.fixture
+def rebuild_window(tmp_path, monkeypatch):
+    from test_reconstruct import HOLE, _wreck_project
+
+    ch = _wreck_project(tmp_path, port_from=HOLE)
+    ch.document.save()
+    yield from _window(ch.document, ch, tmp_path, monkeypatch)
+
+
+def _files(folder):
+    return {p.name: p.read_bytes() for p in folder.glob("*.ply")}
+
+
+def test_the_pane_reconstructs_and_an_undo_takes_a_build_back(rebuild_window, monkeypatch, tmp_path):
+    import copy
+
+    from PySide6.QtWidgets import QFileDialog
+
+    from ppg_shipwreck import RECONSTRUCTION_LAYER, reconstruct
+
+    w, ch, plugin, wait, answers, said, chosen = rebuild_window
+    pane = plugin.pane
+    names = {"rec_ends": "Prua e poppa...", "rec_build": "Ricostruisci...", "rec_frame_of": "Usa il sistema nave di...",
+             "rec_table": "Tabella...", "rec_export": "Esporta 3D...", "rec_plan": "Pianta con ricostruzione..."}
+    for name, text in names.items():
+        assert pane.buttons[name].text() == text
+    assert "Nessuna ricostruzione" in pane.states["reconstruction"].text()
+    asked = {}
+    ask = plugin._ask
+
+    def recording(title, fields, intro=""):
+        asked[title] = [f.name for f in fields]
+        return ask(title, fields, intro)
+
+    monkeypatch.setattr(plugin, "_ask", recording)
+    plugin._requested("drawings")
+    wait()
+    assert "reconstruction" not in asked["Disegni"]  # nothing to draw it with: the 0.3.0 dialog
+
+    answers["Prua e poppa"] = {"stem_on": False, "stern_on": True, "stern": 12.3}
+    plugin._requested("rec_ends")
+    assert reconstruct.state(ch)["ends"] == {"stern": {"x": 12.3}}
+    assert "prua e poppa" in w.history.undo_text()
+
+    answers["Ricostruisci"] = {"loft": False}
+    plugin._requested("rec_build")
+    wait()
+    first = copy.deepcopy(reconstruct.state(ch))
+    first_files = _files(reconstruct.folder(ch))
+    assert "loft" not in first and first["timbers"]
+    answers["Ricostruisci"] = {"loft": True}
+    plugin._requested("rec_build")
+    wait()
+    st = reconstruct.state(ch)
+    assert st["loft"]["file"] and "carenatura.ply" in _files(reconstruct.folder(ch))
+    assert "ipotesi" in pane.states["reconstruction"].text()
+    n = len(st["timbers"])
+    tree = plugin._tree_items(ch)[0]["children"]
+    assert any(i["label"] == f"Ricostruzione ({n}, ipotesi)" for i in tree), [i["label"] for i in tree]
+    assert "ricostruzione" in w.history.undo_text().lower()
+    second = copy.deepcopy(reconstruct.state(ch))
+    second_files = _files(reconstruct.folder(ch))
+
+    w.history.undo()  # the second build taken back: the first reconstruction, records and files
+    assert reconstruct.state(ch) == first and _files(reconstruct.folder(ch)) == first_files
+    w.history.redo()
+    assert reconstruct.state(ch) == second and _files(reconstruct.folder(ch)) == second_files
+
+    # step 5's drawings: without the reconstruction unless the box is ticked
+    plugin._requested("drawings")
+    wait()
+    assert "reconstruction" in asked["Disegni"]
+    made = ship.state(ch)["drawings"]
+    assert made["body_plan"]["reconstruction"] is False and made["wreck_plan"]["reconstruction"] is False
+    answers["Disegni"] = {"reconstruction": True}
+    plugin._requested("drawings")
+    wait()
+    made = ship.state(ch)["drawings"]
+    assert made["body_plan"]["reconstruction"] is True and made["wreck_plan"]["reconstruction"] is True
+    del answers["Disegni"]
+
+    # a strake corrected after the build: "da ricostruire" with the reason in the state, under the buttons, in the tree
+    from ppg_shipwreck import relief, timbers, tracing
+
+    frame = ship.frame_of(ch)
+    strake = next(r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and r["side"] == "starboard"
+                  and r["geometry"]["type"] == "polygon")
+    tracing.correct(ch, strake["id"], relief.uv_of_ship(tracing.ship_xy_of(ch, strake, frame) + [0.0, 0.05],
+                                                        frame.sign))
+    plugin.refresh_pane()
+    reason = reconstruct.stale(ch)
+    assert reason and "Da ricostruire: " + reason in pane.states["reconstruction"].text()
+    for name in ("rec_build", "rec_table", "rec_export", "rec_plan"):
+        assert reason in pane.buttons[name].toolTip(), name
+    assert reason not in pane.buttons["rec_ends"].toolTip()
+    tree = plugin._tree_items(ch)[0]["children"]
+    assert any(i["label"].endswith("ipotesi, da rifare)") for i in tree), [i["label"] for i in tree]
+
+    # the layer of the reconstruction only on the relief
+    plugin._need_view(ch)
+    plugin.draw_layer()
+    assert not _features(w.ortho_view, RECONSTRUCTION_LAYER)
+    plugin._requested("relief_show")
+    assert len(_features(w.ortho_view, RECONSTRUCTION_LAYER)) == len(
+        [r for r in reconstruct.records_of(ch) if r["geometry"]["type"] == "polygon"])
+
+    folder = tmp_path / "tabella"
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(folder))
+    plugin._requested("rec_table")
+    assert (folder / "tabella.csv").exists() and (folder / "tabella.xlsx").exists()
+    assert any(s.startswith("warning: La ricostruzione è da rifare") for s in said), said
+
+    from ppg_shipwreck import solids
+
+    solids.build(ch)
+    out = tmp_path / "esporta" / "ricostruzione.obj"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    answers["Esporta 3D con la ricostruzione"] = {"system": "ship", "tables": True}
+    plugin._requested("rec_export")
+    wait()
+    assert out.exists() and "_ric" in out.read_text() and (out.parent / "tabella.csv").exists()
+
+    plugin._requested("rec_plan")
+    wait()
+    made = ship.state(ch)["drawings"]["wreck_plan"]
+    assert made["reconstruction"] is True and (ship.folder(ch) / "drawings" / "wreck_plan.pdf").exists()
+    # step 8's plan is the 0.3.0 one
+    plugin._requested("wreck_plan")
+    wait()
+    assert ship.state(ch)["drawings"]["wreck_plan"]["reconstruction"] is False
+
+    plugin._requested("rec_frame_of")  # one chunk: nothing to take the frame from
+    assert any("altro chunk" in s for s in said)
+
+
+def test_undo_copies_and_the_reconstruction_layer(rebuild_window):
+    """Two builds keep three copies (the "before" of a build is the "after" of the one before); the copies of an
+    earlier session are removed, those of this session's steps kept; a missing copy is said, not restored empty;
+    deleting reconstructed features on the relief is said and they come back."""
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_shipwreck import RECONSTRUCTION_LAYER, UNDO_FOLDER, reconstruct
+
+    w, ch, plugin, wait, answers, said, chosen = rebuild_window
+    root = ship.folder(ch) / UNDO_FOLDER
+    stray = root / "di_una_sessione_vecchia"
+    stray.mkdir(parents=True)
+    plugin._clean_undo_copies(ch.document)
+    assert not stray.exists()
+    answers["Ricostruisci"] = {"loft": False}
+    plugin._requested("rec_build")
+    wait()
+    answers["Ricostruisci"] = {"loft": True}
+    plugin._requested("rec_build")
+    wait()
+    copies = sorted(root.iterdir())
+    assert len(copies) == 3, copies
+    plugin._clean_undo_copies(ch.document)  # this session's steps hold them all
+    assert sorted(root.iterdir()) == copies
+
+    plugin._requested("relief_show")
+    view = w.ortho_view
+    feats = _features(view, RECONSTRUCTION_LAYER)
+    assert feats
+    view.select_items([feats[0][0]])
+    w.delete_selected(confirm=False)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert any("non si modifica a mano" in s for s in said)
+    assert len(_features(view, RECONSTRUCTION_LAYER)) == len(feats)
+
+    state = reconstruct.state(ch)
+    step = w.history.entries[w.history.index - 1].action
+    import shutil
+
+    shutil.rmtree(step.before_dir)
+    w.history.undo()
+    assert any("non c'è più" in s for s in said) and reconstruct.state(ch) == state  # nothing restored empty
+
+
+def test_stale_undo_copies_go_when_the_project_is_opened_after_activation(tmp_path, monkeypatch):
+    """The plugins start before a project is opened (start page, File > Open): the copies of an earlier session are
+    removed at the first build of the chunk, not left to grow."""
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_shipwreck import UNDO_FOLDER, ShipwreckPlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import main_window as mwmod
+    from pyarchinit_photogrammetry.plugins import Context
+    from test_reconstruct import HOLE, _wreck_project
+
+    QApplication.instance() or QApplication([])
+    ch = _wreck_project(tmp_path / "p", port_from=HOLE)
+    ch.document.save()
+    stray = ship.folder(ch) / UNDO_FOLDER / "di_una_sessione_vecchia"
+    stray.mkdir(parents=True)
+    app.document = ppg.Document()  # as the program starts: an empty project, the plugins activated on it
+    w = mwmod.MainWindow(None, autoconnect=False, check_updates=False)
+    w.runner.show_dialog = False
+    plugin = ShipwreckPlugin()
+    try:
+        plugin.activate(Context("shipwreck", tmp_path / "plugin", window=w))
+        app.document = ch.document
+        w.set_document(ch.document)
+        assert stray.exists()  # activation saw no project
+        monkeypatch.setattr(plugin, "_message", lambda kind, text: None)
+        plugin.rebuild(w.chunk, ["mirror"])
+        w.runner.wait()
+        QApplication.processEvents()
+        assert not stray.exists()
+        assert len(list((ship.folder(w.chunk) / UNDO_FOLDER).iterdir())) == 2
+    finally:
+        plugin.deactivate()
+        w.setWindowModified(False)
+        w.close()
+        w.deleteLater()
+        app.document = None
