@@ -214,6 +214,33 @@ def _require(mask: np.ndarray, record: dict) -> None:
                          f"{record['name'] or record['id']}: no cell of the relief inside the outline."))
 
 
+def _scattered(points: np.ndarray, values: np.ndarray, at: np.ndarray) -> np.ndarray:
+    """``values`` at the points ``at``: ``griddata`` linear where the ``points`` span an area (nearest outside their
+    hull); points on one line (a ring of one row at the model's edge, a strake one cell wide) or fewer than three:
+    linear along that line, held at its ends; no points: NaN."""
+    from scipy.interpolate import griddata
+
+    out = np.full(len(at), np.nan)
+    if not len(points):
+        return out
+    centred = points - points.mean(axis=0)
+    rank = np.linalg.matrix_rank(centred, tol=1e-9) if len(points) >= 3 else 0
+    if rank == 2:
+        try:
+            out = griddata(points, values, at, method="linear")
+        except Exception:  # noqa: BLE001 - a degenerate set qhull refuses: nearest below
+            out = np.full(len(at), np.nan)
+    elif len(points) >= 2 and np.ptp(centred, axis=0).max() > 0:
+        axis = np.linalg.svd(centred, full_matrices=False)[2][0]
+        s = centred @ axis
+        order = np.argsort(s)
+        out = np.interp((at - points.mean(axis=0)) @ axis, s[order], values[order])
+    bad = ~np.isfinite(out)
+    if bad.any():
+        out[bad] = griddata(points, values, at[bad], method="nearest") if len(points) > 1 else values[0]
+    return out
+
+
 # ----------------------------------------------------------------------------- the thickness of a strake
 def _clinker_thickness(chunk, record) -> float | None:
     from . import clinker
@@ -261,12 +288,20 @@ def _seam_steps(chunk, record) -> list[float]:
     return steps
 
 
+def _positive(thickness) -> float:
+    value = float(thickness)
+    if not value > 0:
+        raise NotReady(t(f"Spessore non valido: {num(value, 1)} mm (deve essere maggiore di zero).",
+                         f"Invalid thickness: {num(value, 1)} mm (it must be greater than zero)."))
+    return value
+
+
 def thickness_of(chunk, record: dict, given: float | None = None) -> tuple[float, str]:
     """The thickness (mm) of a strake and where it comes from: ``given`` ("given") > the record's ``thickness_mm``
     ("record") > the strake of the same name and side in the strake model of the sections ("clinker") > the median
     step of the seams along its outline ("seams"). :class:`NotReady` "spessore sconosciuto: scrivilo" otherwise."""
-    if given is not None and float(given) > 0:
-        return float(given), "given"
+    if given is not None:
+        return _positive(given), "given"
     if record.get("thickness_mm"):
         return float(record["thickness_mm"]), "record"
     found = _clinker_thickness(chunk, record)
@@ -292,15 +327,8 @@ def _fill_along_x(z: np.ndarray, known: np.ndarray, wanted: np.ndarray, grid: _G
         else:
             left[r] = w
     if left.any():
-        from scipy.interpolate import griddata
-
         pts = np.column_stack([grid.X[known], grid.Y[known]])
-        at = np.column_stack([grid.X[left], grid.Y[left]])
-        vals = griddata(pts, z[known], at, method="linear") if len(pts) >= 3 else np.full(len(at), np.nan)
-        bad = ~np.isfinite(vals)
-        if bad.any() and len(pts):
-            vals[bad] = griddata(pts, z[known], at[bad], method="nearest")
-        out[left] = vals
+        out[left] = _scattered(pts, z[known], np.column_stack([grid.X[left], grid.Y[left]]))
     return out
 
 
@@ -322,6 +350,7 @@ def _normals(field: np.ndarray, mask: np.ndarray, grid: _Grid, sigma: float) -> 
 def strake_shell(chunk, record: dict, thickness: float) -> Solid:
     """The shell of a strake (``thickness`` in mm): see the module. :class:`NotReady` when the relief is missing or
     stale, or no cell of it lies inside the strake."""
+    thickness = _positive(thickness)
     frame = ship.need_frame(chunk)
     poly = _polygon(tracing.ship_xy_of(chunk, record, frame))
     grid = _Grid(chunk, poly.bounds)
@@ -372,9 +401,7 @@ def _hull_under(cells: np.ndarray, ring: np.ndarray, zs: np.ndarray, cell: float
     long sides (an outline traced a cell or two inside the timber leaves its top in the ring's inner edge; beyond its
     ends the timber may go on past what was traced - a frame stopped short of the sheer - and the ring there would be
     its top; a triangulation of the lattice links cells rows apart, wrong where the hull is steep). What is left, and
-    any other footprint: ``griddata`` linear on the ring, nearest at the rim."""
-    from scipy.interpolate import griddata
-
+    any other footprint: ``griddata`` linear on the ring, nearest at the rim (:func:`_scattered`)."""
     out = np.full(len(cells), np.nan)
     centre, along, across, long = _axes(cells)
     if long:
@@ -400,11 +427,7 @@ def _hull_under(cells: np.ndarray, ring: np.ndarray, zs: np.ndarray, cell: float
             ring, zs = ring[keep], zs[keep]
     left = ~np.isfinite(out)
     if left.any():
-        vals = griddata(ring, zs, cells[left], method="linear") if len(ring) >= 3 else np.full(left.sum(), np.nan)
-        bad = ~np.isfinite(vals)
-        if bad.any():
-            vals[bad] = griddata(ring, zs, cells[left][bad], method="nearest")
-        out[left] = vals
+        out[left] = _scattered(ring, zs, cells[left])
     return out
 
 
@@ -566,6 +589,11 @@ def keel_solid(chunk) -> Solid | None:
 
 
 # ----------------------------------------------------------------------------- files and the build
+def _one_line(text) -> str:
+    """A header comment's text: no line breaks (they would end the comment and break the header for other readers)."""
+    return " ".join(str(text).split())
+
+
 def write_ply(path, solid: Solid, frame: ship.Frame | None = None) -> Path:
     """A binary little-endian PLY of ``solid`` in the ship frame: double vertices, triangle faces with the uchar
     property ``hidden``, comments with the record (as :func:`pyarchinit_photogrammetry.io.mesh_ply.write_mesh` writes
@@ -573,7 +601,7 @@ def write_ply(path, solid: Solid, frame: ship.Frame | None = None) -> Path:
     PlyMesh` and ``read_mesh`` read it). Written to a temporary file first."""
     path = Path(path)
     comments = ["ppg_shipwreck solid", "system ship (x along the keel line, y to port, z up from the datum)",
-                f"kind {solid.kind}", f"status {solid.status}", f"name {solid.name}"]
+                f"kind {solid.kind}", f"status {solid.status}", f"name {_one_line(solid.name)}"]
     if solid.id:
         comments.append(f"id {solid.id}")
     if solid.thickness_mm is not None:
@@ -602,15 +630,22 @@ def _label(record: dict) -> str:
     return record.get("name") or record["id"]
 
 
+def _drop_solid(record: dict, folder: Path) -> None:
+    record.pop("solid", None)
+    record.pop("volume", None)
+    (folder / f"{record['id']}.ply").unlink(missing_ok=True)
+
+
 def build(chunk, thickness: float | None = None, progress=None) -> dict:
     """The 3D object of every polygon record: ``<chunk data>/shipwreck/timbers/<id>.ply`` (:func:`write_ply`), the
-    record's ``solid`` (the file, relative to the chunk's data folder) and ``volume`` (m3); ``thickness`` (mm), when
-    given, is the thickness of every strake (:func:`thickness_of`: it comes before a record's own) and is written
-    into the ``thickness_mm`` of the strakes that had none (a record's own is never overwritten). A record that cannot
-    be built is refused with the reason (its old file and fields go); lines and points are listed without a solid; the typed keel
-    (:func:`keel_solid`) goes to ``keel.ply`` and ``state["keel"]``. Files of records no longer in the catalogue are
-    removed. Returns ``{"built": [...], "refused": [...], "without_solid": [...], "keel": {...} | None}``, also kept
-    (without the lists' details) in ``state["solids"]``."""
+    record's ``solid`` (the file, relative to the chunk's data folder) and ``volume`` (m3). A strake's thickness is
+    its own (:func:`thickness_of`: the record's, the strake model's, the seams'); ``thickness`` (mm) is the DEFAULT
+    for the strakes that have none, written into their ``thickness_mm`` (a strake with its own is never changed).
+    A record that cannot be built - for whatever reason - is refused with the reason (its old file and fields go)
+    and the build goes on; lines and points are listed without a solid; the typed keel (:func:`keel_solid`) goes to
+    ``keel.ply`` and ``state["keel"]``. At the end, whatever happened, the files of records no longer in the
+    catalogue are removed and ``state["solids"]`` is written. Returns ``{"built": [...], "refused": [...],
+    "without_solid": [...], "keel": {...} | None}``."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
@@ -618,6 +653,8 @@ def build(chunk, thickness: float | None = None, progress=None) -> dict:
     if relief.entry(chunk) is None:
         raise NotReady(t("Costruisci prima il rilievo dello scafo.", "Build the relief of the hull first."))
     tracing.need_fresh_relief(chunk)
+    if thickness is not None:
+        thickness = _positive(thickness)
     folder = ship.folder(chunk) / FOLDER
     folder.mkdir(parents=True, exist_ok=True)
     records = list(ship.state(chunk).get("timbers", []))
@@ -627,54 +664,71 @@ def build(chunk, thickness: float | None = None, progress=None) -> dict:
         if r["geometry"]["type"] != "polygon":
             out["without_solid"].append({"id": r["id"], "name": _label(r), "kind": r["kind"],
                                          "type": r["geometry"]["type"]})
-    written = set()
     total = len(polygons) + 1
-    for k, r in enumerate(polygons):
-        progress(k / total, t(f"Legni in 3D: {_label(r)} ({k + 1}/{len(polygons)})",
-                              f"Timbers in 3D: {_label(r)} ({k + 1}/{len(polygons)})"))
-        typed = False
-        try:
-            if r["kind"] in SHELLS:
-                mm, source = thickness_of(chunk, r, thickness)
-                typed = source == "given" and not r.get("thickness_mm")
-                solid = strake_shell(chunk, r, mm)
-            else:
-                solid = timber_solid(chunk, r)
-        except NotReady as exc:
-            r.pop("solid", None)
-            r.pop("volume", None)
-            (folder / f"{r['id']}.ply").unlink(missing_ok=True)
-            out["refused"].append({"id": r["id"], "name": _label(r), "kind": r["kind"], "reason": str(exc)})
-            continue
-        path = write_ply(folder / f"{r['id']}.ply", solid, frame)
-        written.add(path.name)
-        r["solid"] = str(path.relative_to(chunk.data_dir))
-        r["volume"] = float(solid.volume)
-        if typed:
-            r["thickness_mm"] = float(thickness)
-        out["built"].append({"id": r["id"], "name": _label(r), "kind": r["kind"], "file": r["solid"],
-                             "volume": solid.volume, "status": solid.status, "hidden": int(solid.hidden.sum()),
-                             "thickness_mm": solid.thickness_mm})
-    progress(len(polygons) / total, t("Chiglia", "Keel"))
-    keel_state = ship.state(chunk).get("keel")
-    keel = keel_solid(chunk)
-    if keel is not None:
-        path = write_ply(folder / KEEL_FILE, keel, frame)
-        written.add(path.name)
-        keel_state["solid"] = str(path.relative_to(chunk.data_dir))
-        keel_state["volume"] = float(keel.volume)
-        out["keel"] = {"file": keel_state["solid"], "volume": keel.volume, "status": keel.status, "name": keel.name}
-    elif keel_state:
-        keel_state.pop("solid", None)
-        keel_state.pop("volume", None)
-    for old in folder.glob("*.ply"):
-        if old.name not in written:
-            old.unlink(missing_ok=True)
-    ship.state(chunk)["solids"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                                   "count": len(out["built"]), "refused": [r["id"] for r in out["refused"]],
-                                   "frame_key": relief.frame_key(frame)}
+    try:
+        for k, r in enumerate(polygons):
+            progress(k / total, t(f"Legni in 3D: {_label(r)} ({k + 1}/{len(polygons)})",
+                                  f"Timbers in 3D: {_label(r)} ({k + 1}/{len(polygons)})"))
+            typed = False
+            try:
+                if r["kind"] in SHELLS:
+                    try:
+                        mm, _source = thickness_of(chunk, r)
+                    except NotReady:
+                        if thickness is None:
+                            raise
+                        mm, typed = thickness, True
+                    solid = strake_shell(chunk, r, mm)
+                else:
+                    solid = timber_solid(chunk, r)
+                path = write_ply(folder / f"{r['id']}.ply", solid, frame)
+            except Exception as exc:  # noqa: BLE001 - one record refused, never the whole build
+                _drop_solid(r, folder)
+                reason = str(exc) if isinstance(exc, NotReady) else f"{type(exc).__name__}: {exc}"
+                out["refused"].append({"id": r["id"], "name": _label(r), "kind": r["kind"], "reason": reason})
+                continue
+            r["solid"] = str(path.relative_to(chunk.data_dir))
+            r["volume"] = float(solid.volume)
+            if typed:
+                r["thickness_mm"] = float(thickness)
+            out["built"].append({"id": r["id"], "name": _label(r), "kind": r["kind"], "file": r["solid"],
+                                 "volume": solid.volume, "status": solid.status, "hidden": int(solid.hidden.sum()),
+                                 "thickness_mm": solid.thickness_mm})
+        progress(len(polygons) / total, t("Chiglia", "Keel"))
+        keel_state = ship.state(chunk).get("keel")
+        if keel_state:
+            keel_state.pop("solid", None)
+            keel_state.pop("volume", None)
+            try:
+                keel = keel_solid(chunk)
+                if keel is not None:
+                    path = write_ply(folder / KEEL_FILE, keel, frame)
+                    keel_state["solid"] = str(path.relative_to(chunk.data_dir))
+                    keel_state["volume"] = float(keel.volume)
+                    out["keel"] = {"file": keel_state["solid"], "volume": keel.volume, "status": keel.status,
+                                   "name": keel.name}
+            except Exception as exc:  # noqa: BLE001
+                reason = str(exc) if isinstance(exc, NotReady) else f"{type(exc).__name__}: {exc}"
+                out["refused"].append({"id": "keel", "name": t("chiglia", "keel"), "kind": "keel", "reason": reason})
+    finally:
+        _clean(chunk, folder)
+        ship.state(chunk)["solids"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                       "count": len(out["built"]), "refused": [r["id"] for r in out["refused"]],
+                                       "frame_key": relief.frame_key(frame)}
     volume = sum(b["volume"] for b in out["built"]) + (out["keel"]["volume"] if out["keel"] else 0.0)
     progress(1.0, t(f"Legni in 3D: {len(out['built'])} costruiti, {len(out['refused'])} rifiutati, "
                     f"{num(volume, 3)} m³",
                     f"Timbers in 3D: {len(out['built'])} built, {len(out['refused'])} refused, {num(volume, 3)} m³"))
     return out
+
+
+def _clean(chunk, folder: Path) -> None:
+    """The files no record holds any more: of records gone from the catalogue (or turned into lines and points), the
+    keel's when no keel is typed (or a measured one replaces it), left-over temporary files."""
+    keep = {f"{r['id']}.ply" for r in ship.state(chunk).get("timbers", []) if r["geometry"]["type"] == "polygon"}
+    keel = ship.state(chunk).get("keel")
+    if keel and keel.get("solid"):
+        keep.add(KEEL_FILE)
+    for old in list(folder.glob("*.ply")) + list(folder.glob("*.ply.tmp")):
+        if old.name not in keep:
+            old.unlink(missing_ok=True)

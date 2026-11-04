@@ -94,11 +94,13 @@ def test_hidden_span_under_a_frame(hull):
     assert any(abs(x - f) < 1e-9 for x in FRAMES)
     v, _faces = clinker_hull()
     near = np.abs(v[:, 0] - f) < 0.05
-    corners = s.vertices[np.unique(s.faces[s.hidden].ravel())]
+    tri = s.vertices[s.faces[s.hidden]]
+    up = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])[:, 2] > 0  # the inner face (outward = up)
+    corners = s.vertices[np.unique(s.faces[s.hidden][up].ravel())]
     corners = corners[np.abs(corners[:, 0] - f) < 0.03]
     planking = griddata(np.column_stack([v[near, 0], -v[near, 1]]), v[near, 2], corners[:, :2])  # ship y = -hull y
     d = corners[:, 2] - planking
-    inner = np.isfinite(d) & (d > -mm / 2000.0)  # the outer face lies a thickness below
+    inner = np.isfinite(d)  # every corner of the hidden inner faces: a sag is not filtered out
     assert inner.sum() > 10
     assert np.abs(d[inner]).max() < 0.005, np.abs(d[inner]).max()
 
@@ -222,7 +224,8 @@ def test_rebuild_keeps_records(hull):
     assert next(r for r in after if r["id"] == b4["id"])["thickness_mm"] == 16.0
     assert next(r for r in after if r["id"] == b2["id"])["thickness_mm"] == pytest.approx(
         next(r for r in before if r["id"] == b2["id"])["thickness_mm"])  # a record's own thickness is never overwritten
-    assert {b["thickness_mm"] for b in again["built"] if b["kind"] == "plank"} == {16.0}  # the typed one is used
+    typed = {b["id"] for b in again["built"] if b["kind"] == "plank" and b["thickness_mm"] == 16.0}
+    assert typed == {b4["id"]}  # the typed thickness only for the strake without one
     typed = {k: v for k, v in next(r for r in after if r["id"] == b4["id"]).items() if k != "thickness_mm"}
     assert clean([typed]) == clean([next(r for r in before if r["id"] == b4["id"])])
     assert clean([r for r in after if r["id"] != b4["id"]]) == clean([r for r in before if r["id"] != b4["id"]])
@@ -230,3 +233,52 @@ def test_rebuild_keeps_records(hull):
     solids.build(ch, thickness=16.0)
     assert not (ch.data_dir / "shipwreck" / "timbers" / f"{b2['id']}.ply").exists()
     assert np.array_equal(np.array(ch.transform), transform) and ch.product_path("model") == model
+
+
+def test_a_collinear_ring_and_a_failing_record_do_not_stop_the_build(hull, monkeypatch):
+    ch = hull
+    frame = ship.frame_of(ch)
+    sign = frame.sign
+    # a thin timber at the model's end (x 9): the hull beyond is off the model and another timber takes the ring aft
+    # of it but one column: its ring is one row of cells (qhull refuses a flat set)
+    thin = tracing.add_traced(ch, "other", "auto", "listello", relief.uv_of_ship(
+        [[8.985, 0.30], [8.995, 0.30], [8.995, 0.50], [8.985, 0.50]], sign), "polygon")
+    tracing.add_traced(ch, "other", "auto", "tavola", relief.uv_of_ship(
+        [[8.95, 0.30], [8.972, 0.30], [8.972, 0.50], [8.95, 0.50]], sign), "polygon")
+    s = solids.timber_solid(ch, thin)
+    assert trimesh.Trimesh(s.vertices, s.faces, process=False).is_watertight and np.isfinite(s.vertices).all()
+    line = np.column_stack([np.full(5, 1.0), np.linspace(0.0, 1.0, 5)])
+    at = np.array([[1.0, 0.25], [1.0, 2.0], [3.0, 0.5]])
+    assert solids._scattered(line, line[:, 1] * 2.0, at) == pytest.approx([0.5, 2.0, 1.0])
+    # any error of one record: that record refused with the reason, the others built, the state written
+    victim = _named(ch, "ordinata 5")
+    real = solids.timber_solid
+
+    def failing(chunk, record):
+        if record["id"] == victim["id"]:
+            raise RuntimeError("boom")
+        return real(chunk, record)
+
+    solids.build(ch)
+    assert (ch.data_dir / victim["solid"]).exists()
+    monkeypatch.setattr(solids, "timber_solid", failing)
+    ship.state(ch).pop("solids", None)
+    out = solids.build(ch, thickness=15.0)
+    refused = {r["id"]: r["reason"] for r in out["refused"]}
+    assert refused == {victim["id"]: "RuntimeError: boom"}
+    assert "solid" not in victim and not (ch.data_dir / "shipwreck" / "timbers" / f"{victim['id']}.ply").exists()
+    assert ship.state(ch)["solids"]["refused"] == [victim["id"]]
+    assert len(out["built"]) == len([r for r in timbers.timbers_of(ch) if r["geometry"]["type"] == "polygon"]) - 1
+    with pytest.raises(NotReady, match="Spessore non valido"):
+        solids.build(ch, thickness=0.0)
+    with pytest.raises(NotReady, match="Spessore non valido"):
+        solids.thickness_of(ch, _named(ch, "fascia B3"), given=-2.0)
+
+
+def test_a_name_with_a_line_break_keeps_the_header(hull, tmp_path):
+    from pyarchinit_photogrammetry.io.mesh_ply import PlyMesh
+
+    s = solids.strake_shell(hull, _named(hull, "fascia B1"), 15.0)
+    s.name = "fascia\nB1\r\nend_header"
+    mesh = PlyMesh(solids.write_ply(tmp_path / "x.ply", s))
+    assert mesh.n_faces == len(s.faces) and mesh._faces["hidden"].sum() == s.hidden.sum()
