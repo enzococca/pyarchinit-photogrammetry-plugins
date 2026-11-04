@@ -60,7 +60,10 @@ the sections and the faired hull passes over it; a twisted wreck is mirrored twi
 hull is a hypothesis of the breadth only, its height that of the last section; a seam without land lines is followed for
 at most a metre past its points, then held straight (`uncertain`); an extended strake is cut where it grows wider
 than 1.5 times its measured width or leaves the hull's half-breadth (`uncertain`); with several chunks the frames must carry the field's
-numbers, and only the active chunk's files are written.
+numbers, and only the active chunk's files are written; without the mirror, where one side is lost and the other
+preserved only the faired hull is reconstructed. The reconstruction is drawn and exported only when asked for (a box
+in *Drawings*, *Plan of the wreck* and *Export 3D*, `--reconstruction`); when what it was built from changes it is
+said to be built again, and in another ship frame the 3D export refuses it.
 
 The Clinker Boat Tool is a Houdini Digital Asset by Fred Fröhlich and Sigurd Solhaug Nielsen (MIT,
 [10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), described in *From Photogrammetry to Construction
@@ -81,7 +84,7 @@ ppg plugin shipwreck frame PROJECT.ppg --other-bow   # the bow is the other end;
 ppg plugin shipwreck stations PROJECT.ppg --spacing 1 --count 11 --first 1      # or --table FILE, --from-catalogue
 ppg plugin shipwreck sections PROJECT.ppg --longitudinals "0;1;-1" --horizontals "-0.2;-0.5" --half-width 4.5
 ppg plugin shipwreck water PROJECT.ppg --level -0.1 --n 1.34 --on
-ppg plugin shipwreck drawings PROJECT.ppg [--scale 20] [--out FOLDER]
+ppg plugin shipwreck drawings PROJECT.ppg [--scale 20] [--out FOLDER] [--reconstruction]
 ppg plugin shipwreck timbers PROJECT.ppg [--table FILE]
 ppg plugin shipwreck export PROJECT.ppg --out timbers.xlsx                      # .csv, .xlsx, .gpkg
 ppg plugin shipwreck status PROJECT.ppg

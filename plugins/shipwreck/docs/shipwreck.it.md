@@ -178,6 +178,19 @@ dello scafo e i legni ricalcati sopra (passo 8); la carenatura vuole anche le st
 | *Esporta 3D...* | I legni in 3D con la ricostruzione (OBJ, GLB, IFC), e la tabella accanto. |
 | *Pianta con ricostruzione...* | La pianta del relitto con la ricostruzione campita. |
 
+Altrove la ricostruzione è disegnata o esportata solo quando la si chiede: *Disegni* (passo 5), *Pianta del relitto* ed
+*Esporta 3D* (passo 8) hanno la casella **Con la ricostruzione (ipotesi)**, spenta di partenza (i disegni e i file della
+0.3.0); dalla riga di comando `drawings`, `plan` ed `export3d` accettano `--reconstruction`. Il piano di costruzione e
+il profilo si disegnano senza la carenatura se la casella non è spuntata.
+
+**Da ricostruire.** La ricostruzione ricorda da che cosa è stata costruita: il sistema della nave, il catalogo, la
+chiglia data e il rilievo di questo chunk e degli altri chunk letti, la prua e la poppa date. Quando uno di questi cambia
+dopo la costruzione (una fascia corretta, la prua scambiata, il rilievo rifatto...), lo stato del passo 9, le note sotto
+i suoi pulsanti e l'albero (*Ricostruzione (n, ipotesi, da rifare)*) dicono **da ricostruire** e perché; la tabella
+segna le righe ricostruite (colonna `stale`, il titolo della cartella di lavoro), la pianta disegnata con la
+ricostruzione porta una nota e l'esportazione 3D lo dice. Costruita in un altro sistema della nave, i suoi legni in 3D
+starebbero altrove: l'esportazione 3D li rifiuta finché non ricostruisci, e la pianta lascia fuori la carenatura.
+
 Ogni costruzione, e ogni modifica di prua e poppa, è un passo di *Modifica > Annulla*: annullare una costruzione
 riporta la ricostruzione di prima, record e file. Per questo la cartella della ricostruzione è copiata una volta per
 costruzione in `shipwreck/reconstruction.undo/` (tolta alla sessione successiva); le copie sono collegamenti fisici e
@@ -215,6 +228,8 @@ mentre il rilievo è mostrato, il layer *Ricostruzione (ipotesi)* disegna sopra 
 - **La chiglia** data al passo 8 resta un solido suo; non entra mai nella carenatura.
 - **Il profilo** non mostra l'orlo su un tratto perso da entrambi i lati: il bordo alto della carenatura non è
   disegnato come orlo.
+- **Senza la simmetria** (la casella spenta, `--no-mirror`) il prolungamento lascia comunque alla simmetria i tratti
+  dove un lato è perso e l'altro conservato: lì è ricostruita solo la carenatura, e la costruzione lo dice.
 
 ### Più chunk dello stesso relitto
 
@@ -224,7 +239,9 @@ nave di...* lo copia), oppure con un sistema della nave preso da marker degli st
 rilievo e dei suoi legni ricalcati; le ordinate devono avere i numeri del cantiere (*Nomi da tabella...*). I record
 dello stesso tipo, lato e nome sono uniti nella pianta della nave, con il contorno del chunk misurato meglio dove
 entrambi hanno rilevato; ordinate numerate in modo diverso sono unite per posizione; le quote vengono da un rilievo
-unito, ogni cella dal chunk migliore; la carenatura passa per le stazioni di tutti i chunk. I chunk esclusi sono
+unito, ogni cella dal chunk più fine che la rileva (un modello ravvicinato della prua vince sul relitto intero
+rilevato più largo; fra chunk della stessa cella, quello che copre di più); la carenatura passa per le stazioni di tutti
+i chunk. I chunk esclusi sono
 elencati con il motivo (`chunks` dalla riga di comando) e gli avvisi dell'unione sono detti dopo la costruzione. Si
 scrivono solo i file del chunk attivo.
 
@@ -234,8 +251,11 @@ scrivono solo i file del chunk attivo.
 carenatura, con `id`, `name`, `kind`, `side`, `status`, `measured_length`, `measured_area` (un record misurato),
 `reconstructed_length`, `reconstructed_area` (ogni altro), `length_kind`: `3D` per una linea misurata lungo il modello,
 `pianta` per una lunghezza nella pianta della nave (il lato lungo di un poligono, un record unito da più chunk, la
-ricostruzione). Le aree sono nella pianta della nave. Con più chunk la tabella elenca i record uniti, come li usano la
-costruzione e i file.
+ricostruzione), `stale` (perché la ricostruzione è da rifare, sulle sue righe; vuota finché è attuale). Le aree sono
+nella pianta della nave. Con più chunk la tabella elenca i record uniti, come li usano la costruzione e i file. Il
+totale ricostruito (nei totali della tabella e sulla pianta, «ricostruito: x m² senza la carenatura») è l'area
+dell'unione dei legni ricostruiti: la carenatura, che sta sotto di loro, è data a parte nella sua riga, e dove due legni
+ricostruiti si sovrappongono (un'ordinata riflessa sopra una fascia riflessa) l'area è contata una volta sola.
 
 ### Campiture e file 3D
 
@@ -278,4 +298,5 @@ ppg plugin shipwreck reconstruct PROGETTO.ppg [--no-mirror] [--no-extension] [--
 ppg plugin shipwreck reconstruct table PROGETTO.ppg [--out CARTELLA]   # tabella.csv e .xlsx
 ppg plugin shipwreck export3d PROGETTO.ppg --out FILE.obj|.glb|.ifc --reconstruction
 ppg plugin shipwreck plan PROGETTO.ppg --reconstruction [--out CARTELLA]
+ppg plugin shipwreck drawings PROGETTO.ppg --reconstruction [--out CARTELLA]   # piano e profilo con la carenatura
 ```

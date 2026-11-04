@@ -64,7 +64,10 @@ nelle sezioni e la carenatura gli passa sopra; un relitto torto è riflesso tort
 è un'ipotesi della sola larghezza, con l'altezza dell'ultima sezione; un comento senza linee dei gradini è seguito per un
 metro al massimo oltre i suoi punti, poi tenuto dritto (`uncertain`); una fascia prolungata è tagliata dove si allarga
 oltre 1,5 volte la sua larghezza misurata o esce dalla mezza larghezza dello scafo (`uncertain`); con più chunk le ordinate devono avere i numeri del
-cantiere, e si scrivono solo i file del chunk attivo.
+cantiere, e si scrivono solo i file del chunk attivo; senza la simmetria, dove un lato è perso e l'altro conservato è
+ricostruita solo la carenatura. La ricostruzione è disegnata ed esportata solo quando la si chiede (una casella in
+*Disegni*, *Pianta del relitto* ed *Esporta 3D*, `--reconstruction`); quando cambia ciò da cui è stata costruita viene
+detta da rifare, e in un altro sistema della nave l'esportazione 3D la rifiuta.
 
 Il Clinker Boat Tool è un Houdini Digital Asset di Fred Fröhlich e Sigurd Solhaug Nielsen (MIT,
 [10.5281/zenodo.17488549](https://doi.org/10.5281/zenodo.17488549)), descritto in *From Photogrammetry to Construction
@@ -85,7 +88,7 @@ ppg plugin shipwreck frame PROGETTO.ppg --other-bow   # la prua è l'altro capo;
 ppg plugin shipwreck stations PROGETTO.ppg --spacing 1 --count 11 --first 1     # oppure --table FILE, --from-catalogue
 ppg plugin shipwreck sections PROGETTO.ppg --longitudinals "0;1;-1" --horizontals "-0.2;-0.5" --half-width 4.5
 ppg plugin shipwreck water PROGETTO.ppg --level -0.1 --n 1.34 --on
-ppg plugin shipwreck drawings PROGETTO.ppg [--scale 20] [--out CARTELLA]
+ppg plugin shipwreck drawings PROGETTO.ppg [--scale 20] [--out CARTELLA] [--reconstruction]
 ppg plugin shipwreck timbers PROGETTO.ppg [--table FILE]
 ppg plugin shipwreck export PROGETTO.ppg --out legni.xlsx                       # .csv, .xlsx, .gpkg
 ppg plugin shipwreck status PROGETTO.ppg

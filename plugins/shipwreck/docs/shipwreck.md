@@ -175,6 +175,19 @@ sections (steps 2 and 3).
 | *Export 3D...* | The timbers in 3D with the reconstruction (OBJ, GLB, IFC), and the table beside them. |
 | *Plan with reconstruction...* | The plan of the wreck with the reconstruction hatched. |
 
+Elsewhere the reconstruction is drawn or exported only when asked for: *Drawings* (step 5), *Plan of the wreck* and
+*Export 3D* (step 8) have a box **With the reconstruction (hypothesis)**, off by default (the drawings and files of
+0.3.0); on the command line `drawings`, `plan` and `export3d` take `--reconstruction`. The body plan and the profile
+are drawn without the faired hull unless the box is ticked.
+
+**Out of date.** The reconstruction remembers what it was built from: the ship frame, the catalogue, the given keel
+and the relief of this chunk and of the other chunks it read, the stem and the stern given. When one of them changes
+after the build (a strake corrected, the bow swapped, the relief built again...), the state of step 9, the notes under
+its buttons and the tree (*Reconstruction (n, hypothesis, to build again)*) say **to reconstruct again** and why; the
+table marks the reconstructed rows (column `stale`, the workbook's title), the plan drawn with it carries a note, and
+the 3D export says it. Built in another ship frame its timbers in 3D would stand elsewhere: the 3D export refuses them
+until you reconstruct, and the plan leaves the faired hull out.
+
 Each build, and each change of the stem and the stern, is a step of *Edit > Undo*: undoing a build brings back the
 earlier reconstruction, records and files. For that the reconstruction folder is copied once per build into
 `shipwreck/reconstruction.undo/` (removed at the next session); the copies are hard links and take almost no space,
@@ -210,6 +223,8 @@ edited by hand: deleting them there is refused with a word on how to remove them
   is lofted over them.
 - **The keel** typed in step 8 stays a solid of its own; it is never lofted.
 - **The profile** shows no sheer over a span lost on both sides: the faired hull's top edge is not drawn as a sheer.
+- **Without the mirror** (the box off, `--no-mirror`) the extension still leaves to the mirror the stretches where one
+  side is lost and the other preserved: there only the faired hull is reconstructed, and the build says so.
 
 ### Several chunks of the same wreck
 
@@ -218,7 +233,9 @@ compatible: aligned to it (*Workflow > Align chunks*) with the same ship frame (
 or with a ship frame taken from markers of the same names. Each needs its own relief and its traced timbers; the frames
 must carry the field's numbers (*Names from a table...*). The records of the same kind, side and name are merged in
 the ship plan, the better-measured chunk's outline kept where both surveyed; frames numbered differently are merged by
-place; the heights come from a merged relief, each cell from the best chunk; the faired hull goes through every
+place; the heights come from a merged relief, each cell from the finest chunk that has it (a close-range model of the
+bow wins over the whole wreck surveyed coarser; between chunks of the same cell, the one covering more); the faired
+hull goes through every
 chunk's stations. The chunks left out are listed with the reason (`chunks` on the command line), and the warnings of
 the merge are said after the build. Only the active chunk's files are written.
 
@@ -228,8 +245,11 @@ the merge are said after the build. Only the active chunk's files are written.
 faired hull, with `id`, `name`, `kind`, `side`, `status`, `measured_length`, `measured_area` (a measured record),
 `reconstructed_length`, `reconstructed_area` (any other), `length_kind`: `3D` for a line measured along the model,
 `pianta` for a length in the ship plan (a polygon's long side, a record merged from several chunks, the
-reconstruction). Areas are in the ship plan. With several chunks the table lists the merged records, as the build and
-the files use them.
+reconstruction), `stale` (why the reconstruction is to be built again, on its rows; empty while it is current). Areas
+are in the ship plan. With several chunks the table lists the merged records, as the build and the files use them.
+The reconstructed total (in the table's totals and on the plan, "reconstructed: x m² without the faired hull") is the
+area of the union of the reconstructed timbers: the faired hull, which lies under them, is given apart in its own row,
+and where two reconstructed timbers overlap (a mirrored frame over a mirrored strake) the area is counted once.
 
 ### Hatches and 3D files
 
@@ -272,4 +292,5 @@ ppg plugin shipwreck reconstruct PROJECT.ppg [--no-mirror] [--no-extension] [--n
 ppg plugin shipwreck reconstruct table PROJECT.ppg [--out FOLDER]      # tabella.csv and .xlsx
 ppg plugin shipwreck export3d PROJECT.ppg --out FILE.obj|.glb|.ifc --reconstruction
 ppg plugin shipwreck plan PROJECT.ppg --reconstruction [--out FOLDER]
+ppg plugin shipwreck drawings PROJECT.ppg --reconstruction [--out FOLDER]   # body plan and profile with the faired hull
 ```
