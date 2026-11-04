@@ -205,32 +205,49 @@ def test_ifc_elements_psets_stable_ids(hull, tmp_path):
             assert e.PredefinedType == "USERDEFINED" and e.ObjectType == timbers.KIND_TITLES[r["kind"]][1]
     keel, kpset = by_id["keel"]
     assert keel.Name.endswith("_ric") and kpset["Status"] == "ricostruito: dimensioni date"
+    (pdef,) = [r.RelatingPropertyDefinition for r in keel.IsDefinedBy
+               if r.is_a("IfcRelDefinesByProperties") and r.RelatingPropertyDefinition.Name == models3d.PSET]
+    values = {p.Name: p.NominalValue for p in pdef.HasProperties}
+    for key, measure in models3d.MEASURES.items():  # numbers with their unit (the keel has no thickness)
+        if key != "Thickness":
+            assert values[key].is_a(measure), key
     (conv,) = model.by_type("IfcMapConversion")
-    # the ship system's map conversion lands a vertex on the chunk's coordinates
-    item = next(i for i in models3d.items(ch, "world") if i["id"] == "keel")
-    local = np.asarray(keel.Representation.Representations[0].Items[0].Coordinates.CoordList[0], float)
+    # the ship system's map conversion lands every vertex of every element on the chunk's coordinates
+    world = {i["name"]: i["vertices"] for i in models3d.items(ch, "world")}
     a, b = conv.XAxisAbscissa, conv.XAxisOrdinate
-    mapped = [conv.Eastings + a * local[0] - b * local[1], conv.Northings + b * local[0] + a * local[1],
-              conv.OrthogonalHeight + local[2]]
-    assert np.abs(np.asarray(mapped) - item["vertices"][0]).max() < 1e-3
-    again = models3d.write_ifc(ch, tmp_path / "ancora.ifc")
+    for e in elements:
+        local = np.asarray(e.Representation.Representations[0].Items[0].Coordinates.CoordList, float)
+        mapped = np.column_stack([conv.Eastings + a * local[:, 0] - b * local[:, 1],
+                                  conv.Northings + b * local[:, 0] + a * local[:, 1], conv.OrthogonalHeight + local[:, 2]])
+        assert np.abs(mapped - world[e.Name]).max() < 1e-3, e.Name
+    # stable GlobalIds: a second export (in the other system) gives the same ones
+    again = models3d.write_ifc(ch, tmp_path / "mondo.ifc", system="world")
     other = ifcopenshell.open(str(again["path"]))
     first = sorted(e.GlobalId for e in elements)
-    second = sorted(e.GlobalId for e in other.by_type("IfcPlate") + other.by_type("IfcMember"))
-    assert first == second and len(set(first)) == len(first)
-    world = models3d.write_ifc(ch, tmp_path / "mondo.ifc", system="world")
-    third = ifcopenshell.open(str(world["path"]))
-    assert sorted(e.GlobalId for e in third.by_type("IfcPlate") + third.by_type("IfcMember")) == first
+    assert sorted(e.GlobalId for e in other.by_type("IfcPlate") + other.by_type("IfcMember")) == first
+    assert len(set(first)) == len(first)
+    assert first == sorted(models3d.stable_global_id(ch.key, "shipwreck", i) for i in by_id)
 
 
-def test_ifc_in_a_local_system_says_there_is_no_map_conversion(hull, tmp_path, monkeypatch):
+@pytest.mark.parametrize("crs_case", ["local", "geographic"])
+def test_ifc_without_a_projected_system_has_no_map_conversion(hull, tmp_path, monkeypatch, crs_case):
     ifcopenshell = pytest.importorskip("ifcopenshell")
     from pyarchinit_photogrammetry.core import crs as crs_mod
 
-    monkeypatch.setattr(crs_mod, "is_local", lambda _crs: True)
-    out = models3d.write_ifc(hull, tmp_path / "locale.ifc")
-    assert not out["map_conversion"] and "IfcMapConversion" in out["note"]
-    assert not ifcopenshell.open(str(out["path"])).by_type("IfcMapConversion")
+    whole = models3d.items
+    monkeypatch.setattr(models3d, "items", lambda ch, system="ship": whole(ch, system)[-2:])  # light: two timbers
+    monkeypatch.setattr(crs_mod, "is_local" if crs_case == "local" else "is_geographic", lambda _crs: True)
+    for system in ("ship", "world"):
+        out = models3d.write_ifc(hull, tmp_path / f"{system}.ifc", system=system)
+        assert not out["map_conversion"] and "IfcMapConversion" in out["note"]
+        model = ifcopenshell.open(str(out["path"]))
+        assert not model.by_type("IfcMapConversion")
+        if system == "world":  # nowhere to keep an origin: the chunk's own coordinates
+            assert "no origin taken off" in out["note"] or "senza origine sottratta" in out["note"]
+            for e in model.by_type("IfcPlate") + model.by_type("IfcMember"):
+                local = np.asarray(e.Representation.Representations[0].Items[0].Coordinates.CoordList, float)
+                truth = next(i["vertices"] for i in whole(hull, "world") if i["name"] == e.Name)
+                assert np.abs(local - truth).max() < 1e-6
 
 
 def test_tables(hull, tmp_path):

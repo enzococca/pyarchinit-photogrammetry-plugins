@@ -180,10 +180,16 @@ def _names(entries: list[dict]) -> None:
     """Unique object names: the record's name (made safe), with its id where two share it; :data:`RIC` for a
     reconstructed part."""
     bases = [_safe(e["label"]) or _safe(e["id"]) for e in entries]
+    taken: set[str] = set()
     for e, base in zip(entries, bases):
         if bases.count(base) > 1:
             base = f"{base}_{_safe(e['id'])}"
-        e["name"] = base + ("" if e["status"] == "measured" else RIC)
+        name, n = base + ("" if e["status"] == "measured" else RIC), 1
+        while name in taken:  # a disambiguated name equal to another record's own name
+            n += 1
+            name = f"{base}_{n}" + ("" if e["status"] == "measured" else RIC)
+        taken.add(name)
+        e["name"] = name
 
 
 def items(chunk, system: str = "ship") -> list[dict]:
@@ -323,13 +329,13 @@ def _rows(chunk, entries: list[dict]) -> list[dict]:
     """The catalogue's rows (:func:`timbers.measure`) with ``volume``, ``thickness_mm``, ``hidden_share`` and
     ``solid``, and a row for the typed keel (its length, siding as width, its z range as heights)."""
     by_id = {e["id"]: e for e in entries}
+    records = {r["id"]: r for r in timbers.timbers_of(chunk)}
     rows = timbers.measure(chunk)
     for row in rows:
         e = by_id.get(row["id"])
         rec = e["record"] if e else None
         row["volume"] = e["volume"] if e else None
-        row["thickness_mm"] = (rec or next((r for r in timbers.timbers_of(chunk) if r["id"] == row["id"]), {})).get(
-            "thickness_mm")
+        row["thickness_mm"] = (rec or records.get(row["id"]) or {}).get("thickness_mm")
         row["hidden_share"] = e["hidden_share"] if e else None
         row["solid"] = rec.get("solid") if rec else ""
     keel = by_id.get("keel")
@@ -401,8 +407,18 @@ def _pset(chunk, e: dict, row: dict | None) -> dict:
              "Thickness": float(e["thickness_mm"]) / 1000.0 if e["thickness_mm"] else None,
              "HiddenShare": float(e["hidden_share"]), "Sources": _sources(rec) if rec else t(
                  "dimensioni date", "given dimensions")}
-    return {k: (float(v) if isinstance(v, (int, float, np.floating)) and not isinstance(v, bool) else v)
-            for k, v in props.items() if v is not None}
+    return {k: v for k, v in props.items() if v is not None}
+
+
+MEASURES = {"Length": "IfcLengthMeasure", "Width": "IfcLengthMeasure", "ZMin": "IfcLengthMeasure",
+            "ZMax": "IfcLengthMeasure", "Thickness": "IfcLengthMeasure", "Volume": "IfcVolumeMeasure",
+            "HiddenShare": "IfcNormalisedRatioMeasure"}
+"""The Pset's numbers with their IFC measure (metres, cubic metres, a share 0-1), so BIM tools show the unit."""
+
+
+def _typed(model, props: dict) -> dict:
+    """``props`` with the numbers of :data:`MEASURES` as IFC measures (the others as they are)."""
+    return {k: (model.create_entity(MEASURES[k], float(v)) if k in MEASURES else v) for k, v in props.items()}
 
 
 def write_ifc(chunk, path, system: str = "ship", project: str | None = None, site: str | None = None) -> dict:
@@ -434,7 +450,11 @@ def _write_ifc(chunk, path, system, project, site) -> dict:
     entries = items(chunk, system)
     rows = {r["id"]: r for r in _rows(chunk, entries)}
     frame = ship.need_frame(chunk)
-    if system == "world":
+    georeferenced = not (crs_mod.is_local(chunk.crs) or crs_mod.is_geographic(chunk.crs))
+    if system == "world" and not georeferenced:  # no map conversion to keep an origin in: the coordinates as they are
+        origin = np.zeros(3)
+        placement = None
+    elif system == "world":
         allv = np.vstack([e["vertices"] for e in entries]) if entries else np.zeros((1, 3))
         origin = np.floor((allv.min(axis=0) + allv.max(axis=0)) / 2.0)
         placement = {"Eastings": float(origin[0]), "Northings": float(origin[1]), "OrthogonalHeight": float(origin[2]),
@@ -455,10 +475,17 @@ def _write_ifc(chunk, path, system, project, site) -> dict:
     body = ifcopenshell.api.context.add_context(model, context_type="Model", context_identifier="Body",
                                                 target_view="MODEL_VIEW", parent=ctx)
     mapped, note = False, ""
-    if crs_mod.is_local(chunk.crs):
-        note = t("Il chunk è in un sistema locale: nessuna IfcMapConversion, le coordinate sono quelle del sistema "
-                 "scelto.", "The chunk is in a local system: no IfcMapConversion, the coordinates are those of the "
-                 "chosen system.")
+    where = (t("le coordinate del chunk, senza origine sottratta", "the chunk's coordinates, no origin taken off")
+             if system == "world" else
+             t("il sistema della nave (x, segno * y, z)", "the ship frame (x, sign * y, z)"))
+    if crs_mod.is_geographic(chunk.crs):
+        note = t(f"Il chunk è in coordinate geografiche ({chunk.crs}): nessuna IfcMapConversion (serve un sistema "
+                 f"proiettato); coordinate: {where}.",
+                 f"The chunk is in geographic coordinates ({chunk.crs}): no IfcMapConversion (it needs a projected "
+                 f"system); coordinates: {where}.")
+    elif not georeferenced:
+        note = t(f"Il chunk è in un sistema locale: nessuna IfcMapConversion; coordinate: {where}.",
+                 f"The chunk is in a local system: no IfcMapConversion; coordinates: {where}.")
     else:
         ifcopenshell.api.georeference.add_georeferencing(model)
         epsg, vertical = crs_mod.epsg_code(chunk.crs), crs_mod.vertical_part(chunk.crs)
@@ -498,7 +525,7 @@ def _write_ifc(chunk, path, system, project, site) -> dict:
             styles[e["material"]] = style
         ifcopenshell.api.style.assign_representation_styles(model, shape_representation=rep, styles=[style])
         pset = ifcopenshell.api.pset.add_pset(model, product=el, name=PSET)
-        ifcopenshell.api.pset.edit_pset(model, pset=pset, properties=_pset(chunk, e, rows.get(e["id"])))
+        ifcopenshell.api.pset.edit_pset(model, pset=pset, properties=_typed(model, _pset(chunk, e, rows.get(e["id"]))))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.stem + ".tmp" + path.suffix)  # IfcOpenShell picks the format by the suffix
