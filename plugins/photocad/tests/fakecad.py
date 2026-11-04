@@ -94,10 +94,16 @@ def dark_boxes(image_bytes: bytes):
 class FakePhotoCAD:
     """The opener given to the client instead of urllib: ``fake(request, timeout)``."""
 
-    def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False):
+    def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False,
+                 scale: str = "page", diagonal: bool = True):
         self.credits = credits
         self.polls = polls  # "processing" answers before "complete"
-        self.fail = dict(fail or {})  # "METHOD path-prefix" -> list of HTTP codes to answer first
+        # "METHOD path-prefix" -> list of HTTP codes to answer first (0: a broken connection, URLError)
+        self.fail = dict(fail or {})
+        # "page": ``longest`` scales the page (the whole image); "content": only the drawing's extents, moved to 0
+        # (the other reading of the documentation, which the plugin must catch)
+        self.scale = scale
+        self.diagonal = diagonal  # the image's diagonal on DETAIL: without it the drawing does not reach the edges
         self.status_failed = status_failed
         self.requests: list[tuple[str, str, dict]] = []  # method, path?query, headers
         self.images: dict[str, bytes] = {}
@@ -122,6 +128,8 @@ class FakePhotoCAD:
             m, prefix = rule.split(" ", 1)
             if m == method and path.startswith(prefix) and codes:
                 code = codes.pop(0)
+                if code == 0:
+                    raise urllib.error.URLError("connection reset by peer")
                 slugs = {401: "unauthorized", 402: "out_of_credits", 413: "payload_too_large",
                          422: "unprocessable", 429: "rate_limited", 500: "server_error"}
                 extra = {"Retry-After": "2"} if code == 429 else None
@@ -171,11 +179,20 @@ class FakePhotoCAD:
 
     def file(self, cid: str, fmt: str, query: dict) -> bytes:
         boxes, w, h = dark_boxes(self.images[cid])
-        longest = float(query.get("longest", max(w, h) * 0.5))
-        s = longest / max(w, h)  # units per pixel
-        outlines = [[(c0 * s, (h - r0) * s), (c1 * s, (h - r0) * s), (c1 * s, (h - r1) * s), (c0 * s, (h - r1) * s)]
-                    for c0, r0, c1, r1 in boxes]
-        diagonal = [(0.0, 0.0), (w * s, h * s)]
+        # the drawing in image pixels, Y up from the lower-left corner
+        px = [np.array([(c0, h - r0), (c1, h - r0), (c1, h - r1), (c0, h - r1)], float) for c0, r0, c1, r1 in boxes]
+        diag = np.array([(0.0, 0.0), (w, h)], float)
+        unit = {"mm": 1.0, "cm": 0.1, "m": 0.001}[query.get("units", "mm")]
+        if "longest" not in query:  # the natural size: 0.5 mm a pixel (width_mm = w * 0.5)
+            shift, s = np.zeros(2), 0.5 * unit
+        elif self.scale == "content":
+            allp = np.vstack(px + ([diag] if self.diagonal else []))
+            shift = allp.min(axis=0)
+            s = float(query["longest"]) / float((allp.max(axis=0) - shift).max())
+        else:
+            shift, s = np.zeros(2), float(query["longest"]) / max(w, h)
+        outlines = [[tuple(v) for v in (p - shift) * s] for p in px]
+        diagonal = [tuple(v) for v in (diag - shift) * s]
         if fmt == "dxf":
             import ezdxf
 
@@ -185,7 +202,8 @@ class FakePhotoCAD:
             msp = doc.modelspace()
             for outline in outlines:
                 msp.add_lwpolyline(outline, close=True, dxfattribs={"layer": "OUTLINE"})
-            msp.add_line(diagonal[0], diagonal[1], dxfattribs={"layer": "DETAIL"})
+            if self.diagonal:
+                msp.add_line(diagonal[0], diagonal[1], dxfattribs={"layer": "DETAIL"})
             out = io.StringIO()
             doc.write(out)
             return out.getvalue().encode()
