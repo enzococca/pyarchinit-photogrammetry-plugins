@@ -19,6 +19,7 @@ rasterio, Pillow and shapely come with the program.
 | *... > Vettorializza il prospetto mostrato...* | The orthophoto of the elevation or section shown in the 2D view, in its (u, v); optionally also in 3D on its surface. |
 | *... > Converti in US / USM...* | The PhotoCAD polygons selected on the view (or a whole PhotoCAD layer) become stratigraphic units of the active chunk - on the plan, or in the drawings of the elevation shown. Kind (US, USM, ...) and an optional first number; closed polylines count as polygons, open lines are skipped and counted. One entry of *Edit > Undo*. |
 | *... > Importa come disegni liberi...* | (program 1.7.2) The features of a conversion as free 3D drawings in the layer *PhotoCAD*: on the plan at the height of the DEM, on an elevation on its surface. |
+| *... > Recupera una conversione...* | A conversion already paid for downloaded and georeferenced again, without a new upload: one that finished while the network failed or the download broke, or that was cancelled after PhotoCAD had finished. |
 | *... > Esporta una conversione...* / *Rimuovi una conversione...* | A copy as DXF, GeoPackage or SVG; a conversion out of the project with its files (the units made from it stay). |
 | *... > Chiave API PhotoCAD...* | The key in the system keychain: *Salva nel portachiavi*, *Dimentica*. |
 | *... > Credito PhotoCAD* | The credits left on the account. |
@@ -49,6 +50,16 @@ PhotoCAD layer, length and area; in the CRS of the chunk, or without CRS for an 
 elevation in 3D), `drawing.svg` with `drawing.svg.json` (where it lies: the SVG keeps PhotoCAD's frame, Y down),
 `drawing_3d.dxf`, `drawing.pdf` if asked, `conversion.json` (source, bounds, pixel, date, credits used).
 
+A paid conversion is never lost: its PhotoCAD id is written in the project (and in `conversion.json`) right after
+the upload, before PhotoCAD finishes; whatever goes wrong afterwards, *Recupera una conversione...* or
+`ppg plugin photocad fetch` gets it. Cancelling while PhotoCAD still works deletes the conversion there. An upload is
+never sent twice (only a 429 is asked again). The key goes only to PhotoCAD's own address: a file served from another
+address (cloud storage) is downloaded without it.
+
+Before placing the drawing the plugin checks that it is in the image's frame: inside the image, the page with the
+image's proportions, and the drawing asked in metres matching the same drawing at its natural size (same scale on both
+axes, no offset). If not, nothing is placed and the files stay in the folder for a diagnosis.
+
 ## Command line
 
 ```bash
@@ -59,6 +70,7 @@ ppg plugin photocad list scavo.ppg     # also lists the elevations: elevation:<i
 ppg plugin photocad convert scavo.ppg --source ortho --out pianta.dxf
 ppg plugin photocad convert scavo.ppg --source elevation:3236beab --3d --out prospetto.gpkg
 ppg plugin photocad convert scavo.ppg --source dem --bbox 500010,4000020,500060,4000070 --simplified --yes
+ppg plugin photocad fetch scavo.ppg --id <id or PhotoCAD id> [--out disegno.dxf]
 ppg plugin photocad units scavo.ppg <id> --tipo USM --start 101
 ppg plugin photocad export scavo.ppg <id> disegno.svg
 ppg plugin photocad remove scavo.ppg <id>

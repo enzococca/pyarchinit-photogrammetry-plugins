@@ -97,6 +97,11 @@ def test_plan_layer_units_and_elevation(window, monkeypatch):
     plugin.context.show_raster("dem")
     qapp.processEvents()
     assert _photocad_layers(v) == [layer] and len(v.features(layer)) == 3
+    v.set_layer_visible(layer, False)  # hidden in the Layer pane: stays hidden when the window refreshes
+    plugin.draw_layers()
+    qapp.processEvents()
+    assert not v.layers[layer]["visible"]
+    v.set_layer_visible(layer, True)
     # two polygons selected -> two US, one undo entry
     before, entries = len(w.units), w.history.index
     v.select_items([f[0] for f in v.layers[layer]["features"]])  # the line too: skipped and counted

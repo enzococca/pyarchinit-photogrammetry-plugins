@@ -106,8 +106,10 @@ def masked(key: str | None) -> str:
     """``pcad_live_…cdef``: enough to recognise a key, never the key."""
     if not key:
         return ""
+    if len(key) < 24:  # a short key: its tail only (head and tail together would be most of it)
+        return f"…{key[-4:]}" if len(key) >= 12 else "…"
     head = key[:10] if key.startswith("pcad_") else ""
-    return f"{head}…{key[-4:]}" if len(key) > 8 else "…"
+    return f"{head}…{key[-4:]}"
 
 
 def mask(text: str, key: str | None = None) -> str:

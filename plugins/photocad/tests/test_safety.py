@@ -59,7 +59,7 @@ def servers(monkeypatch):
 
 def test_the_key_never_follows_a_redirect_to_another_origin(servers):
     api, storage = servers
-    api.routes["/api/v1/conversions/c1/files/dxf"] = (302, {"Location": storage.url + "/bucket/c1.dxf?sig=x"}, b"")
+    api.routes["/api/v1/conversions/c1/files/dxf?units=m"] = (302, {"Location": storage.url + "/bucket/c1.dxf?sig=x"}, b"")
     storage.routes["/bucket/c1.dxf?sig=x"] = (200, {}, b"0\nSECTION\n")
     c = client.Client(fakecad.KEY, base=api.url + "/api/v1")
     assert c.file("c1", "dxf", units="m") == b"0\nSECTION\n"  # the download still works
@@ -114,7 +114,7 @@ def test_polling_goes_through_network_glitches(tmp_path, monkeypatch):
 
 
 def test_a_failed_download_keeps_the_paid_conversion_and_fetch_gets_it(tmp_path, monkeypatch, capsys):
-    fake = fakecad.FakePhotoCAD(fail={"GET /conversions/conv_0001/files/dxf": [500] * 8})
+    fake = fakecad.FakePhotoCAD(fail={"GET /conversions/conv_0001/files/dxf": [500] * 4})
     monkeypatch.setattr(client, "_urlopen", fake)
     doc, ch = fakecad.project(tmp_path)
     with pytest.raises(client.PhotoCADError) as err:
@@ -212,7 +212,7 @@ def test_fetch_from_the_command_line(tmp_path, monkeypatch, capsys):
     plugin.activate(Context("photocad", tmp_path / "plugin"))
     assert "Recupera una conversione..." in [a.title for a in plugin.context.contributions.actions]
     monkeypatch.setenv("PHOTOCAD_API_KEY", fakecad.KEY)
-    fake = fakecad.FakePhotoCAD(fail={"GET /conversions/conv_0001/files/dxf": [500] * 8})
+    fake = fakecad.FakePhotoCAD(fail={"GET /conversions/conv_0001/files/dxf": [500] * 4})
     monkeypatch.setattr(client, "_urlopen", fake)
     doc, ch = fakecad.project(tmp_path / "p")
     path = str(doc.path)

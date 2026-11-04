@@ -33,7 +33,7 @@ def test_the_plan_comes_back_at_its_world_coordinates(tmp_path, fake):
     assert rec["source"] == "ortho" and rec["frame"] is None and rec["crs"] == fakecad.CRS
     assert rec["credits_remaining"] == 6 and rec["image"]["pixel"] == pytest.approx(fakecad.RES)
     # the DXF asked in metres, without margin, the long side of the image in metres
-    (q,) = fake.calls("GET", "/conversions/conv_0001/files/dxf")
+    (q,) = [c for c in fake.calls("GET", "/conversions/conv_0001/files/dxf") if "units=m&" in c]
     assert "units=m" in q and "margin=0" in q and f"longest={fakecad.W * fakecad.RES:g}" in q
     (square,) = _polygons(ch, rec)
     assert np.allclose(square.bounds, fakecad.square_world(), rtol=0, atol=fakecad.RES / 2)

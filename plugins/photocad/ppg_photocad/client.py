@@ -33,7 +33,10 @@ TIMEOUT = 120.0
 RETRIES = 3  # new attempts after a 429 (or a busy server)
 POLL = 5.0  # seconds between two questions on a conversion
 WAIT_LIMIT = 900.0  # a conversion not done after 15 minutes is given up (and deleted)
-RETRY_STATUS = (429, 502, 503, 504)
+RETRY_STATUS = (429, 500, 502, 503, 504)  # asked again for GET and DELETE (idempotent)
+POST_RETRY_STATUS = (429,)  # an upload only on the rate limit: a 5xx may hide a conversion made (and paid)
+REDIRECTS = (301, 302, 303, 307, 308)
+MAX_REDIRECTS = 5
 
 
 class PhotoCADError(RuntimeError):
@@ -56,9 +59,49 @@ def _ssl_context():
         return ssl.create_default_context()
 
 
-def _urlopen(request, timeout: float):
-    """The network. The tests replace this function (and :func:`_sleep`)."""
-    return urllib.request.urlopen(request, timeout=timeout, context=_ssl_context())
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirects are not followed by urllib: :meth:`Client._request` follows them itself, with the key only on
+    PhotoCAD's own origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def urlopen_no_redirect(request, timeout: float):
+    """The network, certifi's certificates, no redirect followed (a 3xx comes back as an HTTPError)."""
+    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=_ssl_context()))
+    return opener.open(request, timeout=timeout)
+
+
+_urlopen = urlopen_no_redirect  # the tests replace it with a fake server (and :func:`_sleep`)
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or {"https": 443, "http": 80}.get(scheme, 0)
+
+
+def same_origin(a: str, b: str) -> bool:
+    """Same scheme, host and port."""
+    return _origin(a) == _origin(b)
+
+
+def check_redirect(base: str, current: str, target: str) -> None:
+    """A redirect the client follows: https never to http, and only http(s)."""
+    scheme = _origin(target)[0]
+    if scheme not in ("http", "https") or (_origin(current)[0] == "https" and scheme != "https"):
+        raise PhotoCADError(t("PhotoCAD ha rimandato a un indirizzo non sicuro: richiesta fermata.",
+                              "PhotoCAD redirected to an unsafe address: request stopped."), 0, "redirect")
+
+
+def retry_after(value) -> float:
+    """Seconds of a ``Retry-After`` header (an HTTP date or nonsense: 1 s), between 1 and 120."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return min(max(seconds, 1.0), 120.0)
 
 
 def _sleep(seconds: float) -> None:
@@ -141,32 +184,57 @@ class Client:
 
     def _request(self, method: str, path: str, query: dict | None = None, data: bytes | None = None,
                  ctype: str | None = None, raw: bool = False):
+        """One call of the API. The key goes only to PhotoCAD's own origin (``add_unredirected_header``, and
+        redirects followed here: on the same origin with the key, elsewhere - a presigned storage URL - without it).
+        GET and DELETE are asked again on 429/5xx and broken connections (waiting longer each time); POST only on
+        429, so an upload is never sent twice."""
         url = self.base + path + ("?" + urllib.parse.urlencode(query) if query else "")
-        headers = {"Authorization": f"Bearer {self._key}", "User-Agent": user_agent(),
-                   "Accept": "*/*" if raw else "application/json"}
-        if ctype:
-            headers["Content-Type"] = ctype
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        for attempt in range(RETRIES + 1):
+        idempotent = method in ("GET", "DELETE", "HEAD")
+        statuses = RETRY_STATUS if idempotent else POST_RETRY_STATUS
+        attempt, redirects, delay = 0, 0, 2.0
+        while True:
+            headers = {"User-Agent": user_agent(), "Accept": "*/*" if raw else "application/json"}
+            if ctype and data is not None:
+                headers["Content-Type"] = ctype
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            if same_origin(self.base, url):
+                req.add_unredirected_header("Authorization", f"Bearer {self._key}")
             try:
                 with _urlopen(req, self.timeout) as answer:
                     body = answer.read()
                 break
             except urllib.error.HTTPError as exc:
-                if exc.code in RETRY_STATUS and attempt < RETRIES:
-                    try:
-                        wait = float(exc.headers.get("Retry-After") or 0) if exc.headers is not None else 0.0
-                    except ValueError:
-                        wait = 0.0
-                    wait = min(max(wait, 1.0 if exc.code == 429 else 2.0 ** attempt), 120.0)
+                location = exc.headers.get("Location") if exc.headers is not None else None
+                if exc.code in REDIRECTS and location and method != "POST":
+                    redirects += 1
+                    if redirects > MAX_REDIRECTS:
+                        raise PhotoCADError(t("Troppi rimandi da PhotoCAD.", "Too many redirects from PhotoCAD."),
+                                            exc.code, "redirect") from None
+                    target = urllib.parse.urljoin(url, location)
+                    check_redirect(self.base, url, target)
+                    url = target
+                    if exc.code == 303:
+                        method, data = "GET", None
+                    continue
+                if exc.code in statuses and attempt < RETRIES:
+                    attempt += 1
+                    wait = retry_after(exc.headers.get("Retry-After") if exc.headers is not None else None) \
+                        if exc.code == 429 else delay
+                    delay *= 2
                     log.info("PhotoCAD %s %s: HTTP %s, again in %.0f s", method, path, exc.code, wait)
                     _sleep(wait)
                     continue
                 raise _refusal(exc, self._key) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
                 reason = mask(str(getattr(exc, "reason", exc)), self._key)
+                if idempotent and attempt < RETRIES:
+                    attempt += 1
+                    log.info("PhotoCAD %s %s: %s, again in %.0f s", method, path, reason, delay)
+                    _sleep(delay)
+                    delay *= 2
+                    continue
                 raise PhotoCADError(t("PhotoCAD non raggiungibile: {0}", "PhotoCAD cannot be reached: {0}")
-                                    .format(reason)) from None
+                                    .format(reason), 0, "network") from None
         if raw:
             return body
         if not body.strip():
@@ -241,8 +309,9 @@ def wait(client: Client, cid: str, progress=None, interval: float = POLL, limit:
                 return answer
             if status == "failed":
                 err = answer.get("error") or {}
-                detail = err.get("detail") or err.get("title") or err.get("code") or "" if isinstance(err, dict) \
+                detail = (err.get("detail") or err.get("title") or err.get("code") or "") if isinstance(err, dict) \
                     else str(err)
+                detail = mask(" ".join(str(detail).split())[:300], client._key)
                 raise PhotoCADError(t("PhotoCAD non è riuscito a vettorializzare l'immagine: {0}. Il credito è stato "
                                       "rimborsato.", "PhotoCAD could not vectorise the image: {0}. The credit was "
                                                      "refunded.").format(detail or "?"), 0, "failed")
@@ -260,7 +329,8 @@ def wait(client: Client, cid: str, progress=None, interval: float = POLL, limit:
                 _check(progress)
             waited += interval
     except BaseException as exc:
-        if type(exc).__name__ == "Cancelled" or isinstance(exc, PhotoCADError) and exc.code == "timeout":
+        if type(exc).__name__ == "Cancelled" or isinstance(exc, KeyboardInterrupt) or \
+                (isinstance(exc, PhotoCADError) and exc.code == "timeout"):
             try:
                 client.delete(cid)
                 log.info("PhotoCAD conversion %s deleted", cid)

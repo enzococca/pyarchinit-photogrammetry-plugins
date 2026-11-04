@@ -5,11 +5,11 @@ surface) - as DXF, GeoPackage and SVG.
 
 * *Plugin > PhotoCAD*: *Vettorializza l'ortofoto...*, *... il DEM...*, *... il prospetto mostrato...* (all of it,
   the part on the screen, or an area drawn), *Converti in US / USM...*, *Importa come disegni liberi* (program
-  1.7.2), *Esporta una conversione...*, *Rimuovi una conversione...*, *Chiave API PhotoCAD...*, *Credito PhotoCAD*;
+  1.7.2), *Recupera una conversione...*, *Esporta una conversione...*, *Rimuovi una conversione...*, *Chiave API PhotoCAD...*, *Credito PhotoCAD*;
 * every conversion a layer "PhotoCAD: <name>" of the 2D view, on the plan or on its elevation, drawn again with
   the raster;
 * ``ppg plugin photocad key set|forget|status``, ``credit``, ``convert PROJECT --source ortho|dem|elevation:<id>
-  ...``, ``list``, ``units``, ``export``, ``remove``.
+  ...``, ``fetch PROJECT --id ID``, ``list``, ``units``, ``export``, ``remove``.
 
 Before every upload the user confirms (the credits left, the size of the image), unless they chose not to be
 asked again for the project. The API key: the environment variable ``PHOTOCAD_API_KEY``, else the system keychain
@@ -65,6 +65,9 @@ class PhotoCADPlugin(Plugin):
                   "The PhotoCAD polygons selected (or a layer) become stratigraphic units"))
         if _has_free_drawings():
             add(t("Importa come disegni liberi...", "Import as free drawings..."), self.free_drawings_dialog)
+        add(t("Recupera una conversione...", "Fetch a conversion..."), self.fetch_dialog,
+            tip=t("Scarica di nuovo una conversione già pagata (finita, non scaricata, o da rifare)",
+                  "Download again a conversion already paid for (finished, not downloaded, or to redo)"))
         add(t("Esporta una conversione...", "Export a conversion..."), self.export_dialog)
         add(t("Rimuovi una conversione...", "Remove a conversion..."), lambda: self.remove_conversion(None))
         add(t("Chiave API PhotoCAD...", "PhotoCAD API key..."), self.key_dialog)
@@ -269,10 +272,10 @@ class PhotoCADPlugin(Plugin):
                 return exc
 
         def done(rec):
+            self.context.mark_modified()  # also a failure: the paid conversion is kept in the project
             if isinstance(rec, Exception):
                 self._say(str(rec), "warning")
                 return
-            self.context.mark_modified()
             self.draw_layers()
             w = self._window()
             if w is not None and hasattr(w, "log_pane"):
@@ -282,6 +285,44 @@ class PhotoCADPlugin(Plugin):
 
         self.context.run(t("PhotoCAD: vettorializzazione", "PhotoCAD: vectorisation"), work, done)
 
+    def fetch_dialog(self) -> None:
+        from pyarchinit_photogrammetry.gui import dialogs
+
+        from . import client, project
+
+        chunk = self._chunk()
+        recs = self.records()
+        if chunk is None or not recs:
+            self._say(t("Nessuna conversione PhotoCAD nel chunk.", "No PhotoCAD conversion in the chunk."), "warning")
+            return
+        recs = sorted(recs, key=lambda r: r.get("status", "done") == "done")  # those not done first
+        k = dialogs.choice(self._window(), "question", t("Recupera una conversione", "Fetch a conversion"),
+                           t("Quale conversione scaricare di nuovo da PhotoCAD (senza un nuovo invio)?",
+                             "Which conversion to download again from PhotoCAD (no new upload)?"),
+                           [project.summary(r) for r in recs])
+        if k is None:
+            return
+        key = self._key()
+        if key is None:
+            return
+        rid = recs[k]["id"]
+
+        def work(progress):
+            try:
+                return project.fetch(chunk, rid, key, progress)
+            except (client.PhotoCADError, ValueError) as exc:
+                return exc
+
+        def done(rec):
+            self.context.mark_modified()
+            if isinstance(rec, Exception):
+                self._say(str(rec), "warning")
+                return
+            self.draw_layers()
+            self._say("PhotoCAD: " + project.summary(rec))
+
+        self.context.run(t("PhotoCAD: recupero", "PhotoCAD: fetch"), work, done)
+
     # ------------------------------------------------------------------ the layers
     def draw_layers(self) -> None:
         """Every conversion of the frame shown (the plan, or the elevation shown) as a layer of the 2D view."""
@@ -290,8 +331,14 @@ class PhotoCADPlugin(Plugin):
         view, w, chunk = self._view(), self._window(), self._chunk()
         if view is None:
             return
+        hidden = getattr(self, "_hidden", set())
         for name in [n for n in list(view.layers) if n.startswith(LAYER_PREFIX)]:
+            if not view.layers[name].get("visible", True):
+                hidden.add(name)
+            else:
+                hidden.discard(name)
             view.remove_layer(name)
+        self._hidden = hidden
         if chunk is None or view.tr is None:
             return
         frame = getattr(w, "drawings_frame", None)
@@ -308,6 +355,8 @@ class PhotoCADPlugin(Plugin):
                                          layer=name, attrs=attrs)
                     else:
                         view.add_line(list(g.coords), LINE_COLOUR, "", layer=name, attrs=attrs, width=1.5)
+                if name in hidden and name in view.layers:  # hidden in the Layer pane: stays hidden on a refresh (a new raster shows it again)
+                    view.set_layer_visible(name, False)
 
     # ------------------------------------------------------------------ units
     def units_dialog(self) -> None:
@@ -519,6 +568,11 @@ class PhotoCADPlugin(Plugin):
         p.add_argument("--name", help="name of the conversion (its layer)")
         p.add_argument("--out", help="a copy of the drawing: FILE.dxf, .gpkg, .svg or .pdf")
         p.add_argument("--yes", action="store_true", help="no confirmation prompt")
+        p = sub.add_parser("fetch", help="download and georeference again a conversion already paid for (no upload)")
+        p.add_argument("project")
+        p.add_argument("--id", required=True, help="the id of the conversion, or its PhotoCAD id")
+        p.add_argument("--chunk")
+        p.add_argument("--out", help="a copy of the drawing: FILE.dxf, .gpkg, .svg or .pdf")
         p = sub.add_parser("list", help="the conversions of the chunk (and its elevations)")
         p.add_argument("project")
         p.add_argument("--chunk")
@@ -624,6 +678,23 @@ class PhotoCADPlugin(Plugin):
                 return 1
             doc.save()
             return 0
+        if ns.what == "fetch":
+            key = keys.get_key()
+            if not key:
+                print(keys.status_text())
+                return 1
+            try:
+                run = (self.context.run if self.context is not None else (lambda title, f, done=None: f(None)))
+                rec = run("PhotoCAD fetch", lambda p: project.fetch(chunk, ns.id, key, p))
+            except (client.PhotoCADError, ValueError) as exc:
+                print(f"error: {exc}")
+                doc.save()
+                return 1
+            doc.save()
+            print(project.summary(rec))
+            if ns.out:
+                print(project.export(chunk, rec["id"], ns.out))
+            return 0
         if ns.what == "units":
             rec = project.record(chunk, ns.id)
             if rec is None:
@@ -652,7 +723,10 @@ class PhotoCADPlugin(Plugin):
             if not ask:
                 return True
             print(info["text"])
-            answer = input(t("Inviare? [s/N] ", "Send? [y/N] ")).strip().lower()
+            try:
+                answer = input(t("Inviare? [s/N] ", "Send? [y/N] ")).strip().lower()
+            except EOFError:  # no terminal (a pipe, cron): no
+                answer = ""
             return answer in ("s", "si", "sì", "y", "yes")
 
         def run(progress):
@@ -666,6 +740,7 @@ class PhotoCADPlugin(Plugin):
             return 1
         except (client.PhotoCADError, source.NoRaster, ValueError) as exc:
             print(f"error: {exc}")
+            doc.save()  # a paid conversion that failed afterwards is kept in the project
             return 1
         doc.save()
         print(project.summary(rec))
@@ -694,5 +769,11 @@ def _dem_heights(chunk, items):
             z = np.array([v[0] for v in src.sample([tuple(map(float, p)) for p in it["xy"]])], float)
             if src.nodata is not None:
                 z[z == src.nodata] = np.nan
+            missing = int((~np.isfinite(z)).sum())
+            if missing:
+                import logging
+
+                logging.getLogger("pyarchinit_photogrammetry.plugins.photocad").warning(
+                    "PhotoCAD free drawings: %d vertices without a DEM value, placed at z = 0", missing)
             out.append(np.where(np.isfinite(z), z, 0.0))
     return out

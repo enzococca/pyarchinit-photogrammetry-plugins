@@ -141,7 +141,7 @@ def _window(src, bbox, max_side: int):
     return c0, r0, ncols, nrows, k
 
 
-def _read(src, bands, c0, r0, ncols, nrows, k, fill):
+def _read(src, bands, c0, r0, ncols, nrows, k, fill, nodata=None):
     """The block (possibly beyond the right and bottom edges: filled) averaged ``k`` x ``k``."""
     from rasterio.enums import Resampling
     from rasterio.windows import Window
@@ -157,24 +157,35 @@ def _read(src, bands, c0, r0, ncols, nrows, k, fill):
     # the last partial blocks (at the right and bottom edges, narrower than k): averaged over the cells there
     def strip(cs, rs, nc, nr):
         a = src.read(bands, window=Window(c0 + cs, r0 + rs, nc, nr)).astype(np.float64)
+        if nodata is not None and np.isfinite(nodata):
+            a[a == nodata] = np.nan  # averaged over the valid cells only (rasterio does so for the whole blocks)
         return a
 
     if full_c < w and inside_c > full_c * k:  # the right strip, rows of whole blocks
         a = strip(full_c * k, 0, inside_c - full_c * k, full_r * k)
         if a.size:
-            out[:, :full_r, full_c] = a.reshape(len(bands), full_r, k, -1).mean(axis=(2, 3))
+            out[:, :full_r, full_c] = _mean(a.reshape(len(bands), full_r, k, -1), (2, 3))
     if full_r < h and inside_r > full_r * k:  # the bottom strip, columns of whole blocks
         a = strip(0, full_r * k, full_c * k, inside_r - full_r * k)
         if a.size:
-            out[:, full_r, :full_c] = a.reshape(len(bands), -1, full_c, k).mean(axis=(1, 3))
+            out[:, full_r, :full_c] = _mean(a.reshape(len(bands), -1, full_c, k), (1, 3))
     if full_c < w and full_r < h and inside_c > full_c * k and inside_r > full_r * k:  # the corner
         a = strip(full_c * k, full_r * k, inside_c - full_c * k, inside_r - full_r * k)
-        out[:, full_r, full_c] = a.reshape(len(bands), -1).mean(axis=1)
+        out[:, full_r, full_c] = _mean(a.reshape(len(bands), -1), 1)
     return out
 
 
+def _mean(a, axis):
+    """Mean without the NaN cells (NaN where all are)."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmean(a, axis=axis)
+
+
 def _hillshade(z: np.ndarray, cell: float, azimuth: float = 315.0, altitude: float = 45.0) -> np.ndarray:
-    """Hillshade 0-255 (NaN = white), Horn's gradients, light from the north-west."""
+    """Hillshade 0-255 (NaN = white), central-difference gradients, light from the north-west."""
     valid = np.isfinite(z)
     filled = np.where(valid, z, np.nanmean(z) if valid.any() else 0.0)
     gy, gx = np.gradient(filled, cell, cell)  # gy along the rows (southwards)
@@ -230,7 +241,7 @@ def render(chunk, source: str, bbox=None, max_side: int = MAX_SIDE, max_bytes: i
         if abs(abs(tr.a) - abs(tr.e)) > 1e-9 * max(1.0, abs(tr.a)):
             raise ValueError(t("Le celle del raster non sono quadrate.", "The cells of the raster are not square."))
         if kind in ("dem", "relief"):
-            a = _read(src, [1], c0, r0, ncols, nrows, k, np.nan)[0]
+            a = _read(src, [1], c0, r0, ncols, nrows, k, np.nan, src.nodata)[0]
             if src.nodata is not None and np.isfinite(src.nodata):
                 a[a == src.nodata] = np.nan
             grey = _hillshade(a, pixel) if kind == "dem" else _stretch(a)

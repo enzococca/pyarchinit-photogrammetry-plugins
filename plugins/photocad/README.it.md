@@ -19,6 +19,7 @@ rasterio, Pillow e shapely sono già nel programma.
 | *... > Vettorializza il prospetto mostrato...* | L'ortofoto del prospetto o della sezione mostrata nella vista 2D, nelle sue (u, v); a scelta anche in 3D sulla sua superficie. |
 | *... > Converti in US / USM...* | I poligoni PhotoCAD selezionati nella vista (o un intero layer PhotoCAD) diventano unità stratigrafiche del chunk attivo, sulla pianta o nei disegni del prospetto mostrato. Tipo (US, USM, ...) e un primo numero facoltativo; le polilinee chiuse valgono come poligoni, le linee aperte si saltano e si contano. Una sola voce di *Modifica > Annulla*. |
 | *... > Importa come disegni liberi...* | (programma 1.7.2) Gli elementi di una conversione come disegni liberi 3D nel layer *PhotoCAD*: sulla pianta alla quota del DEM, su un prospetto sulla sua superficie. |
+| *... > Recupera una conversione...* | Una conversione già pagata scaricata e georeferenziata di nuovo, senza un nuovo invio: una finita mentre la rete o lo scaricamento si sono interrotti, o annullata quando PhotoCAD aveva già finito. |
 | *... > Esporta una conversione...* / *Rimuovi una conversione...* | Una copia in DXF, GeoPackage o SVG; una conversione tolta dal progetto con i suoi file (le US fatte dai suoi poligoni restano). |
 | *... > Chiave API PhotoCAD...* | La chiave nel portachiavi del sistema: *Salva nel portachiavi*, *Dimentica*. |
 | *... > Credito PhotoCAD* | I crediti rimasti sull'account. |
@@ -50,6 +51,17 @@ con la Z per un prospetto in 3D), `drawing.svg` con `drawing.svg.json` (dove si 
 PhotoCAD, Y in basso), `drawing_3d.dxf`, `drawing.pdf` se richiesto, `conversion.json` (sorgente, limiti, pixel, data,
 crediti usati).
 
+Una conversione pagata non va mai persa: il suo id PhotoCAD è scritto nel progetto (e in `conversion.json`) subito
+dopo l'invio, prima che PhotoCAD finisca; qualunque cosa vada storta dopo, *Recupera una conversione...* o
+`ppg plugin photocad fetch` la recuperano. Annullare mentre PhotoCAD lavora ancora cancella la conversione là. Un
+invio non viene mai ripetuto (solo un 429 si richiede). La chiave va solo all'indirizzo di PhotoCAD: un file servito
+da un altro indirizzo (archivio cloud) si scarica senza.
+
+Prima di mettere il disegno al suo posto il plugin controlla che sia nel riferimento dell'immagine: dentro
+l'immagine, la pagina con le proporzioni dell'immagine e il disegno chiesto in metri uguale allo stesso disegno alla
+sua scala naturale (stessa scala sui due assi, nessuno spostamento). Se no, non viene messo nulla e i file restano
+nella cartella per capire cosa è successo.
+
 ## Riga di comando
 
 ```bash
@@ -60,6 +72,7 @@ ppg plugin photocad list scavo.ppg     # elenca anche i prospetti: elevation:<id
 ppg plugin photocad convert scavo.ppg --source ortho --out pianta.dxf
 ppg plugin photocad convert scavo.ppg --source elevation:3236beab --3d --out prospetto.gpkg
 ppg plugin photocad convert scavo.ppg --source dem --bbox 500010,4000020,500060,4000070 --simplified --yes
+ppg plugin photocad fetch scavo.ppg --id <id o id PhotoCAD> [--out disegno.dxf]
 ppg plugin photocad units scavo.ppg <id> --tipo USM --start 101
 ppg plugin photocad export scavo.ppg <id> disegno.svg
 ppg plugin photocad remove scavo.ppg <id>
