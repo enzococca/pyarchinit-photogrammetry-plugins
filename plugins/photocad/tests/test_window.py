@@ -83,7 +83,7 @@ def test_plan_layer_units_and_elevation(window, monkeypatch):
     monkeypatch.setattr(dialogs, "choice", lambda *a, **k: texts.append(a[3]) or None)
     plugin.convert_dialog("ortho")
     _wait(w, qapp)
-    assert fake.calls("POST") == [] and "photocad.ai" in texts[0] and "9" in texts[0] and not errors
+    assert fake.calls("POST") == [] and "photocad.ai" in texts[0] and "Crediti: 9, conversioni gratuite: 5" in texts[0] and not errors
     # accepted
     monkeypatch.setattr(dialogs, "choice", lambda *a, **k: 0)
     plugin.convert_dialog("ortho")

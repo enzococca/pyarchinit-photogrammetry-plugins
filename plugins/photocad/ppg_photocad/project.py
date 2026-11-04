@@ -114,8 +114,10 @@ def prepare(chunk, src: str, key: str, bbox=None, fmt: str = "jpeg") -> dict:
     """The image of ``src`` (and ``bbox``) and the credits on the account (the key is checked here, before
     anything is sent): ``{"rendered", "credits", "source", "bbox"}``."""
     rendered = source.render(chunk, src, bbox, fmt=fmt)
-    credits = client_mod.credits(_client(key).account())
-    return {"rendered": rendered, "credits": credits, "source": src, "bbox": None if bbox is None else list(bbox)}
+    account = _client(key).account()
+    return {"rendered": rendered, "credits": client_mod.credits(account),
+            "free_conversions": client_mod.free_conversions(account), "account_text": client_mod.account_text(account),
+            "source": src, "bbox": None if bbox is None else list(bbox)}
 
 
 def confirm_info(prep: dict) -> dict:
@@ -123,12 +125,12 @@ def confirm_info(prep: dict) -> dict:
     r = prep["rendered"]
     credits = prep.get("credits")
     text = t("L'immagine ({0} x {1} px, {2} kB, {3} cm/px) sarà inviata a photocad.ai, un servizio esterno, per "
-             "vettorializzarla. Una conversione usa un credito (circa 2 $). Crediti rimasti: {4}.",
+             "vettorializzarla. Una conversione usa un credito (circa 2 $) o una conversione gratuita. {4}.",
              "The image ({0} x {1} px, {2} kB, {3} cm/px) will be sent to photocad.ai, an external service, to "
-             "vectorise it. One conversion uses one credit (about $2). Credits left: {4}.").format(
+             "vectorise it. One conversion uses one credit (about $2) or a free conversion. {4}.").format(
         r.width, r.height, max(1, round(len(r.data) / 1024)), f"{r.pixel * 100:.2f}",
-        "?" if credits is None else credits)
-    return {"text": text, "credits": credits, "width": r.width, "height": r.height, "bytes": len(r.data),
+        prep.get("account_text") or client_mod.account_text({"credits": credits}))
+    return {"text": text, "credits": credits, "free_conversions": prep.get("free_conversions"), "width": r.width, "height": r.height, "bytes": len(r.data),
             "pixel": r.pixel, "source": prep["source"]}
 
 
@@ -201,7 +203,8 @@ def upload(chunk, prep: dict, key: str, detailed: bool = True, remove_background
            "folder": f"photocad/{rid}", "files": {"image": r.filename}, "image": r.describe(),
            "options": {"detailed": bool(detailed), "remove_background": bool(remove_background),
                        "three_d": bool(three_d and r.frame is not None), "pdf": bool(pdf)},
-           "credits_used": 1, "date": datetime.now(timezone.utc).isoformat(timespec="seconds"), "visible": True}
+           "credits_used": 1, "account_before": {"credits": prep.get("credits"),
+                                                 "free_conversions": prep.get("free_conversions")}, "date": datetime.now(timezone.utc).isoformat(timespec="seconds"), "visible": True}
     folder = folder_of(chunk, rec)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / r.filename).write_bytes(r.data)

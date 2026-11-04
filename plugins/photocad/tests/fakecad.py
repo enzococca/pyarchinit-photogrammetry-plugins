@@ -95,8 +95,10 @@ class FakePhotoCAD:
     """The opener given to the client instead of urllib: ``fake(request, timeout)``."""
 
     def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False,
-                 scale: str = "page", diagonal: bool = True):
+                 scale: str = "page", diagonal: bool = True, free: int = 5, account: str = "real"):
         self.credits = credits
+        self.free = free  # free conversions left
+        self.account = account  # "real": the shape photocad.ai gives (2026-11-04); "flat": an older guess
         self.polls = polls  # "processing" answers before "complete"
         # "METHOD path-prefix" -> list of HTTP codes to answer first (0: a broken connection, URLError)
         self.fail = dict(fail or {})
@@ -137,7 +139,11 @@ class FakePhotoCAD:
         if headers.get("authorization") != f"Bearer {KEY}":
             raise _error(url, 401, "unauthorized", "Unauthorized", "Invalid API key")
         if method == "GET" and path == "/account":
-            return _Answer(json.dumps({"credits_remaining": self.credits, "free_credits": 0}).encode())
+            if self.account == "flat":
+                return _Answer(json.dumps({"credits_remaining": self.credits}).encode())
+            return _Answer(json.dumps({"credits": {"total": self.credits, "subscription": 0, "api": self.credits},
+                                       "plan": "free", "ceiling": {"limit": None, "used": 0},
+                                       "free_conversions": {"granted": 5, "remaining": self.free}}).encode())
         if method == "POST" and path == "/convert":
             ctype = headers.get("content-type", "")
             msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(

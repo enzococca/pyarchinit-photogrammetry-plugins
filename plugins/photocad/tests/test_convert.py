@@ -29,7 +29,8 @@ def test_the_plan_comes_back_at_its_world_coordinates(tmp_path, fake):
     asked = []
     rec = project.convert(ch, "ortho", fakecad.KEY, confirm=lambda info: asked.append(info) or True)
     (info,) = asked
-    assert info["credits"] == 7 and info["width"] == fakecad.W and info["height"] == fakecad.H and info["bytes"] > 0
+    assert info["credits"] == 7 and info["free_conversions"] == 5 and "conversioni gratuite: 5" in info["text"]
+    assert info["width"] == fakecad.W and info["height"] == fakecad.H and info["bytes"] > 0
     assert rec["source"] == "ortho" and rec["frame"] is None and rec["crs"] == fakecad.CRS
     assert rec["credits_remaining"] == 6 and rec["image"]["pixel"] == pytest.approx(fakecad.RES)
     # the DXF asked in metres, without margin, the long side of the image in metres
@@ -66,6 +67,7 @@ def test_the_plan_comes_back_at_its_world_coordinates(tmp_path, fake):
     # conversion.json, the record in the project, the key nowhere
     meta = json.loads((folder / "conversion.json").read_text())
     assert meta["id"] == rec["id"] and meta["photocad_id"] == "conv_0001" and meta["credits_used"] == 1
+    assert meta["account_before"] == {"credits": 7, "free_conversions": 5}
     assert project.records(ch)[0]["id"] == rec["id"]
     for path in list(folder.rglob("*")) + [doc.path]:
         if path.is_file():

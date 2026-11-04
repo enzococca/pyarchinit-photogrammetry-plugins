@@ -8,7 +8,7 @@ un layer della vista 2D, un DXF georeferenziato, un GeoPackage e un SVG; i suoi 
 USM.
 
 PhotoCAD è un **servizio esterno a pagamento**: l'immagine esce dal computer e ogni conversione usa un credito (circa
-2 $; i primi 10 $ sono gratuiti). Prima di ogni invio il plugin lo dice, con i crediti rimasti e la dimensione
+2 $; i primi 10 $ sono gratuiti). Prima di ogni invio il plugin lo dice, con i crediti e le conversioni gratuite rimasti e la dimensione
 dell'immagine, e aspetta un sì. Niente da installare oltre al programma: la libreria standard parla con l'API; ezdxf,
 rasterio, Pillow e shapely sono già nel programma.
 
@@ -22,7 +22,7 @@ rasterio, Pillow e shapely sono già nel programma.
 | *... > Recupera una conversione...* | Una conversione già pagata scaricata e georeferenziata di nuovo, senza un nuovo invio: una finita mentre la rete o lo scaricamento si sono interrotti, o annullata quando PhotoCAD aveva già finito. |
 | *... > Esporta una conversione...* / *Rimuovi una conversione...* | Una copia in DXF, GeoPackage o SVG; una conversione tolta dal progetto con i suoi file (le US fatte dai suoi poligoni restano). |
 | *... > Chiave API PhotoCAD...* | La chiave nel portachiavi del sistema: *Salva nel portachiavi*, *Dimentica*. |
-| *... > Credito PhotoCAD* | I crediti rimasti sull'account. |
+| *... > Credito PhotoCAD* | I crediti e le conversioni gratuite rimasti sull'account. |
 
 Ogni conversione è un layer **«PhotoCAD: \<nome\>»** della vista 2D (poligoni e linee, selezionabili, nel pannello
 Layer), sulla pianta o sul prospetto su cui è stata fatta, ridisegnato ogni volta che il raster viene ricaricato.

@@ -147,11 +147,11 @@ class PhotoCADPlugin(Plugin):
         if key is None:
             return
         try:
-            n = client.credits(client.Client(key).account())
+            text = client.account_text(client.Client(key).account())
         except client.PhotoCADError as exc:
             self._say(str(exc), "warning")
             return
-        self._say(t("Crediti PhotoCAD rimasti: {0}", "PhotoCAD credits left: {0}").format("?" if n is None else n))
+        self._say("PhotoCAD - " + text)
 
     # ------------------------------------------------------------------ the conversion in the window
     def convert_dialog(self, kind: str) -> None:
@@ -645,11 +645,10 @@ class PhotoCADPlugin(Plugin):
                 print(keys.status_text())
                 return 1
             try:
-                n = client.credits(client.Client(key).account())
+                print("PhotoCAD - " + client.account_text(client.Client(key).account()))
             except client.PhotoCADError as exc:
                 print(f"error: {exc}")
                 return 1
-            print(t("Crediti PhotoCAD rimasti: {0}", "PhotoCAD credits left: {0}").format("?" if n is None else n))
             return 0
         doc, chunk = self._open(ns.project, ns.chunk)
         if chunk is None:

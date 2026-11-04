@@ -8,7 +8,7 @@ becomes a layer of the 2D view, a georeferenced DXF, a GeoPackage and an SVG; it
 USM.
 
 PhotoCAD is an **external paid service**: the image leaves the computer and every conversion uses one credit
-(about $2; the first $10 are free). Before each upload the plugin says so, with the credits left and the size of the
+(about $2; the first $10 are free). Before each upload the plugin says so, with the credits and free conversions left and the size of the
 image, and waits for a yes. Nothing to install beyond the program: the standard library talks to the API; ezdxf,
 rasterio, Pillow and shapely come with the program.
 
@@ -22,7 +22,7 @@ rasterio, Pillow and shapely come with the program.
 | *... > Recupera una conversione...* | A conversion already paid for downloaded and georeferenced again, without a new upload: one that finished while the network failed or the download broke, or that was cancelled after PhotoCAD had finished. |
 | *... > Esporta una conversione...* / *Rimuovi una conversione...* | A copy as DXF, GeoPackage or SVG; a conversion out of the project with its files (the units made from it stay). |
 | *... > Chiave API PhotoCAD...* | The key in the system keychain: *Salva nel portachiavi*, *Dimentica*. |
-| *... > Credito PhotoCAD* | The credits left on the account. |
+| *... > Credito PhotoCAD* | The credits and the free conversions left on the account. |
 
 Every conversion is a layer **"PhotoCAD: \<name\>"** of the 2D view (polygons and lines, selectable, in the Layer
 pane), on the plan or on the elevation it was made on, drawn again whenever the raster is loaded again.

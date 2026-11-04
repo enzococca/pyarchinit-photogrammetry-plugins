@@ -42,7 +42,7 @@ def test_key_commands(plugin, monkeypatch, capsys, _no_network_no_keychain, tmp_
     assert "portachiavi" in out and fakecad.KEY not in out and "…cdef" in out
     fake = fakecad.FakePhotoCAD(credits=3)
     monkeypatch.setattr(client, "_urlopen", fake)
-    assert plugin.command("credit") == 0 and "3" in capsys.readouterr().out
+    assert plugin.command("credit") == 0 and "Crediti: 3, conversioni gratuite: 5" in capsys.readouterr().out
     assert plugin.command("key", "forget") == 0 and not _no_network_no_keychain.store
     assert plugin.command("credit") == 1 and "PHOTOCAD_API_KEY" in capsys.readouterr().out
     for path in (tmp_path / "plugin").rglob("*"):  # the plugin's settings never hold it

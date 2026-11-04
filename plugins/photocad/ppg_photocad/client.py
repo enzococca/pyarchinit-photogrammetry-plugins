@@ -287,6 +287,28 @@ def credits(answer: dict) -> int | None:
     return None
 
 
+def free_conversions(answer: dict) -> int | None:
+    """The free conversions left (``/account``: ``free_conversions.remaining``); None when not said."""
+    if not isinstance(answer, dict):
+        return None
+    for source in (answer, answer.get("data") if isinstance(answer.get("data"), dict) else {}):
+        value = source.get("free_conversions")
+        if isinstance(value, dict):
+            value = value.get("remaining")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+    return None
+
+
+def account_text(answer: dict) -> str:
+    """``Crediti: 0, conversioni gratuite: 5`` (the free conversions only when the account says them)."""
+    n, free = credits(answer), free_conversions(answer)
+    text = t("Crediti: {0}", "Credits: {0}").format("?" if n is None else n)
+    if free is not None:
+        text += t(", conversioni gratuite: {0}", ", free conversions: {0}").format(free)
+    return text
+
+
 def _check(progress) -> None:
     if progress is None:
         return

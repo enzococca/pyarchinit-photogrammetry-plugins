@@ -125,3 +125,13 @@ def test_cancel_deletes_the_conversion(monkeypatch):
     with pytest.raises(Cancelled):
         client.wait(c, "conv_0001", p, interval=5.0)
     assert fake.deleted == ["conv_0001"]
+
+
+def test_credits_and_free_conversions_of_the_account():
+    real = {"credits": {"total": 0, "subscription": 0, "api": 0}, "plan": "free", "ceiling": {"limit": None, "used": 0},
+            "free_conversions": {"granted": 5, "remaining": 5}}
+    assert client.credits(real) == 0 and client.free_conversions(real) == 5
+    assert client.account_text(real) == "Crediti: 0, conversioni gratuite: 5"
+    assert client.credits({"credits_remaining": 3}) == 3 and client.free_conversions({"credits_remaining": 3}) is None
+    assert client.account_text({"credits_remaining": 3}) == "Crediti: 3"
+    assert client.credits({"data": {"balance": 2}}) == 2 and client.account_text({}) == "Crediti: ?"
