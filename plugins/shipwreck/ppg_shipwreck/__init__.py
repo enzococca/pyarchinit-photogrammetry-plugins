@@ -165,7 +165,8 @@ class ShipwreckPlugin(Plugin):
         history = getattr(window, "history", None) if window is not None else None
         scripted = bool(getattr(window, "_script_running", False))  # a script's own entry covers it
         after = self._snapshot(chunk)
-        if history is not None and not scripted and before != after and chunk is getattr(window, "chunk", None):
+        changed = _without_caches(before) != _without_caches(after)  # a plan cache refreshed is no change
+        if history is not None and not scripted and changed and chunk is getattr(window, "chunk", None):
             history.push(t(f"Relitto: {text}", f"Shipwreck: {text}"), _Step(self, chunk, before, after), document=False)
         self._changed()
 
@@ -785,7 +786,7 @@ class ShipwreckPlugin(Plugin):
         if self.overlay_kind not in relief.KINDS:
             self.overlay.remove()
             return
-        self.overlay.show(relief._path(chunk, self.overlay_kind), self.overlay_kind, t(*OVERLAY_TITLES[self.overlay_kind]))
+        self.overlay.show(relief.path_of(chunk, self.overlay_kind), self.overlay_kind, t(*OVERLAY_TITLES[self.overlay_kind]))
 
     def _do_relief_build(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field
@@ -904,8 +905,12 @@ class ShipwreckPlugin(Plugin):
         return out
 
     def _selected_timbers(self) -> list[str]:
+        """The timbers selected on the view; when none, those selected in the pane's table (a row left selected
+        there never adds to what the user points at on the view)."""
         ids = self._selected(TRACED_LAYER, LAYER)
-        return ids + [i for i in (self.pane.selected_ids() if self.pane is not None else []) if i not in ids]
+        if ids:
+            return ids
+        return self.pane.selected_ids() if self.pane is not None else []
 
     def _do_trace_accept(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field
@@ -986,8 +991,8 @@ class ShipwreckPlugin(Plugin):
         if len(ids) != 1:
             raise ship.NotReady(t("Seleziona un legno (sulla vista o nella tabella) da ridisegnare.",
                                   "Select one timber (on the view or in the table) to trace again."))
-        record = tracing._record(chunk, ids[0])
-        tracing._need_fresh_relief(chunk)
+        record = tracing.record(chunk, ids[0])
+        tracing.need_fresh_relief(chunk)
         self._need_relief_view(chunk)
         gtype = record["geometry"]["type"]
 
@@ -1009,7 +1014,7 @@ class ShipwreckPlugin(Plugin):
         chunk = self._need_chunk()
         ship.need_frame(chunk)
         self._relief_entry(chunk)
-        tracing._need_fresh_relief(chunk)
+        tracing.need_fresh_relief(chunk)
         v = self._ask(t("Legno ricalcato", "Traced timber"), [
             Field("kind", t("Tipo", "Kind"), "frame", choices=[(k, timbers.kind_title(k)) for k in timbers.KINDS]),
             Field("side", t("Lato", "Side"), "auto", choices=[("auto", t("Dalla posizione", "From where it lies"))]
@@ -1150,9 +1155,12 @@ class ShipwreckPlugin(Plugin):
         if chunk is None or view.tr is None:
             return
         shown = getattr(self.context.window, "drawings_frame", None)
+        relief_shown = shown is not None and self._relief_shown(chunk)
+        if not relief_shown and self.overlay is not None:
+            self.overlay.remove()  # a relief removed without another raster shown
         if shown is None:
             self._draw_plan(view, chunk)
-        elif self._relief_shown(chunk):
+        elif relief_shown:
             self._draw_relief(view, chunk)
             try:
                 self._apply_overlay(chunk)
@@ -1463,6 +1471,17 @@ def clinker_state(chunk) -> str:
                  f", distance from the scan median {num(median(medians), 1)} mm") if medians else "")
         text += " " + t(f"Da Houdini, {name}: {count}{far}.", f"From Houdini, {name}: {count}{far}.")
     return text
+
+
+CACHES = ("ship_xy", "frame_key", "visible_xy")  # the fields of a record that are its plan in a frame, a cache
+
+
+def _without_caches(snapshot: dict) -> dict:
+    """A snapshot of :data:`UNDO_KEYS` without the plan caches of the records: what an undo step compares."""
+    out = dict(snapshot)
+    if out.get("timbers"):
+        out["timbers"] = [{k: v for k, v in r.items() if k not in CACHES} for r in out["timbers"]]
+    return out
 
 
 def relief_state(chunk) -> str:

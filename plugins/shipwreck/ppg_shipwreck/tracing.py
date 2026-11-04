@@ -74,7 +74,7 @@ def _elevation(chunk) -> str | None:
     return None if e is None else e.get("id")
 
 
-def _need_fresh_relief(chunk) -> None:
+def need_fresh_relief(chunk) -> None:
     """A relief built for another ship frame or another model has another (u, v): refused."""
     if relief.entry(chunk) is not None and relief.is_stale(chunk):
         raise ship.NotReady(t("Il rilievo dello scafo è di un altro sistema della nave o di un altro modello: "
@@ -86,7 +86,7 @@ def _need_current_proposals(chunk, prop: dict, frame: ship.Frame) -> None:
     """Proposals read in another ship frame (the bow moved, the keel traced again) are in another plan: accepting
     them would put each timber at its image in the new frame (the mirror, with the bow moved): refused, as on a stale
     relief."""
-    _need_fresh_relief(chunk)
+    need_fresh_relief(chunk)
     read_in = prop.get("frame")
     if read_in is not None and relief.frame_key(ship.Frame.from_dict(read_in)) != relief.frame_key(frame):
         raise ship.NotReady(t("Le proposte sono state lette in un altro sistema della nave: ricostruisci il rilievo "
@@ -163,18 +163,19 @@ def add_traced(chunk, kind: str, side: str, name: str, uv, geometry_type: str) -
     ``geometry_type`` "line", "polygon" or "point"; ``side`` "auto" from the mean y in the ship plan (on the keel line
     within :data:`timbers.SIDE_TOLERANCE`: centre). A measured record with ``ship_xy``."""
     frame = ship.need_frame(chunk)
-    _need_fresh_relief(chunk)
+    need_fresh_relief(chunk)
     xy = _ship_of(uv, frame, geometry_type)
     return timbers.add(chunk, kind, _side(side, xy), name, timbers.geometry(geometry_type, _world(frame, xy)),
                        ship_xy=xy.tolist(), status="measured", chunk=chunk.key, elevation=_elevation(chunk),
                        frame_key=relief.frame_key(frame))
 
 
-def _record(chunk, tid: str) -> dict:
-    record = next((r for r in ship.state(chunk).get("timbers", []) if r["id"] == tid), None)
-    if record is None:
+def record(chunk, tid: str) -> dict:
+    """The record ``tid`` of the catalogue; :class:`ship.NotReady` when there is none."""
+    found = next((r for r in ship.state(chunk).get("timbers", []) if r["id"] == tid), None)
+    if found is None:
         raise ship.NotReady(t(f"Legno {tid} non trovato.", f"Timber {tid} not found."))
-    return record
+    return found
 
 
 def correct(chunk, tid: str, uv) -> dict:
@@ -183,19 +184,19 @@ def correct(chunk, tid: str, uv) -> dict:
     traced again on the model becomes a measure: its hypothesis or import note goes). The visible parts of the
     strakes follow when they were computed."""
     frame = ship.need_frame(chunk)
-    _need_fresh_relief(chunk)
-    record = _record(chunk, tid)
-    gtype = record["geometry"]["type"]
+    need_fresh_relief(chunk)
+    rec = record(chunk, tid)
+    gtype = rec["geometry"]["type"]
     xy = _ship_of(uv, frame, gtype)
-    if not timbers.is_measured(record):
-        record["notes"] = ""
-    record.update(geometry=timbers.geometry(gtype, _world(frame, xy)), ship_xy=xy.tolist(), corrected=True,
-                  status="measured", elevation=_elevation(chunk), frame_key=relief.frame_key(frame))
-    record.setdefault("chunk", chunk.key)
-    record.pop("visible_xy", None)
+    if not timbers.is_measured(rec):
+        rec["notes"] = ""
+    rec.update(geometry=timbers.geometry(gtype, _world(frame, xy)), ship_xy=xy.tolist(), corrected=True,
+               status="measured", elevation=_elevation(chunk), frame_key=relief.frame_key(frame))
+    rec.setdefault("chunk", chunk.key)
+    rec.pop("visible_xy", None)
     if any("visible_xy" in r for r in ship.state(chunk).get("timbers", [])):
         update_visible(chunk)
-    return record
+    return rec
 
 
 def ship_xy_of(chunk, record: dict, frame: ship.Frame | None = None) -> np.ndarray:

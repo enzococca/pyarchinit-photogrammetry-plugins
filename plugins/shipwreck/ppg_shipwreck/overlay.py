@@ -28,18 +28,33 @@ def grey(values: np.ndarray, stretch=STRETCH) -> np.ndarray:
     return rgba
 
 
+def _read(path, factor: float):
+    """The band of ``path`` read at ``factor`` of its size (<= 1: an overview when the file has one, never the whole
+    raster for a coarser view), NaN where there is no value, and the affine of what was read."""
+    import rasterio
+    from rasterio.enums import Resampling
+
+    with rasterio.open(path) as src:
+        h = max(1, min(src.height, int(np.ceil(src.height * factor))))
+        w = max(1, min(src.width, int(np.ceil(src.width * factor))))
+        values = src.read(1, out_shape=(h, w), resampling=Resampling.average).astype(np.float32)
+        if src.nodata is not None and np.isfinite(src.nodata):
+            values[values == src.nodata] = np.nan
+        transform = src.transform @ src.transform.scale(src.width / w, src.height / h)
+    return values, transform
+
+
 def resample_to(path, transform, shape) -> np.ndarray:
-    """The raster ``path`` on the grid of the view (``transform``, (rows, cols)), both in the relief's (u, v): bilinear,
-    NaN outside."""
+    """The raster ``path`` on the grid of the view (``transform``, (rows, cols)), both in the relief's (u, v): read at
+    the view's cell when it is coarser than the raster's (:func:`_read`), then bilinear; NaN outside."""
     import rasterio
     from rasterio.warp import Resampling, reproject
 
-    crs = rasterio.crs.CRS.from_epsg(3857)  # the (u, v) of the relief on both sides: any projected CRS does
     with rasterio.open(path) as src:
-        values = src.read(1).astype(np.float32)
-        if src.nodata is not None and np.isfinite(src.nodata):
-            values[values == src.nodata] = np.nan
-        src_tr = src.transform
+        cell = abs(src.transform.a)
+    factor = min(1.0, cell / max(abs(transform.a), 1e-12))
+    values, src_tr = _read(path, factor)
+    crs = rasterio.crs.CRS.from_epsg(3857)  # the (u, v) of the relief on both sides: any projected CRS does
     dst = np.full(shape, np.nan, np.float32)
     reproject(source=values, destination=dst, src_transform=src_tr, src_crs=crs, dst_transform=transform,
               dst_crs=crs, src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.bilinear)
@@ -54,6 +69,14 @@ class Overlay:
         self.item = None
         self.key = None
         self.title = ""
+        self._cached = None  # (what it was made from, the image): an edit that changes neither reuses it
+
+    def _source(self, path, key: str, w: int, h: int) -> tuple:
+        """What the image depends on: the file (and its date and size), the kind, the view's grid."""
+        from pathlib import Path
+
+        st = Path(path).stat()
+        return str(path), st.st_mtime_ns, st.st_size, key, tuple(self.view.tr), w, h
 
     def show(self, path, key: str, title: str, opacity: float = 0.6) -> None:
         from PySide6.QtGui import QPixmap
@@ -66,12 +89,19 @@ class Overlay:
         if view.tr is None or w < 1 or h < 1:
             raise RuntimeError(t("Niente nella vista raster: mostra prima il rilievo dello scafo.",
                                  "Nothing in the raster view: show the relief of the hull first."))
+        source = self._source(path, key, w, h)
+        if self.shown() and self._cached is not None and self._cached[0] == source:
+            self.item.setOpacity(float(opacity))
+            self.title = title
+            return
         self.remove()
-        values = resample_to(path, view.tr, (h, w))
-        if not np.isfinite(values).any():
-            raise RuntimeError(t("Il raster sta fuori da quello mostrato: mostra il rilievo dello scafo.",
-                                 "The raster lies outside the one shown: show the relief of the hull."))
-        item = view.scene().addPixmap(QPixmap.fromImage(to_qimage(grey(values))))
+        if self._cached is None or self._cached[0] != source:
+            values = resample_to(path, view.tr, (h, w))
+            if not np.isfinite(values).any():
+                raise RuntimeError(t("Il raster sta fuori da quello mostrato: mostra il rilievo dello scafo.",
+                                     "The raster lies outside the one shown: show the relief of the hull."))
+            self._cached = (source, QPixmap.fromImage(to_qimage(grey(values))))
+        item = view.scene().addPixmap(self._cached[1])
         item.setZValue(-0.5)  # over the raster (-2) and its detail (-1), under the drawings
         item.setOpacity(float(opacity))
         self.item, self.key, self.title = item, key, title

@@ -154,7 +154,8 @@ def is_stale(chunk) -> bool:
         st.get("model") != _model_key(chunk)
 
 
-def _path(chunk, kind: str) -> Path:
+def path_of(chunk, kind: str) -> Path:
+    """The GeoTIFF of the relief raster ``kind`` (one of :data:`KINDS`)."""
     if kind not in KINDS:
         raise ValueError(f"unknown relief raster {kind!r}: one of {', '.join(KINDS)}")
     e = entry(chunk)
@@ -171,7 +172,7 @@ def load(chunk, kind: str):
     """The raster ``kind`` (float, NaN off the model) and its affine in (u, v)."""
     import rasterio
 
-    with rasterio.open(_path(chunk, kind)) as src:
+    with rasterio.open(path_of(chunk, kind)) as src:
         arr = src.read(1)
         if src.nodata is not None and np.isfinite(src.nodata):
             arr = np.where(arr == src.nodata, np.nan, arr).astype(arr.dtype)
@@ -395,7 +396,7 @@ def export_ship(chunk, kind: str, path) -> Path:
     """The raster ``kind`` as a GeoTIFF in ship metres (u = x, v = sign*y; no system), the frame in the tags."""
     import rasterio
 
-    src_path, path = _path(chunk, kind), Path(path)
+    src_path, path = path_of(chunk, kind), Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src_path, path)
     with rasterio.open(path, "r+") as dst:
@@ -433,7 +434,7 @@ def export_world(chunk, kind: str, path) -> Path:
     work_crs = crs or CRS.from_epsg(3857)  # the same on both sides: only the affine changes
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(_path(chunk, kind)) as src:
+    with rasterio.open(path_of(chunk, kind)) as src:
         a = src.transform
         world = Affine(ux * a.a + vx * a.d, ux * a.b + vx * a.e, ox + ux * a.c + vx * a.f,
                        uy * a.a + vy * a.d, uy * a.b + vy * a.e, oy + uy * a.c + vy * a.f)
