@@ -58,7 +58,7 @@ def test_account_convert_poll_download(monkeypatch):
     assert cid == "conv_0001" and fake.options[cid] == {"detailed": "false", "remove_background": "true"}
     seen = []
     done = client.wait(c, cid, lambda f, m: seen.append(m), interval=5.0)
-    assert done["status"] == "complete" and client.credits(done) == 4 and len(fake.calls("GET", "/conversions/")) == 2
+    assert done["status"] == "complete" and client.credits(done) == 5  # a free conversion went first and len(fake.calls("GET", "/conversions/")) == 2
     dxf = c.file(cid, "dxf", units="m", longest=1.5, margin=0)
     assert b"OUTLINE" in dxf
     assert "units=m" in fake.calls("GET", "/conversions/conv_0001/files/dxf")[0]

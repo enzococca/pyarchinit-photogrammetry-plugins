@@ -37,28 +37,28 @@ message (masked as `pcad_live_…abcd`). Without a keychain (the `keyring` libra
 
 ## How the drawing comes back in place
 
-The image covers a block of whole cells of the raster, reduced by an integer factor so that its long side is at most
-2400 px (PhotoCAD reduces to that anyway): each pixel of the image is a known square of the survey and its lower-left
-corner a known point. The DXF is asked in metres (`units=m`), without margin (`margin=0`), with the long side of the
-image in metres (`longest`): PhotoCAD draws from the lower-left corner of the image, Y up, so moving the drawing by
-that corner puts it in the coordinates of the chunk (or the (u, v) of the elevation). On an elevation each vertex can
-also go to the world, at the depth read from the elevation's relief.
+The image is cut into **tiles at the raster's native resolution** - at most 2400 px on the long side, about 10 %
+overlap, one conversion each (a strip under 600 px is enlarged up to 4 times, thinner than that it is not sent:
+PhotoCAD fails on thin strips). Before sending, the confirmation says how many conversions it takes and refuses when
+the account has fewer credits and free conversions; `--max-tiles` (6) guards against a long image taking many.
 
-Files, in `<chunk data>/photocad/<id>/`: `image.jpg` (what was sent), `photocad.dxf` (as PhotoCAD gave it),
-`drawing.dxf` (georeferenced, PhotoCAD's layers kept), `drawing.gpkg` (table `photocad`: polygons and lines with the
-PhotoCAD layer, length and area; in the CRS of the chunk, or without CRS for an elevation; `photocad_3d` with Z for an
-elevation in 3D), `drawing.svg` with `drawing.svg.json` (where it lies: the SVG keeps PhotoCAD's frame, Y down),
-`drawing_3d.dxf`, `drawing.pdf` if asked, `conversion.json` (source, bounds, pixel, date, credits used).
+PhotoCAD's drawing does not come in the image's frame: its page is the box of the **subject** it found, in
+millimetres at a natural size (whatever `units` asks). So each tile's drawing is downloaded in mm and placed by
+**registration**: the page onto the image's content box (one scale, proportions within 2 %), then offset and scale
+refined (+-24 px, +-3 %) by bringing the lines onto the image's edges (the strength of the gradient under them,
+maximised to a fortieth of a pixel). The residual (median distance of the lines from the image's edges, in pixels)
+is kept in `conversion.json`; over 2 px, or under 60 % of the lines near an edge, the drawing is refused and nothing
+is placed. The tiles are then merged: from each tile what is nearer its own centre (the copies in the overlaps once).
+On an elevation each vertex can also go to the world, at the depth read from the elevation's relief.
 
-A paid conversion is never lost: its PhotoCAD id is written in the project (and in `conversion.json`) right after
-the upload, before PhotoCAD finishes; whatever goes wrong afterwards, *Recupera una conversione...* or
-`ppg plugin photocad fetch` gets it. Cancelling while PhotoCAD still works deletes the conversion there. An upload is
-never sent twice (only a 429 is asked again). The key goes only to PhotoCAD's own address: a file served from another
-address (cloud storage) is downloaded without it.
-
-Before placing the drawing the plugin checks that it is in the image's frame: inside the image, the page with the
-image's proportions, and the drawing asked in metres matching the same drawing at its natural size (same scale on both
-axes, no offset). If not, nothing is placed and the files stay in the folder for a diagnosis.
+Files, in `<chunk data>/photocad/<id>/`: per tile `t0/`, `t1/`...: `image.jpg` (what was sent), `photocad_mm.dxf` (as
+PhotoCAD gave it), `geometry.json`, `drawing.svg` with `drawing.svg.json` (where it lies), `drawing.dxf` (the tile
+placed); for the whole: `drawing.dxf` (georeferenced, PhotoCAD's layers kept), `drawing.gpkg` (table `photocad`:
+polygons and lines with the PhotoCAD layer, length and area; in the CRS of the chunk, or without CRS for an
+elevation; `photocad_3d` with Z for an elevation in 3D), `drawing_3d.dxf`, `conversion.json` (source, tiles with
+their PhotoCAD ids, idempotency keys and registrations, date, credits used). Each upload carries an
+`Idempotency-Key` saved before it is sent: an upload asked again (a 429, a lost connection, `fetch` after a crash)
+never charges twice.
 
 ## Command line
 
@@ -77,14 +77,14 @@ ppg plugin photocad remove scavo.ppg <id>
 ```
 
 `convert` asks for confirmation at the prompt unless `--yes` (or the project was told not to ask again); options
-`--chunk NAME`, `--remove-background`, `--pdf`, `--name`.
+`--chunk NAME`, `--remove-background`, `--pdf`, `--name`, `--max-tiles N`.
 
 ## Limits
 
-- PhotoCAD's own frame (origin, Y up, `longest` applied to the image, no margin) follows its documentation; the
-  plugin was tested against a fake server that behaves as documented, not against photocad.ai.
-- The drawing is as good as the image: an orthophoto of a few thousand pixels reduced to 2400 px loses detail - send
-  a part (visible area or drawn area) for detail.
+- The placement rests on the image having edges where the drawing has lines (stones, walls, cuts: what PhotoCAD
+  draws); a drawing of a flat, featureless image may be refused.
+- A large orthophoto at native resolution takes many tiles (many conversions): send a part (visible area or drawn
+  area), or raise `--max-tiles` knowingly.
 - 20 conversions a minute; a refused or failed conversion is said in plain words (a failed one is refunded by
   PhotoCAD).
 

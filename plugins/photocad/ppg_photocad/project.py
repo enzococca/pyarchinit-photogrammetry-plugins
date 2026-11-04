@@ -1,11 +1,12 @@
-"""A conversion of the project: the image rendered, the confirmation, the upload, the wait, the drawing brought
-back and kept. No Qt here.
+"""A conversion of the project: the images rendered (one per tile), the confirmation, the uploads, the waits, the
+drawings brought back, placed by registration, merged and kept. No Qt here.
 
-What is made lives in ``<chunk data>/photocad/<id>/``: ``image.jpg`` (what was sent), ``photocad.dxf`` (as
-PhotoCAD gave it, metres from the lower-left corner of the image), ``drawing.dxf`` (georeferenced),
-``drawing.gpkg`` (table ``photocad``; ``photocad_3d`` for an elevation in 3D), ``drawing.svg`` with
-``drawing.svg.json`` (where it lies), ``drawing_3d.dxf``, ``drawing.pdf`` when asked, ``conversion.json`` (the
-source, the bounds, the pixel, the date, the credits used - never the key). The list of the conversions is in
+What is made lives in ``<chunk data>/photocad/<id>/``: one folder per tile, ``t0/``, ``t1/``... with ``image.jpg``
+(what was sent), ``photocad_mm.dxf`` (PhotoCAD's drawing at its natural size in mm), ``geometry.json``, ``drawing.svg``
+(+ ``drawing.svg.json``: where it lies), ``drawing.dxf`` (the tile placed), ``drawing.pdf`` when asked; and for the
+whole: ``drawing.dxf`` (georeferenced, the tiles merged), ``drawing.gpkg`` (table ``photocad``; ``photocad_3d`` for an
+elevation in 3D), ``drawing_3d.dxf``, ``conversion.json`` (the source, the tiles with their PhotoCAD ids, idempotency
+keys, images and registrations, the date, the credits used - never the key). The list of the conversions is in
 ``chunk.meta["photocad"]["conversions"]``; whether to ask before each upload in ``doc.meta["photocad"]["confirm"]``.
 """
 from __future__ import annotations
@@ -90,19 +91,40 @@ def features(chunk, rec: dict):
     return [(g, a) for g, a in gpkg.read_table(path, drawing.TABLE) if g is not None]
 
 
-STATUS = {"pending": ("inviata, non ancora finita", "sent, not finished yet"),
+STATUS = {"uploading": ("non ancora inviata del tutto", "not all sent yet"),
+          "pending": ("inviata, non ancora finita", "sent, not finished yet"),
           "complete": ("finita, non scaricata", "finished, not downloaded"),
           "mismatch": ("disegno non corrispondente all'immagine", "drawing not matching the image")}
 
 
+def _tiles(rec: dict) -> list[dict]:
+    """The tiles of a record; a record made before the tiles (0.1.0 in development: one PhotoCAD id, its files in the
+    folder itself) becomes one tile, in place."""
+    if "tiles" not in rec:
+        status = {"done": "complete", "mismatch": "complete", "complete": "complete"}.get(rec.get("status"), "pending")
+        rec["tiles"] = [{"n": 0, "folder": "", "photocad_id": rec.get("photocad_id"), "idempotency_key": None,
+                         "status": status if rec.get("photocad_id") else "new", "image": dict(rec.get("image") or {}),
+                         "page_mm": rec.get("page_mm"), "files": {"image": (rec.get("files") or {}).get("image",
+                                                                                                       "image.jpg")}}]
+    return rec["tiles"]
+
+
+def _pixel(rec: dict) -> float:
+    tiles = rec.get("tiles") or [{"image": rec.get("image") or {}}]
+    return float((tiles[0].get("image") or {}).get("pixel", 0))
+
+
 def summary(rec: dict) -> str:
     c = rec.get("counts") or {}
+    ids = ", ".join(str(tl.get("photocad_id")) for tl in rec.get("tiles") or [] if tl.get("photocad_id")) \
+        or str(rec.get("photocad_id"))
     if rec.get("status", "done") in STATUS:
-        return f"{rec.get('name')}: {t(*STATUS[rec['status']])} (PhotoCAD {rec.get('photocad_id')})"
+        return f"{rec.get('name')}: {t(*STATUS[rec['status']])} (PhotoCAD {ids})"
     where = t("pianta", "plan") if rec.get("frame") is None else t("prospetto {0}", "elevation {0}").format(rec["frame"])
-    return t("{0}: {1} poligoni, {2} linee ({3}, {4} cm/px)", "{0}: {1} polygons, {2} lines ({3}, {4} cm/px)").format(
-        rec.get("name"), c.get("polygons", 0), c.get("lines", 0), where,
-        f"{float((rec.get('image') or {}).get('pixel', 0)) * 100:.2f}")
+    n = len(rec.get("tiles") or [1])
+    tiles = "" if n == 1 else t(", {0} tessere", ", {0} tiles").format(n)
+    return t("{0}: {1} poligoni, {2} linee ({3}, {4} cm/px{5})", "{0}: {1} polygons, {2} lines ({3}, {4} cm/px{5})").format(
+        rec.get("name"), c.get("polygons", 0), c.get("lines", 0), where, f"{_pixel(rec) * 100:.2f}", tiles)
 
 
 # ------------------------------------------------------------------ the conversion
@@ -110,28 +132,56 @@ def _client(key):
     return client_mod.Client(key)
 
 
-def prepare(chunk, src: str, key: str, bbox=None, fmt: str = "jpeg") -> dict:
-    """The image of ``src`` (and ``bbox``) and the credits on the account (the key is checked here, before
-    anything is sent): ``{"rendered", "credits", "source", "bbox"}``."""
-    rendered = source.render(chunk, src, bbox, fmt=fmt)
+class NotEnough(client_mod.PhotoCADError):
+    """Fewer credits and free conversions than the tiles need."""
+
+
+def prepare(chunk, src: str, key: str, bbox=None, fmt: str = "jpeg", max_tiles: int = source.MAX_TILES) -> dict:
+    """The tiles of ``src`` (and ``bbox``) rendered, and the account (the key is checked here, before anything is
+    sent): ``{"tiles" [Rendered], "credits", "free_conversions", "account_text", "source", "bbox"}``. ``ValueError``
+    for more tiles than ``max_tiles`` or a strip too thin; :class:`NotEnough` when the account cannot pay them."""
+    plan = source.tiles(chunk, src, bbox)
+    if len(plan) > max_tiles:
+        raise ValueError(t("Servirebbero {0} tessere ({0} conversioni), più del limite di {1}: scegli una parte "
+                           "(un'area, --bbox) o alza il limite (--max-tiles).",
+                           "{0} tiles ({0} conversions) would be needed, more than the limit of {1}: choose a part "
+                           "(an area, --bbox) or raise the limit (--max-tiles).").format(len(plan), max_tiles))
+    rendered = [source.render(chunk, src, p["window"], p["zoom"], fmt=fmt) for p in plan]
     account = _client(key).account()
-    return {"rendered": rendered, "credits": client_mod.credits(account),
-            "free_conversions": client_mod.free_conversions(account), "account_text": client_mod.account_text(account),
-            "source": src, "bbox": None if bbox is None else list(bbox)}
+    credits, free = client_mod.credits(account), client_mod.free_conversions(account)
+    text = client_mod.account_text(account)
+    if credits is not None or free is not None:
+        available = (credits or 0) + (free or 0)
+        if available < len(rendered):
+            raise NotEnough(t("Servono {0} conversioni, ne restano {1} ({2}).",
+                              "{0} conversions are needed, {1} are left ({2}).").format(len(rendered), available, text),
+                            402, "not_enough")
+    return {"tiles": rendered, "rendered": rendered[0], "credits": credits, "free_conversions": free,
+            "account_text": text, "source": src, "bbox": None if bbox is None else list(bbox)}
 
 
 def confirm_info(prep: dict) -> dict:
     """What the user is told before the upload: the text and its numbers."""
-    r = prep["rendered"]
-    credits = prep.get("credits")
-    text = t("L'immagine ({0} x {1} px, {2} kB, {3} cm/px) sarà inviata a photocad.ai, un servizio esterno, per "
-             "vettorializzarla. Una conversione usa un credito (circa 2 $) o una conversione gratuita. {4}.",
-             "The image ({0} x {1} px, {2} kB, {3} cm/px) will be sent to photocad.ai, an external service, to "
-             "vectorise it. One conversion uses one credit (about $2) or a free conversion. {4}.").format(
-        r.width, r.height, max(1, round(len(r.data) / 1024)), f"{r.pixel * 100:.2f}",
-        prep.get("account_text") or client_mod.account_text({"credits": credits}))
-    return {"text": text, "credits": credits, "free_conversions": prep.get("free_conversions"), "width": r.width, "height": r.height, "bytes": len(r.data),
-            "pixel": r.pixel, "source": prep["source"]}
+    tiles = prep["tiles"]
+    r = tiles[0]
+    n = len(tiles)
+    size = sum(len(x.data) for x in tiles)
+    if n == 1:
+        what = t("L'immagine ({0} x {1} px, {2} kB, {3} cm/px) sarà inviata a photocad.ai, un servizio esterno, per "
+                 "vettorializzarla. Serve 1 conversione: un credito (circa 2 $) o una conversione gratuita.",
+                 "The image ({0} x {1} px, {2} kB, {3} cm/px) will be sent to photocad.ai, an external service, to "
+                 "vectorise it. 1 conversion is needed: a credit (about $2) or a free conversion.")
+    else:
+        what = t("L'immagine va in {4} tessere (fino a {0} x {1} px, {2} kB in tutto, {3} cm/px) inviate a photocad.ai, "
+                 "un servizio esterno, per vettorializzarle. Servono {4} conversioni: un credito (circa 2 $) o una "
+                 "conversione gratuita ciascuna.",
+                 "The image goes in {4} tiles (up to {0} x {1} px, {2} kB in all, {3} cm/px) sent to photocad.ai, an "
+                 "external service, to vectorise them. {4} conversions are needed: a credit (about $2) or a free "
+                 "conversion each.")
+    text = what.format(max(x.width for x in tiles), max(x.height for x in tiles), max(1, round(size / 1024)),
+                       f"{r.pixel * 100:.2f}", n) + " " + (prep.get("account_text") or "") + "."
+    return {"text": text, "credits": prep.get("credits"), "free_conversions": prep.get("free_conversions"),
+            "tiles": n, "width": r.width, "height": r.height, "bytes": size, "pixel": r.pixel, "source": prep["source"]}
 
 
 def _name(chunk, src: str) -> str:
@@ -161,14 +211,15 @@ def _new_id(chunk) -> str:
 
 
 class FrameMismatch(client_mod.PhotoCADError):
-    """PhotoCAD's drawing is not in the image's frame: nothing placed, the files kept for a diagnosis."""
+    """PhotoCAD's drawing does not lie on the image: nothing placed, the files kept for a diagnosis."""
 
 
 def _hint(rec: dict) -> str:
-    return t("La conversione PhotoCAD {0} è pagata e conservata nel progetto: recuperala con Plugin > PhotoCAD > "
-             "Recupera una conversione, o `ppg plugin photocad fetch PROGETTO --id {0}`.",
-             "The PhotoCAD conversion {0} is paid for and kept in the project: get it with Plugin > PhotoCAD > "
-             "Fetch a conversion, or `ppg plugin photocad fetch PROJECT --id {0}`.").format(rec["photocad_id"])
+    ids = ", ".join(str(tl.get("photocad_id")) for tl in rec.get("tiles") or [] if tl.get("photocad_id"))
+    return t("La conversione {0} (PhotoCAD {1}) è conservata nel progetto: recuperala con Plugin > PhotoCAD > Recupera "
+             "una conversione, o `ppg plugin photocad fetch PROGETTO --id {0}` (nessun nuovo addebito).",
+             "The conversion {0} (PhotoCAD {1}) is kept in the project: get it with Plugin > PhotoCAD > Fetch a "
+             "conversion, or `ppg plugin photocad fetch PROJECT --id {0}` (no new charge).").format(rec["id"], ids or "-")
 
 
 def _write_json(chunk, rec: dict) -> None:
@@ -182,146 +233,264 @@ def _forget(chunk, rec: dict) -> None:
     remove(chunk, rec["id"])
 
 
+def _tile_dir(chunk, rec: dict, tile: dict) -> Path:
+    d = folder_of(chunk, rec) / (tile.get("folder") or "")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _status(rec: dict) -> str:
+    states = {tl.get("status") for tl in rec["tiles"]}
+    for s in ("new", "pending"):
+        if s in states:
+            return "uploading" if s == "new" else "pending"
+    if "complete" in states:
+        return "complete"
+    if "mismatch" in states:
+        return "mismatch"
+    return "done"
+
+
 def upload(chunk, prep: dict, key: str, detailed: bool = True, remove_background: bool = False,
            three_d: bool = False, pdf: bool = False, progress=None, name: str | None = None) -> dict:
-    """Send the prepared image, wait for PhotoCAD, bring the drawing back and keep it: the record (also in
-    ``chunk.meta["photocad"]["conversions"]``).
+    """Send the prepared tiles, wait for PhotoCAD, bring the drawings back, place and merge them, keep them: the
+    record (also in ``chunk.meta["photocad"]["conversions"]``).
 
-    The conversion is paid from the 202: its PhotoCAD id is written (``conversion.json``, status ``pending``, and the
-    record) before the first poll. A failure after that keeps it - status ``pending`` (not yet finished) or
-    ``complete`` (finished, not downloaded) or ``mismatch`` (the frame check refused it) - with the folder, and
-    :func:`fetch` gets it later without a new upload. ``progress(fraction, message)`` raises ``Cancelled`` when the
-    user cancels: before the conversion is complete it is deleted on PhotoCAD and forgotten, after it it is kept."""
+    Each tile has an ``Idempotency-Key`` written in ``conversion.json`` BEFORE its POST, so an upload asked again (a
+    429, a lost connection, :func:`fetch` after a crash) never charges twice; its PhotoCAD id is written as soon as the
+    202 comes. A failure afterwards keeps the record - ``uploading``, ``pending``, ``complete`` or ``mismatch`` - and
+    :func:`fetch` goes on from there. ``progress(fraction, message)`` raises ``Cancelled`` when the user cancels:
+    before a conversion is complete it is deleted on PhotoCAD (the record forgotten when nothing is left), after it
+    it is kept."""
+    import uuid
+
     progress = progress or (lambda *a: None)
-    r = prep["rendered"]
-    c = _client(key)
-    progress(0.02, t("Invio dell'immagine a PhotoCAD", "Sending the image to PhotoCAD"))
-    cid = c.convert(r.data, r.filename, r.content_type, detailed=detailed, remove_background=remove_background)
     rid = _new_id(chunk)
-    rec = {"id": rid, "name": name or _name(chunk, prep["source"]), "photocad_id": cid, "status": "pending",
-           "source": prep["source"], "frame": r.frame, "crs": r.crs, "bbox": prep.get("bbox"),
-           "folder": f"photocad/{rid}", "files": {"image": r.filename}, "image": r.describe(),
+    tiles = []
+    for i, r in enumerate(prep["tiles"]):
+        tiles.append({"n": i, "folder": f"t{i}", "idempotency_key": uuid.uuid4().hex, "status": "new",
+                      "photocad_id": None, "image": r.describe(), "files": {"image": r.filename}})
+    rec = {"id": rid, "name": name or _name(chunk, prep["source"]), "status": "uploading", "source": prep["source"],
+           "frame": prep["tiles"][0].frame, "crs": prep["tiles"][0].crs, "bbox": prep.get("bbox"),
+           "folder": f"photocad/{rid}", "tiles": tiles, "files": {},
            "options": {"detailed": bool(detailed), "remove_background": bool(remove_background),
-                       "three_d": bool(three_d and r.frame is not None), "pdf": bool(pdf)},
-           "credits_used": 1, "account_before": {"credits": prep.get("credits"),
-                                                 "free_conversions": prep.get("free_conversions")}, "date": datetime.now(timezone.utc).isoformat(timespec="seconds"), "visible": True}
-    folder = folder_of(chunk, rec)
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / r.filename).write_bytes(r.data)
+                       "three_d": bool(three_d and prep["tiles"][0].frame is not None), "pdf": bool(pdf)},
+           "credits_used": len(tiles), "account_before": {"credits": prep.get("credits"),
+                                                          "free_conversions": prep.get("free_conversions")},
+           "date": datetime.now(timezone.utc).isoformat(timespec="seconds"), "visible": True}
+    for tile, r in zip(tiles, prep["tiles"]):
+        (_tile_dir(chunk, rec, tile) / r.filename).write_bytes(r.data)
     _write_json(chunk, rec)
     _state(chunk, True).setdefault("conversions", []).append(rec)
-    return dict(_complete(chunk, rec, c, progress))
+    return dict(_complete(chunk, rec, _client(key), progress))
+
+
+def _fail(chunk, rec, exc, status=None, code=None):
+    rec["status"] = _status(rec)
+    rec["error"] = str(exc)
+    _write_json(chunk, rec)
+    return client_mod.PhotoCADError(f"{exc}\n{_hint(rec)}", status if status is not None else getattr(exc, "status", 0),
+                                    code if code is not None else getattr(exc, "code", ""))
 
 
 def _complete(chunk, rec: dict, c, progress) -> dict:
-    """Wait for the conversion of ``rec`` (a record of the chunk, changed in place), then :func:`_download`."""
-    cid = rec["photocad_id"]
-    try:
-        done = client_mod.wait(c, cid, progress)
-    except client_mod.PhotoCADError as exc:
-        if exc.code in ("failed", "timeout"):  # refunded, or deleted on PhotoCAD: nothing to fetch
-            _forget(chunk, rec)
+    """Upload, wait, download and place the tiles of ``rec`` still to do (a record of the chunk, changed in place)."""
+    tiles = _tiles(rec)
+    opts = rec.get("options") or {}
+    n = len(tiles)
+    # 1. the uploads (the key on disk already)
+    for tile in tiles:
+        if tile.get("status") != "new":
+            continue
+        img = tile["files"].get("image", "image.jpg")
+        data = (_tile_dir(chunk, rec, tile) / img).read_bytes()
+        progress(0.02 + 0.06 * tile["n"] / n, t("Invio a PhotoCAD ({0}/{1})", "Sending to PhotoCAD ({0}/{1})")
+                 .format(tile["n"] + 1, n))
+        ctype = "image/png" if img.endswith(".png") else "image/jpeg"
+        try:
+            cid = c.convert(data, img, ctype, detailed=opts.get("detailed", True),
+                            remove_background=opts.get("remove_background", False),
+                            idempotency_key=tile.get("idempotency_key"))
+        except client_mod.PhotoCADError as exc:
+            raise _fail(chunk, rec, exc) from None
+        tile.update(photocad_id=cid, status="pending")
+        rec["status"] = _status(rec)
+        _write_json(chunk, rec)
+    # 2. the waits
+    for tile in tiles:
+        if tile.get("status") != "pending":
+            continue
+        try:
+            done = client_mod.wait(c, tile["photocad_id"], progress)
+        except client_mod.PhotoCADError as exc:
+            if exc.code in ("failed", "timeout"):  # refunded, or deleted on PhotoCAD: nothing to fetch from it
+                tile.update(status="failed", error=str(exc))
+                _write_json(chunk, rec)
+                continue
+            raise _fail(chunk, rec, exc) from None
+        except BaseException:  # cancelled while PhotoCAD worked: wait() deleted this one, the others go too
+            tile["status"] = "deleted"
+            for other in tiles:
+                if other.get("status") in ("pending", "new") and other.get("photocad_id"):
+                    try:
+                        c.delete(other["photocad_id"])
+                    except client_mod.PhotoCADError:
+                        pass
+                    other["status"] = "deleted"
+            if not any(tl.get("status") in ("complete", "placed", "mismatch") for tl in tiles):
+                _forget(chunk, rec)
+            else:
+                rec["status"] = _status(rec)
+                _write_json(chunk, rec)
             raise
-        rec["error"] = str(exc)
+        tile.update(status="complete", page_mm=[done.get("width_mm"), done.get("height_mm")],
+                    title=done.get("title"), credits_remaining=client_mod.credits(done))
+        tile.pop("error", None)
+        rec["credits_remaining"] = client_mod.credits(done)
+        rec["status"] = _status(rec)
         _write_json(chunk, rec)
-        raise client_mod.PhotoCADError(f"{exc}\n{_hint(rec)}", exc.status, exc.code) from None
-    except BaseException:  # cancelled while PhotoCAD worked: wait() deleted the conversion
+    if all(tl.get("status") in ("failed", "deleted") for tl in tiles):
+        errors = "; ".join(str(tl.get("error") or "") for tl in tiles if tl.get("error"))
         _forget(chunk, rec)
-        raise
-    rec.update(status="complete", page_mm=[done.get("width_mm"), done.get("height_mm")],
-               credits_remaining=client_mod.credits(done))
-    rec.pop("error", None)
-    _write_json(chunk, rec)
-    try:
-        _download(chunk, rec, c, progress)
-    except FrameMismatch:
-        raise
-    except Cancelled:  # cancelled after PhotoCAD finished: kept (status complete), fetched later
-        raise
-    except client_mod.PhotoCADError as exc:
-        rec["error"] = str(exc)
+        raise client_mod.PhotoCADError(errors or t("PhotoCAD non ha dato nessun disegno.", "PhotoCAD gave no drawing."),
+                                       0, "failed")
+    # 3. the downloads and the registrations
+    for tile in tiles:
+        if tile.get("status") not in ("complete", "mismatch"):
+            continue
+        try:
+            _download_tile(chunk, rec, tile, c, progress)
+        except Cancelled:
+            rec["status"] = _status(rec)
+            _write_json(chunk, rec)
+            raise
+        except client_mod.PhotoCADError as exc:
+            raise _fail(chunk, rec, exc) from None
+        except Exception as exc:  # noqa: BLE001 - a DXF ezdxf cannot read, a disk error: the conversion stays
+            raise _fail(chunk, rec, t("Il disegno di PhotoCAD non è stato elaborato ({0}).",
+                                      "PhotoCAD's drawing could not be processed ({0}).").format(
+                f"{type(exc).__name__}: {exc}")) from exc
         _write_json(chunk, rec)
-        raise client_mod.PhotoCADError(f"{exc}\n{_hint(rec)}", exc.status, exc.code) from None
-    except Exception as exc:  # noqa: BLE001 - a DXF ezdxf cannot read, a disk error: the conversion stays
-        rec["error"] = f"{type(exc).__name__}: {exc}"
+    bad = [tl for tl in tiles if tl.get("status") == "mismatch"]
+    if bad:
+        rec["status"] = "mismatch"
         _write_json(chunk, rec)
-        raise client_mod.PhotoCADError(t("Il disegno di PhotoCAD non è stato elaborato ({0}).",
-                                         "PhotoCAD's drawing could not be processed ({0}).").format(rec["error"])
-                                       + "\n" + _hint(rec)) from exc
+        problems = "; ".join(f"PhotoCAD {tl['photocad_id']}: " + ", ".join(tl["registration"]["problems"]) for tl in bad)
+        raise FrameMismatch(t("Il disegno di PhotoCAD non combacia con l'immagine inviata ({0}). Non è stato messo nel "
+                              "rilievo; i file sono in {1}.", "PhotoCAD's drawing does not match the image sent ({0}). "
+                              "It was not placed in the survey; the files are in {1}.").format(
+            problems, folder_of(chunk, rec)), 0, "frame")
+    _merge(chunk, rec, progress)
     return rec
 
 
-def _download(chunk, rec: dict, c, progress) -> None:
-    """Download the drawing of a complete conversion, check its frame, georeference it, write the files."""
-    from types import SimpleNamespace
+def _download_tile(chunk, rec: dict, tile: dict, c, progress) -> None:
+    """The drawing of a complete tile at its natural size (mm, no ``longest``: PhotoCAD writes mm whatever ``units``
+    says), its registration on the tile's image, the tile placed (``placed``) or refused (``mismatch``)."""
+    from . import register
 
-    cid, img = rec["photocad_id"], rec["image"]
-    r = SimpleNamespace(x0=img["x0"], y0=img["y0"], pixel=img["pixel"], width=img["width"], height=img["height"],
-                        width_m=img["width"] * img["pixel"], height_m=img["height"] * img["pixel"])
-    longest = float(max(r.width, r.height) * r.pixel)
-    folder = folder_of(chunk, rec)
-    progress(0.92, t("Scarico il disegno", "Downloading the drawing"))
-    params = {"units": "m", "longest": longest, "margin": 0}
-    files = {"image": rec["files"].get("image", "image.jpg")}
-    raw = folder / "photocad.dxf"
-    raw.write_bytes(c.file(cid, "dxf", **params))
-    files["dxf_photocad"] = raw.name
-    raw_mm = folder / "photocad_mm.dxf"  # the same drawing at its natural size: for the frame check
+    cid = tile["photocad_id"]
+    d = _tile_dir(chunk, rec, tile)
+    progress(0.92, t("Scarico il disegno ({0})", "Downloading the drawing ({0})").format(cid))
+    raw = d / "photocad_mm.dxf"
+    raw.write_bytes(c.file(cid, "dxf", units="mm", margin=0))
+    files = dict(tile.get("files") or {})
+    files["dxf_photocad_mm"] = raw.name
     try:
-        raw_mm.write_bytes(c.file(cid, "dxf", units="mm", margin=0))
-        files["dxf_photocad_mm"] = raw_mm.name
+        (d / "geometry.json").write_bytes(c.file(cid, "geometry", units="mm"))
+        files["geometry"] = "geometry.json"
     except client_mod.PhotoCADError:
-        raw_mm = None
-    rec["dxf_request"] = params
-    rec["files"] = files
-    check = drawing.check_frame(raw, raw_mm, img, rec.get("page_mm"), longest)
-    rec["check"] = check
-    if not check["ok"]:
-        rec["status"] = "mismatch"
-        _write_json(chunk, rec)
-        raise FrameMismatch(t("Il disegno di PhotoCAD (conversione {0}) non corrisponde all'immagine inviata: {1}. "
-                              "Non è stato messo nel rilievo; i file sono in {2} per capire cosa è successo.",
-                              "PhotoCAD's drawing (conversion {0}) does not match the image sent: {1}. It was not "
-                              "placed in the survey; the files are in {2} to see what happened.").format(
-            cid, "; ".join(check["problems"]), folder), 0, "frame")
-    progress(0.95, t("Georeferenzio il disegno", "Georeferencing the drawing"))
-    left = drawing.georeference_dxf(raw, folder / "drawing.dxf", r.x0, r.y0)
+        pass
+    if (rec.get("options") or {}).get("pdf"):
+        (d / "drawing.pdf").write_bytes(c.file(cid, "pdf"))
+        files["pdf"] = "drawing.pdf"
+    items, factor = register.read_mm(raw)
+    image = (d / files.get("image", "image.jpg")).read_bytes()
+    reg = register.register(items, tile.get("page_mm"), image)
+    tile["registration"] = reg
+    tile["files"] = files
+    if not reg["ok"]:
+        tile["status"] = "mismatch"
+        return
+    m, tx, ty = register.similarity(reg, tile["image"])
+    tile["similarity"] = [m, tx, ty]
+    drawing.georeference_dxf(raw, d / "drawing.dxf", tx, ty, scale=m * factor)
     files["dxf"] = "drawing.dxf"
-    items = drawing.paths(folder / "drawing.dxf", tolerance=max(r.pixel / 4, 1e-4))
+    try:
+        (d / "drawing.svg").write_bytes(c.file(cid, "svg", units="mm", margin=0))
+        drawing.svg_note(d / "drawing.svg.json", reg["page_mm"], (m, tx, ty), rec.get("crs"), rec.get("frame"))
+        files["svg"], files["svg_georef"] = "drawing.svg", "drawing.svg.json"
+    except client_mod.PhotoCADError as exc:  # the DXF is what matters: the SVG is a courtesy
+        progress(0.96, t("SVG non scaricato: {0}", "SVG not downloaded: {0}").format(exc))
+    tile["status"] = "placed"
+
+
+def _centre(tile: dict) -> tuple[float, float]:
+    im = tile["image"]
+    return im["x0"] + im["width"] * im["pixel"] / 2, im["y0"] + im["height"] * im["pixel"] / 2
+
+
+def _merge(chunk, rec: dict, progress) -> None:
+    """The placed tiles into one drawing: from each tile what is nearer its own centre than any other tile's (the
+    copies in the overlaps once), DXF, GeoPackage, 3D."""
+    import numpy as np
+
+    folder = folder_of(chunk, rec)
+    placed = [tl for tl in rec["tiles"] if tl.get("status") == "placed"]
+    progress(0.97, t("Unisco e georeferenzio il disegno", "Merging and georeferencing the drawing"))
+    centres = np.array([_centre(tl) for tl in placed])
+    items, left = [], 0
+    for i, tl in enumerate(placed):
+        d = _tile_dir(chunk, rec, tl)
+        pixel = float(tl["image"]["pixel"])
+        for it in drawing.paths(d / "drawing.dxf", tolerance=max(pixel / 4, 1e-4)):
+            if len(placed) > 1:
+                c = it["xy"].mean(axis=0)
+                if int(np.argmin(np.hypot(*(centres - c).T))) != i:
+                    left += 1
+                    continue
+            items.append(it)
+    files = {}
+    if len(placed) == 1:
+        one = _tile_dir(chunk, rec, placed[0]) / "drawing.dxf"
+        if one.resolve() != (folder / "drawing.dxf").resolve():  # a record made before the tiles: the same file
+            shutil.copyfile(one, folder / "drawing.dxf")
+        for what in ("svg", "svg_georef", "pdf"):
+            if what in placed[0]["files"]:
+                files[what] = f"{placed[0].get('folder') or '.'}/{placed[0]['files'][what]}"
+    else:
+        drawing.write_dxf(folder / "drawing.dxf", items)
+    files["dxf"] = "drawing.dxf"
     feats = drawing.geometries(items)
     gpkg_path = folder / "drawing.gpkg"
     if gpkg_path.exists():
         gpkg_path.unlink()
     drawing.write_gpkg(gpkg_path, feats, rec.get("crs"))
     files["gpkg"] = "drawing.gpkg"
-    try:
-        (folder / "drawing.svg").write_bytes(c.file(cid, "svg", **params))
-        drawing.svg_note(folder / "drawing.svg.json", r, rec.get("crs"), rec.get("frame"))
-        files["svg"], files["svg_georef"] = "drawing.svg", "drawing.svg.json"
-    except client_mod.PhotoCADError as exc:  # the DXF is what matters: the SVG is a courtesy
-        progress(0.96, t("SVG non scaricato: {0}", "SVG not downloaded: {0}").format(exc))
-    opts = rec.get("options") or {}
-    if opts.get("pdf"):
-        (folder / "drawing.pdf").write_bytes(c.file(cid, "pdf"))
-        files["pdf"] = "drawing.pdf"
-    if opts.get("three_d") and rec.get("frame") is not None:
+    if (rec.get("options") or {}).get("three_d") and rec.get("frame") is not None:
         entry = source.elevation_entry(chunk, rec["frame"])
         items3d = drawing.world_items(chunk, entry, [it for it in items if len(it["xy"]) >= 2])
         drawing.write_dxf_3d(folder / "drawing_3d.dxf", items3d)
         drawing.write_gpkg_3d(gpkg_path, items3d, chunk.crs)
         files["dxf_3d"] = "drawing_3d.dxf"
     polygons = sum(1 for g, _a in feats if g.geom_type == "Polygon")
-    rec.update(status="done", files=files, counts={"polygons": polygons, "lines": len(feats) - polygons,
-                                                   "left_out": left})
+    rec.update(status="done", files=files, counts={
+        "polygons": polygons, "lines": len(feats) - polygons, "overlap_copies_removed": left,
+        "tiles_placed": len(placed), "tiles_failed": sum(1 for tl in rec["tiles"] if tl.get("status") == "failed"),
+        "residual_px": [round(float(tl["registration"]["residual_px"]), 3) for tl in placed]})
     rec.pop("error", None)
     _write_json(chunk, rec)
     progress(1.0, summary(rec))
 
 
 def find(chunk, ident: str) -> dict | None:
-    """A conversion by its id or its PhotoCAD id; also one only on disk (``<chunk data>/photocad/*/conversion.json``,
-    a project not saved after the upload), which is put back in the project."""
-    rec = next((r for r in records(chunk) if ident in (r.get("id"), r.get("photocad_id"))), None)
+    """A conversion by its id, the PhotoCAD id of one of its tiles (or of a record made before the tiles); also one
+    only on disk (``<chunk data>/photocad/*/conversion.json``, a project not saved after the upload), which is put
+    back in the project."""
+    def ids(r):
+        return {r.get("id"), r.get("photocad_id")} | {tl.get("photocad_id") for tl in r.get("tiles") or []}
+
+    rec = next((r for r in records(chunk) if ident in ids(r)), None)
     if rec is not None:
         return rec  # the record of chunk.meta itself: changed in place
     base = chunk.data_dir / "photocad"
@@ -330,27 +499,30 @@ def find(chunk, ident: str) -> dict | None:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if ident in (data.get("id"), data.get("photocad_id")) and data.get("folder") == f"photocad/{path.parent.name}":
+        if ident in ids(data) and data.get("folder") == f"photocad/{path.parent.name}":
             _state(chunk, True).setdefault("conversions", []).append(data)
             return data
     return None
 
 
 def fetch(chunk, ident: str, key: str, progress=None) -> dict:
-    """Download and georeference again a conversion already paid for (by its id or its PhotoCAD id): waits for it
-    when still running; no new upload. The record, status ``done``."""
+    """Go on with a conversion already made (by its id or a PhotoCAD id): tiles not sent are sent with their
+    idempotency key (never charged twice), running ones waited for, finished ones downloaded and placed again.
+    The record, status ``done``."""
     rec = find(chunk, ident)
     if rec is None:
         raise ValueError(t("Nessuna conversione «{0}» in questo chunk.", "No conversion '{0}' in this chunk.")
                          .format(ident))
+    _tiles(rec)
     return dict(_complete(chunk, rec, _client(key), progress or (lambda *a: None)))
 
 
 def convert(chunk, src: str, key: str, bbox=None, detailed: bool = True, remove_background: bool = False,
-            three_d: bool = False, pdf: bool = False, confirm=None, progress=None, name: str | None = None) -> dict:
+            three_d: bool = False, pdf: bool = False, confirm=None, progress=None, name: str | None = None,
+            max_tiles: int = source.MAX_TILES) -> dict:
     """:func:`prepare`, ``confirm(info)`` (:func:`confirm_info`; False: :class:`Declined`, nothing sent; None:
     no question), :func:`upload`."""
-    prep = prepare(chunk, src, key, bbox)
+    prep = prepare(chunk, src, key, bbox, max_tiles=max_tiles)
     if confirm is not None and not confirm(confirm_info(prep)):
         raise Declined(t("Conversione annullata: nulla è stato inviato.", "Conversion cancelled: nothing was sent."))
     return upload(chunk, prep, key, detailed, remove_background, three_d, pdf, progress, name)

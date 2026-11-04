@@ -183,11 +183,12 @@ class Client:
         return f"Client({self.base!r})"
 
     def _request(self, method: str, path: str, query: dict | None = None, data: bytes | None = None,
-                 ctype: str | None = None, raw: bool = False):
+                 ctype: str | None = None, raw: bool = False, idempotency_key: str | None = None):
         """One call of the API. The key goes only to PhotoCAD's own origin (``add_unredirected_header``, and
         redirects followed here: on the same origin with the key, elsewhere - a presigned storage URL - without it).
         GET and DELETE are asked again on 429/5xx and broken connections (waiting longer each time); POST only on
-        429, so an upload is never sent twice."""
+        429 - and, with an ``Idempotency-Key`` (the same one each time: PhotoCAD gives the same conversion back, not
+        charged again), on a lost connection; never on a 5xx."""
         url = self.base + path + ("?" + urllib.parse.urlencode(query) if query else "")
         idempotent = method in ("GET", "DELETE", "HEAD")
         statuses = RETRY_STATUS if idempotent else POST_RETRY_STATUS
@@ -196,6 +197,8 @@ class Client:
             headers = {"User-Agent": user_agent(), "Accept": "*/*" if raw else "application/json"}
             if ctype and data is not None:
                 headers["Content-Type"] = ctype
+            if idempotency_key:
+                headers["Idempotency-Key"] = idempotency_key
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             if same_origin(self.base, url):
                 req.add_unredirected_header("Authorization", f"Bearer {self._key}")
@@ -227,7 +230,7 @@ class Client:
                 raise _refusal(exc, self._key) from None
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
                 reason = mask(str(getattr(exc, "reason", exc)), self._key)
-                if idempotent and attempt < RETRIES:
+                if (idempotent or idempotency_key) and attempt < RETRIES:
                     attempt += 1
                     log.info("PhotoCAD %s %s: %s, again in %.0f s", method, path, reason, delay)
                     _sleep(delay)
@@ -249,12 +252,13 @@ class Client:
         return self._request("GET", "/account")
 
     def convert(self, data: bytes, filename: str, content_type: str, detailed: bool = True,
-                remove_background: bool = False) -> str:
-        """Upload the image: the id of the conversion (one credit)."""
+                remove_background: bool = False, idempotency_key: str | None = None) -> str:
+        """Upload the image: the id of the conversion (one credit, or one free conversion). ``idempotency_key``: the
+        same key sent again gives the same conversion (an interrupted run goes on safely)."""
         body, ctype = _multipart({"detailed": "true" if detailed else "false",
                                   "remove_background": "true" if remove_background else "false"},
                                  {"image_file": (filename, data, content_type)})
-        answer = self._request("POST", "/convert", data=body, ctype=ctype)
+        answer = self._request("POST", "/convert", data=body, ctype=ctype, idempotency_key=idempotency_key)
         cid = str(answer.get("id") or (answer.get("data") or {}).get("id") or "")
         if not cid:
             raise PhotoCADError(t("PhotoCAD non ha dato l'id della conversione.", "PhotoCAD gave no conversion id."))

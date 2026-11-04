@@ -37,30 +37,30 @@ l'extra `assistant` del programma) funziona solo la variabile d'ambiente.
 
 ## Come il disegno torna al suo posto
 
-L'immagine copre un blocco di celle intere del raster, ridotto di un fattore intero perché il lato lungo sia al
-massimo 2400 px (PhotoCAD riduce comunque a quella misura): ogni pixel dell'immagine è un quadrato noto del rilievo e
-il suo angolo in basso a sinistra un punto noto. Il DXF si chiede in metri (`units=m`), senza margine (`margin=0`), con
-il lato lungo dell'immagine in metri (`longest`): PhotoCAD disegna dall'angolo in basso a sinistra dell'immagine, Y in
-alto, quindi spostare il disegno di quell'angolo lo mette nelle coordinate del chunk (o nelle (u, v) del prospetto).
-Su un prospetto ogni vertice può andare anche nel mondo, alla profondità letta dal rilievo del prospetto.
+L'immagine è tagliata in **tessere alla risoluzione nativa** del raster: al massimo 2400 px sul lato lungo, circa il
+10 % di sovrapposizione, una conversione ciascuna (una striscia sotto i 600 px è ingrandita fino a 4 volte; più
+sottile non viene inviata: PhotoCAD fallisce sulle strisce sottili). Prima dell'invio la conferma dice quante
+conversioni servono e rifiuta se l'account ha meno crediti e conversioni gratuite; `--max-tiles` (6) evita che
+un'immagine lunga ne prenda troppe.
 
-File, in `<dati del chunk>/photocad/<id>/`: `image.jpg` (ciò che è stato inviato), `photocad.dxf` (come l'ha dato
-PhotoCAD), `drawing.dxf` (georeferenziato, con i layer di PhotoCAD), `drawing.gpkg` (tabella `photocad`: poligoni e
-linee con il layer PhotoCAD, lunghezza e area; nel sistema del chunk, o senza sistema per un prospetto; `photocad_3d`
-con la Z per un prospetto in 3D), `drawing.svg` con `drawing.svg.json` (dove si trova: l'SVG tiene il riferimento di
-PhotoCAD, Y in basso), `drawing_3d.dxf`, `drawing.pdf` se richiesto, `conversion.json` (sorgente, limiti, pixel, data,
-crediti usati).
+Il disegno di PhotoCAD non arriva nel riferimento dell'immagine: la sua pagina è il riquadro del **soggetto** che ha
+trovato, in millimetri a una scala naturale (qualunque cosa chieda `units`). Quindi il disegno di ogni tessera si
+scarica in mm e si colloca per **registrazione**: la pagina sul riquadro del contenuto dell'immagine (una sola
+scala, proporzioni entro il 2 %), poi spostamento e scala affinati (±24 px, ±3 %) portando le linee sui bordi
+dell'immagine (l'intensità del gradiente sotto di esse, massimizzata fino a un quarantesimo di pixel). Lo scarto (distanza
+mediana delle linee dai bordi dell'immagine, in pixel) resta in `conversion.json`; oltre 2 px, o con meno del 60 % delle
+linee vicino a un bordo, il disegno è rifiutato e non viene messo nulla. Le tessere poi si uniscono: da ciascuna ciò
+che è più vicino al suo centro (le copie nelle sovrapposizioni una volta sola). Su un prospetto ogni vertice può
+andare anche nel mondo, alla profondità letta dal rilievo del prospetto.
 
-Una conversione pagata non va mai persa: il suo id PhotoCAD è scritto nel progetto (e in `conversion.json`) subito
-dopo l'invio, prima che PhotoCAD finisca; qualunque cosa vada storta dopo, *Recupera una conversione...* o
-`ppg plugin photocad fetch` la recuperano. Annullare mentre PhotoCAD lavora ancora cancella la conversione là. Un
-invio non viene mai ripetuto (solo un 429 si richiede). La chiave va solo all'indirizzo di PhotoCAD: un file servito
-da un altro indirizzo (archivio cloud) si scarica senza.
-
-Prima di mettere il disegno al suo posto il plugin controlla che sia nel riferimento dell'immagine: dentro
-l'immagine, la pagina con le proporzioni dell'immagine e il disegno chiesto in metri uguale allo stesso disegno alla
-sua scala naturale (stessa scala sui due assi, nessuno spostamento). Se no, non viene messo nulla e i file restano
-nella cartella per capire cosa è successo.
+File, in `<dati del chunk>/photocad/<id>/`: per tessera `t0/`, `t1/`...: `image.jpg` (ciò che è stato inviato),
+`photocad_mm.dxf` (come l'ha dato PhotoCAD), `geometry.json`, `drawing.svg` con `drawing.svg.json` (dove si trova),
+`drawing.dxf` (la tessera collocata); per l'insieme: `drawing.dxf` (georeferenziato, con i layer di PhotoCAD),
+`drawing.gpkg` (tabella `photocad`: poligoni e linee con il layer PhotoCAD, lunghezza e area; nel sistema del chunk, o
+senza sistema per un prospetto; `photocad_3d` con la Z per un prospetto in 3D), `drawing_3d.dxf`, `conversion.json`
+(sorgente, tessere con i loro id PhotoCAD, chiavi di idempotenza e registrazioni, data, crediti usati). Ogni invio porta
+una `Idempotency-Key` salvata prima di inviarlo: un invio ripetuto (un 429, una connessione persa, `fetch` dopo un
+arresto) non viene mai addebitato due volte.
 
 ## Riga di comando
 
@@ -79,15 +79,15 @@ ppg plugin photocad remove scavo.ppg <id>
 ```
 
 `convert` chiede conferma al prompt se non c'è `--yes` (o se al progetto è stato detto di non chiedere più); opzioni
-`--chunk NOME`, `--remove-background`, `--pdf`, `--name`.
+`--chunk NOME`, `--remove-background`, `--pdf`, `--name`, `--max-tiles N`.
 
 ## Limiti
 
-- Il riferimento di PhotoCAD (origine, Y in alto, `longest` applicato all'immagine, nessun margine) segue la sua
-  documentazione; il plugin è stato provato con un server finto che si comporta come documentato, non con photocad.ai.
-- Il disegno è buono quanto l'immagine: un'ortofoto di qualche migliaio di pixel ridotta a 2400 px perde dettaglio;
-  per il dettaglio si invia una parte (area visibile o disegnata).
-- 20 conversioni al minuto; una conversione rifiutata o fallita viene spiegata a parole (una fallita viene
-  rimborsata da PhotoCAD).
+- La collocazione presuppone che l'immagine abbia dei bordi dove il disegno ha delle linee (pietre, muri, tagli: ciò
+  che PhotoCAD disegna); il disegno di un'immagine piatta e senza dettagli può essere rifiutato.
+- Una grande ortofoto alla risoluzione nativa richiede molte tessere (molte conversioni): si invia una parte (area
+  visibile o disegnata), o si alza `--max-tiles` sapendolo.
+- 20 conversioni al minuto; una conversione rifiutata o fallita viene spiegata a parole (una fallita viene rimborsata
+  da PhotoCAD).
 
 Licenza: GPL-2.0-or-later.

@@ -567,6 +567,8 @@ class PhotoCADPlugin(Plugin):
         p.add_argument("--pdf", action="store_true", help="also PhotoCAD's PDF")
         p.add_argument("--name", help="name of the conversion (its layer)")
         p.add_argument("--out", help="a copy of the drawing: FILE.dxf, .gpkg, .svg or .pdf")
+        p.add_argument("--max-tiles", type=int, default=6,
+                       help="most tiles (one conversion each) a long image may take (default 6)")
         p.add_argument("--yes", action="store_true", help="no confirmation prompt")
         p = sub.add_parser("fetch", help="download and georeference again a conversion already paid for (no upload)")
         p.add_argument("project")
@@ -730,7 +732,7 @@ class PhotoCADPlugin(Plugin):
 
         def run(progress):
             return project.convert(chunk, ns.source, key, bbox, not ns.simplified, ns.remove_background, ns.three_d,
-                                   ns.pdf, confirm, progress, ns.name)
+                                   ns.pdf, confirm, progress, ns.name, max_tiles=ns.max_tiles)
 
         try:
             rec = self.context.run("PhotoCAD", run) if self.context is not None else run(None)
