@@ -1005,3 +1005,25 @@ def test_a_typed_keel_standing_proud_is_the_keel_not_a_keelson(tmp_path, monkeyp
     assert any("la chiglia è il suo solido" in n for n in st["notes"]), st
     errors = _clinker_errors(solid.vertices, 8.45, 9.25)
     assert len(errors) > 100 and np.percentile(errors, 95) < 0.025, np.percentile(errors, [50, 95, 100])
+
+
+def test_a_self_crossing_outline_is_mirrored_by_its_parts(hull):
+    """A strake traced with its outline crossing itself (a bow tie, as a hand tracing can make): its valid parts are
+    mirrored, the others as before; nothing raises."""
+    ch = hull
+    frame = ship.frame_of(ch)
+    expected = {reconstruct._base_name(r["name"]) for r in reconstruct.mirror(ch)}
+    plank = next(r for r in timbers.timbers_of(ch) if r["kind"] == "plank" and r["side"] == "starboard")
+    xy = np.asarray(tracing.ship_xy_of(ch, plank, frame), float)
+    poly = shapely.Polygon(xy)
+    x0, y0, x1, y1 = poly.bounds
+    xm = 0.5 * (x0 + x1)
+    bowtie = poly.intersection(shapely.box(x0, -5, xm, 5)).union(poly.intersection(shapely.box(xm, -5, x1, 5)))
+    left = np.asarray(shapely.geometry.polygon.orient(poly.intersection(shapely.box(x0, -5, xm, 5)), 1.0).exterior.coords)[:-1]
+    right = np.asarray(shapely.geometry.polygon.orient(poly.intersection(shapely.box(xm, -5, x1, 5)), 1.0).exterior.coords)[:-1]
+    crossing = np.vstack([left[::-1], right])  # two lobes joined by crossing edges
+    assert not shapely.Polygon(crossing).is_valid and bowtie.area > 0
+    plank["ship_xy"] = crossing.tolist()
+    plank["geometry"] = timbers.geometry("polygon", frame.to_world(np.column_stack([crossing, np.zeros(len(crossing))]))[:, :2])
+    out = reconstruct.mirror(ch)
+    assert {reconstruct._base_name(r["name"]) for r in out} == expected

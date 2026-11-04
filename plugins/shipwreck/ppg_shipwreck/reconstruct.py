@@ -286,6 +286,25 @@ def _ring(poly, cell: float | None = None) -> np.ndarray:
     return np.asarray(poly.exterior.coords, float)[:-1, :2]
 
 
+def _all_parts(xy):
+    """A traced outline as a polygon; one that crosses itself as all its parts (``make_valid``: a bow tie keeps both
+    lobes, where ``buffer(0)`` drops one)."""
+    import shapely
+
+    poly = shapely.Polygon(np.asarray(xy, float).reshape(-1, 2))
+    if poly.is_valid:
+        return poly
+    fixed = shapely.make_valid(poly)
+    return shapely.union_all([g for g in getattr(fixed, "geoms", [fixed]) if g.geom_type in ("Polygon", "MultiPolygon")])
+
+
+def _reflected(geom):
+    """``geom`` reflected across the keel plane (y to -y): a polygon, or the parts of an outline that crossed itself."""
+    import shapely
+
+    return shapely.transform(geom, lambda p: p * [1.0, -1.0])
+
+
 def _width(poly) -> float:
     """The mean width of a strip: twice its area over its perimeter."""
     return 2.0 * poly.area / poly.length if poly.length > 0 else 0.0
@@ -423,10 +442,10 @@ def mirror(chunk, progress=None, records=None) -> list[dict]:
         for k, source in enumerate(candidates):
             progress(k / max(1, len(candidates)), t(f"Simmetria: {source['name'] or source['id']}",
                                                     f"Mirror: {source['name'] or source['id']}"))
-            original = _polygon(tracing.ship_xy_of(chunk, source, frame))
+            original = _all_parts(tracing.ship_xy_of(chunk, source, frame))
             if original.is_empty or original.area <= 0:
                 continue
-            reflected = _polygon(_reflect(_ring(original)))
+            reflected = _reflected(original)
             side, name = other_side(source["side"]), other_name(source["name"])
             others = _others(chunk, records, frame, source["kind"], side)
             over = shapely.union_all(others) if others else None
