@@ -1,0 +1,12 @@
+{
+  "title": "PhotoCAD",
+  "description": "The orthophoto, the DEM (as a hillshade) or an elevation vectorised by PhotoCAD (photocad.ai, an external paid service: one credit a conversion, confirmed before each upload): the drawing comes back georeferenced as DXF, GeoPackage and SVG, as a layer of the 2D view, and its outlines can become US/USM. API key in the system keychain",
+  "i18n": {
+    "it": {
+      "title": "PhotoCAD",
+      "description": "Ortofoto, DEM (come ombreggiatura) o prospetto vettorializzati da PhotoCAD (photocad.ai, servizio esterno a pagamento: un credito a conversione, confermato prima di ogni invio): il disegno torna georeferenziato in DXF, GeoPackage e SVG, come layer della vista 2D, e i suoi contorni diventano US/USM. Chiave API nel portachiavi"
+    }
+  },
+  "min_app": "1.7.1",
+  "requires": []
+}

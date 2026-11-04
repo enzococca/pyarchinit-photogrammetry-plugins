@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-photocad"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: the orthophoto, the DEM or an elevation vectorised by PhotoCAD (photocad.ai, an external paid service), the drawing brought back georeferenced as DXF, GeoPackage and SVG, as a layer of the 2D view and as US/USM; the API key in the system keychain"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# the standard library talks to the API; ezdxf, rasterio, Pillow, shapely and keyring are the program's
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/photocad"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+photocad = "ppg_photocad:PhotoCADPlugin"
+
+[tool.setuptools]
+packages = ["ppg_photocad"]
