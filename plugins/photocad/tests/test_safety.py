@@ -172,17 +172,13 @@ def test_written_before_the_upload_and_with_the_id_after_it(tmp_path, monkeypatc
     assert sent == [seen["before_post"]["tiles"][0]["idempotency_key"]]
 
 
-def test_a_lost_upload_is_sent_again_by_fetch_with_the_same_key(tmp_path, monkeypatch):
-    fake = fakecad.FakePhotoCAD(fail={"POST /convert": [-1, -1, -1, -1]})  # made on the server, the answer lost
+def test_a_lost_answer_is_sent_again_once_with_the_same_key(tmp_path, monkeypatch):
+    fake = fakecad.FakePhotoCAD(fail={"POST /convert": [-1]})  # made on the server, the answer lost
     monkeypatch.setattr(client, "_urlopen", fake)
     doc, ch = fakecad.project(tmp_path)
-    with pytest.raises(client.PhotoCADError) as err:
-        project.convert(ch, "ortho", fakecad.KEY)
-    assert "fetch" in str(err.value)
-    (rec,) = project.records(ch)
-    assert rec["status"] == "uploading" and rec["tiles"][0]["status"] == "new"
-    rec = project.fetch(ch, rec["id"], fakecad.KEY)
-    assert rec["status"] == "done" and fake.charged == 1 and len(set(fake.keys)) == 1
+    rec = project.convert(ch, "ortho", fakecad.KEY)
+    assert rec["status"] == "done" and fake.charged == 1 and len(fake.calls("POST")) == 2
+    assert rec["tiles"][0]["posts"] == 2
 
 
 def test_cancel_after_completion_keeps_it_cancel_before_deletes_it(tmp_path, monkeypatch):
@@ -349,3 +345,95 @@ def test_failed_detail_is_masked(monkeypatch):
         client.wait(Leaky(fakecad.KEY), "c", None)
     assert fakecad.KEY not in str(err.value)
 
+
+
+# ------------------------------------------------------------------ the peak of the registration (review I4)
+def test_a_textured_wall_placed_right_passes_with_a_clear_peak(tmp_path, monkeypatch):
+    doc, ch, boxes = fakecad.masonry_project(tmp_path)
+    fake = fakecad.FakePhotoCAD(boxes_px=boxes)
+    monkeypatch.setattr(client, "_urlopen", fake)
+    rec = project.convert(ch, "ortho", fakecad.KEY)
+    reg = rec["tiles"][0]["registration"]
+    assert reg["ok"] and reg["peak_ratio"] >= 1.3 and not reg["at_border"]
+    polys = sorted((g.bounds for g, _a in project.features(ch, rec) if g.geom_type == "Polygon"))
+    c0, r0, c1, r1 = boxes[0]
+    truth = (fakecad.X0 + c0 * fakecad.RES, fakecad.Y1 - r1 * fakecad.RES, fakecad.X0 + c1 * fakecad.RES,
+             fakecad.Y1 - r0 * fakecad.RES)
+    assert min(np.abs(np.asarray(b) - truth).max() for b in polys) <= 1.5 * fakecad.RES
+
+
+def test_a_wall_drawn_beyond_the_search_is_refused(tmp_path, monkeypatch):
+    doc, ch, boxes = fakecad.masonry_project(tmp_path)
+    fake = fakecad.FakePhotoCAD(boxes_px=boxes, offset_px=(130, 0))  # 1.3 m off: beyond the widened search
+    monkeypatch.setattr(client, "_urlopen", fake)
+    with pytest.raises(project.FrameMismatch):
+        project.convert(ch, "ortho", fakecad.KEY)
+    reg = project.records(ch)[0]["tiles"][0]["registration"]
+    assert not reg["ok"] and "peak_ratio" in reg
+
+
+def test_random_lines_over_a_wall_are_refused(tmp_path, monkeypatch):
+    doc, ch, boxes = fakecad.masonry_project(tmp_path)
+    fake = fakecad.FakePhotoCAD(boxes_px=boxes, random_lines=2000)
+    monkeypatch.setattr(client, "_urlopen", fake)
+    with pytest.raises(project.FrameMismatch):
+        project.convert(ch, "ortho", fakecad.KEY)
+    reg = project.records(ch)[0]["tiles"][0]["registration"]
+    assert reg["peak_ratio"] < 1.3
+
+
+# ------------------------------------------------------------------ the idempotency key not honoured (review I5)
+def test_without_idempotency_at_most_one_resend_per_tile(tmp_path, monkeypatch):
+    fake = fakecad.FakePhotoCAD(honour_keys=False, fail={"POST /convert": [-1, -1, -1, -1]})
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path)
+    with pytest.raises(client.PhotoCADError) as err:
+        project.convert(ch, "ortho", fakecad.KEY)
+    assert len(fake.calls("POST")) == 2 and "photocad.ai" in str(err.value)
+    (rec,) = project.records(ch)
+    assert rec["tiles"][0]["status"] == "unknown" and rec["tiles"][0]["posts"] == 2
+    with pytest.raises(client.PhotoCADError):
+        project.fetch(ch, rec["id"], fakecad.KEY)
+    assert len(fake.calls("POST")) == 2  # fetch never sends a tile of unknown outcome again
+
+
+def test_a_crashed_upload_is_sent_once_more_by_fetch(tmp_path, monkeypatch):
+    fake = fakecad.FakePhotoCAD()
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path)
+    real = client.Client.convert
+
+    def crash(self, *a, before_post=None, **k):  # the program dies while the POST is on its way
+        if before_post is not None:
+            before_post("attempt")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(client.Client, "convert", crash)
+    with pytest.raises(KeyboardInterrupt):
+        project.convert(ch, "ortho", fakecad.KEY)
+    (rec,) = project.records(ch)
+    assert rec["tiles"][0]["posts"] == 1 and rec["tiles"][0]["status"] == "new"
+    monkeypatch.setattr(client.Client, "convert", real)
+    rec = project.fetch(ch, rec["id"], fakecad.KEY)
+    assert rec["status"] == "done" and len(fake.calls("POST")) == 1
+
+
+def test_a_cancel_whose_delete_fails_keeps_the_record(tmp_path, monkeypatch):
+    from pyarchinit_photogrammetry.core.progress import Cancelled, Progress
+
+    fake = fakecad.FakePhotoCAD(polls=50, fail={"DELETE /conversions/": [500] * 8})
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path)
+    q = Progress()
+    naps = []
+
+    def nap(s):
+        naps.append(s)
+        if len(naps) == 3:
+            q.cancel()
+
+    monkeypatch.setattr(client, "_sleep", nap)
+    with pytest.raises(Cancelled):
+        project.convert(ch, "ortho", fakecad.KEY, progress=q)
+    (rec,) = project.records(ch)  # PhotoCAD may still make it (and charge it): kept, to check or fetch
+    assert rec["tiles"][0]["status"] == "pending"

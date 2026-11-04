@@ -106,7 +106,8 @@ class FakePhotoCAD:
 
     def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False,
                  free: int = 5, account: str = "real", page_pad=(0, 0, 0, 0), garbage: bool = False,
-                 open_lines: bool = False, ring: bool = False, tiny: bool = False, gap_px: float = 0.5):
+                 open_lines: bool = False, ring: bool = False, tiny: bool = False, gap_px: float = 0.5,
+                 honour_keys: bool = True, boxes_px=None, offset_px=(0, 0), random_lines: int = 0):
         self.credits = credits
         self.free = free  # free conversions left
         self.account = account  # "real": the shape photocad.ai gives (2026-11-04); "flat": an older guess
@@ -119,6 +120,10 @@ class FakePhotoCAD:
         self.garbage = garbage
         # as PhotoCAD draws stones: each side an open polyline, the ends 0.5 px short of the corners (a 1 px gap)
         self.open_lines = open_lines
+        self.honour_keys = honour_keys  # False: a key seen before is ignored (a POST sent again is charged again)
+        self.boxes_px = boxes_px  # the outlines to draw, in pixels of the image (else: the dark blobs)
+        self.offset_px = tuple(offset_px)  # the drawing moved inside its page (a placement the search cannot reach)
+        self.random_lines = random_lines  # instead of the outlines, random polylines over the page
         self.gap_px = gap_px  # 0: the sides chained end to end exactly, as at Khutm
         self.ring = ring  # four open lines around a white rectangle (background: never a stone)
         self.tiny = tiny  # a 4 x 4 px closed loop inside the first blob (smaller than the minimum area)
@@ -173,7 +178,7 @@ class FakePhotoCAD:
                                        "free_conversions": {"granted": 5, "remaining": self.free}}).encode())
         if method == "POST" and path == "/convert":
             key = headers.get("idempotency-key")
-            if key and key in self.keys:
+            if key and key in self.keys and self.honour_keys:
                 return _Answer(json.dumps({"id": self.keys[key], "status": "processing"}).encode(), 202)
             ctype = headers.get("content-type", "")
             msg = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
@@ -205,7 +210,7 @@ class FakePhotoCAD:
             raise _error(url, 404, "not_found", "Not found")
         if fmt is None:
             n = self._seen[cid] = self._seen.get(cid, 0) + 1
-            boxes, _w, _h = dark_boxes(self.images[cid]) if self.images[cid] else ([], 0, 0)
+            boxes, _w, _h = self._boxes(cid) if self.images[cid] else ([], 0, 0)
             if self.status_failed or (n > self.polls and not boxes):
                 return _Answer(json.dumps({"id": cid, "status": "failed", "credits_remaining": self.credits,
                                            "error": {"code": "general_error",
@@ -220,9 +225,15 @@ class FakePhotoCAD:
             }).encode())
         return _Answer(self.file(cid, fmt, query))
 
+    def _boxes(self, cid):
+        if self.boxes_px is None:
+            return dark_boxes(self.images[cid])
+        w, h = _size(self.images[cid])
+        return list(self.boxes_px), w, h
+
     def page(self, cid):
         """The subject box in image pixels (c0, r0, c1, r1, edges), padded."""
-        boxes, w, h = dark_boxes(self.images[cid])
+        boxes, w, h = self._boxes(cid)
         c0 = min(b[0] for b in boxes) - self.page_pad[0]
         r1 = max(b[3] for b in boxes) + self.page_pad[1]
         c1 = max(b[2] for b in boxes) + self.page_pad[2]
@@ -232,14 +243,16 @@ class FakePhotoCAD:
     def drawing(self, cid, query):
         """Closed outlines of the blobs and an open line along the top of the first one, in the units PhotoCAD
         writes (mm from the page's lower-left corner; ``longest`` x 1000 on the long side when given)."""
-        boxes, w, h = dark_boxes(self.images[cid])
+        boxes, w, h = self._boxes(cid)
         pc0, pr0, pc1, pr1 = self.page(cid)
         s = NATURAL
         if "longest" in query:
             s = float(query["longest"]) * 1000.0 / max(pc1 - pc0, pr1 - pr0)
 
+        ox, oy = self.offset_px
+
         def mm(c, r):
-            return ((c - pc0) * s, (pr1 - r) * s)
+            return ((c + ox - pc0) * s, (pr1 - r - oy) * s)
 
         outlines = []
         for c0, r0, c1, r1 in boxes:
@@ -259,6 +272,14 @@ class FakePhotoCAD:
             for o in list(outlines):
                 self._open += _sides(o, self.gap_px * s)
             outlines = []
+        if self.random_lines:
+            rng = np.random.default_rng(11)
+            outlines = []
+            for _ in range(self.random_lines):
+                start = rng.uniform((pc0, pr0), (pc1, pr1))
+                pts = start + np.cumsum(rng.normal(0, 25, (4, 2)), axis=0)
+                pts = np.clip(pts, (pc0, pr0), (pc1, pr1))
+                self._open.append([mm(c, r) for c, r in pts])
         return outlines, line, (pc1 - pc0) * s, (pr1 - pr0) * s
 
     def file(self, cid: str, fmt: str, query: dict) -> bytes:
@@ -289,6 +310,13 @@ class FakePhotoCAD:
         if fmt == "geometry":
             return json.dumps({"units": "mm", "width": pw, "height": ph, "paths": outlines + [line]}).encode()
         raise ValueError(fmt)
+
+
+def _size(image_bytes: bytes):
+    from PIL import Image
+
+    w, h = Image.open(io.BytesIO(image_bytes)).size
+    return w, h
 
 
 def _sides(corners, gap):
@@ -394,3 +422,52 @@ def elevation_square(square=E_SQUARE, h=E_H):
     c, r, side = square
     v_top = E_V0 + h * E_RES
     return E_U0 + c * E_RES, v_top - (r + side) * E_RES, E_U0 + (c + side) * E_RES, v_top - r * E_RES
+
+
+# ---------------------------------------------------------------- a textured wall (Khutm-like)
+def masonry(w: int = 1200, h: int = 800, seed: int = 5):
+    """A dry-stone wall: courses of blocks with a stone texture, dark joints of 4 px. ``(rgb (3, h, w), boxes)``:
+    the blocks as (c0, r0, c1, r1) pixel edges - what PhotoCAD would draw."""
+    import cv2
+
+    rng = np.random.default_rng(seed)
+    grey = np.full((h, w), 55.0)
+    boxes = []
+    r = 2
+    while r < h - 40:
+        ch = int(rng.integers(55, 110))
+        r1 = min(h - 2, r + ch)
+        c = 2
+        while c < w - 40:
+            cw = int(rng.integers(80, 220))
+            c1 = min(w - 2, c + cw)
+            boxes.append((c, r, c1, r1))
+            grey[r:r1, c:c1] = rng.uniform(130, 205)
+            c = c1 + 4
+        r = r1 + 4
+    texture = cv2.GaussianBlur(rng.normal(0, 30, (h, w)), (0, 0), 1.2) + cv2.GaussianBlur(rng.normal(0, 60, (h, w)),
+                                                                                         (0, 0), 6)
+    stone = grey > 100
+    grey = np.where(stone, grey + texture, grey + texture * 0.3)
+    rgb = np.clip(np.stack([grey * 1.05, grey, grey * 0.85]), 0, 255).astype(np.uint8)
+    return rgb, boxes
+
+
+def masonry_project(tmp_path: Path):
+    """A project whose orthophoto (1 cm, 1200 x 800 px: no zoom) is the textured wall: ``(doc, chunk, boxes)``."""
+    import rasterio  # noqa: F401
+    from rasterio.transform import from_origin
+
+    import pyarchinit_photogrammetry as ppg
+
+    doc = ppg.Document()
+    ch = doc.add_chunk("Muro")
+    doc.chunk = ch
+    doc.save(tmp_path / "muro.ppg")
+    ch.crs = CRS
+    rgb, boxes = masonry()
+    ortho = ch.data_dir / "orthomosaic.tif"
+    _write_rgb(ortho, rgb, from_origin(X0, Y1, RES, RES), CRS)
+    ch._set_product("orthomosaic", ortho)
+    doc.save()
+    return doc, ch, boxes

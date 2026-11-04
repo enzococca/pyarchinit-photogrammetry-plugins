@@ -83,3 +83,9 @@ def test_lines_chained_end_to_end_are_noded(tmp_path, monkeypatch):
     assert rec["counts"]["stones"] == 2 and rec["polygonize"]["connectors"] == 0
     rec = project.record(ch, rec["id"])
     assert project.polygonize(ch, rec, snap_px=0.0) == 2
+
+
+def test_joint_slivers_are_counted_and_left_out():
+    from shapely.geometry import box
+
+    assert project.is_sliver(box(0, 0, 10, 0.1)) and not project.is_sliver(box(0, 0, 10, 4))
