@@ -573,15 +573,15 @@ def _keel_line(chunk, xs: np.ndarray, siding: float) -> np.ndarray:
     for r in _keelsons(chunk):
         x0, _y0, x1, _y1 = _polygon(tracing.ship_xy_of(chunk, r, frame)).bounds
         here = (xs >= x0) & (xs <= x1)
-        covered |= here
         try:
             grid, mask, _top, bottom = _solid_grid(chunk, r)
         except NotReady:
-            continue
+            continue  # not covered: the keel's top there is read on the hull
         row = int(np.argmin(np.abs(grid.y)))
         ok = mask[row] & np.isfinite(bottom[row])
         if ok.sum() < 2:
             continue
+        covered |= here
         top[here] = np.fmin(top[here], np.interp(xs[here], grid.x[ok], bottom[row, ok]))
     missing = ~np.isfinite(top) & ~covered
     if missing.any():

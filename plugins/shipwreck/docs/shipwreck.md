@@ -10,7 +10,7 @@ frame (step 1); the stations and the sections are not needed.
 
 | Button | What it does |
 |---|---|
-| *Relief of the hull...* | The hull seen from above in the ship frame: an elevation of the program on a horizontal plane (u = x, v = y), its heights, hillshade and local relief model. |
+| *Relief of the hull...* | The hull seen from above in the ship frame: an elevation of the program on a horizontal plane (u = x, v = sign × y: y to the left of x, whichever end is the bow), its heights, hillshade and local relief model. |
 | *Show* | The relief in the raster view, with the heights, the hillshade or the local relief in grey over it. |
 | *Propose...* | Seams, frames, keelson, stringers and strakes read on the relief: proposals, dashed, a colour per kind. |
 | *Accept* / *Reject* | The proposals selected on the view into the timber catalogue / thrown away for good (*Delete* on the view rejects too). |
@@ -100,7 +100,7 @@ proposes again what was accepted or rejected. The limits, plainly:
   (interpolated from a ring of cells around it) up to its top (the model's surface).
 
 Limits: trace every timber touching the one you build (an untraced one ends up in the ring the planking under it is read
-from); the files are large on long hulls (about 100 bytes per cell, no decimation); a hidden span with cells on one side
+from); the files are large on long hulls (see the sizes below); a hidden span with cells on one side
 only is held constant; a timber traced where nothing stands on the hull gives a mesh of zero thickness. Across a long
 timber the hull under it is a curve through the heights and slopes of the planking on both sides (a chord where the
 slopes are those of another timber's side). On the synthetic hull all 23 frames, from stem to stern, come within 2 %
@@ -125,9 +125,16 @@ One object per timber with its name, in the ship frame or in the chunk's coordin
 - **GLB**: a node per timber, a colour per kind;
 - **IFC4**: an element per timber (IfcPlate for planks and ceiling, IfcMember for the others) with
   `Pset_PyArchInit_Timber` (name, kind, side, chunk, status, length, width, heights, volume, thickness in metres). A
-  chunk in a local or geographic system gets no map conversion, and the file says so. An IFC of a long hull may take
-  tens of seconds;
+  chunk in a local or geographic system gets no map conversion, and the file says so. An IFC of a long hull takes from
+  tens of seconds to minutes (below);
 - the tables `timbers_3d.csv` and `.xlsx` beside it (thickness in millimetres).
+
+Sizes at 5 mm, measured on a 12 m synthetic hull (1.9 million cells): proposals 1 s and about 0.45 GB of memory,
+3D timbers about 0.75 GB while building (the two strakes at the edges 1.5 million faces each), PLY files 160 MB, IFC
+about 20 s and 290 MB. A 20 m hull at 5 mm has about 16 million cells: count on several GB of memory for the proposals
+(about 3.5 GB) and the 3D timbers, an IFC of a few GB taking minutes, and about ten minutes for the relief of a
+photogrammetric model. For the 3D exports of a long hull build the relief at 1 cm (four times fewer cells); the
+decimation of the solids is planned for version 0.4.0.
 
 Hypotheses end in `_ric`, lighter and half transparent, with their status in the Pset.
 

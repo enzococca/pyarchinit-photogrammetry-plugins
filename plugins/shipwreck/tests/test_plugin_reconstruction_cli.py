@@ -347,3 +347,23 @@ def test_a_cancelled_build_in_the_window_marks_the_project_modified(window, monk
         QApplication.processEvents()
     assert w.isWindowModified()
     assert "interrotto" in plugin.pane.states["relief"].text()
+
+
+def test_removing_timbers_in_the_table_is_an_undo_step(window):
+    from ppg_shipwreck import tracing
+
+    w, ch, plugin, wait, answers, said, chosen = window
+    answers["Rilievo dello scafo"] = {"cell": 10.0}
+    plugin._requested("relief_build")
+    wait()
+    plugin._requested("proposals_build")
+    wait()
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"] if i["kind"] == "frame"][:2])
+    plugin.refresh_pane()
+    n = len(timbers.timbers_of(ch))
+    plugin.pane.table.selectRow(0)
+    plugin._requested("timber_remove")
+    assert len(timbers.timbers_of(ch)) == n - 1
+    assert "legni rimossi" in w.history.undo_text()
+    w.history.undo()
+    assert len(timbers.timbers_of(ch)) == n

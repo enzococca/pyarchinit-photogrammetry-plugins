@@ -501,3 +501,13 @@ def test_the_end_frames_keep_their_whole_outline(framed):
         assert poly.area == pytest.approx((x1 - x0) * (poly.bounds[3] - poly.bounds[1]), rel=0.12), f["name"]
         assert abs(f["room"] - 0.08) < 0.01
     assert not _of(prop, "other")
+
+
+def test_the_summary_says_what_was_found_after_everything_is_judged(framed):
+    _ch, _frame, prop = framed
+    chunk = SimpleNamespace(meta={"shipwreck": {"proposals": {**copy.deepcopy(prop), "items": []}}})
+    text = proposals.summary(chunk)
+    assert "8 comenti" in text and "23 ordinate" in text and "tutte accettate o scartate" in text
+    assert "nessun gradino" not in text
+    chunk.meta["shipwreck"]["proposals"]["items"] = copy.deepcopy(prop["items"][:3])
+    assert "da giudicare: 3" in proposals.summary(chunk)

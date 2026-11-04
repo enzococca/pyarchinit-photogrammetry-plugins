@@ -828,3 +828,26 @@ def test_a_survey_without_traced_timbers_draws_as_before(tmp_path):
 
     doc = ezdxf.readfile(ch.data_dir / "shipwreck" / "drawings" / "profile.dxf")
     assert not {"KEELSON", "SHEER", "FASCE_RICALCATE"} & {layer.dxf.name for layer in doc.layers}
+
+
+def test_a_keel_wholly_under_the_keelson_says_so(wreck):
+    from ppg_shipwreck import solids
+
+    ch = wreck
+    solids.set_keel(ch, 0.10, 0.15)  # narrower than the keelson (0.12): no part of it shows
+    d = drawings.make(ch, "wreck_plan")
+    assert any("interamente sotto il paramezzale" in n for n in d.notes)
+
+
+def test_the_profile_says_what_it_could_not_draw(wreck, monkeypatch):
+    from ppg_shipwreck import solids
+
+    ch = wreck
+
+    def refused(chunk, record):
+        raise ship.NotReady("no")
+
+    monkeypatch.setattr(solids, "timber_solid", refused)
+    monkeypatch.setattr(solids, "keel_solid", lambda chunk: (_ for _ in ()).throw(ship.NotReady("no")))
+    d = drawings.make(ch, "profile")
+    assert any(n.startswith("Non disegnati: paramezzale") and "chiglia" in n for n in d.notes)

@@ -1113,24 +1113,33 @@ def build(chunk, params=None, progress=None) -> dict:
         n += 1
     st["proposals"] = {"items": kept, "rejected": list(previous.get("rejected", [])), "params": p,
                        "built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "next": n,
-                       "frame": frame.to_dict()}
+                       "frame": frame.to_dict(), "found": counts(kept)}
     progress(1.0, summary(chunk))
     return st["proposals"]
 
 
-def summary(chunk) -> str:
-    """A line on the proposals: how many of each kind; "nessun gradino di fasciame trovato" without seams."""
-    prop = (chunk.meta.get(ship.KEY) or {}).get("proposals")
-    if not prop:
-        return t("Nessuna proposta: leggi prima il rilievo dello scafo.", "No proposals: read the relief of the hull first.")
-    sure = [i for i in prop["items"] if not i.get("doubtful")]
+def counts(items: list[dict]) -> dict:
+    """What a reading proposes: ``{"count": {kind: n}, "unsure": {"frame", "plank"}, "xs": [the x of each frame]}``
+    (a frame in two pieces, one name on both sides, is one frame; doubtful items apart)."""
+    sure = [i for i in items if not i.get("doubtful")]
     count = {k: sum(1 for i in sure if i["kind"] == k) for k in KINDS}
-    unsure = {k: sum(1 for i in prop["items"] if i.get("doubtful") and i["kind"] == k) for k in ("frame", "plank")}
-    named = {}  # a frame in two pieces (one name on both sides) is one frame
+    unsure = {k: sum(1 for i in items if i.get("doubtful") and i["kind"] == k) for k in ("frame", "plank")}
+    named: dict[str, list] = {}
     for i in sure:
         if i["kind"] == "frame":
             named.setdefault(i["name"], []).append(float(np.mean(np.asarray(i["ship_xy"])[:, 0])))
     count["frame"] = len(named)
+    return {"count": count, "unsure": unsure, "xs": sorted(float(np.mean(v)) for v in named.values())}
+
+
+def summary(chunk) -> str:
+    """A line on the proposals: how many of each kind the reading found ("nessun gradino di fasciame trovato" without
+    seams) and how many are left to judge (accepting or rejecting them does not change what was found)."""
+    prop = (chunk.meta.get(ship.KEY) or {}).get("proposals")
+    if not prop:
+        return t("Nessuna proposta: leggi prima il rilievo dello scafo.", "No proposals: read the relief of the hull first.")
+    found = prop.get("found") or counts(prop["items"])  # a reading of an earlier version: what is left
+    count, unsure = found["count"], found["unsure"]
     parts = []
     if count["seam"]:
         parts.append(plural(count["seam"], ("comento", "comenti"), ("seam", "seams")))
@@ -1148,8 +1157,12 @@ def summary(chunk) -> str:
     if unsure["plank"]:
         parts.append(plural(unsure["plank"], ("fascia dubbia", "fasce dubbie"), ("doubtful strake", "doubtful strakes")))
     text = t("Proposte: ", "Proposals: ") + ", ".join(parts)
-    xs = sorted(float(np.mean(v)) for v in named.values())
+    xs = found["xs"]
     if len(xs) > 2:  # two frames far apart give no frame space
         space = num(float(np.median(np.diff(xs))), 2)
         text += t(f" (passo mediano delle ordinate {space} m)", f" (median frame space {space} m)")
+    left = len(prop["items"])
+    if "found" in prop:
+        text += t(f"; da giudicare: {left}" if left else "; tutte accettate o scartate",
+                  f"; left to judge: {left}" if left else "; all accepted or rejected")
     return text + "."

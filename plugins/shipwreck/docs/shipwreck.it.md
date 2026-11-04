@@ -10,7 +10,7 @@ sistema della nave (passo 1); stazioni e sezioni non servono.
 
 | Pulsante | Che cosa fa |
 |---|---|
-| *Rilievo dello scafo...* | Lo scafo visto dall'alto nel sistema della nave: un prospetto del programma su un piano orizzontale (u = x, v = y), le sue altezze, l'ombreggiatura e il rilievo locale. |
+| *Rilievo dello scafo...* | Lo scafo visto dall'alto nel sistema della nave: un prospetto del programma su un piano orizzontale (u = x, v = segno × y: y alla sinistra di x, qualunque sia il capo della prua), le sue altezze, l'ombreggiatura e il rilievo locale. |
 | *Mostra* | Il rilievo nella vista raster, con le altezze, l'ombreggiatura o il rilievo locale in grigio sopra. |
 | *Proponi...* | Comenti, ordinate, paramezzale, serrette e fasce letti sul rilievo: proposte, tratteggiate, un colore per tipo. |
 | *Accetta* / *Scarta* | Le proposte selezionate sulla vista nel catalogo dei legni / buttate per sempre (anche *Canc* sulla vista). |
@@ -102,7 +102,7 @@ ripropone ciò che è stato accettato o scartato. I limiti, detti chiaramente:
   di lui (interpolato da un anello di celle intorno) fino alla sua cima (la superficie del modello).
 
 Limiti: ricalca tutti i legni che toccano quello che costruisci (uno non ricalcato finisce nell'anello da cui si legge il
-fasciame sotto); i file sono grandi sugli scafi lunghi (circa 100 byte per cella, nessuna decimazione); un tratto nascosto
+fasciame sotto); i file sono grandi sugli scafi lunghi (vedi le dimensioni sotto); un tratto nascosto
 con celle da un lato solo è tenuto costante; un legno ricalcato dove sullo scafo non c'è niente dà una mesh di spessore
 nullo. Di traverso a un legno lungo lo scafo sotto di lui è una curva per le quote e le pendenze del fasciame ai due
 lati (una corda dove le pendenze sono quelle del fianco di un altro legno). Sullo scafo sintetico tutte le 23 ordinate,
@@ -129,9 +129,16 @@ Un oggetto per legno con il suo nome, nel sistema della nave o nelle coordinate 
 - **GLB**: un nodo per legno, un colore per tipo;
 - **IFC4**: un elemento per legno (IfcPlate per fasciame e serrettame, IfcMember per gli altri) con
   `Pset_PyArchInit_Timber` (nome, tipo, lato, chunk, stato, lunghezza, larghezza, quote, volume, spessore in metri). Un
-  chunk in un sistema locale o geografico non ha la IfcMapConversion, e il file lo dice. L'IFC di uno scafo lungo può
-  richiedere decine di secondi;
+  chunk in un sistema locale o geografico non ha la IfcMapConversion, e il file lo dice. L'IFC di uno scafo lungo
+  richiede da decine di secondi a minuti (sotto);
 - le tabelle `timbers_3d.csv` e `.xlsx` accanto (spessore in millimetri).
+
+Dimensioni a 5 mm, misurate su uno scafo sintetico di 12 m (1,9 milioni di celle): proposte 1 s e circa 0,45 GB di
+memoria, legni 3D circa 0,75 GB durante la costruzione (le due fasce sui bordi 1,5 milioni di facce ciascuna), file PLY
+160 MB, IFC circa 20 s e 290 MB. Uno scafo di 20 m a 5 mm ha circa 16 milioni di celle: conta su diversi GB di memoria
+per le proposte (circa 3,5 GB) e i legni 3D, un IFC di qualche GB che richiede minuti e una decina di minuti per il
+rilievo di un modello fotogrammetrico. Per le esportazioni 3D di uno scafo lungo costruisci il rilievo a 1 cm (quattro
+volte meno celle); la decimazione dei solidi è prevista per la versione 0.4.0.
 
 Le ipotesi finiscono in `_ric`, più chiare e semitrasparenti, con il loro stato nel Pset.
 

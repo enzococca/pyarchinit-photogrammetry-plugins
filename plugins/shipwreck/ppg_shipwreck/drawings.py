@@ -440,15 +440,17 @@ def _profile_timbers(chunk, data: dict, frame: ship.Frame, d: Drawing) -> None:
     ``KEELSON`` when measured), the typed keel's box hatched (:func:`solids.keel_solid`, ``RICOSTRUZIONE_KEEL``: a
     hypothesis) and the preserved upper edge (``SHEER``: the highest end of each station whose section did not reach
     the edge of the window it was cut in)."""
-    from . import models3d, solids
+    from . import models3d, relief, solids
 
     water = _water(data)
+    skipped = []
     for r in timbers.timbers_of(chunk):
         if r["kind"] != "keelson" or r["geometry"]["type"] != "polygon":
             continue
         try:
             solid = solids.timber_solid(chunk, dict(r))
         except ship.NotReady:
+            skipped.append(r["name"] or r["id"])
             continue
         measured = timbers.is_measured(r)
         base = LAYERS["KEELSON"]
@@ -461,6 +463,14 @@ def _profile_timbers(chunk, data: dict, frame: ship.Frame, d: Drawing) -> None:
         keel = solids.keel_solid(chunk)
     except ship.NotReady:
         keel = None
+        if ship.state(chunk).get("keel"):
+            skipped.append(t("chiglia", "keel"))
+    if skipped:  # never dropped without a word (a stale relief, a timber the relief cannot read)
+        stale = relief.entry(chunk) is not None and relief.is_stale(chunk)
+        d.notes.append(t(f"Non disegnati: {', '.join(skipped)}"
+                         + (" (rilievo dello scafo da rifare)." if stale else "."),
+                         f"Not drawn: {', '.join(skipped)}"
+                         + (" (relief of the hull to build again)." if stale else ".")))
     if keel is not None:
         ring = _box_of(keel, water)
         colour = models3d.lighter(models3d.KIND_COLOURS["keel"])
@@ -719,6 +729,7 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
     order = {k: i for i, k in enumerate(DRAW_ORDER)}
     hidden_names, shown = [], {}
     keel_ring = _keel_ring(chunk)
+    keel_covered = False
     if keel_ring is not None:
         colour = models3d.lighter(models3d.KIND_COLOURS["keel"])
         keel = shapely.Polygon(keel_ring)
@@ -732,6 +743,7 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
             at = _to_sheet(seen, sign).representative_point()
             d.label(at.x, at.y, t("chiglia", "keel"), models3d.KIND_COLOURS["keel"])
         shown[("keel", "reconstructed:given")] = (colour, HATCH if not seen.is_empty else "")  # wholly covered: no hatch
+        keel_covered = seen.is_empty
     for r in sorted(records, key=lambda r: order.get(r["kind"], len(order))):
         status = timbers.status_of(r)
         measured = status == "measured"
@@ -789,6 +801,9 @@ def wreck_plan(chunk, scale: int | None = None, background: str = "relief") -> D
                  "under a frame, the keelson or a stringer.")]
     if said:
         notes.append(said)
+    if keel_covered:  # its dashed outline is no hidden part of a measured timber
+        notes.append(t("Chiglia di dimensioni date (ipotesi) interamente sotto il paramezzale: solo il contorno a trattini.",
+                       "Keel of given dimensions (hypothesis) wholly under the keelson: its dashed outline only."))
     if hidden_names:
         notes.append(t(f"Fasce delle sezioni (ipotesi) non disegnate dove una fascia ricalcata ha lo stesso nome: "
                        f"{', '.join(sorted(set(hidden_names)))}.",

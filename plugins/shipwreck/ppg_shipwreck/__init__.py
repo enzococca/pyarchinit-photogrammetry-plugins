@@ -565,12 +565,19 @@ class ShipwreckPlugin(Plugin):
             self._changed()
 
     def _do_timber_remove(self) -> None:
-        from . import timbers
+        from . import ship, timbers, tracing
 
         ids = self.pane.selected_ids()
-        if ids:
-            timbers.remove(self._need_chunk(), ids)
-            self._changed()
+        if not ids:
+            return
+        chunk = self._need_chunk()
+        before = self._snapshot(chunk)
+        if timbers.remove(chunk, ids):
+            try:
+                tracing.update_visible(chunk)
+            except ship.NotReady:
+                pass
+            self._step(chunk, before, t("legni rimossi", "timbers removed"))
 
     def _do_timber_export(self) -> None:
         from PySide6.QtWidgets import QFileDialog
@@ -1602,6 +1609,11 @@ class ShipwreckPlugin(Plugin):
                     raise ship.NotReady("--level")
                 lines.set_water(chunk, ns.level, ns.n, ns.on)
             elif ns.what == "drawings":
+                from . import relief
+
+                if drawings._traced(chunk) and relief.entry(chunk) is not None and relief.is_stale(chunk):
+                    print(t("Il rilievo dello scafo è da rifare: sul profilo mancano paramezzale e chiglia.",
+                            "The relief of the hull is to be built again: the profile lacks the keelson and the keel."))
                 for path in drawings.write_all(chunk, scale=ns.scale, folder=ns.out, progress=_print_progress):
                     print(path)
             elif ns.what == "timbers":
