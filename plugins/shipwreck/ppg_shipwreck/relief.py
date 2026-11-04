@@ -146,6 +146,12 @@ def frame_key(frame: ship.Frame | None):
     return _frame_key(None if frame is None else frame.to_dict())
 
 
+def built_frame_key(chunk):
+    """The key (:func:`frame_key`) of the ship frame the relief was built in; None without a relief."""
+    st = _relief_state(chunk)
+    return None if not st else _frame_key(st.get("frame"))
+
+
 def _model_key(chunk) -> dict | None:
     path = chunk.product_path("model")
     if path is None or not Path(path).exists():

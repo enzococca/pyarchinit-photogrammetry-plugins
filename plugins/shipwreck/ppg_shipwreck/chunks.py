@@ -23,8 +23,10 @@ Either way the ship plan of every member is the same, so their records and relie
   the main's record's, else ``<chunk key>:<id>``; ``sources``: ``[{"chunk", "id", "coverage", "cell"}]``, the better
   first. The main's records that are not measured or are loose are passed on as they are;
 - :func:`prepare`: the merged height raster on the ship plan at the finest member's cell, each cell from the best
-  member covering it (``<main data>/shipwreck/reconstruction/members/height.tif``, ``members.json`` beside it),
-  which the reconstruction reads through :func:`reconstruct.height_path` while it is current (:func:`is_current`).
+  member covering it (``<main data>/shipwreck/reconstruction/members/height.tif``), which the reconstruction reads
+  through :func:`reconstruct.height_path` while it is current (:func:`is_current`; :func:`stale` says why not);
+- :func:`station_sections`: the stations' sections of all the members, each station from the member that surveys it
+  best, for the faired hull.
 
 Only the main chunk's folder is written; the members (their state, records, files) are read only."""
 from __future__ import annotations
@@ -43,9 +45,9 @@ from .texts import t
 
 FOLDER = "members"  # inside the reconstruction's folder
 RASTER = "height.tif"
-INDEX = "members.json"
 SHARE_TIE = 0.02  # shares of a polygon on the relief this close are a tie: the finer cell wins
 TOUCH = 0.02  # m: records of one name and kind closer than this, in two chunks, are one timber
+FRAME_OVERLAP = 0.5  # two frames of one side, in two chunks, overlapping by more than this share of the smaller: one
 JOIN = 0.03  # m: a worse-measured outline goes this far into the better member's survey, so that the two meet
 FOOTPRINT_SIDE = 1000  # the footprint of a relief is read at most this many cells a side
 SAMPLES = 20000  # at most this many points of a record read on a relief for its share
@@ -342,8 +344,17 @@ def _shape(gtype: str, xy):
     return shapely.Point(xy[0])
 
 
+def _frames_meet(a: dict, b: dict) -> bool:
+    """Two frames of one side overlapping by more than half of the smaller's area: one frame, whatever the names."""
+    if a["type"] != "polygon" or b["type"] != "polygon":
+        return False
+    small = min(a["shape"].area, b["shape"].area)
+    return small > 0 and a["shape"].intersection(b["shape"]).area > FRAME_OVERLAP * small
+
+
 def _clusters(entries: list[dict]) -> list[list[dict]]:
-    """The entries of one group joined where records of two chunks meet (within :data:`TOUCH`); a point is alone."""
+    """The entries of one group joined where records of two chunks are one timber: the same name meeting within
+    :data:`TOUCH`, or (frames) overlapping by more than :data:`FRAME_OVERLAP` of the smaller; a point is alone."""
     n = len(entries)
     parent = list(range(n))
 
@@ -358,7 +369,8 @@ def _clusters(entries: list[dict]) -> list[list[dict]]:
             a, b = entries[i], entries[j]
             if a["survey"].chunk.key == b["survey"].chunk.key or "point" in (a["type"], b["type"]):
                 continue
-            if a["shape"].distance(b["shape"]) <= TOUCH:
+            if (a["name"] == b["name"] and a["shape"].distance(b["shape"]) <= TOUCH) or \
+                    (a["record"]["kind"] == "frame" and _frames_meet(a, b)):
                 parent[find(i)] = find(j)
     groups: dict[int, list[dict]] = {}
     for i in range(n):
@@ -413,12 +425,44 @@ def _merge_lines(ranked_entries: list[dict]) -> np.ndarray:
     return out[np.argsort(out[:, 0], kind="stable")]
 
 
-def merged(doc, main, found: list[dict] | None = None) -> list[dict]:
+def _label(e: dict) -> str:
+    return f"«{e['record'].get('name') or e['record']['id']}» ({e['survey'].chunk.label})"
+
+
+def _name_warnings(clusters: list[list[dict]], warnings: list) -> None:
+    """The frames joined by place under different names, and a name used by two chunks for timbers apart."""
+    where: dict[tuple, dict] = {}
+    for k, cluster in enumerate(clusters):
+        names = sorted({e["name"] for e in cluster})
+        if len(names) > 1:
+            listed = ", ".join(_label(e) for e in cluster)
+            warnings.append(t(f"Unite per posizione (si sovrappongono): {listed}; il nome tenuto è quello del chunk "
+                              "principale. Dai alle ordinate i numeri del campo (Rinomina le ordinate) in ogni chunk.",
+                              f"Merged by place (they overlap): {listed}; the name kept is the main chunk's. Give the "
+                              "frames the field's numbers (Rename the frames) in every chunk."))
+        for e in cluster:
+            key = (e["record"]["kind"], e["record"]["side"], e["name"])
+            where.setdefault(key, {}).setdefault(e["survey"].chunk.key, set()).add(k)
+    for (kind, side, name), by_chunk in where.items():
+        if len(by_chunk) < 2:
+            continue
+        clusters_of = [c for cs in by_chunk.values() for c in cs]
+        if len(set(clusters_of)) > 1 and any(not (a & b) for i, a in enumerate(by_chunk.values())
+                                             for b in list(by_chunk.values())[i + 1:]):
+            warnings.append(t(f"«{name}» ({timbers.side_title(side)}) indica in chunk diversi legni in posti diversi: "
+                              "tenuti separati.",
+                              f"«{name}» ({timbers.side_title(side)}) names timbers at different places in different "
+                              "chunks: kept apart."))
+
+
+def merged(doc, main, found: list[dict] | None = None, warnings: list | None = None) -> list[dict]:
     """The records of all the members merged in the ship plan (see the module); ``found``: :func:`members`' first list
-    (read again when None). Nothing of any chunk is written."""
+    (read again when None); ``warnings``: a list the merge's warnings are added to (pieces that do not meet, frames
+    joined by place under different names, a name used for timbers apart). Nothing of any chunk is written."""
     from . import reconstruct
 
     found = members(doc, main)[0] if found is None else found
+    warnings = [] if warnings is None else warnings
     frame = ship.need_frame(main)
     key = relief.frame_key(frame)
     order = {m["chunk"].key: i for i, m in enumerate(found)}
@@ -429,20 +473,22 @@ def merged(doc, main, found: list[dict] | None = None) -> list[dict]:
         ch = m["chunk"]
         fr = ship.need_frame(ch)
         for r in copy.deepcopy(timbers.timbers_of(ch)):
-            if not timbers.is_measured(r) or r.get("loose"):
+            gtype = r["geometry"]["type"]
+            xy = tracing.ship_xy_of(ch, r, fr) if timbers.is_measured(r) and not r.get("loose") else None
+            if xy is None or (gtype == "polygon" and _polygon(xy).is_empty):
                 if ch is main:
                     passed.append(r)
                 continue
-            gtype = r["geometry"]["type"]
-            xy = tracing.ship_xy_of(ch, r, fr)
-            if gtype == "polygon" and _polygon(xy).is_empty:
-                continue
-            groups.setdefault((r["kind"], r["side"], reconstruct._base_name(r["name"])), []).append(
-                {"record": r, "survey": survey, "type": gtype, "xy": xy, "shape": _shape(gtype, xy),
+            name = reconstruct._base_name(r["name"])
+            group = (r["kind"], r["side"]) if r["kind"] == "frame" and gtype == "polygon" else (r["kind"], r["side"], name)
+            groups.setdefault(group, []).append(
+                {"record": r, "survey": survey, "type": gtype, "xy": xy, "shape": _shape(gtype, xy), "name": name,
                  "share": survey.share(gtype, xy)})
-    out, warnings = [], []
+    out = []
     for entries in groups.values():
-        for cluster in _clusters(entries):
+        clusters = _clusters(entries)
+        _name_warnings(clusters, warnings)
+        for cluster in clusters:
             best = sorted(cluster, key=functools.cmp_to_key(
                 lambda a, b: _better(a["survey"].member, b["survey"].member, a["share"], b["share"], order)))
             own = [e for e in cluster if e["survey"].chunk is main]
@@ -468,7 +514,58 @@ def merged(doc, main, found: list[dict] | None = None) -> list[dict]:
                         "sources": [{"chunk": e["survey"].chunk.key, "id": e["record"]["id"],
                                      "coverage": round(float(e["share"]), 4), "cell": e["survey"].cell} for e in best]})
             out.append(rec)
+    warnings[:] = list(dict.fromkeys(warnings))
     return out + passed
+
+
+# ----------------------------------------------------------------------------- the stations' sections
+def _breadth(survey: "_Survey", x: float) -> float:
+    """How much of the relief's column at ship x has a value (metres across): how well the member surveys there."""
+    z, a = survey.z
+    col = int(math.floor((x - a.c) / a.a))
+    if not 0 <= col < z.shape[1]:
+        return 0.0
+    return float(np.isfinite(z[:, col]).sum()) * abs(a.e)
+
+
+def station_sections(found: list[dict], refused: list | None = None) -> list[dict]:
+    """The sections at the stations of all the members (``lines.sections_of``: one ship frame, ``value`` = ship x),
+    for the faired hull: at each station (to the millimetre) the section of the member that surveys it best (the
+    breadth of its relief at that x, a tie within :data:`SHARE_TIE` of the larger to the finer cell), each section
+    with ``chunk`` (its member's key). A member whose sections are out of date is left out, and said in ``refused``
+    (``[{"chunk", "reason"}]``); the main's own out of date raise :class:`NotReady` as the loft does."""
+    from . import lines
+
+    order = {m["chunk"].key: i for i, m in enumerate(found)}
+    by_x: dict[float, list[tuple]] = {}
+    for k, m in enumerate(found):
+        ch = m["chunk"]
+        data = lines.load(ch)
+        sections = [s for s in (data or {}).get("sections", []) if s["kind"] == "station"]
+        if not sections:
+            continue
+        if lines.is_stale(ch, data):
+            reason = t(f"Le sezioni del chunk «{ch.label}» non sono aggiornate: tagliale di nuovo.",
+                       f"The sections of chunk «{ch.label}» are out of date: cut them again.")
+            if k == 0:
+                raise NotReady(t("Le sezioni non sono aggiornate (altro sistema della nave o altro modello): tagliale di "
+                                 "nuovo.",
+                                 "The sections are out of date (another ship frame or another model): cut them again."))
+            if refused is not None:
+                refused.append({"chunk": ch, "reason": reason})
+            continue
+        survey = _Survey(m)
+        for sec in sections:
+            x = round(float(sec["value"]), 3)
+            by_x.setdefault(x, []).append((m, {**sec, "chunk": ch.key}, _breadth(survey, float(sec["value"]))))
+    out = []
+    for x in sorted(by_x):
+        options = by_x[x]
+        top = max(b for _m, _s, b in options) or 1.0
+        best = min(options, key=functools.cmp_to_key(
+            lambda p, q: _better(p[0], q[0], p[2] / top, q[2] / top, order)))
+        out.append(best[1])
+    return out
 
 
 # ----------------------------------------------------------------------------- the merged relief
@@ -481,24 +578,34 @@ def relief_key(chunk) -> dict | None:
     if not path.exists():
         return None
     st = path.stat()
-    return {"elevation": e.get("id"), "frame": relief._frame_key(_st(chunk)["relief"].get("frame")),
-            "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    return {"elevation": e.get("id"), "frame": relief.built_frame_key(chunk), "size": st.st_size,
+            "mtime_ns": st.st_mtime_ns}
+
+
+def stale(main, entry: dict) -> list[str]:
+    """Why the merged raster of ``entry`` (``state["reconstruction"]["members"]``) no longer holds, for the user (empty
+    while it holds): a member gone from the project, no longer compatible, or whose relief was built again since."""
+    doc = getattr(main, "document", None)
+    if doc is None:
+        return [t("Il chunk non è in un progetto.", "The chunk is in no project.")]
+    by_key = {c.key: c for c in doc.chunks}
+    out = []
+    for m in entry.get("chunks") or []:
+        ch = by_key.get(m["chunk"])
+        label = m.get("label", m["chunk"])
+        if ch is None:
+            out.append(t(f"Il chunk «{label}» non è più nel progetto.", f"Chunk «{label}» is no longer in the project."))
+        elif relief_key(ch) != m.get("relief"):
+            out.append(t(f"Il rilievo del chunk «{label}» è cambiato dopo la ricostruzione.",
+                         f"The relief of chunk «{label}» changed after the reconstruction."))
+        elif ch is not main and not compatible(main, ch)[0]:
+            out.append(compatible(main, ch)[1])
+    return out
 
 
 def is_current(main, entry: dict) -> bool:
-    """Whether the merged raster of ``entry`` (``state["reconstruction"]["members"]``) still holds: every member in
-    the project, compatible, its relief the one recorded."""
-    doc = getattr(main, "document", None)
-    if doc is None:
-        return False
-    by_key = {c.key: c for c in doc.chunks}
-    for m in entry.get("chunks") or []:
-        ch = by_key.get(m["chunk"])
-        if ch is None or relief_key(ch) != m.get("relief"):
-            return False
-        if ch is not main and not compatible(main, ch)[0]:
-            return False
-    return True
+    """Whether the merged raster of ``entry`` still holds (:func:`stale` has nothing to say)."""
+    return not stale(main, entry)
 
 
 def _grid(found: list[dict]):
@@ -528,19 +635,29 @@ def _grid(found: list[dict]):
     return Affine(cell, 0.0, u0, 0.0, -cell, v1), h, w, cell
 
 
-def _resample(z: np.ndarray, a, us: np.ndarray, vs: np.ndarray):
-    """The raster ``z`` (affine ``a``) at the cell centres ``us`` x ``vs``: the value where the cell under the centre
-    has one (as the nearest cell), bilinear over the neighbours that have one."""
+class _Source:
+    """A member's height raster ready to be read at points: the values with 0 where none, the weights, the mask."""
+
+    def __init__(self, z: np.ndarray, a):
+        self.finite = np.isfinite(z)
+        self.values = np.where(self.finite, z, 0.0).astype(np.float32)
+        self.weights = self.finite.astype(np.float32)
+        self.a = a
+
+
+def _resample(src: _Source, us: np.ndarray, vs: np.ndarray):
+    """The raster of ``src`` at the cell centres ``us`` x ``vs``: the value where the cell under the centre has one (as
+    the nearest cell), bilinear over the neighbours that have one."""
     from scipy.ndimage import map_coordinates
 
+    a, finite = src.a, src.finite
     cf = (us - a.c) / a.a
     rf = (vs - a.f) / a.e
     ci, ri = np.floor(cf).astype(np.int64), np.floor(rf).astype(np.int64)
-    okc, okr = (ci >= 0) & (ci < z.shape[1]), (ri >= 0) & (ri < z.shape[0])
+    okc, okr = (ci >= 0) & (ci < finite.shape[1]), (ri >= 0) & (ri < finite.shape[0])
     R, C = np.meshgrid(rf - 0.5, cf - 0.5, indexing="ij")
-    finite = np.isfinite(z)
-    num = map_coordinates(np.where(finite, z, 0.0), [R, C], order=1, mode="nearest")
-    den = map_coordinates(finite.astype(np.float64), [R, C], order=1, mode="nearest")
+    num = map_coordinates(src.values, [R, C], order=1, mode="nearest").astype(np.float64)
+    den = map_coordinates(src.weights, [R, C], order=1, mode="nearest").astype(np.float64)
     valid = np.zeros(R.shape, bool)
     sub = np.ix_(okr, okc)
     valid[sub] = finite[np.ix_(ri[okr], ci[okc])]
@@ -551,8 +668,8 @@ def _resample(z: np.ndarray, a, us: np.ndarray, vs: np.ndarray):
 
 
 def prepare(doc, main, progress=None, found: list[dict] | None = None) -> dict:
-    """The merged height raster of the members (see the module) and ``members.json``, in the main chunk's
-    reconstruction folder (written aside, then put in place). Returns ``{"raster", "chunks"}``: the raster's path
+    """The merged height raster of the members (see the module), in the main chunk's reconstruction folder (written
+    aside, then put in place); its tags name the members. Returns ``{"raster", "chunks"}``: the raster's path
     relative to the main's data folder and the members ``[{"chunk", "label", "cell", "coverage", "relief"}]`` (main
     first) - the entry :func:`is_current` checks."""
     import rasterio
@@ -571,8 +688,7 @@ def prepare(doc, main, progress=None, found: list[dict] | None = None) -> dict:
     best = ranked(found)
     for k, m in enumerate(best):
         progress(k / len(best), t(f"Rilievo dei chunk: {m['chunk'].label}", f"Relief of the chunks: {m['chunk'].label}"))
-        z, a = relief.load(m["chunk"], "height")
-        z = z.astype(np.float64)
+        src = _Source(*relief.load(m["chunk"], "height"))
         for r0 in range(0, h, block):
             r1 = min(h, r0 + block)
             vs = affine.f - (np.arange(r0, r1) + 0.5) * cell
@@ -580,9 +696,9 @@ def prepare(doc, main, progress=None, found: list[dict] | None = None) -> dict:
             empty = ~np.isfinite(part)
             if not empty.any():
                 continue
-            values = _resample(z, a, us, vs)
+            values = _resample(src, us, vs)
             part[empty] = values[empty].astype(np.float32)
-        del z
+        del src
     folder = reconstruct.folder(main) / FOLDER
     folder.mkdir(parents=True, exist_ok=True)
     path, tmp = folder / RASTER, folder / ("height.tmp.tif")
@@ -600,10 +716,6 @@ def prepare(doc, main, progress=None, found: list[dict] | None = None) -> dict:
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
-    index = folder / INDEX
-    staged = folder / (INDEX + ".tmp")
-    staged.write_text(json.dumps(entries, ensure_ascii=False, indent=1), encoding="utf-8")
-    staged.replace(index)
     progress(1.0, t(f"Rilievo dei chunk: {len(found)} chunk, {h} x {w} celle",
                     f"Relief of the chunks: {len(found)} chunks, {h} x {w} cells"))
     return {"raster": str(path.relative_to(main.data_dir)), "chunks": entries}

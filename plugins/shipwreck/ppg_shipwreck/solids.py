@@ -298,10 +298,11 @@ def _polygon(xy):
     return poly if poly.is_valid else poly.buffer(0)
 
 
-def _polygons(chunk, kinds, frame, exclude=None) -> list:
-    """The polygons in the ship plan of the records of ``kinds`` (all but ``exclude``)."""
+def _polygons(chunk, kinds, frame, exclude=None, records=None) -> list:
+    """The polygons in the ship plan of the records of ``kinds`` (all but ``exclude``); ``records``: the records to
+    read (default the catalogue; the reconstruction passes the ones it reads, those of several chunks merged)."""
     out = []
-    for r in ship.state(chunk).get("timbers", []):
+    for r in ship.state(chunk).get("timbers", []) if records is None else records:
         if r["kind"] in kinds and r["geometry"]["type"] == "polygon" and r["id"] != exclude:
             out.append(_polygon(tracing.ship_xy_of(chunk, r, frame)))
     return out
@@ -527,16 +528,17 @@ def _normals(field: np.ndarray, mask: np.ndarray, grid: _Grid, sigma: float) -> 
     return n / np.linalg.norm(n, axis=-1, keepdims=True)
 
 
-def strake_shell(chunk, record: dict, thickness: float, surface=None, path=None) -> Solid:
+def strake_shell(chunk, record: dict, thickness: float, surface=None, path=None, records=None) -> Solid:
     """The shell of a strake (``thickness`` in mm): see the module. :class:`NotReady` when the relief is missing or
     stale, or no cell of it lies inside the strake. ``surface``: the heights off the model (:func:`surface_for`, a
-    reconstructed strake); ``path``: the height raster (:class:`_Grid`)."""
+    reconstructed strake); ``path``: the height raster (:class:`_Grid`); ``records``: the timbers that hide it
+    (default the catalogue's)."""
     thickness = _positive(thickness)
     frame = ship.need_frame(chunk)
     poly = _polygon(tracing.ship_xy_of(chunk, record, frame))
     grid = _Grid(chunk, poly.bounds, surface=surface, path=path)
     inside = grid.inside(poly)
-    over = _union(_polygons(chunk, HIDING, frame, exclude=record["id"]))
+    over = _union(_polygons(chunk, HIDING, frame, exclude=record["id"], records=records))
     hiding = grid.inside(over.buffer(grid.cell)) if over is not None else np.zeros(inside.shape, bool)
     finite = np.isfinite(grid.z)
     known = inside & ~hiding & finite
@@ -556,11 +558,11 @@ def strake_shell(chunk, record: dict, thickness: float, surface=None, path=None)
 
 
 # ----------------------------------------------------------------------------- solids
-def _footprint(chunk, record, frame):
+def _footprint(chunk, record, frame, records=None):
     """A timber's footprint in the ship plan: its polygon, a frame's less what lies over it (:data:`OVER_FRAMES`)."""
     poly = _polygon(tracing.ship_xy_of(chunk, record, frame))
     if record["kind"] == "frame":
-        over = _union(_polygons(chunk, OVER_FRAMES, frame, exclude=record["id"]))
+        over = _union(_polygons(chunk, OVER_FRAMES, frame, exclude=record["id"], records=records))
         if over is not None:
             poly = poly.difference(over)
     return poly
@@ -645,12 +647,12 @@ def _hull_under(cells: np.ndarray, ring: np.ndarray, zs: np.ndarray, cell: float
     return out
 
 
-def _solid_grid(chunk, record, surface=None, path=None):
+def _solid_grid(chunk, record, surface=None, path=None, records=None):
     """The grid of a timber's solid: (grid, mask, top, bottom) on its cells."""
     from scipy import ndimage
 
     frame = ship.need_frame(chunk)
-    poly = _footprint(chunk, record, frame)
+    poly = _footprint(chunk, record, frame, records)
     if poly.is_empty:
         raise NotReady(t(f"{record['name'] or record['id']}: l'impronta è vuota.",
                          f"{record['name'] or record['id']}: the footprint is empty."))
@@ -658,7 +660,7 @@ def _solid_grid(chunk, record, surface=None, path=None):
     finite = np.isfinite(grid.z)
     mask = _no_bowties(grid.inside(poly) & finite)
     _require(mask, record)
-    others = _union([p for p in _polygons(chunk, SOLIDS, frame, exclude=record["id"])])
+    others = _union([p for p in _polygons(chunk, SOLIDS, frame, exclude=record["id"], records=records)])
     taken = grid.inside(others.buffer(grid.cell)) if others is not None else np.zeros(mask.shape, bool)
     if record["kind"] == "frame":  # the part of the frame cut away is not hull either
         taken |= grid.inside(_polygon(tracing.ship_xy_of(chunk, record, frame)).buffer(grid.cell))
@@ -677,11 +679,11 @@ def _solid_grid(chunk, record, surface=None, path=None):
     return grid, mask, top, bottom
 
 
-def timber_solid(chunk, record: dict, surface=None, path=None) -> Solid:
+def timber_solid(chunk, record: dict, surface=None, path=None, records=None) -> Solid:
     """The solid of a frame, the keelson, a stringer, the ceiling or another polygon: see the module. ``surface``:
     the heights off the model (:func:`surface_for`, a reconstructed timber); ``path``: the height raster
-    (:class:`_Grid`)."""
-    grid, mask, top, bottom = _solid_grid(chunk, record, surface, path)
+    (:class:`_Grid`); ``records``: the other timbers around it (default the catalogue's)."""
+    grid, mask, top, bottom = _solid_grid(chunk, record, surface, path, records)
     v, f, hid, vol = _closed(mask, _plane(grid, _corners(top, mask)), _plane(grid, _corners(bottom, mask)))
     return Solid(v, f, hid, timbers.status_of(record), record["name"], record["kind"], vol, None, record["id"])
 
@@ -745,10 +747,11 @@ def _measured_keel(chunk) -> bool:
                for r in ship.state(chunk).get("timbers", []))
 
 
-def _keel_line(chunk, xs: np.ndarray, siding: float, path=None, keelsons=None) -> np.ndarray:
+def _keel_line(chunk, xs: np.ndarray, siding: float, path=None, keelsons=None, records=None) -> np.ndarray:
     """The height of the keel's top at ``xs``: the keelson's bottom on the keel line where a keelson lies (its ends
     held to the stations within its outline), else the lowest of the relief across the keel's siding. ``path``: the
-    height raster (:class:`_Grid`); ``keelsons``: the keelson records (default the catalogue's)."""
+    height raster (:class:`_Grid`); ``keelsons``: the keelson records (default the catalogue's); ``records``: the
+    timbers around them (default the catalogue's)."""
     import warnings
 
     top = np.full(len(xs), np.nan)
@@ -758,7 +761,7 @@ def _keel_line(chunk, xs: np.ndarray, siding: float, path=None, keelsons=None) -
         x0, _y0, x1, _y1 = _polygon(tracing.ship_xy_of(chunk, r, frame)).bounds
         here = (xs >= x0) & (xs <= x1)
         try:
-            grid, mask, _top, bottom = _solid_grid(chunk, r, path=path)
+            grid, mask, _top, bottom = _solid_grid(chunk, r, path=path, records=records)
         except NotReady:
             continue  # not covered: the keel's top there is read on the hull
         row = int(np.argmin(np.abs(grid.y)))

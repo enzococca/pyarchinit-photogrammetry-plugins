@@ -93,7 +93,7 @@ def _band_surface(record: dict, base):
     return surface
 
 
-def _extension_solid(chunk, record: dict, by_id: dict, cache: dict) -> solids.Solid:
+def _extension_solid(chunk, record: dict, by_id: dict, cache: dict, records=None) -> solids.Solid:
     source = by_id.get(record["source"])
     if source is None:
         raise NotReady(t(f"{_label(record)}: la fascia da cui viene non c'è più.",
@@ -102,7 +102,7 @@ def _extension_solid(chunk, record: dict, by_id: dict, cache: dict) -> solids.So
     record["thickness_mm"] = float(mm)
     poly = solids._polygon(record["ship_xy"])
     surface = _band_surface(record, solids.surface_for(chunk, poly, cache))
-    return solids.strake_shell(chunk, record, mm, surface=surface, path=_height(chunk))
+    return solids.strake_shell(chunk, record, mm, surface=surface, path=_height(chunk), records=records)
 
 
 def _height(chunk):
@@ -143,6 +143,7 @@ def _new_solids(chunk, frame, progress, records=None) -> tuple[list[dict], list[
     """The solids of the extension's pieces and of the spaced frames: (built, refused)."""
     from . import reconstruct
 
+    given = records
     records = timbers.timbers_of(chunk) if records is None else records
     recon = reconstruct.records_of(chunk)
     by_id = {r["id"]: r for r in records} | {r["id"]: r for r in recon}
@@ -161,7 +162,7 @@ def _new_solids(chunk, frame, progress, records=None) -> tuple[list[dict], list[
         r.pop("volume", None)
         try:
             if r["status"] == reconstruct.EXTENSION:
-                solid = _extension_solid(chunk, r, by_id, cache)
+                solid = _extension_solid(chunk, r, by_id, cache, given)
             else:
                 solid = _spacing_solid(chunk, r, by_id, frames_median, cache)
             path = solids.write_ply(folder / f"{r['id']}.ply", solid, frame)
@@ -210,15 +211,16 @@ def _clean(chunk, folder: Path) -> None:
     reconstruct.remove_orphans(folder, keep)
 
 
-def _members(chunk, doc, progress) -> tuple[list[dict] | None, dict | None, list[str]]:
-    """The other chunks of the wreck for a build: (the merged records or None, the ``members`` entry to keep, the
-    warnings: the members of the previous build gone from the project). The merged raster is written here."""
+def _members(chunk, doc, progress) -> tuple[list[dict] | None, list[dict] | None, dict | None]:
+    """The other chunks of the wreck for a build: (the merged records or None, the merged station sections or None,
+    the ``members`` entry to keep: ``chunks``, ``refused``, ``raster``, ``warnings`` - the members of the previous build
+    gone from the project, and the merge's). The merged raster is written here."""
     from . import chunks, reconstruct, relief
 
     doc = doc if doc is not None else getattr(chunk, "document", None)
     previous = (reconstruct.state(chunk).get("members") or {}).get("chunks") or []
     if doc is None or relief.entry(chunk) is None:
-        return None, None, []
+        return None, None, None
     present = {c.key for c in doc.chunks}
     warnings = [t(f"Il chunk «{m.get('label', m['chunk'])}» della ricostruzione precedente non è più nel progetto: la "
                   "ricostruzione è fatta senza.",
@@ -226,22 +228,29 @@ def _members(chunk, doc, progress) -> tuple[list[dict] | None, dict | None, list
                   "the reconstruction is made without it.")
                 for m in previous if m["chunk"] != chunk.key and m["chunk"] not in present]
     members, refused = chunks.members(doc, chunk)
-    entry = {"chunks": [], "refused": [{"chunk": r["chunk"].key, "label": r["chunk"].label, "reason": r["reason"]}
-                                       for r in refused], "raster": None}
+    entry = {"chunks": [], "refused": [], "raster": None, "warnings": warnings}
+    records = sections = None
     if len(members) < 2:
         entry["chunks"] = [{"chunk": chunk.key, "label": chunk.label, "cell": members[0]["cell"] if members else None,
                             "coverage": 1.0}]
         shutil.rmtree(reconstruct.folder(chunk) / chunks.FOLDER, ignore_errors=True)
-        return None, entry, warnings
-    entry.update(chunks.prepare(doc, chunk, progress, members))
-    return chunks.merged(doc, chunk, members), entry, warnings
+    else:
+        entry.update(chunks.prepare(doc, chunk, progress, members))
+        records = chunks.merged(doc, chunk, members, warnings)
+        try:
+            sections = chunks.station_sections(members, refused)
+        except NotReady:
+            sections = None  # the main's own out of date: the loft says so
+    entry["refused"] = [{"chunk": r["chunk"].key, "label": r["chunk"].label, "reason": r["reason"]} for r in refused]
+    return records, sections, entry
 
 
 def build(chunk, progress=None, doc=None) -> dict:
     """The whole reconstruction (see the module): mirror, extension, frames by spacing, loft, the new parts' solids.
     Returns ``{"mirrored", "extended", "spaced", "loft", "built", "refused", "open_ends", "warnings", "notes",
-    "table", "members"}`` (``warnings``: the extension's and the loft's, and the members of the previous build no
-    longer in the project; ``notes``: the loft's). The stored disagreement of the two sides (``disagreement``) is
+    "table", "members"}`` (``warnings``: the extension's, the loft's and those of the members - a member of the
+    previous build no longer in the project, the merge's - kept in ``members["warnings"]`` too; ``notes``: the
+    loft's). The stored disagreement of the two sides (``disagreement``) is
     kept with the user's ends. ``doc``: the project whose other chunks of the wreck are read (default the chunk's)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
@@ -255,7 +264,7 @@ def build(chunk, progress=None, doc=None) -> dict:
     bak = _backup(folder)
     try:
         progress(0.0, t("Ricostruzione: i chunk del relitto", "Reconstruction: the chunks of the wreck"))
-        records, members, gone = _members(chunk, doc, progress.sub(0.0, 0.05))
+        records, sections, members = _members(chunk, doc, progress.sub(0.0, 0.05))
         if members is not None:
             reconstruct.state(chunk)["members"] = members
         else:
@@ -267,7 +276,7 @@ def build(chunk, progress=None, doc=None) -> dict:
         progress(0.45, t("Ricostruzione: ordinate al passo misurato", "Reconstruction: frames at the measured spacing"))
         spaced = reconstruct.frames_by_spacing(chunk, records=records)
         progress(0.55, t("Ricostruzione: carenatura", "Reconstruction: fairing"))
-        solid = reconstruct.loft(chunk, STEP, SAMPLES, records=records)
+        solid = reconstruct.loft(chunk, STEP, SAMPLES, records=records, sections=sections or None)
         progress(0.7, t("Ricostruzione: legni in 3D", "Reconstruction: timbers in 3D"))
         built, refused = _new_solids(chunk, frame, progress.sub(0.7, 0.3), records)
         st = reconstruct.state(chunk)
@@ -298,7 +307,7 @@ def build(chunk, progress=None, doc=None) -> dict:
     return {"mirrored": len(mirrored), "extended": len(extended), "spaced": len(spaced), "loft": solid is not None,
             "built": built, "refused": refused, "open_ends": new["open_ends"],
             "warnings": list((new.get("extension") or {}).get("warnings") or [])
-            + list((new.get("loft") or {}).get("warnings") or []) + gone,
+            + list((new.get("loft") or {}).get("warnings") or []) + list((members or {}).get("warnings") or []),
             "notes": list((new.get("loft") or {}).get("notes") or []),
             "table": new["table"], "members": copy.deepcopy(new.get("members"))}
 

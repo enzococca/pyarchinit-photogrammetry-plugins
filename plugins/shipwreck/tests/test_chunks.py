@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 
 import numpy as np
 import pytest
 import shapely
-from hulls import FRAMES, UTM, depth, framed_hull, transform
+from hulls import FRAMES, UTM, depth, framed_hull, plan_half_breadth, transform
 
 import pyarchinit_photogrammetry as ppg
 from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
@@ -26,14 +27,14 @@ def _hull_point(x, y):
     return np.array([x, y, float(depth(x, y))])
 
 
-def _add_chunk(doc, label, x_range, heading, offset, scale, markers=MARKERS):
+def _add_chunk(doc, label, x_range, heading, offset, scale, markers=MARKERS, **hull):
     """A chunk of ``doc`` with the framed hull's part ``x_range`` as its model, placed by ``transform(heading, scale,
     offset)``, and ``markers`` at the hull's points (internal coordinates: the same world point in every chunk once
     the chunks are aligned)."""
     ch = doc.add_chunk(label)
     ch.crs = "EPSG:32633"
     ch.transform = transform(heading, scale, offset)
-    v, f = framed_hull(x_range=x_range)
+    v, f = framed_hull(x_range=x_range, **hull)
     write_mesh_ply(ch.data_dir / "model.ply", v / scale, f)
     ch._set_product("model", ch.data_dir / "model.ply")
     for name, (x, y) in markers.items():
@@ -206,6 +207,49 @@ def test_frames_from_markers_of_the_same_names(tmp_path):
     assert "frame_markers" not in ship.state(c) and chunks.compatible(c, d)[0] is False
 
 
+def test_frames_numbered_in_each_chunk_merged_by_place(wreck):
+    """B's frames numbered from 1, as the proposals name them in each chunk: the frames of the overlap are one record
+    each all the same (by place, the main's name), and the warnings say so, and that «ordinata 1» names two places."""
+    doc, a, b = wreck
+    named = [r for r in chunks.merged(doc, a) if r["kind"] == "frame"]
+    saved = copy.deepcopy(ship.state(b)["timbers"])
+    try:
+        frames = [r for r in ship.state(b)["timbers"] if r["kind"] == "frame"]
+        xs = sorted({round(float(_poly(r).centroid.x), 1) for r in frames})
+        for r in frames:
+            r["name"] = f"ordinata {xs.index(round(float(_poly(r).centroid.x), 1)) + 1}"
+        warnings = []
+        out = [r for r in chunks.merged(doc, a, warnings=warnings) if r["kind"] == "frame"]
+    finally:
+        ship.state(b)["timbers"] = saved
+    assert len(out) == len(named), (len(out), len(named))
+    at = {(r["side"], round(_poly(r).centroid.x, 1)): r for r in out}
+    assert len(at) == len(out)  # one record per frame and side
+    for (side, x), r in at.items():
+        if 6.0 < x < 7.0:
+            assert len(r["sources"]) == 2 and r["name"] == next(
+                n["name"] for n in named if n["side"] == side and round(_poly(n).centroid.x, 1) == x)
+    assert any(w.startswith("Unite per posizione") and "Campagna B" in w for w in warnings), warnings
+    assert any("«ordinata 1»" in w and "posti diversi" in w for w in warnings), warnings
+
+
+def test_a_member_relief_built_again_is_said(wreck):
+    """After a merged build, a member's relief changed: the reconstruction reads the main's own relief again and says
+    why; the same relief back, the merged one again."""
+    _doc, a, b = wreck
+    assert reconstruct.members_stale(a) == []
+    path = relief.path_of(b, "height")
+    before = path.stat()
+    try:
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 10**9))
+        reasons = reconstruct.members_stale(a)
+        assert reasons == ["Il rilievo del chunk «Campagna B» è cambiato dopo la ricostruzione."], reasons
+        assert reconstruct.height_path(a) == relief.path_of(a, "height")
+    finally:
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert reconstruct.members_stale(a) == [] and reconstruct.height_path(a) != relief.path_of(a, "height")
+
+
 def test_a_third_chunk_refused_until_aligned_then_merged_without_touching_the_others(wreck):
     """An unaligned chunk is refused with the reason; aligned, framed and surveyed it joins the next build, and the
     main's catalogue (a record corrected by hand among it) and the other members are as they were."""
@@ -251,3 +295,72 @@ def test_a_third_chunk_refused_until_aligned_then_merged_without_touching_the_ot
     out = reconstruct.build(a)
     assert [m["chunk"] for m in out["members"]["chunks"]] == [a.key, b.key]
     assert any("Campagna C" in w for w in out["warnings"]), out["warnings"]
+    assert any("Campagna C" in w for w in reconstruct.state(a)["members"]["warnings"])
+
+
+def _pair(tmp, b_range, **b_hull):
+    """A (the hull's x 0-7, the main) and B (``b_range``) aligned on the markers, the ship frame of A copied to B, both
+    surveyed, the stations cut on A (and on B by :func:`chunks.use_frame_of`)."""
+    doc = ppg.Document()
+    doc.save(tmp / "relitto.ppg")
+    a = _add_chunk(doc, "A", (0.0, 7.0), 35.0, UTM, 2.0)
+    b = _add_chunk(doc, "B", b_range, 80.0, UTM + [37.5, -12.25, 3.0], 1.6, **b_hull)
+    doc.align_chunks(a, [b], method="markers")
+    ends = a.to_world(np.array([[0.0, 0.0, 0.0], [12.0 / 2.0, 0.0, 0.0]]))
+    ship.set_frame(a, ship.Frame(ends[0], ends[1], "start"))
+    ship.set_stations(a, [{"name": f"S{k}", "x": float(x)} for k, x in enumerate(STATIONS)])
+    lines.build(a)
+    chunks.use_frame_of(b, a)
+    names = _frame_names(tmp)
+    _survey(a, 0.01, names)
+    _survey(b, 0.01, names)
+    return doc, a, b
+
+
+def _strake_volumes(records):
+    out: dict[str, float] = {}
+    for r in records:
+        if r["status"] == reconstruct.STATUS and r["kind"] == "plank" and r.get("volume"):
+            name = reconstruct._base_name(r["name"])
+            out[name] = out.get(name, 0.0) + float(r["volume"])
+    return out
+
+
+def test_mirrored_strakes_over_a_member_hidden_by_its_frames(tmp_path):
+    """B's port side lost over x 8.5-11: the strakes mirrored there are shells under B's frames, as thick as the same
+    hull surveyed as one chunk mirrors them (B's frames hide the planking, not A's catalogue alone)."""
+    doc, a, _b = _pair(tmp_path / "two", (6.0, 12.0), missing=(8.5, 11.0, "port"))
+    reconstruct.build(a)
+    merged = _strake_volumes(reconstruct.records_of(a))
+    one = ppg.Document()
+    (tmp_path / "one").mkdir()
+    one.save(tmp_path / "one" / "relitto.ppg")
+    ch = _add_chunk(one, "Tutto", (0.0, 12.0), 35.0, UTM, 2.0, missing=(8.5, 11.0, "port"))
+    ends = ch.to_world(np.array([[0.0, 0.0, 0.0], [12.0 / 2.0, 0.0, 0.0]]))
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    _survey(ch, 0.01, _frame_names(tmp_path / "one"))
+    single = _strake_volumes(reconstruct.mirror(ch))
+    assert set(merged) == set(single) and len(single) >= 4, (merged, single)
+    for name, v in single.items():
+        assert abs(merged[name] - v) < 0.05 * v, (name, merged[name], v)
+
+
+def test_the_loft_reads_the_sections_of_every_member(tmp_path):
+    """A 0-7, B 6-9.5, the ends given at 0.05 and 11.95: the faired hull goes through B's stations too, and past the
+    last of them it tapers from B's last section, not from A's."""
+    doc, a, b = _pair(tmp_path, (6.0, 9.5))
+    assert [s["value"] for s in lines.sections_of(b, "station")] == [s["value"] for s in lines.sections_of(a, "station")]
+    reconstruct.set_ends(a, stem=0.05, stern=11.95)
+    reconstruct.build(a)
+    loft = reconstruct.state(a)["loft"]
+    assert max(loft["stations"]) == pytest.approx(9.225), loft["stations"]  # B's last station on its model
+    from pyarchinit_photogrammetry.io.mesh_ply import PlyMesh
+
+    v = PlyMesh(a.data_dir / loft["file"]).xyz()
+    near = np.abs(v[:, 0] - 9.8) < 0.051
+    k = np.flatnonzero(near)[np.argmax(np.abs(v[near, 1]))]
+    breadth, x = float(abs(v[k, 1])), float(v[k, 0])
+    # the quarter-ellipse taper of the loft (Task 11) from B's last station, not from A's (6.975: 1.65 m here)
+    taper = plan_half_breadth(9.225) * np.sqrt(1.0 - ((x - 9.225) / (11.95 - 9.225)) ** 2)
+    assert abs(breadth - taper) < 0.05, (x, breadth, taper)
+    assert breadth - plan_half_breadth(x) < 0.20, (x, breadth, plan_half_breadth(x))

@@ -118,7 +118,8 @@ def _records(chunk, records) -> list[dict]:
 def height_path(chunk) -> Path:
     """The height raster the reconstruction reads: the merged one of several chunks (:func:`chunks.prepare`) when
     ``state["reconstruction"]["members"]`` names more than the main chunk and is current (every member still in the
-    project, its relief the one recorded: elevation, frame, file), else the chunk's own relief."""
+    project, its relief the one recorded: elevation, frame, file), else the chunk's own relief (:func:`members_stale`
+    says why, for the user: the reconstruction is to be built again)."""
     from . import chunks
 
     members = (ship.state(chunk).get("reconstruction") or {}).get("members") or {}
@@ -127,6 +128,20 @@ def height_path(chunk) -> Path:
         if path.exists() and chunks.is_current(chunk, members):
             return path
     return relief.path_of(chunk, "height")
+
+
+def members_stale(chunk) -> list[str]:
+    """Why the reconstruction made over several chunks no longer matches them (:func:`chunks.stale`: a member gone, no
+    longer compatible, its relief built again), so that :func:`height_path` has fallen back to the chunk's own relief:
+    build the reconstruction again. Empty when it matches, or when it was made over this chunk alone."""
+    from . import chunks
+
+    members = (ship.state(chunk).get("reconstruction") or {}).get("members") or {}
+    if not members.get("raster") or len(members.get("chunks") or []) < 2:
+        return []
+    if not (chunk.data_dir / members["raster"]).exists():
+        return [t("Il rilievo dei chunk insieme non c'è più.", "The relief of the chunks together is gone.")]
+    return chunks.stale(chunk, members)
 
 
 def height_load(chunk):
@@ -310,7 +325,7 @@ def _read_solid(path: Path):
     return v, np.asarray(f, np.int64), hidden
 
 
-def _original_solid(chunk, source: dict, part_xy, whole: bool, frame) -> solids.Solid:
+def _original_solid(chunk, source: dict, part_xy, whole: bool, frame, records=None) -> solids.Solid:
     """The original's solid over the part that is mirrored (``part_xy``, on the original's side): its 3D file when
     the part is the whole timber and the solids are current, else built now on the part."""
     if whole and source.get("solid") and not solids.is_stale(chunk):
@@ -324,8 +339,8 @@ def _original_solid(chunk, source: dict, part_xy, whole: bool, frame) -> solids.
             "geometry": timbers.geometry("polygon", _world(frame, part_xy))}
     if source["kind"] in solids.SHELLS:
         mm, _how = solids.thickness_of(chunk, source)
-        return solids.strake_shell(chunk, part, mm, path=height_path(chunk))
-    return solids.timber_solid(chunk, part, path=height_path(chunk))
+        return solids.strake_shell(chunk, part, mm, path=height_path(chunk), records=records)
+    return solids.timber_solid(chunk, part, path=height_path(chunk), records=records)
 
 
 def _mirrored_solid(solid: solids.Solid, rid: str, name: str) -> solids.Solid:
@@ -426,7 +441,8 @@ def mirror(chunk, progress=None, records=None) -> list[dict]:
                 rid = take(source["id"], at)
                 label = name if len(pieces) == 1 else f"{name} ({j + 1})"
                 try:
-                    solid = _mirrored_solid(_original_solid(chunk, source, _reflect(xy), whole, frame), rid, label)
+                    solid = _mirrored_solid(_original_solid(chunk, source, _reflect(xy), whole, frame, records),
+                                            rid, label)
                     path = solids.write_ply(tmp / f"{rid}.ply", solid, frame)
                 except Exception as exc:  # noqa: BLE001 - one timber refused, never the whole mirror
                     reason = str(exc) if isinstance(exc, NotReady) else f"{type(exc).__name__}: {exc}"

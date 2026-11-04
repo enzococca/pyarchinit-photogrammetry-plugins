@@ -25,8 +25,8 @@ the wreck exists, a stated hypothesis like the rest of the reconstruction.
   running over it): the loft follows the planking all the same and ``notes`` says the keel is its own solid.
 - Refused (:class:`NotReady`) without station sections, or with sections cut on another frame or model.
 - ``records``: the measured records to read (default the catalogue; the merged records of several chunks,
-  :func:`chunks.merged`); the relief is the reconstruction's (:func:`reconstruct.height_path`). The sections are the
-  main chunk's.
+  :func:`chunks.merged`); the relief is the reconstruction's (:func:`reconstruct.height_path`); ``sections``: the
+  station sections (default the chunk's; those of all the chunks of the wreck, :func:`chunks.station_sections`).
 
 An open surface: ``volume`` 0, status ``reconstructed:fairing``, name ``carenatura``, kind ``hull``, written to
 ``<chunk data>/shipwreck/reconstruction/carenatura.ply``; ``state["reconstruction"]["loft"]`` says what it was made
@@ -126,7 +126,8 @@ def _keel_heights(chunk, frame, xs: np.ndarray, halves, records=None) -> tuple[n
     keelsons = None if records is None else [r for r in records if r["kind"] == "keelson"
                                              and r["geometry"]["type"] == "polygon"]
     try:
-        line = solids._keel_line(chunk, xs, float(siding), path=reconstruct.height_path(chunk), keelsons=keelsons)
+        line = solids._keel_line(chunk, xs, float(siding), path=reconstruct.height_path(chunk), keelsons=keelsons,
+                                 records=records)
     except NotReady:
         line = np.full(len(xs), np.nan)
     cover = _keelson_cover(chunk, frame, records)
@@ -298,9 +299,10 @@ def _taper(x_last: float, x_end: float, step: float):
     return xs, np.sqrt(np.clip(1.0 - r**2, 0.0, 1.0))
 
 
-def loft(chunk, step: float = 0.10, samples: int = 41, records=None) -> solids.Solid | None:
+def loft(chunk, step: float = 0.10, samples: int = 41, records=None, sections=None) -> solids.Solid | None:
     """The faired hull where neither side of the wreck exists (see the module); None (and no file) when fewer than
-    two stations have a half-section, or nothing is left where the wreck shows nothing."""
+    two stations have a half-section, or nothing is left where the wreck shows nothing. ``sections``: the station
+    sections to loft through (default the chunk's own; :func:`chunks.station_sections` for several chunks)."""
     import shapely
     from scipy.interpolate import CubicSpline
 
@@ -313,10 +315,12 @@ def loft(chunk, step: float = 0.10, samples: int = 41, records=None) -> solids.S
     if step <= 0 or samples < 3:
         raise ValueError("step > 0 and samples >= 3")
     data = lines.load(chunk)
-    sections = [s for s in (data or {}).get("sections", []) if s["kind"] == "station"]
+    given = sections is not None
+    if not given:
+        sections = [s for s in (data or {}).get("sections", []) if s["kind"] == "station"]
     if not sections:
         raise NotReady(t("Taglia prima le sezioni alle stazioni.", "Cut the sections at the stations first."))
-    if lines.is_stale(chunk, data):
+    if not given and lines.is_stale(chunk, data):
         raise NotReady(t("Le sezioni non sono aggiornate (altro sistema della nave o altro modello): tagliale di "
                          "nuovo.",
                          "The sections are out of date (another ship frame or another model): cut them again."))
