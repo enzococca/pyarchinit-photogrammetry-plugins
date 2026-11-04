@@ -44,6 +44,12 @@ and loft in one go, builds the solids of the extended strakes and of the spaced 
 (:func:`solids.surface_for`: the relief, else the mirrored solids, else the faired hull) and replaces the
 reconstruction as a whole; :func:`table` and :func:`write_table` say what is measured and what is reconstructed.
 
+SEVERAL CHUNKS of the same wreck (:mod:`chunks`: other campaigns or parts, aligned to the main chunk or sharing the
+ship frame through markers of the same names) feed one reconstruction: :func:`build` merges their records
+(:func:`chunks.merged`, passed as ``records`` to every step) and their reliefs (:func:`chunks.prepare`, the raster
+every reader of the reconstruction reaches through :func:`height_path` / :func:`height_load`); only the main chunk's
+state and folder are written.
+
 Only ``chunk.meta["shipwreck"]["reconstruction"]`` and ``<chunk data>/shipwreck/reconstruction/`` are written; the
 measured records, the chunk's transform, model and products never."""
 from __future__ import annotations
@@ -104,6 +110,36 @@ def folder(chunk) -> Path:
     return d
 
 
+def _records(chunk, records) -> list[dict]:
+    return timbers.timbers_of(chunk) if records is None else list(records)
+
+
+# ----------------------------------------------------------------------------- the height raster of the reconstruction
+def height_path(chunk) -> Path:
+    """The height raster the reconstruction reads: the merged one of several chunks (:func:`chunks.prepare`) when
+    ``state["reconstruction"]["members"]`` names more than the main chunk and is current (every member still in the
+    project, its relief the one recorded: elevation, frame, file), else the chunk's own relief."""
+    from . import chunks
+
+    members = (ship.state(chunk).get("reconstruction") or {}).get("members") or {}
+    if members.get("raster") and len(members.get("chunks") or []) > 1:
+        path = chunk.data_dir / members["raster"]
+        if path.exists() and chunks.is_current(chunk, members):
+            return path
+    return relief.path_of(chunk, "height")
+
+
+def height_load(chunk):
+    """:func:`relief.load` of :func:`height_path`: the heights (NaN off the model) and the affine in (u, v)."""
+    import rasterio
+
+    with rasterio.open(height_path(chunk)) as src:
+        arr = src.read(1)
+        if src.nodata is not None and np.isfinite(src.nodata):
+            arr = np.where(arr == src.nodata, np.nan, arr).astype(arr.dtype)
+        return arr, src.transform
+
+
 # ----------------------------------------------------------------------------- the relief
 def opened_lost(model: np.ndarray) -> np.ndarray:
     """The cells without the model, opened by a square of :data:`OPENING` + 1 cells: strips of empty cells up to
@@ -120,7 +156,7 @@ class _Relief:
 
     def __init__(self, chunk, frame: ship.Frame):
         tracing.need_fresh_relief(chunk)
-        self.z, self.affine = relief.load(chunk, "height")
+        self.z, self.affine = height_load(chunk)
         self.cell = float(abs(self.affine.a))
         self.sign = frame.sign
 
@@ -288,8 +324,8 @@ def _original_solid(chunk, source: dict, part_xy, whole: bool, frame) -> solids.
             "geometry": timbers.geometry("polygon", _world(frame, part_xy))}
     if source["kind"] in solids.SHELLS:
         mm, _how = solids.thickness_of(chunk, source)
-        return solids.strake_shell(chunk, part, mm)
-    return solids.timber_solid(chunk, part)
+        return solids.strake_shell(chunk, part, mm, path=height_path(chunk))
+    return solids.timber_solid(chunk, part, path=height_path(chunk))
 
 
 def _mirrored_solid(solid: solids.Solid, rid: str, name: str) -> solids.Solid:
@@ -340,13 +376,14 @@ def _kept(grid: "_Relief", piece, source_width: float, over, beside) -> bool:
     return not any(_beside(piece, b) for b in beside)
 
 
-def mirror(chunk, progress=None) -> list[dict]:
+def mirror(chunk, progress=None, records=None) -> list[dict]:
     """The preserved side mirrored where the other side is lost (see the module): the earlier mirror replaced, the
     new records added to ``state["reconstruction"]["timbers"]``, their solids written (into a folder of their own
     first: whatever stops the mirror halfway leaves the earlier one as it was), each keeping the id of the earlier
     record from the same source at the same place (``position``: its plan bounds to the cm). Returns the new
     records; the timbers refused (no thickness, a solid that cannot be built) go to
-    ``state["reconstruction"]["mirror"]``, with the fingerprint of the catalogue it read (``catalogue``)."""
+    ``state["reconstruction"]["mirror"]``, with the fingerprint of the catalogue it read (``catalogue``). ``records``:
+    the measured records to read (default the chunk's catalogue; :func:`chunks.merged` for several chunks)."""
     import shutil
 
     import shapely
@@ -358,7 +395,7 @@ def mirror(chunk, progress=None) -> list[dict]:
     if relief.entry(chunk) is None:
         raise NotReady(t("Costruisci prima il rilievo dello scafo.", "Build the relief of the hull first."))
     grid = _Relief(chunk, frame)
-    records = timbers.timbers_of(chunk)
+    records = _records(chunk, records)
     candidates = _candidates(records)
     st = state(chunk)
     take = _ids(chunk, STATUS)
@@ -408,7 +445,7 @@ def mirror(chunk, progress=None) -> list[dict]:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     st["mirror"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": len(out),
-                    "refused": refused, "frame_key": key, "catalogue": _catalogue_key(chunk)}
+                    "refused": refused, "frame_key": key, "catalogue": _catalogue_key(chunk, records)}
     progress(1.0, t(f"Simmetria: {len(out)} legni ricostruiti, {len(refused)} rifiutati",
                     f"Mirror: {len(out)} timbers reconstructed, {len(refused)} refused"))
     return out
@@ -451,11 +488,12 @@ def _stations(chunk) -> list[dict]:
     return sections or [{"name": s["name"], "x": float(s["x"])} for s in ship.stations_of(chunk)]
 
 
-def _seams(chunk, frame, side: str, x: float) -> dict[int, float]:
+def _seams(chunk, frame, side: str, x: float, records=None) -> dict[int, float]:
     """The |y| of the measured seams of ``side`` at ``x`` by rank: the seam records, and where a rank has none
     there the inner edge of the strake above it (strake k + 1 starts on seam k)."""
     out = {}
-    for r in timbers.timbers_of(chunk):
+    records = _records(chunk, records)
+    for r in records:
         if r["side"] != side or r.get("loose") or not timbers.is_measured(r):
             continue
         rank = _rank(r["name"])
@@ -465,7 +503,7 @@ def _seams(chunk, frame, side: str, x: float) -> dict[int, float]:
             y = _at(tracing.ship_xy_of(chunk, r, frame), x)
             if y is not None:
                 out[rank] = y
-    for r in timbers.timbers_of(chunk):
+    for r in records:
         if (r["side"] != side or r.get("loose") or not timbers.is_measured(r) or r["kind"] != "plank"
                 or r["geometry"]["type"] != "polygon"):
             continue
@@ -478,17 +516,17 @@ def _seams(chunk, frame, side: str, x: float) -> dict[int, float]:
     return out
 
 
-def disagreement(chunk) -> list[dict]:
+def disagreement(chunk, records=None) -> list[dict]:
     """Per station (the sections' stations, else the chunk's) and seam rank where both sides have a measured seam
     (or strake edge): ``station``, ``x``, ``rank``, ``port_y`` and ``starboard_y`` (the half-breadths, |y|),
     ``difference_mm`` (port - starboard). Kept in ``state["reconstruction"]["disagreement"]`` (the table of
     :func:`table` reads them afresh)."""
-    rows = disagreement_rows(chunk)
+    rows = disagreement_rows(chunk, records)
     state(chunk)["disagreement"] = rows
     return rows
 
 
-def disagreement_rows(chunk) -> list[dict]:
+def disagreement_rows(chunk, records=None) -> list[dict]:
     """The rows of :func:`disagreement`, kept nowhere."""
     frame = ship.need_frame(chunk)
     stations = _stations(chunk)
@@ -496,7 +534,8 @@ def disagreement_rows(chunk) -> list[dict]:
         raise NotReady(t("Nessuna stazione: dai prima le stazioni.", "No stations: set the stations first."))
     rows = []
     for s in stations:
-        port, starboard = _seams(chunk, frame, "port", s["x"]), _seams(chunk, frame, "starboard", s["x"])
+        port, starboard = (_seams(chunk, frame, "port", s["x"], records),
+                           _seams(chunk, frame, "starboard", s["x"], records))
         for rank in sorted(set(port) & set(starboard)):
             p, q = port[rank], starboard[rank]
             if not (math.isfinite(p) and math.isfinite(q)):
@@ -556,11 +595,12 @@ def set_ends(chunk, stem=None, stern=None) -> dict:
 
 
 def surveyed_range(chunk) -> tuple[float, float]:
-    """The ship x range of the relief's cells with a value, both sides taken together (the surveyed wreck)."""
+    """The ship x range of the relief's cells with a value, both sides taken together (the surveyed wreck): the
+    reconstruction's relief (:func:`height_load`: of all the chunks merged, when there are several)."""
     ship.need_frame(chunk)
     if relief.entry(chunk) is None:
         raise NotReady(t("Costruisci prima il rilievo dello scafo.", "Build the relief of the hull first."))
-    z, affine = relief.load(chunk, "height")
+    z, affine = height_load(chunk)
     cols = np.flatnonzero(np.isfinite(z).any(axis=0))
     if not len(cols):
         raise NotReady(t("Il rilievo dello scafo è vuoto.", "The relief of the hull is empty."))
@@ -749,7 +789,7 @@ class _Heights:
         import shapely
         from scipy import ndimage
 
-        self.z, self.affine = relief.load(chunk, "height")
+        self.z, self.affine = height_load(chunk)
         self.cell = float(abs(self.affine.a))
         self.sign = frame.sign
         valid = ndimage.binary_erosion(np.isfinite(self.z), iterations=BORDER, border_value=0)
@@ -1088,30 +1128,30 @@ def _ids(chunk, status: str):
     return take
 
 
-def _catalogue_key(chunk) -> str:
+def _catalogue_key(chunk, records=None) -> str:
     """A fingerprint of the catalogue's records as the mirror reads them (ids, kinds, sides, names, loose, status,
     geometry): another one later means the mirror is older than the records."""
     import hashlib
     import json
 
     rows = sorted([r["id"], r["kind"], r["side"], r["name"], bool(r.get("loose")), timbers.status_of(r),
-                   np.round(np.asarray(r["geometry"]["xy"], float), 4).tolist()] for r in timbers.timbers_of(chunk))
+                   np.round(np.asarray(r["geometry"]["xy"], float), 4).tolist()] for r in _records(chunk, records))
     return hashlib.sha1(json.dumps(rows).encode("utf-8")).hexdigest()
 
 
-def _current_mirror(chunk, frame: ship.Frame) -> str | None:
+def _current_mirror(chunk, frame: ship.Frame, records=None) -> str | None:
     """The mirror's build stamp (None: never built); :class:`NotReady` when it is older than the catalogue or was
     made in another ship frame (build it again: what follows reads it)."""
     m = state(chunk).get("mirror")
     if m is None:
         return None
-    if m.get("catalogue") != _catalogue_key(chunk) or m.get("frame_key") != relief.frame_key(frame):
+    if m.get("catalogue") != _catalogue_key(chunk, records) or m.get("frame_key") != relief.frame_key(frame):
         raise NotReady(t("La simmetria è più vecchia del catalogo dei legni: rifai prima la simmetria.",
                          "The mirror is older than the catalogue of timbers: build the mirror again first."))
     return m.get("built")
 
 
-def extend(chunk, progress=None) -> list[dict]:
+def extend(chunk, progress=None, records=None) -> list[dict]:
     """Each strake between two seams (measured, or mirrored: its edges are its seams) continued along the hull.
 
     - Its seams' |y| fitted in x by a smoothing spline (GCV) over the strake's gaps (x not covered by its measured
@@ -1129,18 +1169,19 @@ def extend(chunk, progress=None) -> list[dict]:
     strake's record nearest, ``sources``, ``edges`` lower/upper ``[[x, y, z], ...]`` in the ship plan (z None where
     nothing gives a height), ``seams``, ``trend``, ``uncertain``, ``beyond``: past the surveyed range, ``position``);
     the earlier extension replaced (ids kept for the same source and position). No solid yet. The order to build:
-    mirror, then extension and frames (``state["extension"]["mirror_built"]`` says which mirror it read)."""
+    mirror, then extension and frames (``state["extension"]["mirror_built"]`` says which mirror it read).
+    ``records``: as :func:`mirror`'s."""
     import shapely
 
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
     frame = ship.need_frame(chunk)
-    mirror_built = _current_mirror(chunk, frame)
+    records = _records(chunk, records)
+    mirror_built = _current_mirror(chunk, frame, records)
     surveyed = surveyed_range(chunk)
     tracing.need_fresh_relief(chunk)
     lo, hi, cuts, warnings = _limits(chunk, surveyed)
-    records = timbers.timbers_of(chunk)
     recon = [r for r in records_of(chunk) if r.get("status") == STATUS]
     heights = _Heights(chunk, frame, [r for r in records if timbers.is_measured(r)])
     sheers = _sheers(chunk)
@@ -1258,7 +1299,7 @@ def _frame_number(name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def frames_by_spacing(chunk) -> list[dict]:
+def frames_by_spacing(chunk, records=None) -> list[dict]:
     """Frames added where they are missing (``reconstructed:spacing``): per side, the measured (not loose) and the
     mirrored frames in order of x (a centre frame counts for both sides; :func:`timbers.frame_spacing`); a space
     between two of them longer than :data:`GAP_FACTOR` median spaces gets ``round(space / median) - 1`` frames,
@@ -1267,12 +1308,12 @@ def frames_by_spacing(chunk) -> list[dict]:
     centre frame. Named ``ordinata N`` after the highest number (the existing numbers kept), ``notes`` saying where;
     ``source`` the frame before it, ``sources`` both. The earlier ones replaced (ids kept for the same source and
     position); the medians and the mirror read (``mirror_built``) in ``state["reconstruction"]["spacing"]``;
-    :class:`NotReady` while the mirror is older than the catalogue."""
+    :class:`NotReady` while the mirror is older than the catalogue. ``records``: as :func:`mirror`'s."""
     import shapely
 
     frame = ship.need_frame(chunk)
-    mirror_built = _current_mirror(chunk, frame)
-    records = timbers.timbers_of(chunk)
+    records = _records(chunk, records)
+    mirror_built = _current_mirror(chunk, frame, records)
     recon = [r for r in records_of(chunk) if r.get("status") == STATUS]
     frames = [r for r in records + recon if r["kind"] == "frame" and r["geometry"]["type"] == "polygon"
               and not r.get("loose") and (r.get("status") == STATUS or timbers.is_measured(r))]

@@ -17,6 +17,11 @@ replaced as a whole (``state["reconstruction"]``: ``params``, ``built``, ``timbe
 position, the files no record holds removed. Whatever stops the build - a step that is not ready, a cancel - leaves
 the earlier reconstruction as it was, records and files. The measured catalogue is never touched.
 
+With other chunks of the same wreck in the project (:func:`chunks.members`: aligned to this one, or sharing its ship
+frame through markers of the same names, with a current relief) the build reads them all: the merged height raster
+(:func:`chunks.prepare`, in this chunk's folder) and the merged records (:func:`chunks.merged`); the members are
+read only. ``state["reconstruction"]["members"]`` lists them (and the chunks refused, with the reason).
+
 :func:`table` lists every record of the catalogue and of the reconstruction with its length and area, measured or
 reconstructed; :func:`write_table` writes it as CSV and Excel."""
 from __future__ import annotations
@@ -97,7 +102,13 @@ def _extension_solid(chunk, record: dict, by_id: dict, cache: dict) -> solids.So
     record["thickness_mm"] = float(mm)
     poly = solids._polygon(record["ship_xy"])
     surface = _band_surface(record, solids.surface_for(chunk, poly, cache))
-    return solids.strake_shell(chunk, record, mm, surface=surface)
+    return solids.strake_shell(chunk, record, mm, surface=surface, path=_height(chunk))
+
+
+def _height(chunk):
+    from . import reconstruct
+
+    return reconstruct.height_path(chunk)
 
 
 def _frame_height(r: dict) -> float | None:
@@ -115,7 +126,8 @@ def _spacing_solid(chunk, record: dict, by_id: dict, frames_median: float | None
         raise NotReady(t(f"{_label(record)}: nessuna ordinata costruita da cui prendere l'altezza.",
                          f"{_label(record)}: no frame built to take the height from."))
     poly = solids._polygon(record["ship_xy"])
-    grid = solids._Grid(chunk, poly.bounds, margin=2, surface=solids.surface_for(chunk, poly, cache))
+    grid = solids._Grid(chunk, poly.bounds, margin=2, surface=solids.surface_for(chunk, poly, cache),
+                        path=_height(chunk))
     mask = solids._no_bowties(grid.inside(poly) & np.isfinite(grid.z))
     if not mask.any():
         raise NotReady(t(f"{_label(record)}: nessuna superficie dello scafo sotto il contorno.",
@@ -127,13 +139,14 @@ def _spacing_solid(chunk, record: dict, by_id: dict, frames_median: float | None
     return solids.Solid(v, f, hid, record["status"], record["name"], record["kind"], vol, None, record["id"])
 
 
-def _new_solids(chunk, frame, progress) -> tuple[list[dict], list[dict]]:
+def _new_solids(chunk, frame, progress, records=None) -> tuple[list[dict], list[dict]]:
     """The solids of the extension's pieces and of the spaced frames: (built, refused)."""
     from . import reconstruct
 
+    records = timbers.timbers_of(chunk) if records is None else records
     recon = reconstruct.records_of(chunk)
-    by_id = {r["id"]: r for r in timbers.timbers_of(chunk)} | {r["id"]: r for r in recon}
-    measured = [h for h in (_frame_height(r) for r in timbers.timbers_of(chunk)
+    by_id = {r["id"]: r for r in records} | {r["id"]: r for r in recon}
+    measured = [h for h in (_frame_height(r) for r in records
                             if r["kind"] == "frame" and timbers.is_measured(r) and not r.get("loose")) if h]
     frames_median = float(np.median(measured)) if measured else None
     todo = [r for r in ship.state(chunk)["reconstruction"]["timbers"]
@@ -197,11 +210,39 @@ def _clean(chunk, folder: Path) -> None:
     reconstruct.remove_orphans(folder, keep)
 
 
-def build(chunk, progress=None) -> dict:
+def _members(chunk, doc, progress) -> tuple[list[dict] | None, dict | None, list[str]]:
+    """The other chunks of the wreck for a build: (the merged records or None, the ``members`` entry to keep, the
+    warnings: the members of the previous build gone from the project). The merged raster is written here."""
+    from . import chunks, reconstruct, relief
+
+    doc = doc if doc is not None else getattr(chunk, "document", None)
+    previous = (reconstruct.state(chunk).get("members") or {}).get("chunks") or []
+    if doc is None or relief.entry(chunk) is None:
+        return None, None, []
+    present = {c.key for c in doc.chunks}
+    warnings = [t(f"Il chunk «{m.get('label', m['chunk'])}» della ricostruzione precedente non è più nel progetto: la "
+                  "ricostruzione è fatta senza.",
+                  f"The chunk «{m.get('label', m['chunk'])}» of the previous reconstruction is no longer in the project: "
+                  "the reconstruction is made without it.")
+                for m in previous if m["chunk"] != chunk.key and m["chunk"] not in present]
+    members, refused = chunks.members(doc, chunk)
+    entry = {"chunks": [], "refused": [{"chunk": r["chunk"].key, "label": r["chunk"].label, "reason": r["reason"]}
+                                       for r in refused], "raster": None}
+    if len(members) < 2:
+        entry["chunks"] = [{"chunk": chunk.key, "label": chunk.label, "cell": members[0]["cell"] if members else None,
+                            "coverage": 1.0}]
+        shutil.rmtree(reconstruct.folder(chunk) / chunks.FOLDER, ignore_errors=True)
+        return None, entry, warnings
+    entry.update(chunks.prepare(doc, chunk, progress, members))
+    return chunks.merged(doc, chunk, members), entry, warnings
+
+
+def build(chunk, progress=None, doc=None) -> dict:
     """The whole reconstruction (see the module): mirror, extension, frames by spacing, loft, the new parts' solids.
     Returns ``{"mirrored", "extended", "spaced", "loft", "built", "refused", "open_ends", "warnings", "notes",
-    "table"}`` (``warnings``: the extension's and the loft's; ``notes``: the loft's). The stored disagreement of
-    the two sides (``disagreement``) is kept with the user's ends."""
+    "table", "members"}`` (``warnings``: the extension's and the loft's, and the members of the previous build no
+    longer in the project; ``notes``: the loft's). The stored disagreement of the two sides (``disagreement``) is
+    kept with the user's ends. ``doc``: the project whose other chunks of the wreck are read (default the chunk's)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     from . import reconstruct
@@ -213,27 +254,33 @@ def build(chunk, progress=None) -> dict:
     folder = reconstruct.folder(chunk)
     bak = _backup(folder)
     try:
-        progress(0.0, t("Ricostruzione: simmetria", "Reconstruction: mirror"))
-        mirrored = reconstruct.mirror(chunk, progress.sub(0.0, 0.25))
+        progress(0.0, t("Ricostruzione: i chunk del relitto", "Reconstruction: the chunks of the wreck"))
+        records, members, gone = _members(chunk, doc, progress.sub(0.0, 0.05))
+        if members is not None:
+            reconstruct.state(chunk)["members"] = members
+        else:
+            reconstruct.state(chunk).pop("members", None)
+        progress(0.05, t("Ricostruzione: simmetria", "Reconstruction: mirror"))
+        mirrored = reconstruct.mirror(chunk, progress.sub(0.05, 0.20), records=records)
         progress(0.25, t("Ricostruzione: prolungamento delle fasce", "Reconstruction: extension of the strakes"))
-        extended = reconstruct.extend(chunk, progress.sub(0.25, 0.20))
+        extended = reconstruct.extend(chunk, progress.sub(0.25, 0.20), records=records)
         progress(0.45, t("Ricostruzione: ordinate al passo misurato", "Reconstruction: frames at the measured spacing"))
-        spaced = reconstruct.frames_by_spacing(chunk)
+        spaced = reconstruct.frames_by_spacing(chunk, records=records)
         progress(0.55, t("Ricostruzione: carenatura", "Reconstruction: fairing"))
-        solid = reconstruct.loft(chunk, STEP, SAMPLES)
+        solid = reconstruct.loft(chunk, STEP, SAMPLES, records=records)
         progress(0.7, t("Ricostruzione: legni in 3D", "Reconstruction: timbers in 3D"))
-        built, refused = _new_solids(chunk, frame, progress.sub(0.7, 0.3))
+        built, refused = _new_solids(chunk, frame, progress.sub(0.7, 0.3), records)
         st = reconstruct.state(chunk)
         new = {"params": {"step": STEP, "samples": SAMPLES},
                "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "timbers": [r for r in st.get("timbers", []) if r.get("status") in STATUSES]}
-        for key in ("mirror", "extension", "spacing", "loft", "ends", "disagreement"):
+        for key in ("mirror", "extension", "spacing", "loft", "ends", "disagreement", "members"):
             if key in st:
                 new[key] = st[key]
         new["open_ends"] = list((st.get("loft") or {}).get("open_ends") or [])
         root["reconstruction"] = new
         _clean(chunk, folder)
-        new["table"] = table(chunk)
+        new["table"] = table(chunk, records)
     except BaseException:
         if before is None:
             root.pop("reconstruction", None)
@@ -251,9 +298,9 @@ def build(chunk, progress=None) -> dict:
     return {"mirrored": len(mirrored), "extended": len(extended), "spaced": len(spaced), "loft": solid is not None,
             "built": built, "refused": refused, "open_ends": new["open_ends"],
             "warnings": list((new.get("extension") or {}).get("warnings") or [])
-            + list((new.get("loft") or {}).get("warnings") or []),
+            + list((new.get("loft") or {}).get("warnings") or []) + gone,
             "notes": list((new.get("loft") or {}).get("notes") or []),
-            "table": new["table"]}
+            "table": new["table"], "members": copy.deepcopy(new.get("members"))}
 
 
 # ----------------------------------------------------------------------------- the table
@@ -267,13 +314,30 @@ def _round(v, digits):
     return None if v is None else round(float(v), digits)
 
 
-def table(chunk) -> dict:
+def _plan_length(chunk, r: dict, frame) -> float | None:
+    """The length in plan of a record merged from several chunks (a polygon's long side, a line's run)."""
+    xy = tracing.ship_xy_of(chunk, r, frame)
+    if r["geometry"]["type"] == "polygon":
+        return timbers._polygon_sides(r["geometry"], frame)[0]
+    if r["geometry"]["type"] == "line":
+        return float(np.hypot(*np.diff(xy, axis=0).T).sum())
+    return None
+
+
+def _merged(chunk, r: dict) -> bool:
+    sources = [s for s in r.get("sources") or [] if isinstance(s, dict)]
+    return bool(sources) and (len(sources) > 1 or sources[0].get("chunk") != chunk.key)
+
+
+def table(chunk, records=None) -> dict:
     """What is measured and what is reconstructed: ``rows`` (one per record of the catalogue, then of the
     reconstruction, then the faired hull: ``id``, ``name``, ``kind``, ``side``, ``status``, ``measured_length``,
     ``measured_area``, ``reconstructed_length``, ``reconstructed_area`` - a measured record fills the first two, any
     other the last two; length in m, as :func:`timbers.measure` gives it for the catalogue, area in m2 in the ship
     plan), ``totals`` (``measured`` and ``reconstructed`` sums, per ``kind`` and per ``status``), ``counts`` per
-    status, ``mirror`` (its pieces, refusals and the disagreements of the two sides)."""
+    status, ``mirror`` (its pieces, refusals and the disagreements of the two sides). ``records``: the measured
+    records (default the catalogue; the merged records of several chunks: a record merged from more than one chunk
+    has its length in plan, the catalogue's are measured on the model)."""
     from . import reconstruct
 
     frame = ship.need_frame(chunk)
@@ -289,8 +353,9 @@ def table(chunk) -> dict:
                 "reconstructed_length": None if measured else _round(length, 4),
                 "reconstructed_area": None if measured else _round(area, 6)}
 
-    for r in timbers.timbers_of(chunk):
-        rows.append(row(r, timbers.status_of(r), lengths.get(r["id"]), _area(chunk, r, frame)))
+    for r in timbers.timbers_of(chunk) if records is None else records:
+        length = _plan_length(chunk, r, frame) if _merged(chunk, r) else lengths.get(r["id"])
+        rows.append(row(r, timbers.status_of(r), length, _area(chunk, r, frame)))
     for r in reconstruct.records_of(chunk):
         length = (timbers._polygon_sides(r["geometry"], frame)[0] if r["geometry"]["type"] == "polygon" else None)
         rows.append(row(r, r.get("status") or "reconstructed", length, _area(chunk, r, frame)))
@@ -318,7 +383,7 @@ def table(chunk) -> dict:
         for q in group:
             group[q] = round(group[q], 6)
     try:
-        disagreements = reconstruct.disagreement_rows(chunk)
+        disagreements = reconstruct.disagreement_rows(chunk, records)
     except NotReady:
         disagreements = []
     mirror = reconstruct.state(chunk).get("mirror") or {}

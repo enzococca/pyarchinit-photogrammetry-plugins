@@ -339,7 +339,8 @@ class ShipwreckPlugin(Plugin):
         if v:
             old = ship.frame_of(chunk)
             new = ship.frame_from_markers(chunk, v["a"], v["b"], old.bow if old else "start", old.z0 if old else None)
-            ship.set_frame(chunk, ship.keeping_bow(old, new))
+            ship.set_frame(chunk, ship.keeping_bow(old, new),
+                           markers=[ship.marker_label(chunk, v["a"]), ship.marker_label(chunk, v["b"])])
             self._changed()
 
     def _do_frame_options(self) -> None:
@@ -1584,7 +1585,8 @@ class ShipwreckPlugin(Plugin):
                 elif ns.other_bow:
                     ship.set_frame(chunk, ship.need_frame(chunk).other_bow())
                 elif ns.markers:
-                    ship.set_frame(chunk, ship.frame_from_markers(chunk, ns.start, ns.end, ns.bow, ns.z0, ns.x0))
+                    ship.set_frame(chunk, ship.frame_from_markers(chunk, ns.start, ns.end, ns.bow, ns.z0, ns.x0),
+                                   markers=[ship.marker_label(chunk, ns.start), ship.marker_label(chunk, ns.end)])
                 elif ns.start and ns.end:
                     a, b = (np.array([float(v) for v in s.split(",")]) for s in (ns.start, ns.end))
                     ship.set_frame(chunk, ship.frame_from_picks(chunk, a, b, ns.bow, ns.z0, ns.x0))

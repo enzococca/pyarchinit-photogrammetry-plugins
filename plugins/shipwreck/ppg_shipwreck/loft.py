@@ -24,6 +24,9 @@ the wreck exists, a stated hypothesis like the rest of the reconstruction.
   ridge seen over at least :data:`KEEL_RUN` of the stations, no wider than its siding and two cells, the frames
   running over it): the loft follows the planking all the same and ``notes`` says the keel is its own solid.
 - Refused (:class:`NotReady`) without station sections, or with sections cut on another frame or model.
+- ``records``: the measured records to read (default the catalogue; the merged records of several chunks,
+  :func:`chunks.merged`); the relief is the reconstruction's (:func:`reconstruct.height_path`). The sections are the
+  main chunk's.
 
 An open surface: ``volume`` 0, status ``reconstructed:fairing``, name ``carenatura``, kind ``hull``, written to
 ``<chunk data>/shipwreck/reconstruction/carenatura.ply``; ``state["reconstruction"]["loft"]`` says what it was made
@@ -48,11 +51,15 @@ KEEL_RUN = 0.8  # share of the stations a ridge runs over to be the keel's run
 OVER_FRAME = 0.01  # m: a ridge this much over a frame's top beside it stands over the frames (a keelson)
 
 
-def _cover(chunk, frame):
+def _catalogue(chunk, records) -> list[dict]:
+    return ship.state(chunk).get("timbers", []) if records is None else records
+
+
+def _cover(chunk, frame, records=None):
     """The catalogue's timbers lying over the planking (what is not a strake or a line), buffered by :data:`COVER`."""
     import shapely
 
-    polys = [solids._polygon(tracing.ship_xy_of(chunk, r, frame)) for r in ship.state(chunk).get("timbers", [])
+    polys = [solids._polygon(tracing.ship_xy_of(chunk, r, frame)) for r in _catalogue(chunk, records)
              if r["kind"] in solids.SOLIDS and r["geometry"]["type"] == "polygon"]
     return shapely.union_all(polys).buffer(COVER) if polys else None
 
@@ -91,20 +98,20 @@ def _resample(pts: np.ndarray, keel_z: float, samples: int) -> np.ndarray:
     return np.column_stack([np.interp(at, s, pts[:, 0]), np.interp(at, s, pts[:, 1])])
 
 
-def _keelson_cover(chunk, frame):
+def _keelson_cover(chunk, frame, records=None):
     """The keelsons traced (the catalogue's and the mirrored), buffered by :data:`COVER`; None without any."""
     import shapely
 
     from . import reconstruct
 
-    polys = [solids._polygon(tracing.ship_xy_of(chunk, r, frame)) for r in ship.state(chunk).get("timbers", [])
+    polys = [solids._polygon(tracing.ship_xy_of(chunk, r, frame)) for r in _catalogue(chunk, records)
              if r["kind"] == "keelson" and r["geometry"]["type"] == "polygon"]
     polys += [solids._polygon(r["ship_xy"]) for r in reconstruct.records_of(chunk)
               if r["kind"] == "keelson" and r.get("ship_xy")]
     return shapely.union_all(polys).buffer(COVER) if polys else None
 
 
-def _keel_heights(chunk, frame, xs: np.ndarray, halves) -> tuple[np.ndarray, np.ndarray]:
+def _keel_heights(chunk, frame, xs: np.ndarray, halves, records=None) -> tuple[np.ndarray, np.ndarray]:
     """The keel line's height at the stations and which stations show an untraced timber over the keel.
 
     Under a traced keelson: :func:`solids._keel_line` (its bottom). Elsewhere the lower of :func:`solids._keel_line`
@@ -112,13 +119,17 @@ def _keel_heights(chunk, frame, xs: np.ndarray, halves) -> tuple[np.ndarray, np.
     :data:`KEEL_STEP` below the relief across the keel there is a timber standing on the keel that is not traced."""
     import shapely
 
+    from . import reconstruct
+
     lowest = np.array([min(float(h[:, 1].min()) for h in pair if h is not None) for pair in halves])
     siding = (ship.state(chunk).get("keel") or {}).get("siding") or KEEL_SIDING
+    keelsons = None if records is None else [r for r in records if r["kind"] == "keelson"
+                                             and r["geometry"]["type"] == "polygon"]
     try:
-        line = solids._keel_line(chunk, xs, float(siding))
+        line = solids._keel_line(chunk, xs, float(siding), path=reconstruct.height_path(chunk), keelsons=keelsons)
     except NotReady:
         line = np.full(len(xs), np.nan)
-    cover = _keelson_cover(chunk, frame)
+    cover = _keelson_cover(chunk, frame, records)
     covered = (shapely.contains_xy(cover, xs, np.zeros(len(xs))) if cover is not None
                else np.zeros(len(xs), bool))
     z = np.where(covered & np.isfinite(line), line, np.fmin(line, lowest))
@@ -130,7 +141,10 @@ def _band_low(chunk, xs: np.ndarray, siding: float) -> np.ndarray:
     """The lowest relief across the keel line, ``siding`` wide, at ``xs`` (NaN where the relief has none)."""
     import warnings as _w
 
-    grid = solids._Grid(chunk, (float(xs.min()), -siding / 2.0, float(xs.max()), siding / 2.0), margin=1)
+    from . import reconstruct
+
+    grid = solids._Grid(chunk, (float(xs.min()), -siding / 2.0, float(xs.max()), siding / 2.0), margin=1,
+                        path=reconstruct.height_path(chunk))
     band = np.abs(grid.y) <= max(siding / 2.0, grid.cell)
     with _w.catch_warnings():
         _w.simplefilter("ignore", RuntimeWarning)
@@ -157,16 +171,18 @@ def _ridge_width(pair, keel_z: float) -> float:
     return 2.0 * half
 
 
-def _over_frames(chunk, frame, half: float) -> bool:
+def _over_frames(chunk, frame, half: float, records=None) -> bool:
     """Whether the ridge on the keel line stands over the frames' tops (a keelson over the frames) rather than under
     them (the keel, the frames running over it): at most of the traced frames crossing the keel line."""
     import shapely
 
-    z, a = relief.load(chunk, "height")
+    from . import reconstruct
+
+    z, a = reconstruct.height_load(chunk)
     cell = float(abs(a.a))
     band = shapely.box(-1e4, -half - 3 * cell, 1e4, half + 3 * cell)
     votes = []
-    for r in ship.state(chunk).get("timbers", []):
+    for r in _catalogue(chunk, records):
         if r["kind"] != "frame" or r["geometry"]["type"] != "polygon" or r.get("loose"):
             continue
         part = solids._polygon(tracing.ship_xy_of(chunk, r, frame)).intersection(band)
@@ -184,7 +200,7 @@ def _over_frames(chunk, frame, half: float) -> bool:
     return bool(votes) and sum(votes) > len(votes) / 2.0
 
 
-def _is_keel(chunk, frame, xs, halves, keel, untraced) -> bool:
+def _is_keel(chunk, frame, xs, halves, keel, untraced, records=None) -> bool:
     """Whether the ridge the untraced stations show is the typed keel itself: a keel typed (:func:`solids.set_keel`),
     the ridge seen over at least :data:`KEEL_RUN` of the stations, no wider than the siding and two cells, and
     running under the frames, not over them."""
@@ -199,11 +215,13 @@ def _is_keel(chunk, frame, xs, halves, keel, untraced) -> bool:
         return False
     if seen.mean() < KEEL_RUN:
         return False
-    cell = float(abs(relief.load(chunk, "height")[1].a))
+    from . import reconstruct
+
+    cell = float(abs(reconstruct.height_load(chunk)[1].a))
     widths = [_ridge_width(pair, zk) for pair, zk, u in zip(halves, keel, untraced) if u]
     if any(w > float(siding) + 2 * cell for w in widths):
         return False
-    return not _over_frames(chunk, frame, float(siding) / 2.0)
+    return not _over_frames(chunk, frame, float(siding) / 2.0, records)
 
 
 def _off_the_keel(pts: np.ndarray | None, keel_z: float) -> np.ndarray | None:
@@ -254,7 +272,7 @@ def _lost(chunk, frame):
     """A test of plan points: the relief's cell under them has no value (opened as the mirror does) or lies off it."""
     from . import reconstruct
 
-    z, a = relief.load(chunk, "height")
+    z, a = reconstruct.height_load(chunk)
     lost = reconstruct.opened_lost(np.isfinite(z))
 
     def test(x, y):
@@ -280,7 +298,7 @@ def _taper(x_last: float, x_end: float, step: float):
     return xs, np.sqrt(np.clip(1.0 - r**2, 0.0, 1.0))
 
 
-def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
+def loft(chunk, step: float = 0.10, samples: int = 41, records=None) -> solids.Solid | None:
     """The faired hull where neither side of the wreck exists (see the module); None (and no file) when fewer than
     two stations have a half-section, or nothing is left where the wreck shows nothing."""
     import shapely
@@ -304,7 +322,7 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
                          "The sections are out of date (another ship frame or another model): cut them again."))
     path = reconstruct.folder(chunk) / reconstruct.LOFT_FILE
     st = reconstruct.state(chunk)
-    cover = _cover(chunk, frame)
+    cover = _cover(chunk, frame, records)
     sections = sorted(sections, key=lambda s: float(s["value"]))
     xs, halves, names = [], [], []
     for s in sections:
@@ -329,8 +347,8 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
     if len(xs) < 2:
         return nothing(t("meno di due stazioni con una mezza sezione", "fewer than two stations with a half-section"))
     xs_a = np.asarray(xs)
-    keel, untraced = _keel_heights(chunk, frame, xs_a, halves)
-    if untraced.any() and _is_keel(chunk, frame, xs_a, halves, keel, untraced):
+    keel, untraced = _keel_heights(chunk, frame, xs_a, halves, records)
+    if untraced.any() and _is_keel(chunk, frame, xs_a, halves, keel, untraced, records):
         notes.append(t("La carenatura segue il fasciame; la chiglia è il suo solido.",
                        "The faired hull follows the planking; the keel is its own solid."))
     elif untraced.any():
