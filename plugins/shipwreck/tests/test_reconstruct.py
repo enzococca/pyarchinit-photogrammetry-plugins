@@ -165,13 +165,17 @@ def test_names_of_the_other_side():
     assert reconstruct.other_name("Bordo") == "Bordo"
 
 
-def _wider_port(tmp_path):
-    """The framed hull with its port side (the hull's y < 0) 3 cm wider in plan between x 2 and 4 (ramps of 0.3 m)."""
+def _wider_port(tmp_path, side: str = "port"):
+    """The framed hull with its ``side`` (port: the hull's y < 0) 3 cm wider in plan between x 2 and 4 (ramps of
+    0.3 m)."""
     v, f = framed_hull()
     x = v[:, 0]
     w = np.clip(np.minimum(x - 1.7, 4.3 - x) / 0.3, 0.0, 1.0)
     v = v.copy()
-    v[:, 1] -= 0.03 * w * (v[:, 1] < 0)
+    if side == "port":
+        v[:, 1] -= 0.03 * w * (v[:, 1] < 0)
+    else:
+        v[:, 1] += 0.03 * w * (v[:, 1] > 0)
     from hulls import UTM
 
     return _project(tmp_path, v, f, 35.0, UTM, "EPSG:32633", 2.0)
@@ -198,3 +202,69 @@ def test_disagreement_where_both_sides_are_measured(tmp_path):
             assert abs(row["difference_mm"]) < 5.0, row
     assert {r["station"] for r in rows} >= {"S0", "S1", "S2", "S3", "S4"}
     assert {r["rank"] for r in rows if r["station"] == "S3"} == {1, 2, 3, 4}
+
+
+def test_a_deformed_wreck_is_a_disagreement_not_a_mirror(tmp_path):
+    """Starboard read 3 cm wider than port over x 2-4: the strip of starboard's reflection beside the measured port
+    timbers is the same timbers read wider, listed in the table, never a reconstructed timber."""
+    _doc, ch, ends = _wider_port(tmp_path, "starboard")
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    relief.build(ch, cell=0.01)
+    proposals_mod.build(ch)
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"] if "?" not in i["name"]])
+    ship.set_stations(ch, [{"name": f"S{k}", "x": x} for k, x in enumerate((2.5, 3.0, 3.5, 6.0, 8.0))])
+    assert reconstruct.mirror(ch) == []
+    rows = reconstruct.disagreement(ch)
+    inside = [r for r in rows if 2.4 < r["x"] < 3.6]
+    assert inside and all(-35.0 < r["difference_mm"] < -25.0 for r in inside), inside
+
+
+def test_a_whole_lost_side_is_mirrored_whole(tmp_path):
+    _doc, ch, ends = framed_project(tmp_path, heading_deg=35, missing=(0.0, 12.0, "port"))
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    relief.build(ch, cell=0.01)
+    proposals_mod.build(ch)
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"]
+                        if i["side"] == "starboard" and "?" not in i["name"]])
+    solids.build(ch)
+    out = reconstruct.mirror(ch)
+    assert out and not any(r["clipped"] for r in out)
+    by_id = {r["id"]: r for r in timbers.timbers_of(ch)}
+    for r in out:
+        source = np.asarray(tracing.ship_xy_of(ch, by_id[r["source"]]))
+        xy = np.asarray(r["ship_xy"])
+        assert np.allclose(np.sort(xy[:, 0]), np.sort(source[:, 0]))  # the same vertices, the ends kept
+        assert np.allclose(np.sort(xy[:, 1]), np.sort(-source[:, 1]))
+        assert shapely.Polygon(xy).exterior.is_ccw
+    (b1,) = _named(out, "fascia B1")
+    t1 = by_id[b1["source"]]
+    assert np.ptp(np.asarray(b1["ship_xy"])[:, 0]) == pytest.approx(np.ptp(tracing.ship_xy_of(ch, t1)[:, 0]))
+
+
+def test_a_strake_measured_up_to_the_loss_goes_on_mirrored(hull):
+    """Port B5 measured up to the lost part: the mirror of T5 meets it end to end and goes on aft of it."""
+    ch = hull
+    items = ship.state(ch)["proposals"]["items"]
+    (b5,) = [i["id"] for i in items if i["name"] == "fascia B5"]
+    tracing.accept(ch, [b5])
+    out = reconstruct.mirror(ch)
+    (r,) = _named(out, "fascia B5")
+    xy = np.asarray(r["ship_xy"])
+    assert xy[:, 0].min() > HOLE - 0.03 and r["clipped"]
+
+
+def test_a_mirror_stopped_halfway_keeps_the_earlier_one(hull, monkeypatch):
+    ch = hull
+    first = reconstruct.mirror(ch)
+    files = sorted(p.name for p in reconstruct.folder(ch).glob("*.ply"))
+    kept = copy.deepcopy(reconstruct.records_of(ch))
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("stopped")
+
+    monkeypatch.setattr(reconstruct, "_others", broken)
+    with pytest.raises(RuntimeError):
+        reconstruct.mirror(ch)
+    assert reconstruct.records_of(ch) == kept and len(kept) == len(first)
+    assert sorted(p.name for p in reconstruct.folder(ch).glob("*.ply")) == files
+    assert not (ship.folder(ch) / "reconstruction.new").exists()
