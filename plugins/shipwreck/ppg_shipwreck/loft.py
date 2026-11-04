@@ -15,11 +15,17 @@ the wreck exists, a stated hypothesis like the rest of the reconstruction.
   (y x sqrt(1 - ((x - x_last) / (x_end - x_last))^2), z kept); one inside the stations' range stops the loft there.
   Without one the loft stops at the last station and that end is listed in ``open_ends`` ("stem", "stern").
 - Faces kept only where the wreck shows nothing: the relief's cell under the face's centre has no value (the empty
-  cells opened by :data:`reconstruct.OPENING` cells, as the mirror reads them) and no mirrored timber lies there.
+  cells opened by :data:`reconstruct.OPENING` cells, as the mirror reads them) and no mirrored timber lies there:
+  the test is on each triangle's centroid, so the loft keeps to the lost parts to within one face.
+- A station whose keel no traced keelson covers, and whose section's lowest point lies more than :data:`KEEL_STEP`
+  below the relief across the keel, has an untraced timber standing on the keel: the keel is read from the
+  section's lowest point, the points standing over it at the keel are left out, and ``warnings`` names the
+  stations (trace the timber).
+- Refused (:class:`NotReady`) without station sections, or with sections cut on another frame or model.
 
 An open surface: ``volume`` 0, status ``reconstructed:fairing``, name ``carenatura``, kind ``hull``, written to
 ``<chunk data>/shipwreck/reconstruction/carenatura.ply``; ``state["reconstruction"]["loft"]`` says what it was made
-from (``file``, ``open_ends``, ``stations``, ``faces``, ``area`` in plan, ``length`` along x)."""
+from (``file``, ``open_ends``, ``stations``, ``faces``, ``area`` in plan, ``length`` along x, ``warnings``)."""
 from __future__ import annotations
 
 import numpy as np
@@ -34,6 +40,7 @@ KIND = "hull"
 MIN_POINTS = 5  # a half-section with fewer points is missing: the other side's taken
 COVER = 0.01  # m: the timbers over the planking buffered by this when their points are left out of a section
 KEEL_SIDING = 0.10  # m: the band across the keel line where the keel's height is read without a keelson
+KEEL_STEP = 0.03  # m: a section this much lower than the relief across the keel: a timber on the keel, not traced
 
 
 def _cover(chunk, frame):
@@ -52,7 +59,7 @@ def _half(polylines, sign: float, cover, x: float) -> np.ndarray | None:
     runs = []
     for p in polylines:
         p = np.asarray(p, float).reshape(-1, 2)
-        keep = sign * p[:, 0] > 0
+        keep = (sign * p[:, 0] > 0) & np.isfinite(p).all(axis=1)
         if cover is not None and keep.any():
             keep &= ~shapely.contains_xy(cover, np.full(len(p), x), p[:, 0])
         idx = np.flatnonzero(keep)
@@ -79,15 +86,50 @@ def _resample(pts: np.ndarray, keel_z: float, samples: int) -> np.ndarray:
     return np.column_stack([np.interp(at, s, pts[:, 0]), np.interp(at, s, pts[:, 1])])
 
 
-def _keel_heights(chunk, xs: np.ndarray, halves) -> np.ndarray:
-    """The keel line's height at the stations: :func:`solids._keel_line`, else the lowest point of the section."""
+def _keelson_cover(chunk, frame):
+    """The keelsons traced (the catalogue's and the mirrored), buffered by :data:`COVER`; None without any."""
+    import shapely
+
+    from . import reconstruct
+
+    polys = [solids._polygon(tracing.ship_xy_of(chunk, r, frame)) for r in ship.state(chunk).get("timbers", [])
+             if r["kind"] == "keelson" and r["geometry"]["type"] == "polygon"]
+    polys += [solids._polygon(r["ship_xy"]) for r in reconstruct.records_of(chunk)
+              if r["kind"] == "keelson" and r.get("ship_xy")]
+    return shapely.union_all(polys).buffer(COVER) if polys else None
+
+
+def _keel_heights(chunk, frame, xs: np.ndarray, halves) -> tuple[np.ndarray, np.ndarray]:
+    """The keel line's height at the stations and which stations show an untraced timber over the keel.
+
+    Under a traced keelson: :func:`solids._keel_line` (its bottom). Elsewhere the lower of :func:`solids._keel_line`
+    (the lowest relief across the keel) and the section's lowest point; a section's lowest point more than
+    :data:`KEEL_STEP` below the relief across the keel there is a timber standing on the keel that is not traced."""
+    import shapely
+
     lowest = np.array([min(float(h[:, 1].min()) for h in pair if h is not None) for pair in halves])
-    keel = (ship.state(chunk).get("keel") or {}).get("siding") or KEEL_SIDING
+    siding = (ship.state(chunk).get("keel") or {}).get("siding") or KEEL_SIDING
     try:
-        z = solids._keel_line(chunk, xs, float(keel))
+        line = solids._keel_line(chunk, xs, float(siding))
     except NotReady:
-        return lowest
-    return np.where(np.isfinite(z), z, lowest)
+        line = np.full(len(xs), np.nan)
+    cover = _keelson_cover(chunk, frame)
+    covered = (shapely.contains_xy(cover, xs, np.zeros(len(xs))) if cover is not None
+               else np.zeros(len(xs), bool))
+    z = np.where(covered & np.isfinite(line), line, np.fmin(line, lowest))
+    untraced = ~covered & np.isfinite(line) & (lowest < line - KEEL_STEP)
+    return z, untraced
+
+
+def _off_the_keel(pts: np.ndarray | None, keel_z: float) -> np.ndarray | None:
+    """A half-section without its leading points standing more than :data:`KEEL_STEP` over the keel (an untraced
+    timber on it); as it was when too few points would be left."""
+    if pts is None:
+        return None
+    high = pts[:, 1] > keel_z + KEEL_STEP
+    first = int(np.argmin(high)) if not high.all() else len(pts)
+    rest = pts[first:]
+    return rest if len(rest) >= MIN_POINTS else pts
 
 
 def _end_x(e: dict) -> float:
@@ -125,22 +167,14 @@ def _ends(chunk, frame, lo: float, hi: float):
 
 def _lost(chunk, frame):
     """A test of plan points: the relief's cell under them has no value (opened as the mirror does) or lies off it."""
-    from scipy import ndimage
-
     from . import reconstruct
 
     z, a = relief.load(chunk, "height")
-    k = reconstruct.OPENING + 1
-    lost = ndimage.binary_opening(~np.isfinite(z), structure=np.ones((k, k), bool), border_value=1)
-    inv = ~a
-    sign = frame.sign
+    lost = reconstruct.opened_lost(np.isfinite(z))
 
     def test(x, y):
-        u, v = np.asarray(x, float), sign * np.asarray(y, float)
-        col = np.floor(inv.a * u + inv.b * v + inv.c).astype(np.int64)
-        row = np.floor(inv.d * u + inv.e * v + inv.f).astype(np.int64)
-        out = np.ones(len(u), bool)
-        ok = (row >= 0) & (row < lost.shape[0]) & (col >= 0) & (col < lost.shape[1])
+        row, col, ok = relief.cells_at(lost.shape, a, frame.sign, x, y)
+        out = np.ones(len(row), bool)
         out[ok] = lost[row[ok], col[ok]]
         return out
 
@@ -175,11 +209,19 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
     tracing.need_fresh_relief(chunk)
     if step <= 0 or samples < 3:
         raise ValueError("step > 0 and samples >= 3")
+    data = lines.load(chunk)
+    sections = [s for s in (data or {}).get("sections", []) if s["kind"] == "station"]
+    if not sections:
+        raise NotReady(t("Taglia prima le sezioni alle stazioni.", "Cut the sections at the stations first."))
+    if lines.is_stale(chunk, data):
+        raise NotReady(t("Le sezioni non sono aggiornate (altro sistema della nave o altro modello): tagliale di "
+                         "nuovo.",
+                         "The sections are out of date (another ship frame or another model): cut them again."))
     path = reconstruct.folder(chunk) / reconstruct.LOFT_FILE
     st = reconstruct.state(chunk)
     cover = _cover(chunk, frame)
-    sections = sorted(lines.sections_of(chunk, "station"), key=lambda s: float(s["value"]))
-    xs, halves = [], []
+    sections = sorted(sections, key=lambda s: float(s["value"]))
+    xs, halves, names = [], [], []
     for s in sections:
         x = float(s["value"])
         if xs and abs(x - xs[-1]) < 1e-9:
@@ -189,17 +231,29 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
             continue
         xs.append(x)
         halves.append(pair)
+        names.append(s.get("name") or f"x {x:.2f}")
+    warnings: list[str] = []
 
     def nothing(reason):
         path.unlink(missing_ok=True)
         st["loft"] = {"file": None, "open_ends": [], "stations": xs, "faces": 0, "area": 0.0, "length": 0.0,
-                      "reason": reason}
+                      "reason": reason, "warnings": warnings}
         return None
 
     if len(xs) < 2:
         return nothing(t("meno di due stazioni con una mezza sezione", "fewer than two stations with a half-section"))
     xs_a = np.asarray(xs)
-    keel = _keel_heights(chunk, xs_a, halves)
+    keel, untraced = _keel_heights(chunk, frame, xs_a, halves)
+    if untraced.any():
+        listed = ", ".join(n for n, u in zip(names, untraced) if u)
+        warnings.append(t(f"Un legno sopra la chiglia non tracciato alle stazioni {listed}: lì la chiglia è letta dal "
+                          "punto più basso della sezione e i punti sopra di essa sono lasciati fuori; traccialo (il "
+                          "paramezzale) perché la carenatura non lo segua.",
+                          f"A timber over the keel not traced at the stations {listed}: there the keel is read from "
+                          "the lowest point of the section and the points over it are left out; trace it (the "
+                          "keelson) so that the faired hull does not follow it."))
+        halves = [(_off_the_keel(hp, zk), _off_the_keel(hs, zk)) if u else (hp, hs)
+                  for (hp, hs), zk, u in zip(halves, keel, untraced)]
     port, star = [], []
     for (hp, hs), zk in zip(halves, keel):
         p = _resample(hp if hp is not None else hs, zk, samples)
@@ -260,6 +314,10 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
     used[faces.ravel()] = True
     remap = np.cumsum(used) - 1
     vertices, faces = vertices[used], remap[faces].astype(np.int64)
+    # one vertex per place: the two sides meet at the tip of a closed end
+    vertices, inverse = np.unique(vertices, axis=0, return_inverse=True)
+    faces = inverse.reshape(-1)[faces]
+    faces = faces[(faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])]
     solid = solids.Solid(vertices, faces, np.zeros(len(faces), bool), STATUS, NAME, KIND, 0.0, None, None)
     solids.write_ply(path, solid, frame)
     plan = vertices[faces][..., :2]
@@ -267,5 +325,5 @@ def loft(chunk, step: float = 0.10, samples: int = 41) -> solids.Solid | None:
                   "stations": [float(v) for v in xs_a],
                   "faces": int(len(faces)),
                   "area": float(np.abs(_cross2(plan[:, 1] - plan[:, 0], plan[:, 2] - plan[:, 0])).sum() / 2.0),
-                  "length": float(np.ptp(vertices[:, 0]))}
+                  "length": float(np.ptp(vertices[:, 0])), "warnings": warnings}
     return solid

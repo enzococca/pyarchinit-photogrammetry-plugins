@@ -191,7 +191,7 @@ def test_disagreement_where_both_sides_are_measured(tmp_path):
     ship.set_stations(ch, [{"name": f"S{k}", "x": x} for k, x in enumerate((2.5, 3.0, 3.5, 6.0, 8.0))])
     before = copy.deepcopy(timbers.timbers_of(ch))
     rows = reconstruct.disagreement(ch)
-    assert ship.state(ch)["reconstruction"]["table"]["mirror"] == rows
+    assert ship.state(ch)["reconstruction"]["disagreement"] == rows
     assert timbers.timbers_of(ch) == before
     assert rows and {"station", "x", "rank", "port_y", "starboard_y", "difference_mm"} <= set(rows[0])
     for row in rows:
@@ -671,13 +671,8 @@ def lost(wreck):
 
 def _relief_at(ch, xy):
     z, a = relief.load(ch, "height")
-    sign = ship.frame_of(ch).sign
-    inv = ~a
-    u, v = xy[:, 0], sign * xy[:, 1]
-    col = np.floor(inv.a * u + inv.b * v + inv.c).astype(int)
-    row = np.floor(inv.d * u + inv.e * v + inv.f).astype(int)
+    row, col, ok = relief.cells_at(z.shape, a, ship.frame_of(ch).sign, xy[:, 0], xy[:, 1])
     out = np.full(len(xy), np.nan)
-    ok = (row >= 0) & (row < z.shape[0]) & (col >= 0) & (col < z.shape[1])
     out[ok] = z[row[ok], col[ok]]
     return out
 
@@ -736,6 +731,7 @@ def test_the_hull_lofted_where_neither_side_exists(lost):
     for end in (-0.3, 12.3):
         tip = v[np.abs(v[:, 0] - end) < 1e-9]
         assert len(tip) and np.abs(tip[:, 1]).max() < 1e-9, end
+    assert len(np.unique(v, axis=0)) == len(v)  # the two sides share the tips' vertices
 
 
 def test_build_the_whole_reconstruction(lost):
@@ -859,3 +855,95 @@ def test_a_build_stopped_halfway_keeps_the_earlier_reconstruction(lost, monkeypa
         reconstruct.build(ch)
     assert ship.state(ch)["reconstruction"] == kept
     assert {p.name: p.read_bytes() for p in reconstruct.folder(ch).glob("*.ply")} == files
+
+
+def _clinker_errors(v, x0, x1, side=None):
+    from hulls import clinker_section
+
+    span = (v[:, 0] > x0) & (v[:, 0] < x1)
+    if side is not None:
+        span &= side * v[:, 1] >= 0
+    out = []
+    for x, y, z in v[span]:
+        sec = clinker_section(x)
+        port = sec[sec[:, 0] >= 0]
+        out.append(abs(z - np.interp(abs(y), port[:, 0], port[:, 1])))
+    return np.asarray(out)
+
+
+def test_the_loft_refuses_sections_missing_or_out_of_date(lost):
+    from ppg_shipwreck import lines
+
+    ch = lost
+    kept = copy.deepcopy(ship.state(ch).get("reconstruction"))
+    data = lines.load(ch)
+    stale = copy.deepcopy(data)
+    stale["source"]["model_size"] = -1  # cut from another model
+    try:
+        lines._save(ch, stale)
+        with pytest.raises(ship.NotReady, match="tagliale di nuovo"):
+            reconstruct.loft(ch)
+        with pytest.raises(ship.NotReady, match="tagliale di nuovo"):
+            reconstruct.build(ch)
+        assert ship.state(ch).get("reconstruction") == kept
+        lines._path(ch).unlink()
+        with pytest.raises(ship.NotReady, match="Taglia prima le sezioni"):
+            reconstruct.loft(ch)
+        with pytest.raises(ship.NotReady, match="Taglia prima le sezioni"):
+            reconstruct.build(ch)
+        assert ship.state(ch).get("reconstruction") == kept
+    finally:
+        lines._save(ch, data)
+
+
+def test_an_untraced_keelson_is_told_and_kept_out_of_the_keel(hull):
+    """Port lost aft of 6.5, starboard and the keelson accepted as the plugin proposes them (the keelson stops where
+    port is lost): the stations aft of it read the keelson's top in the section; the keel is taken from the
+    section's lowest point there, the faired port side stays on the planking, and the stations are named."""
+    from ppg_shipwreck import lines
+
+    ch = hull
+    items = ship.state(ch)["proposals"]["items"]
+    tracing.accept(ch, [i["id"] for i in items if i["kind"] == "keelson" and "?" not in i["name"]])
+    keelsons = [r for r in timbers.timbers_of(ch) if r["kind"] == "keelson"]
+    assert keelsons and max(np.asarray(tracing.ship_xy_of(ch, r))[:, 0].max() for r in keelsons) < 9.0
+    ship.set_stations(ch, [{"name": f"S{k}", "x": float(x)} for k, x in enumerate(STATIONS)])
+    lines.build(ch)
+    solid = reconstruct.loft(ch)
+    errors = _clinker_errors(solid.vertices, 8.45, 9.25)
+    assert len(errors) > 100 and np.percentile(errors, 95) < 0.025, np.percentile(errors, [50, 95, 100])
+    warnings = reconstruct.state(ch)["loft"]["warnings"]
+    import re
+
+    assert warnings and any(re.search(r"\bS16\b", w) for w in warnings), warnings  # x 8.325, no keelson over it
+    assert not any(re.search(r"\bS2\b", w) for w in warnings), warnings  # x 2.025, under the keelson
+    assert len(np.unique(solid.vertices, axis=0)) == len(solid.vertices)  # one vertex per place, tips too
+    out = reconstruct.build(ch)  # the build says it too
+    assert any(re.search(r"\bS16\b", w) for w in out["warnings"]), out["warnings"]
+
+
+def test_build_minor_guards(lost, monkeypatch):
+    """A file system without hard links still builds; each 3D file is read once per build; the disagreement
+    of the two sides never overwrites the table."""
+    from ppg_shipwreck import rebuild
+
+    ch = lost
+
+    def no_links(*args, **kwargs):
+        raise OSError("hard links not supported")
+
+    monkeypatch.setattr(rebuild.os, "link", no_links)
+    reads: dict = {}
+    real = reconstruct._read_solid
+
+    def counted(path):
+        reads[str(path)] = reads.get(str(path), 0) + 1
+        return real(path)
+
+    monkeypatch.setattr(reconstruct, "_read_solid", counted)
+    reconstruct.build(ch)
+    reconstruct.build(ch)
+    assert reads and max(reads.values()) <= 2, sorted(reads.values())[-3:]  # once per build
+    table = copy.deepcopy(reconstruct.state(ch)["table"])
+    reconstruct.disagreement(ch)
+    assert reconstruct.state(ch)["table"] == table

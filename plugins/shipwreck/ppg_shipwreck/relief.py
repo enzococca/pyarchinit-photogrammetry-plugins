@@ -62,6 +62,17 @@ def ship_of_uv(uv, sign: int) -> np.ndarray:
     return np.column_stack([uv[:, 0], sign * uv[:, 1]])
 
 
+def cells_at(shape, affine, sign: int, x, y):
+    """The (row, column) of a raster of ``shape`` and ``affine`` (in (u, v)) under ship plan points, and whether each
+    lies on the raster (row and column are meaningless where not)."""
+    inv = ~affine
+    u, v = np.asarray(x, float), sign * np.asarray(y, float)
+    col = np.floor(inv.a * u + inv.b * v + inv.c).astype(np.int64)
+    row = np.floor(inv.d * u + inv.e * v + inv.f).astype(np.int64)
+    ok = (row >= 0) & (row < shape[0]) & (col >= 0) & (col < shape[1])
+    return row, col, ok
+
+
 # ----------------------------------------------------------------------------- the grid
 def default_cell(chunk) -> float:
     """The cell from the model's density: its median edge in world metres, never below :data:`DEFAULT_CELL`."""

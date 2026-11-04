@@ -28,7 +28,7 @@ starboard polygon of the catalogue reflected across the keel plane (ship y -> -y
 
 Where both sides are measured the two are compared, not averaged (the wreck is copied as it lies):
 :func:`disagreement` lists per station and seam the port and starboard half-breadths and their difference
-(``state["reconstruction"]["table"]["mirror"]``).
+(``state["reconstruction"]["disagreement"]``).
 
 The EXTENSION (``ricostruito: prolungamento``, :func:`extend`) continues each strake between two seams along the
 hull with a fair spline through its seams, inside the surveyed length (:func:`surveyed_range`) and beyond it only to
@@ -105,6 +105,15 @@ def folder(chunk) -> Path:
 
 
 # ----------------------------------------------------------------------------- the relief
+def opened_lost(model: np.ndarray) -> np.ndarray:
+    """The cells without the model, opened by a square of :data:`OPENING` + 1 cells: strips of empty cells up to
+    :data:`OPENING` wide (the model's own edge) are not lost; past the raster's edges all is lost."""
+    from scipy import ndimage
+
+    k = OPENING + 1
+    return ndimage.binary_opening(~np.asarray(model, bool), structure=np.ones((k, k), bool), border_value=1)
+
+
 class _Relief:
     """The relief's height raster, read once: the cells of a polygon of the ship plan, the parts where the model is
     not."""
@@ -155,8 +164,7 @@ class _Relief:
         inside, model, a = self.read(poly)
         if a is None or not inside.any():
             return shapely.Polygon(), False
-        # a square of OPENING + 1 cells: strips of empty cells up to OPENING wide go
-        lost = ndimage.binary_opening(~model, structure=np.ones((OPENING + 1, OPENING + 1), bool), border_value=1)
+        lost = opened_lost(model)
         if lost[inside].all():
             return poly, True
         # the polygon's lost cells and the ring of lost cells its outline crosses (a cell whose centre is outside):
@@ -307,7 +315,11 @@ def _swap(chunk, new: list[dict], tmp: Path) -> None:
     for r in new:
         (tmp / f"{r['id']}.ply").replace(d / f"{r['id']}.ply")
     st["timbers"] = kept + new
-    keep = {f"{r['id']}.ply" for r in st["timbers"]} | {LOFT_FILE}
+    remove_orphans(d, {f"{r['id']}.ply" for r in st["timbers"]} | {LOFT_FILE})
+
+
+def remove_orphans(d: Path, keep: set) -> None:
+    """The 3D files (and left-over temporary ones) of the reconstruction's folder not named in ``keep``."""
     for old in list(d.glob("*.ply")) + list(d.glob("*.ply.tmp")):
         if old.name not in keep:
             old.unlink(missing_ok=True)
@@ -469,9 +481,10 @@ def _seams(chunk, frame, side: str, x: float) -> dict[int, float]:
 def disagreement(chunk) -> list[dict]:
     """Per station (the sections' stations, else the chunk's) and seam rank where both sides have a measured seam
     (or strake edge): ``station``, ``x``, ``rank``, ``port_y`` and ``starboard_y`` (the half-breadths, |y|),
-    ``difference_mm`` (port - starboard). Kept in ``state["reconstruction"]["table"]["mirror"]``."""
+    ``difference_mm`` (port - starboard). Kept in ``state["reconstruction"]["disagreement"]`` (the table of
+    :func:`table` reads them afresh)."""
     rows = disagreement_rows(chunk)
-    state(chunk).setdefault("table", {})["mirror"] = rows
+    state(chunk)["disagreement"] = rows
     return rows
 
 

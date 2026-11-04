@@ -88,7 +88,7 @@ def _band_surface(record: dict, base):
     return surface
 
 
-def _extension_solid(chunk, record: dict, by_id: dict) -> solids.Solid:
+def _extension_solid(chunk, record: dict, by_id: dict, cache: dict) -> solids.Solid:
     source = by_id.get(record["source"])
     if source is None:
         raise NotReady(t(f"{_label(record)}: la fascia da cui viene non c'è più.",
@@ -96,7 +96,7 @@ def _extension_solid(chunk, record: dict, by_id: dict) -> solids.Solid:
     mm, _how = solids.thickness_of(chunk, source)
     record["thickness_mm"] = float(mm)
     poly = solids._polygon(record["ship_xy"])
-    surface = _band_surface(record, solids.surface_for(chunk, poly))
+    surface = _band_surface(record, solids.surface_for(chunk, poly, cache))
     return solids.strake_shell(chunk, record, mm, surface=surface)
 
 
@@ -108,14 +108,14 @@ def _frame_height(r: dict) -> float | None:
     return float(r["volume"]) / area if area > 0 else None
 
 
-def _spacing_solid(chunk, record: dict, by_id: dict, frames_median: float | None) -> solids.Solid:
+def _spacing_solid(chunk, record: dict, by_id: dict, frames_median: float | None, cache: dict) -> solids.Solid:
     heights = [h for h in (_frame_height(by_id[s]) for s in record.get("sources", []) if s in by_id) if h]
     height = float(np.median(heights)) if heights else frames_median
     if not height:
         raise NotReady(t(f"{_label(record)}: nessuna ordinata costruita da cui prendere l'altezza.",
                          f"{_label(record)}: no frame built to take the height from."))
     poly = solids._polygon(record["ship_xy"])
-    grid = solids._Grid(chunk, poly.bounds, margin=2, surface=solids.surface_for(chunk, poly))
+    grid = solids._Grid(chunk, poly.bounds, margin=2, surface=solids.surface_for(chunk, poly, cache))
     mask = solids._no_bowties(grid.inside(poly) & np.isfinite(grid.z))
     if not mask.any():
         raise NotReady(t(f"{_label(record)}: nessuna superficie dello scafo sotto il contorno.",
@@ -140,6 +140,7 @@ def _new_solids(chunk, frame, progress) -> tuple[list[dict], list[dict]]:
             if r.get("status") in (reconstruct.EXTENSION, reconstruct.SPACING)]
     folder = reconstruct.folder(chunk)
     built, refused = [], []
+    cache: dict = {}  # the 3D files read for the surface, once per build
     for k, r in enumerate(todo):
         progress(k / max(1, len(todo)), t(f"Legni ricostruiti in 3D: {_label(r)}", f"Reconstructed timbers in 3D: "
                                                                                   f"{_label(r)}"))
@@ -147,9 +148,9 @@ def _new_solids(chunk, frame, progress) -> tuple[list[dict], list[dict]]:
         r.pop("volume", None)
         try:
             if r["status"] == reconstruct.EXTENSION:
-                solid = _extension_solid(chunk, r, by_id)
+                solid = _extension_solid(chunk, r, by_id, cache)
             else:
-                solid = _spacing_solid(chunk, r, by_id, frames_median)
+                solid = _spacing_solid(chunk, r, by_id, frames_median, cache)
             path = solids.write_ply(folder / f"{r['id']}.ply", solid, frame)
         except Exception as exc:  # noqa: BLE001 - one piece refused, never the whole build
             (folder / f"{r['id']}.ply").unlink(missing_ok=True)
@@ -165,12 +166,17 @@ def _new_solids(chunk, frame, progress) -> tuple[list[dict], list[dict]]:
 
 # ----------------------------------------------------------------------------- the build
 def _backup(folder: Path) -> Path | None:
-    """A copy of the reconstruction's folder by hard links (the files are replaced, never written over in place)."""
+    """A copy of the reconstruction's folder by hard links (the files are replaced, never written over in place);
+    a plain copy on a file system without hard links (FAT, exFAT, some network shares)."""
     bak = folder.with_name(folder.name + ".bak")
     shutil.rmtree(bak, ignore_errors=True)
     if not folder.exists():
         return None
-    shutil.copytree(folder, bak, copy_function=os.link)
+    try:
+        shutil.copytree(folder, bak, copy_function=os.link)
+    except OSError:
+        shutil.rmtree(bak, ignore_errors=True)
+        shutil.copytree(folder, bak, copy_function=shutil.copy2)
     return bak
 
 
@@ -188,14 +194,13 @@ def _clean(chunk, folder: Path) -> None:
     keep = {f"{r['id']}.ply" for r in reconstruct.records_of(chunk) if r.get("solid")}
     if (reconstruct.state(chunk).get("loft") or {}).get("file"):
         keep.add(reconstruct.LOFT_FILE)
-    for old in list(folder.glob("*.ply")) + list(folder.glob("*.ply.tmp")):
-        if old.name not in keep:
-            old.unlink(missing_ok=True)
+    reconstruct.remove_orphans(folder, keep)
 
 
 def build(chunk, progress=None) -> dict:
     """The whole reconstruction (see the module): mirror, extension, frames by spacing, loft, the new parts' solids.
-    Returns ``{"mirrored", "extended", "spaced", "loft", "built", "refused", "open_ends", "table"}``."""
+    Returns ``{"mirrored", "extended", "spaced", "loft", "built", "refused", "open_ends", "warnings", "table"}``
+    (``warnings``: the extension's and the loft's)."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     from . import reconstruct
@@ -243,7 +248,10 @@ def build(chunk, progress=None) -> dict:
                     f"Reconstruction: {len(mirrored)} mirrored, {len(extended)} extended, {len(spaced)} frames, "
                     f"{len(refused)} refused"))
     return {"mirrored": len(mirrored), "extended": len(extended), "spaced": len(spaced), "loft": solid is not None,
-            "built": built, "refused": refused, "open_ends": new["open_ends"], "table": new["table"]}
+            "built": built, "refused": refused, "open_ends": new["open_ends"],
+            "warnings": list((new.get("extension") or {}).get("warnings") or [])
+            + list((new.get("loft") or {}).get("warnings") or []),
+            "table": new["table"]}
 
 
 # ----------------------------------------------------------------------------- the table
@@ -348,7 +356,12 @@ def write_table(chunk, folder=None) -> dict:
                else t("scafo", "hull"), timbers.side_title(r["side"]) if r["side"] in timbers.SIDE_TITLES else r["side"],
                timbers.status_title(r["status"]), r["measured_length"], r["measured_area"], r["reconstructed_length"],
                r["reconstructed_area"]] for r in rows]
-    write_xlsx(xlsx_path, {t("misurato e ricostruito", "measured and reconstructed"):
-                           Sheet(headers, titled, [None, None, None, None, None, 3, 4, 3, 4])},
-               title=t("misurato e ricostruito (ipotesi)", "measured and reconstructed (hypothesis)"))
+    tmp = xlsx_path.with_name(f"{TABLE_FILE}.tmp.xlsx")
+    try:
+        write_xlsx(tmp, {t("misurato e ricostruito", "measured and reconstructed"):
+                         Sheet(headers, titled, [None, None, None, None, None, 3, 4, 3, 4])},
+                   title=t("misurato e ricostruito (ipotesi)", "measured and reconstructed (hypothesis)"))
+        tmp.replace(xlsx_path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return {"csv": csv_path, "xlsx": xlsx_path, "rows": len(rows)}

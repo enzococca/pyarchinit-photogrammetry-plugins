@@ -89,15 +89,10 @@ class _Grid:
         frame = ship.need_frame(chunk)
         sign = frame.sign
         path = relief.path_of(chunk, "height")
-        x0, y0, x1, y1 = bounds
         with rasterio.open(path) as src:
             a = src.transform
             self.cell = float(abs(a.a))
-            vs = sorted((sign * y0, sign * y1))
-            c0 = int(math.floor((x0 - a.c) / a.a)) - margin
-            c1 = int(math.ceil((x1 - a.c) / a.a)) + margin
-            r0 = int(math.floor((vs[1] - a.f) / a.e)) - margin
-            r1 = int(math.ceil((vs[0] - a.f) / a.e)) + margin
+            c0, r0, c1, r1 = _window(a, bounds, sign, margin)
             if surface is None:
                 c0, r0 = max(0, c0), max(0, r0)
                 c1, r1 = min(src.width, max(c0, c1)), min(src.height, max(r0, r1))
@@ -125,6 +120,15 @@ class _Grid:
             return np.zeros(self.z.shape, bool)
         shapely.prepare(geom)
         return shapely.contains_xy(geom, self.X, self.Y)
+
+
+def _window(a, bounds, sign: int, margin: int) -> tuple[int, int, int, int]:
+    """The raster's columns ``c0:c1`` and rows ``r0:r1`` around ship plan ``bounds`` and ``margin`` cells more (not
+    clipped to the raster)."""
+    x0, y0, x1, y1 = bounds
+    vs = sorted((sign * y0, sign * y1))
+    return (int(math.floor((x0 - a.c) / a.a)) - margin, int(math.floor((vs[1] - a.f) / a.e)) - margin,
+            int(math.ceil((x1 - a.c) / a.a)) + margin, int(math.ceil((vs[0] - a.f) / a.e)) + margin)
 
 
 def _read_boundless(src, c0: int, r0: int, c1: int, r1: int) -> np.ndarray:
@@ -194,12 +198,11 @@ class _Surface:
 
     def index(self, x, y):
         """The (row, column) of the grid's cells under the plan points, -1 off the grid."""
-        inv = ~self.affine
-        u, v = np.asarray(x, float), self.sign * np.asarray(y, float)
-        col = np.floor(inv.a * u + inv.b * v + inv.c).astype(np.int64) - self.c0
-        row = np.floor(inv.d * u + inv.e * v + inv.f).astype(np.int64) - self.r0
-        off = (row < 0) | (row >= self.z.shape[0]) | (col < 0) | (col >= self.z.shape[1])
-        return np.where(off, -1, row), np.where(off, -1, col)
+        from rasterio import windows
+
+        a = windows.transform(windows.Window(self.c0, self.r0, self.z.shape[1], self.z.shape[0]), self.affine)
+        row, col, ok = relief.cells_at(self.z.shape, a, self.sign, x, y)
+        return np.where(ok, row, -1), np.where(ok, col, -1)
 
     def __call__(self, x, y) -> np.ndarray:
         x, y = np.asarray(x, float), np.asarray(y, float)
@@ -213,12 +216,13 @@ class _Surface:
 SURFACE_MARGIN = 12  # cells: the grid of :func:`surface_for` goes this far around the polygon
 
 
-def surface_for(chunk, polygon):
+def surface_for(chunk, polygon, cache: dict | None = None):
     """The hull's surface for a reconstructed timber over ``polygon`` (ship plan): a callable ``(X, Y) -> z`` (ship
     plan points, z NaN where nothing gives one), on the relief's cells around the polygon. The relief where it has a
     value; else the inner (hull-side) surface of the mirrored solids under the point (a strake's inner face: the top
     of its shell; another timber's bottom where no strake is); else the faired hull (``reconstruction/
-    carenatura.ply``, :func:`reconstruct.loft`); else NaN."""
+    carenatura.ply``, :func:`reconstruct.loft`); else NaN. ``cache``: a dict kept by the caller over several calls
+    (one build), so that each 3D file is read once."""
     import rasterio
 
     from . import reconstruct
@@ -226,14 +230,10 @@ def surface_for(chunk, polygon):
     tracing.need_fresh_relief(chunk)
     frame = ship.need_frame(chunk)
     sign = frame.sign
-    x0, y0, x1, y1 = polygon.bounds
+    cache = {} if cache is None else cache
     with rasterio.open(relief.path_of(chunk, "height")) as src:
         a = src.transform
-        vs = sorted((sign * y0, sign * y1))
-        c0 = int(math.floor((x0 - a.c) / a.a)) - SURFACE_MARGIN
-        c1 = int(math.ceil((x1 - a.c) / a.a)) + SURFACE_MARGIN
-        r0 = int(math.floor((vs[1] - a.f) / a.e)) - SURFACE_MARGIN
-        r1 = int(math.ceil((vs[0] - a.f) / a.e)) + SURFACE_MARGIN
+        c0, r0, c1, r1 = _window(a, polygon.bounds, sign, SURFACE_MARGIN)
         z = _read_boundless(src, c0, r0, max(c0, c1), max(r0, r1))
         if src.nodata is not None and np.isfinite(src.nodata):
             z[z == src.nodata] = np.nan
@@ -249,7 +249,10 @@ def surface_for(chunk, polygon):
     box = shapely.box(*(np.asarray(polygon.bounds) + [-1, -1, 1, 1] * np.r_[SURFACE_MARGIN * abs(a.a)]))
 
     def layer(path, highest):
-        v, f, _hidden = reconstruct._read_solid(path)
+        key = str(path)
+        if key not in cache:
+            cache[key] = reconstruct._read_solid(path)
+        v, f, _hidden = cache[key]
         if not len(f):
             return None
         tri = v[f]
