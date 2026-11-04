@@ -851,3 +851,202 @@ def test_the_profile_says_what_it_could_not_draw(wreck, monkeypatch):
     monkeypatch.setattr(solids, "keel_solid", lambda chunk: (_ for _ in ()).throw(ship.NotReady("no")))
     d = drawings.make(ch, "profile")
     assert any(n.startswith("Non disegnati: paramezzale") and "chiglia" in n for n in d.notes)
+
+
+# ----------------------------------------------------------------------------- the reconstruction on the drawings (0.4.0)
+@pytest.fixture(scope="module")
+def _rebuilt(tmp_path_factory):
+    """The project of the reconstruction's tests (both sides lost over 8.4-9.3, port lost aft of 6.5), its meta before
+    and after the whole reconstruction is built."""
+    import copy
+
+    from test_reconstruct import HOLE, _wreck_project
+
+    from ppg_shipwreck import reconstruct
+
+    ch = _wreck_project(tmp_path_factory.mktemp("rebuilt"), port_from=HOLE)
+    before = copy.deepcopy(ch.meta[ship.KEY])
+    reconstruct.build(ch)
+    return ch, before, copy.deepcopy(ch.meta[ship.KEY])
+
+
+@pytest.fixture
+def rebuilt(_rebuilt):
+    import copy
+
+    ch, _before, after = _rebuilt
+    ch.meta[ship.KEY] = copy.deepcopy(after)
+    return ch
+
+
+def _dxf_entities(path) -> list:
+    """What a DXF draws: type, layer, linetype and points of each entity (no header, no time stamps)."""
+    import ezdxf
+
+    out = []
+    for e in ezdxf.readfile(path).modelspace():
+        kind = e.dxftype()
+        if kind == "LWPOLYLINE":
+            pts = [tuple(round(v, 9) for v in p[:2]) for p in e.get_points()]
+        elif kind == "HATCH":
+            pts = [(round(float(v2[0]), 9), round(float(v2[1]), 9)) for path in e.paths for v2 in path.vertices]
+        elif kind == "TEXT":
+            pts = [e.dxf.text, round(e.dxf.insert.x, 9), round(e.dxf.insert.y, 9)]
+        else:
+            pts = []
+        out.append((kind, e.dxf.layer, e.dxf.get("linetype", ""), pts))
+    return out
+
+
+def _png_hash(d) -> str:
+    import hashlib
+    import io
+
+    buf = io.BytesIO()
+    drawings.figure(d).savefig(buf, format="png", dpi=60, metadata={"Software": None})
+    return hashlib.sha256(buf.getvalue()).hexdigest()
+
+
+def test_the_reconstruction_hatched_and_lighter_on_the_wreck_plan(rebuilt, tmp_path):
+    import copy
+
+    import ezdxf
+    import shapely
+
+    from ppg_shipwreck import reconstruct
+    from ppg_shipwreck.texts import num
+
+    ch = rebuilt
+    before = copy.deepcopy(ch.meta[ship.KEY])
+    d = drawings.make(ch, "wreck_plan")
+    assert ch.meta[ship.KEY] == before  # drawing writes nothing
+    records = [r for r in reconstruct.records_of(ch) if r["geometry"]["type"] == "polygon"]
+    statuses = {r["status"] for r in records}
+    assert statuses == {"reconstructed:mirror", "reconstructed:extension", "reconstructed:spacing"}
+    sign = ship.need_frame(ch).sign
+    for r in records:  # every reconstruction record a hatched, lighter fill on its own layer
+        layer = "RICOSTRUZIONE_" + r["kind"].upper()
+        assert layer in ("RICOSTRUZIONE_PLANK", "RICOSTRUZIONE_FRAME") or r["kind"] not in ("plank", "frame")
+        poly = shapely.Polygon(np.asarray(r["ship_xy"]) * [1.0, sign]).buffer(0)
+        mine = [i for i, (lay, ring, _c, hatch, dashed) in enumerate(d.fills) if lay == layer and hatch == drawings.HATCH
+                and not dashed and shapely.Polygon(ring).buffer(0).symmetric_difference(poly).area < 1e-3 * poly.area]
+        assert mine, r["name"]
+        assert all(i in d.faint for i in mine)
+    assert not any(lay.startswith("LEGNI_") for i, (lay, *_rest) in enumerate(d.fills) if i in d.faint)
+    # the faired hull: its plan hatched on RICOSTRUZIONE_HULL, the area of the loft's plan
+    hull = _filled(d, "RICOSTRUZIONE_HULL", hatched=True)
+    assert hull.area == pytest.approx(reconstruct.state(ch)["loft"]["area"], rel=0.02)
+    # a legend entry per how present, nothing for the others
+    texts = [text for text, _c, _h in d.legend]
+    for status in ("reconstructed:mirror", "reconstructed:extension", "reconstructed:spacing", "reconstructed:fairing"):
+        assert texts.count(timbers.status_title(status)) == 1, status
+    assert timbers.status_title("reconstructed:imported") not in " ".join(texts)
+    # both ends open: "aperto" on the keel line at the first and last stations
+    stations = reconstruct.state(ch)["loft"]["stations"]
+    open_at = sorted(x for x, y, text, _c in d.labels if text == "aperto")
+    assert open_at == pytest.approx([min(stations), max(stations)]) and all(
+        y == 0.0 for _x, y, text, _c in d.labels if text == "aperto")
+    totals = reconstruct.state(ch)["table"]["totals"]
+    said = f"misurato {num(totals['measured']['area'], 2)} m², ricostruito {num(totals['reconstructed']['area'], 2)} m² (ipotesi)"
+    assert any(said in n for n in d.notes), d.notes
+    assert not any("oltre l'ultima stazione" in n.lower() for n in d.notes)  # no end given: the loft stops at the stations
+    assert not any("dai chunk" in n for n in d.notes)  # one chunk
+    path = drawings.write_dxf(d, tmp_path / "wreck.dxf")
+    msp = ezdxf.readfile(path).modelspace()
+    hatched = {e.dxf.layer for e in msp if e.dxftype() == "HATCH" and e.dxf.pattern_name == "ANSI31"}
+    assert {"RICOSTRUZIONE_PLANK", "RICOSTRUZIONE_FRAME", "RICOSTRUZIONE_HULL"} <= hatched
+    assert any(e.dxf.linetype == "DASHED" for e in msp if e.dxftype() == "LWPOLYLINE"
+               and e.dxf.layer == "RICOSTRUZIONE_HULL")
+    drawings.figure(d)  # the sheet draws
+    # written and noted: out of date when the reconstruction changes
+    drawings.write_all(ch, kinds=("wreck_plan", "body_plan", "profile"))
+    assert drawings.out_of_date(ch) == []
+    reconstruct.state(ch)["timbers"] = reconstruct.records_of(ch)[1:]
+    assert {"wreck_plan", "body_plan", "profile"} <= set(drawings.out_of_date(ch))
+
+
+def test_the_loft_past_the_last_station_and_the_chunks_said(rebuilt):
+    from ppg_shipwreck import reconstruct
+
+    ch = rebuilt
+    reconstruct.set_ends(ch, stem=-0.3, stern=12.3)
+    reconstruct.loft(ch)
+    d = drawings.make(ch, "wreck_plan")
+    assert not any(text == "aperto" for _x, _y, text, _c in d.labels)
+    stations = reconstruct.state(ch)["loft"]["stations"]
+    beyond = [ring for lay, ring, _c, _h, dashed in d.fills if lay == "RICOSTRUZIONE_HULL" and dashed]
+    assert beyond and all(ring[:, 0].min() >= max(stations) - 1e-6 or ring[:, 0].max() <= min(stations) + 1e-6
+                          for ring in beyond)
+    assert any("oltre l'ultima stazione la carenatura è un'ipotesi della sola larghezza" in n.lower() for n in d.notes)
+    reconstruct.state(ch)["members"] = {"chunks": [{"chunk": ch.key, "label": "Scavo A"},
+                                                   {"chunk": "k2", "label": "Scavo B"}]}
+    d = drawings.make(ch, "wreck_plan")
+    assert any("dai chunk: Scavo A, Scavo B" in n for n in d.notes)
+
+
+def test_the_loft_on_the_body_plan_and_the_extended_sheer_on_the_profile(rebuilt):
+    import copy
+
+    from hulls import clinker_section
+    from test_reconstruct import LOST_BOTH
+
+    from ppg_shipwreck import reconstruct
+
+    ch = rebuilt
+    d = drawings.make(ch, "body_plan")
+    hull = [p for lay, p, _c in d.lines if lay == "RICOSTRUZIONE_HULL"]
+    assert hull
+    lost = [s["value"] for s in lines.load(ch)["sections"] if s["kind"] == "station" and LOST_BOTH[0] < s["value"] < LOST_BOTH[1]]
+    assert lost
+    pts = np.vstack(hull)
+    assert pts[:, 0].min() < -0.5 and pts[:, 0].max() > 0.5  # both sides: neither has a section in the lost span
+    stations = [s["value"] for s in lines.load(ch)["sections"] if s["kind"] == "station"]
+    for y, z in pts[::7]:  # on the hull at one of the stations (the loft also fills gaps beside mirrored timbers)
+        best = min(abs(z - np.interp(abs(y), sec[sec[:, 0] >= 0][:, 0], sec[sec[:, 0] >= 0][:, 1]))
+                   for sec in map(clinker_section, stations))
+        assert best < 0.03, (y, z, best)
+    assert any("carenatura" in n for n in d.notes)
+    # the top strakes (T5, B5) are not extended on this hull: no extended upper edge, never a lower strake's
+    p = drawings.make(ch, "profile")
+    assert not [q for lay, q, _c in p.lines if lay == "RICOSTRUZIONE_HULL"]
+    assert drawings._top_strakes(ch, timbers.timbers_of(ch)) == {"port": "fascia B5", "starboard": "fascia T5"}
+    # a piece of the top strake extended: its upper edge, where it has a height
+    st = reconstruct.state(ch)
+    piece = copy.deepcopy(next(r for r in st["timbers"] if r["status"] == "reconstructed:extension"
+                               and r["side"] == "starboard"))
+    piece.update(id="R99", name="fascia T5")
+    piece["edges"]["upper"][3][2] = None  # a point without a height breaks the line
+    st["timbers"].append(piece)
+    p = drawings.make(ch, "profile")
+    sheer = [q for lay, q, _c in p.lines if lay == "RICOSTRUZIONE_HULL"]
+    assert len(sheer) == 2
+    upper = np.array([[x, z] for x, _y, z in piece["edges"]["upper"] if z is not None])
+    assert sum(len(q) for q in sheer) == len(upper)
+    for x, z in np.vstack(sheer):
+        assert np.min(np.hypot(upper[:, 0] - x, upper[:, 1] - z)) < 1e-9
+    assert any(text.startswith("orlo prolungato") for text, _c, _h in p.legend)
+
+
+def test_without_the_reconstruction_the_drawings_of_0_3_0(_rebuilt, tmp_path):
+    """``reconstruction=False`` on the built project, and the default on the project before the build: the same
+    DXF entities and the same PNG, for the plan of the wreck, the body plan and the profile."""
+    import copy
+
+    ch, before, after = _rebuilt
+    try:
+        for kind in ("wreck_plan", "body_plan", "profile"):
+            ch.meta[ship.KEY] = copy.deepcopy(before)
+            old = drawings.make(ch, kind)
+            ch.meta[ship.KEY] = copy.deepcopy(after)
+            off = drawings.make(ch, kind, reconstruction=False)
+            on = drawings.make(ch, kind)
+            a = _dxf_entities(drawings.write_dxf(old, tmp_path / f"{kind}_old.dxf"))
+            b = _dxf_entities(drawings.write_dxf(off, tmp_path / f"{kind}_off.dxf"))
+            c = _dxf_entities(drawings.write_dxf(on, tmp_path / f"{kind}_on.dxf"))
+            assert a == b, kind
+            if kind != "profile":  # the profile draws only the top strake's extension: none on this hull
+                assert a != c, kind  # the reconstruction is drawn when asked
+            assert _png_hash(old) == _png_hash(off), kind
+            assert off.faint == set() and not any(lay.endswith("_HULL") for lay, *_r in off.fills + off.lines)
+    finally:
+        ch.meta[ship.KEY] = copy.deepcopy(after)
