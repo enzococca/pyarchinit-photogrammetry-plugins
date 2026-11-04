@@ -9,10 +9,12 @@ starboard polygon of the catalogue reflected across the keel plane (ship y -> -y
   cells. Each piece is kept when it is at least :data:`MIN_AREA`, at least :data:`MIN_WIDTH` wide (or
   :data:`NARROW` of the timber's own width, for a narrow timber), fewer than :data:`COVERED` of its cells have the
   model, it overlaps the measured records of the same kind of the other side (or the centre) by no more than
-  :data:`OVERLAP` of its area, and it does not lie ALONGSIDE (within :data:`TOUCH`) the other side's measured timber
-  of its name: that is the same timber read wider on one side - a deformed wreck - and its difference goes in the
-  table of :func:`disagreement`, not into a timber; meeting it end to end, where the other side is lost beyond it,
-  is the timber going on. A timber whose reflection lies on the model, a loose timber, a centre timber are never
+  :data:`OVERLAP` of its area, and, when it is NARROW (narrower than both :data:`DEFORMATION` and :data:`NARROW` of
+  the timber's width), it does not lie ALONGSIDE (within :data:`TOUCH`) the other side's measured timber of its
+  name: that is the same timber read wider on one side - a deformed wreck - and its difference goes in the table of
+  :func:`disagreement`, not into a timber. A wide piece alongside (the upper part of an eroded strake) is a lost
+  part and is mirrored; a piece meeting it end to end, where the other side is lost beyond it, is the timber going
+  on. A timber whose reflection lies on the model, a loose timber, a centre timber are never
   mirrored: no hypothesis where the wreck shows something;
 - the piece is a record of ``state["reconstruction"]["timbers"]`` (never of the catalogue): ``id`` R1, R2, ...,
   the other side's ``name`` (``fascia B3`` <-> ``fascia T3``; the frames keep ``ordinata N``; the pieces of one
@@ -48,7 +50,8 @@ COVERED = 0.20  # share of a mirrored piece's cells with the model under them: m
 MIN_AREA = 0.0025  # m2: a smaller piece is not mirrored
 MIN_WIDTH = 0.05  # m: a piece narrower (2 area / perimeter) is not mirrored, unless the timber itself is narrow
 NARROW = 0.5  # ... then a piece of at least this share of the timber's own width is
-TOUCH = 0.02  # m: a piece lying this close beside the other side's measured timber of its name is a disagreement
+TOUCH = 0.02  # m: a NARROW piece lying this close beside the other side's measured timber of its name ...
+DEFORMATION = 0.10  # m: ... narrower than this (and than NARROW of the timber's width) is a disagreement
 OPENING = 2  # cells: lost areas narrower than this along the model's edge are not lost (the edge's own cells)
 SIDES = ("port", "starboard")
 STATUS = "reconstructed:mirror"
@@ -305,6 +308,8 @@ def _kept(grid: "_Relief", piece, source_width: float, over, beside) -> bool:
         return False
     if over is not None and piece.intersection(over).area > OVERLAP * piece.area:
         return False
+    if _width(piece) >= min(NARROW * source_width, DEFORMATION):
+        return True  # as wide as a lost part: mirrored even alongside the measured part (an eroded sheer)
     return not any(_beside(piece, b) for b in beside)
 
 

@@ -165,17 +165,17 @@ def test_names_of_the_other_side():
     assert reconstruct.other_name("Bordo") == "Bordo"
 
 
-def _wider_port(tmp_path, side: str = "port"):
-    """The framed hull with its ``side`` (port: the hull's y < 0) 3 cm wider in plan between x 2 and 4 (ramps of
-    0.3 m)."""
+def _wider_port(tmp_path, side: str = "port", amount: float = 0.03):
+    """The framed hull with its ``side`` (port: the hull's y < 0) ``amount`` wider in plan between x 2 and 4 (ramps
+    of 0.3 m)."""
     v, f = framed_hull()
     x = v[:, 0]
     w = np.clip(np.minimum(x - 1.7, 4.3 - x) / 0.3, 0.0, 1.0)
     v = v.copy()
     if side == "port":
-        v[:, 1] -= 0.03 * w * (v[:, 1] < 0)
+        v[:, 1] -= amount * w * (v[:, 1] < 0)
     else:
-        v[:, 1] += 0.03 * w * (v[:, 1] > 0)
+        v[:, 1] += amount * w * (v[:, 1] > 0)
     from hulls import UTM
 
     return _project(tmp_path, v, f, 35.0, UTM, "EPSG:32633", 2.0)
@@ -204,10 +204,11 @@ def test_disagreement_where_both_sides_are_measured(tmp_path):
     assert {r["rank"] for r in rows if r["station"] == "S3"} == {1, 2, 3, 4}
 
 
-def test_a_deformed_wreck_is_a_disagreement_not_a_mirror(tmp_path):
-    """Starboard read 3 cm wider than port over x 2-4: the strip of starboard's reflection beside the measured port
-    timbers is the same timbers read wider, listed in the table, never a reconstructed timber."""
-    _doc, ch, ends = _wider_port(tmp_path, "starboard")
+@pytest.mark.parametrize("amount", [0.03, 0.08])
+def test_a_deformed_wreck_is_a_disagreement_not_a_mirror(tmp_path, amount):
+    """Starboard read 3 or 8 cm wider than port over x 2-4: the strip of starboard's reflection beside the measured
+    port timbers is the same timbers read wider, listed in the table, never a reconstructed timber."""
+    _doc, ch, ends = _wider_port(tmp_path, "starboard", amount)
     ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
     relief.build(ch, cell=0.01)
     proposals_mod.build(ch)
@@ -216,7 +217,8 @@ def test_a_deformed_wreck_is_a_disagreement_not_a_mirror(tmp_path):
     assert reconstruct.mirror(ch) == []
     rows = reconstruct.disagreement(ch)
     inside = [r for r in rows if 2.4 < r["x"] < 3.6]
-    assert inside and all(-35.0 < r["difference_mm"] < -25.0 for r in inside), inside
+    mm = 1000.0 * amount
+    assert inside and all(-mm - 5.0 < r["difference_mm"] < -mm + 5.0 for r in inside), inside
 
 
 def test_a_whole_lost_side_is_mirrored_whole(tmp_path):
@@ -268,3 +270,56 @@ def test_a_mirror_stopped_halfway_keeps_the_earlier_one(hull, monkeypatch):
     assert reconstruct.records_of(ch) == kept and len(kept) == len(first)
     assert sorted(p.name for p in reconstruct.folder(ch).glob("*.ply")) == files
     assert not (ship.folder(ch) / "reconstruction.new").exists()
+
+
+def _lost_project(tmp_path, lost):
+    """The framed hull with the port faces (the hull's y < 0) whose centre ``lost(x, |y|)`` says taken away."""
+    from hulls import UTM
+
+    v, f = framed_hull()
+    c = v[f].mean(axis=1)
+    drop = (c[:, 1] < 0) & lost(c[:, 0], np.abs(c[:, 1]))
+    _doc, ch, ends = _project(tmp_path, v, f[~drop], 35.0, UTM, "EPSG:32633", 2.0)
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    relief.build(ch, cell=0.01)
+    proposals_mod.build(ch)
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"] if "?" not in i["name"]])
+    solids.build(ch)
+    return ch
+
+
+def test_an_eroded_sheer_is_mirrored(tmp_path):
+    """Port's upper part of the sheer strake gone over x 3-9 (beyond seam 4 + 0.12 m), its lower part measured: the
+    lost part, wide, alongside the measured one, is mirrored."""
+    from hulls import plan_half_breadth
+
+    def lost(x, y):
+        edge = np.array([seam_y(v)[3] for v in x]) + 0.12
+        return (x > 3.0) & (x < 9.0) & (y > edge)
+
+    ch = _lost_project(tmp_path, lost)
+    out = reconstruct.mirror(ch)
+    (b5,) = _named(out, "fascia B5")
+    assert [r["name"] for r in out] == ["fascia B5"]  # the frames are centre timbers, B1-B4 are whole on port
+    poly = shapely.Polygon(b5["ship_xy"])
+    x0, _y0, x1, _y1 = poly.bounds
+    assert abs(x0 - 3.0) < 0.05 and abs(x1 - 9.0) < 0.05, (x0, x1)
+    cut = np.asarray(shapely.get_coordinates(poly.intersection(shapely.LineString([(6.0, 0.0), (6.0, 3.0)]))))
+    assert abs(cut[:, 1].min() - (seam_y(6.0)[3] + 0.12)) < 0.03, cut
+    assert abs(cut[:, 1].max() - plan_half_breadth(6.0)) < 0.03, cut
+    assert b5["clipped"] and timbers.timbers_of(ch)  # the measured lower part stays as it is
+
+
+def test_an_oblique_loss_is_mirrored(tmp_path):
+    """Port lost beyond x > 5.5 + 1.5 |y|, a boundary oblique to the strakes: every strake goes on mirrored, the
+    narrow garboard too."""
+    ch = _lost_project(tmp_path, lambda x, y: x > 5.5 + 1.5 * y)
+    out = reconstruct.mirror(ch)
+    names = {r["name"] for r in out if r["kind"] == "plank"}
+    assert names == {f"fascia B{k}" for k in range(1, 6)}, names
+    (b1,) = _named(out, "fascia B1")
+    xy = np.asarray(b1["ship_xy"])
+    assert abs(xy[:, 0].min() - (5.5 + 1.5 * 0.12)) < 0.1 and xy[:, 0].max() > 9.3, (xy[:, 0].min(), xy[:, 0].max())
+    for r in out:
+        xy = np.asarray(r["ship_xy"])
+        assert (xy[:, 0] > 5.5 + 1.5 * xy[:, 1] - 0.05).all(), r["name"]  # nothing over the preserved port side
