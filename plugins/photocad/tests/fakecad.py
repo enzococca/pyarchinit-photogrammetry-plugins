@@ -106,7 +106,7 @@ class FakePhotoCAD:
 
     def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False,
                  free: int = 5, account: str = "real", page_pad=(0, 0, 0, 0), garbage: bool = False,
-                 open_lines: bool = False, ring: bool = False, tiny: bool = False):
+                 open_lines: bool = False, ring: bool = False, tiny: bool = False, gap_px: float = 0.5):
         self.credits = credits
         self.free = free  # free conversions left
         self.account = account  # "real": the shape photocad.ai gives (2026-11-04); "flat": an older guess
@@ -119,6 +119,7 @@ class FakePhotoCAD:
         self.garbage = garbage
         # as PhotoCAD draws stones: each side an open polyline, the ends 0.5 px short of the corners (a 1 px gap)
         self.open_lines = open_lines
+        self.gap_px = gap_px  # 0: the sides chained end to end exactly, as at Khutm
         self.ring = ring  # four open lines around a white rectangle (background: never a stone)
         self.tiny = tiny  # a 4 x 4 px closed loop inside the first blob (smaller than the minimum area)
         self.requests: list[tuple[str, str, dict]] = []  # method, path?query, headers
@@ -256,7 +257,7 @@ class FakePhotoCAD:
             outlines.append([mm(c0 + 10, r0 + 10), mm(c0 + 14, r0 + 10), mm(c0 + 14, r0 + 14), mm(c0 + 10, r0 + 14)])
         if self.open_lines:
             for o in list(outlines):
-                self._open += _sides(o, 0.5 * s)
+                self._open += _sides(o, self.gap_px * s)
             outlines = []
         return outlines, line, (pc1 - pc0) * s, (pr1 - pr0) * s
 
@@ -291,12 +292,14 @@ class FakePhotoCAD:
 
 
 def _sides(corners, gap):
-    """The four sides of a box as open lines, each ``gap`` short of the corners at both ends."""
+    """The four sides of a box as open lines, each ``gap`` short of the corners at both ends; with no gap the end of
+    each side a few 1e-9 mm off the start of the next (float noise: what the placement leaves at Khutm)."""
     out = []
     for a, b in zip(corners, corners[1:] + corners[:1]):
         a, b = np.asarray(a, float), np.asarray(b, float)
         u = (b - a) / np.hypot(*(b - a))
-        out.append([tuple(a + u * gap), tuple(b - u * gap)])
+        end = b - u * gap if gap else b + 3e-9
+        out.append([tuple(a + u * gap), tuple(end)])
     return out
 
 

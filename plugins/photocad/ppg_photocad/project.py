@@ -542,6 +542,10 @@ def polygonize(chunk, rec: dict, snap_px: float = SNAP_PX, min_area_px: float = 
             lines.append(LineString(g.exterior.coords))
         elif g.geom_type == "LineString" and g.length > 0:
             lines.append(g)
+    # on a grid of a fiftieth of a pixel: the ends PhotoCAD made equal come back from the placement 1e-16 apart,
+    # and unary_union would not node them (Khutm: 3 faces out of 1993 chained lines without this)
+    grid = pixel / 50
+    lines = [g for g in shapely.set_precision(lines, grid) if not g.is_empty and g.length > 0]
     tree = shapely.STRtree(lines)
     connectors = []
     for i, line in enumerate(lines):
@@ -551,7 +555,7 @@ def polygonize(chunk, rec: dict, snap_px: float = SNAP_PX, min_area_px: float = 
         for end, other in ((coords[0], coords[-1]), (coords[-1], coords[0])):
             p = shapely.Point(end)
             best = None
-            if 0 < p.distance(shapely.Point(other)) <= tol:
+            if grid < p.distance(shapely.Point(other)) <= tol:
                 best = (p.distance(shapely.Point(other)), other)
             for j in tree.query(p.buffer(tol)):
                 if j == i:
@@ -560,9 +564,9 @@ def polygonize(chunk, rec: dict, snap_px: float = SNAP_PX, min_area_px: float = 
                 if d <= tol and (best is None or d < best[0]):
                     q = nearest_points(lines[j], p)[0]
                     best = (d, (q.x, q.y))
-            if best is not None and best[0] > 0:
+            if best is not None and best[0] > grid:
                 connectors.append(LineString([end, best[1]]))
-    noded = shapely.unary_union(lines + connectors)
+    noded = shapely.unary_union(lines + connectors, grid_size=grid)
     faces = list(shapely.get_parts(shapely.polygonize(list(shapely.get_parts(noded)))))
     greys: dict = {}
     kept, small, background = [], 0, 0

@@ -71,3 +71,15 @@ def test_command_line_units_from(tmp_path, open_fake, monkeypatch, capsys):
     assert len(ppg.Document.open(path).chunk.meta["drawings"]["units"]) == 2
     assert plugin.command("polygonize", path, rid, "--snap-px", "3") == 0
     assert "2" in capsys.readouterr().out
+
+
+def test_lines_chained_end_to_end_are_noded(tmp_path, monkeypatch):
+    """At Khutm the polylines chain exactly end to start; after the placement their ends differ by 1e-16 and were
+    not noded (3 faces out of 1993 lines): the lines go on a grid first."""
+    fake = fakecad.FakePhotoCAD(open_lines=True, gap_px=0.0)
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path, square=[fakecad.SQUARE, fakecad.SQUARE2])
+    rec = project.convert(ch, "ortho", fakecad.KEY)
+    assert rec["counts"]["stones"] == 2 and rec["polygonize"]["connectors"] == 0
+    rec = project.record(ch, rec["id"])
+    assert project.polygonize(ch, rec, snap_px=0.0) == 2
