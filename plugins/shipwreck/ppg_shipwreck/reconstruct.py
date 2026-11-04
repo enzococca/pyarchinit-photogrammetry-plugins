@@ -38,6 +38,12 @@ of the same list, each kind replaced as a whole when built again, without solids
 None where nothing gives one). The order: the mirror first (the extension leaves its ground to it, and both refuse
 a mirror older than the catalogue), then the extension and the frames.
 
+The FAIRED HULL (``ricostruito: carenatura``, :func:`loft`, module :mod:`loft`) is lofted through the stations'
+sections where neither side exists; :func:`build` (module :mod:`rebuild`) runs mirror, extension, frames by spacing
+and loft in one go, builds the solids of the extended strakes and of the spaced frames on the hull's surface
+(:func:`solids.surface_for`: the relief, else the mirrored solids, else the faired hull) and replaces the
+reconstruction as a whole; :func:`table` and :func:`write_table` say what is measured and what is reconstructed.
+
 Only ``chunk.meta["shipwreck"]["reconstruction"]`` and ``<chunk data>/shipwreck/reconstruction/`` are written; the
 measured records, the chunk's transform, model and products never."""
 from __future__ import annotations
@@ -64,6 +70,7 @@ OPENING = 2  # cells: lost areas narrower than this along the model's edge are n
 SIDES = ("port", "starboard")
 STATUS = "reconstructed:mirror"
 FOLDER = "reconstruction"
+LOFT_FILE = "carenatura.ply"  # the faired hull (:func:`loft`), kept beside the records' solids
 _CODE = re.compile(r"^([BT])(\d+|\?)$")
 
 
@@ -300,7 +307,7 @@ def _swap(chunk, new: list[dict], tmp: Path) -> None:
     for r in new:
         (tmp / f"{r['id']}.ply").replace(d / f"{r['id']}.ply")
     st["timbers"] = kept + new
-    keep = {f"{r['id']}.ply" for r in st["timbers"]}
+    keep = {f"{r['id']}.ply" for r in st["timbers"]} | {LOFT_FILE}
     for old in list(d.glob("*.ply")) + list(d.glob("*.ply.tmp")):
         if old.name not in keep:
             old.unlink(missing_ok=True)
@@ -463,6 +470,13 @@ def disagreement(chunk) -> list[dict]:
     """Per station (the sections' stations, else the chunk's) and seam rank where both sides have a measured seam
     (or strake edge): ``station``, ``x``, ``rank``, ``port_y`` and ``starboard_y`` (the half-breadths, |y|),
     ``difference_mm`` (port - starboard). Kept in ``state["reconstruction"]["table"]["mirror"]``."""
+    rows = disagreement_rows(chunk)
+    state(chunk).setdefault("table", {})["mirror"] = rows
+    return rows
+
+
+def disagreement_rows(chunk) -> list[dict]:
+    """The rows of :func:`disagreement`, kept nowhere."""
     frame = ship.need_frame(chunk)
     stations = _stations(chunk)
     if not stations:
@@ -476,7 +490,6 @@ def disagreement(chunk) -> list[dict]:
                 continue
             rows.append({"station": s["name"], "x": s["x"], "rank": rank, "port_y": p, "starboard_y": q,
                          "difference_mm": (p - q) * 1000.0})
-    state(chunk).setdefault("table", {})["mirror"] = rows
     return rows
 
 
@@ -1092,7 +1105,9 @@ def extend(chunk, progress=None) -> list[dict]:
       records) inside :func:`surveyed_range` and, beyond it, only up to the ends :func:`set_ends` gave.
     - Past the last point of a seam the slope of a robust line through its last :data:`END_FIT` goes over linearly
       in :data:`BLEND` into the trend of the 0.2.0 land line of its rank, else of the stations' sheer; with neither
-      (``trend`` "none") a seam goes on :data:`NO_TREND_REACH` at most and the piece is ``uncertain``.
+      (``trend`` "none") a seam goes on :data:`NO_TREND_REACH` at most and the piece is ``uncertain``; a piece
+      reaching more than :data:`BEND_REACH` past both its seam's points and its trend's (where the slope is only
+      held) is ``uncertain`` too.
     - z read on the relief along the edge wherever the model is (:func:`_edge`); past the model continued as |y|.
     - Never over the mirror's ground (:meth:`_Heights.ground`: this side lost, the other preserved): that is the
       mirror's to fill, whichever is built first; :class:`NotReady` while the mirror is older than the catalogue.
@@ -1167,6 +1182,10 @@ def extend(chunk, progress=None) -> list[dict]:
                 source = min(polys, key=lambda rid: max(0.0, polys[rid].bounds[0] - px1, px0 - polys[rid].bounds[2]))
                 at = (round(px0, 2), round(px1, 2))
                 guessed = any(tr.kind == "none" and (px0 < s.lo - GRID or px1 > s.hi + GRID) for s, tr in seams)
+                # past both the seam's points and its trend's points by more than the trend's bending: held only
+                held = any(tr.fy is not None and (px0 < min(s.lo, tr.fy.lo) - BEND_REACH - GRID
+                                                  or px1 > max(s.hi, tr.fy.hi) + BEND_REACH + GRID)
+                           for s, tr in seams)
                 kinds = sorted({tr0.kind, tr1.kind})
                 out.append({"id": take(source, at), "kind": "plank", "side": side, "name": name, "station": "",
                             "status": EXTENSION, "source": source, "sources": sorted(polys), "ship_xy": xy.tolist(),
@@ -1174,7 +1193,7 @@ def extend(chunk, progress=None) -> list[dict]:
                             "chunk": chunk.key,
                             "edges": {"lower": _edge_of_piece(lower, piece, sign, beyond),
                                       "upper": _edge_of_piece(upper, piece, sign, beyond)},
-                            "seams": [rank - 1, rank], "trend": "/".join(kinds), "uncertain": bool(guessed),
+                            "seams": [rank - 1, rank], "trend": "/".join(kinds), "uncertain": bool(guessed or held),
                             "beyond": bool(px0 < surveyed[0] - 1e-6 or px1 > surveyed[1] + 1e-6),
                             "position": list(at)})
                 if guessed:
@@ -1182,6 +1201,11 @@ def extend(chunk, progress=None) -> list[dict]:
                                       f"{NO_TREND_REACH:g} m (incerta)",
                                       f"{name}: no land line and no sections, extended {NO_TREND_REACH:g} m at most "
                                       "(uncertain)"))
+                if held:
+                    warnings.append(t(f"{name}: oltre {BEND_REACH:g} m dopo gli ultimi punti del comento e della sua "
+                                      "tendenza la pendenza è solo tenuta (incerta)",
+                                      f"{name}: more than {BEND_REACH:g} m past the last points of the seam and of its "
+                                      "trend the slope is only held (uncertain)"))
     _replace(chunk, EXTENSION, out)
     state(chunk)["extension"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": len(out),
                                  "skipped": skipped, "warnings": list(dict.fromkeys(warnings)), "range": [lo, hi],
@@ -1312,3 +1336,8 @@ def frames_by_spacing(chunk) -> list[dict]:
                                "sides": medians, "median": float(np.median(spaces)) if spaces else None,
                                "frame_key": key, "mirror_built": mirror_built}
     return out
+
+
+# ----------------------------------------------------------------------------- the faired hull, the build, the table
+from .loft import loft  # noqa: E402, F401 - re-exported: reconstruct.loft
+from .rebuild import build, table, write_table  # noqa: E402, F401 - re-exported

@@ -472,7 +472,7 @@ def test_nothing_past_the_surveyed_length_unless_the_ends_are_given(cut_at_nine)
     assert abs(far - 11.5) < 1e-6, far
     beyond = [r for r in out if r["beyond"]]
     assert beyond and {r["name"] for r in beyond} == {f"fascia {c}{k}" for c in "BT" for k in (2, 3, 4)}
-    assert not any(r["uncertain"] for r in out)
+    assert not any(r["uncertain"] for r in out if not r["beyond"])  # past the land lines' reach: uncertain (N1)
     _beyond_z_ok(beyond, 9.0, _straight)  # no section past the model: the last 0.5 m of the hull continued
     assert any("prua" in w for w in reconstruct.state(ch)["extension"]["warnings"])
     # a stem traced as a line in the plan, slanting: nothing past it, the edges cut on it
@@ -602,3 +602,260 @@ def test_frames_added_at_the_measured_spacing(whole):
     again = reconstruct.frames_by_spacing(ch)
     assert [r["id"] for r in again] == [r["id"] for r in out]
     assert reconstruct.state(ch)["spacing"]["median"] == pytest.approx(0.45, abs=0.005)
+
+
+def test_a_trend_held_past_its_reach_is_uncertain(cut_at_nine):
+    """N1 of the review of Task 10: land lines ending at 8.75, the stem at 11.5: past the trend's points and the 1 m of
+    its bending the extension only holds a slope, and says so."""
+    ch, snapshot = cut_at_nine
+    ch.meta[ship.KEY] = copy.deepcopy(snapshot)
+    ship.state(ch)["clinker"] = {"lines": _land_lines(np.arange(0.25, 8.76, 0.5))}
+    reconstruct.set_ends(ch, stem=11.5)
+    out = reconstruct.extend(ch)
+    beyond = [r for r in out if r["beyond"]]
+    assert beyond and all(r["uncertain"] for r in beyond)
+    assert not any(r["uncertain"] for r in out if not r["beyond"])
+    warnings = reconstruct.state(ch)["extension"]["warnings"]
+    assert any(r["name"] in w and "oltre" in w for r in beyond for w in warnings), warnings
+
+
+# ----------------------------------------------------------------------------- the loft, the build, the table
+LOST_BOTH = (8.4, 9.3)  # both sides of the hull lost between these x
+STATIONS = np.arange(1.125, 11.0, 0.45)  # halfway between the frames
+
+
+def _wreck_project(tmp_path, port_from=None):
+    """The framed hull with both sides lost over :data:`LOST_BOTH` (and, with ``port_from``, port lost aft of it),
+    everything proposed accepted, the solids built, stations halfway between the frames cut from the model."""
+    from hulls import UTM
+
+    from ppg_shipwreck import lines
+
+    v, f = framed_hull()
+    c = v[f].mean(axis=1)
+    drop = (c[:, 0] > LOST_BOTH[0]) & (c[:, 0] < LOST_BOTH[1])
+    if port_from is not None:
+        drop |= (c[:, 1] < 0) & (c[:, 0] > port_from)
+    _doc, ch, ends = _project(tmp_path, v, f[~drop], 35.0, UTM, "EPSG:32633", 2.0)
+    ship.set_frame(ch, ship.Frame(ends[0], ends[1], "start"))
+    relief.build(ch, cell=0.01)
+    proposals_mod.build(ch)
+    tracing.accept(ch, [i["id"] for i in ship.state(ch)["proposals"]["items"] if "?" not in i["name"]])
+    # the keelson traced over all of its length (the proposals stop it where a side is lost): what lies over the
+    # planking is left out of the sections the hull is lofted through
+    from hulls import KEELSON_HALF, KEELSON_X
+
+    timbers.remove(ch, [r["id"] for r in timbers.timbers_of(ch) if r["kind"] == "keelson"])
+    half = KEELSON_HALF + 0.005
+    keelson = [[KEELSON_X[0], -half], [KEELSON_X[1], -half], [KEELSON_X[1], half], [KEELSON_X[0], half]]
+    tracing.add_traced(ch, "keelson", "centre", "paramezzale", relief.uv_of_ship(keelson, ship.frame_of(ch).sign),
+                       "polygon")
+    solids.build(ch)
+    ship.set_stations(ch, [{"name": f"S{k}", "x": float(x)} for k, x in enumerate(STATIONS)])
+    lines.build(ch)
+    return ch
+
+
+@pytest.fixture(scope="module")
+def wreck(tmp_path_factory):
+    ch = _wreck_project(tmp_path_factory.mktemp("wreck"), port_from=HOLE)
+    return ch, copy.deepcopy(ch.meta[ship.KEY])
+
+
+@pytest.fixture
+def lost(wreck):
+    ch, snapshot = wreck
+    ch.meta[ship.KEY] = copy.deepcopy(snapshot)
+    return ch
+
+
+def _relief_at(ch, xy):
+    z, a = relief.load(ch, "height")
+    sign = ship.frame_of(ch).sign
+    inv = ~a
+    u, v = xy[:, 0], sign * xy[:, 1]
+    col = np.floor(inv.a * u + inv.b * v + inv.c).astype(int)
+    row = np.floor(inv.d * u + inv.e * v + inv.f).astype(int)
+    out = np.full(len(xy), np.nan)
+    ok = (row >= 0) & (row < z.shape[0]) & (col >= 0) & (col < z.shape[1])
+    out[ok] = z[row[ok], col[ok]]
+    return out
+
+
+def _mesh(path):
+    from pyarchinit_photogrammetry.io.mesh_ply import PlyMesh
+
+    mesh = PlyMesh(path)
+    v, f = np.array(mesh.xyz(), float), np.concatenate(list(mesh.face_chunks()))
+    del mesh
+    return v, f
+
+
+def test_the_hull_lofted_where_neither_side_exists(lost):
+    """Both sides lost over x 8.4-9.3, port also aft of 6.5 (mirrored): the loft spans the stations, keeps faces only
+    where neither the model nor a mirrored timber is, lies on the hull's clinker section (p95 < 2.5 cm), and, with no
+    stem or stern given, leaves both ends open; given, it closes on them."""
+    from hulls import clinker_section, half_breadth
+
+    ch = lost
+    mirrored = reconstruct.mirror(ch)
+    solid = reconstruct.loft(ch)
+    assert solid is not None and solid.status == "reconstructed:fairing" and solid.kind == "hull"
+    assert solid.name == "carenatura" and solid.volume == 0.0 and not solid.hidden.any()
+    st = reconstruct.state(ch)["loft"]
+    path = ch.data_dir / st["file"]
+    assert path.name == "carenatura.ply" and path.parent.name == "reconstruction" and path.exists()
+    assert set(st["open_ends"]) == {"stem", "stern"} and len(st["open_ends"]) == 2
+    v, f = _mesh(path)
+    assert np.allclose(v, solid.vertices) and np.array_equal(f, solid.faces)
+    centres = v[f].mean(axis=1)
+    # no face over the model, none over a mirrored timber
+    assert np.isnan(_relief_at(ch, centres[:, :2])).all()
+    over = shapely.union_all([shapely.Polygon(r["ship_xy"]) for r in mirrored])
+    assert not shapely.contains_xy(over, centres[:, 0], centres[:, 1]).any()
+    # the span between the two sides' loss covered, both sides out to the sheer
+    for x in np.arange(8.5, 9.25, 0.1):
+        near = np.abs(v[:, 0] - x) < 0.051
+        for sign in (1.0, -1.0):
+            ys = sign * v[near, 1]
+            assert ys.max() > 0.9 * half_breadth(x), (x, sign, ys.max())
+    # on the hull: z against the clinker section at the vertex's |y|
+    span = (v[:, 0] > LOST_BOTH[0] + 0.05) & (v[:, 0] < LOST_BOTH[1] - 0.05)
+    errors = []
+    for x, y, z in v[span]:
+        sec = clinker_section(x)
+        port = sec[sec[:, 0] >= 0]
+        errors.append(abs(z - np.interp(abs(y), port[:, 0], port[:, 1])))
+    errors = np.asarray(errors)
+    assert len(errors) > 100 and np.percentile(errors, 95) < 0.025, np.percentile(errors, [50, 95, 100])
+    # the ends given: the loft goes on to them, closing to the keel line
+    reconstruct.set_ends(ch, stem=-0.3, stern=12.3)  # past the model's ends (0.2, 11.8): the tips are shown
+    solid = reconstruct.loft(ch)
+    assert reconstruct.state(ch)["loft"]["open_ends"] == []
+    v = solid.vertices
+    for end in (-0.3, 12.3):
+        tip = v[np.abs(v[:, 0] - end) < 1e-9]
+        assert len(tip) and np.abs(tip[:, 1]).max() < 1e-9, end
+
+
+def test_build_the_whole_reconstruction(lost):
+    """mirror -> extension -> frames by spacing -> loft -> solids, in one build: the extended strakes and the spaced
+    frames closed and on the hull, the measured records and their files untouched, the same table and the same files
+    built twice, the measured totals those of the catalogue's measures."""
+    import trimesh
+
+    ch = lost
+    before = copy.deepcopy(timbers.timbers_of(ch))
+    files = {p.name: p.read_bytes() for p in (ship.folder(ch) / solids.FOLDER).glob("*.ply")}
+    out = reconstruct.build(ch)
+    assert timbers.timbers_of(ch) == before  # the catalogue never touched
+    assert {p.name: p.read_bytes() for p in (ship.folder(ch) / solids.FOLDER).glob("*.ply")} == files
+    st = reconstruct.state(ch)
+    assert {"params", "built", "timbers", "mirror", "extension", "spacing", "loft", "table", "open_ends"} <= set(st)
+    assert st["params"] == {"step": 0.10, "samples": 41}
+    assert out["loft"] and out["mirrored"] and out["extended"] and out["spaced"]
+    assert out["table"] == st["table"] and set(out["open_ends"]) == {"stem", "stern"}
+    records = reconstruct.records_of(ch)
+    statuses = {r["status"] for r in records}
+    assert statuses == {"reconstructed:mirror", "reconstructed:extension", "reconstructed:spacing"}
+    built = {r["id"] for r in records if r.get("solid")}
+    for kind, status in (("plank", "reconstructed:extension"), ("frame", "reconstructed:spacing")):
+        done = [r for r in records if r["status"] == status and r["id"] in built]
+        assert done, (status, out["refused"])
+        for r in done:
+            assert r["kind"] == kind
+            v, f = _mesh(ch.data_dir / r["solid"])
+            tm = trimesh.Trimesh(v, f, process=False)
+            assert tm.is_watertight and tm.volume > 0, r["name"]
+            assert tm.volume == pytest.approx(r["volume"], rel=1e-6)
+    # the frames put back in the lost span stand on the loft
+    spaced = [r for r in records if r["status"] == "reconstructed:spacing" and r["id"] in built]
+    in_span = [r for r in spaced if LOST_BOTH[0] < _frame_x(r) < LOST_BOTH[1]]
+    assert in_span, [(r["name"], _frame_x(r)) for r in spaced]
+    refused = {r["id"] for r in out["refused"]}
+    assert refused == {r["id"] for r in records if not r.get("solid") and r["status"] != "reconstructed:mirror"}
+    names = sorted(p.name for p in reconstruct.folder(ch).glob("*.ply"))
+    assert names == sorted(["carenatura.ply"] + [f"{r['id']}.ply" for r in records if r.get("solid")])
+    first = {p.name: p.read_bytes() for p in reconstruct.folder(ch).glob("*.ply")}
+    table = copy.deepcopy(st["table"])
+    again = reconstruct.build(ch)
+    assert again["table"] == table
+    assert {p.name: p.read_bytes() for p in reconstruct.folder(ch).glob("*.ply")} == first
+    assert timbers.timbers_of(ch) == before
+
+
+def test_the_table_of_what_is_measured_and_what_is_reconstructed(lost, tmp_path):
+    import csv
+
+    from openpyxl import load_workbook
+
+    ch = lost
+    reconstruct.build(ch)
+    tab = reconstruct.table(ch)
+    assert tab == reconstruct.state(ch)["table"]
+    rows = tab["rows"]
+    catalogue, recon = timbers.timbers_of(ch), reconstruct.records_of(ch)
+    assert [r["id"] for r in rows][:len(catalogue)] == [r["id"] for r in catalogue]
+    assert {r["id"] for r in recon} <= {r["id"] for r in rows}
+    measure = timbers.measure(ch)
+    measured = [m for m in measure if m["status"] == "measured" and m["length"] is not None]
+    assert tab["totals"]["measured"]["length"] == pytest.approx(sum(m["length"] for m in measured), abs=1e-3)
+    frame = ship.frame_of(ch)
+    area = sum(shapely.Polygon(tracing.ship_xy_of(ch, r, frame)).area for r in catalogue
+               if timbers.is_measured(r) and r["geometry"]["type"] == "polygon")
+    assert tab["totals"]["measured"]["area"] == pytest.approx(area, abs=1e-4)
+    for row in rows:
+        if row["status"] == "measured":
+            assert row["reconstructed_length"] is None and row["reconstructed_area"] is None
+        else:
+            assert row["measured_length"] is None and row["measured_area"] is None
+    by_kind = tab["totals"]["kind"]
+    assert by_kind["plank"]["reconstructed_area"] > 0 and by_kind["frame"]["reconstructed_area"] > 0
+    assert sum(tab["counts"].values()) == len(rows)
+    assert tab["counts"]["reconstructed:mirror"] == len([r for r in recon if r["status"] == "reconstructed:mirror"])
+    assert tab["mirror"]["pieces"] == tab["counts"]["reconstructed:mirror"]
+    assert isinstance(tab["mirror"]["disagreements"], list)
+    paths = reconstruct.write_table(ch, tmp_path)
+    with open(paths["csv"], newline="", encoding="utf-8") as f:
+        read = list(csv.reader(f))
+    assert read[0][:5] == ["id", "name", "kind", "side", "status"] and len(read) == len(rows) + 1
+    book = load_workbook(paths["xlsx"])
+    assert book.sheetnames == ["misurato e ricostruito"] and book.properties.title == "misurato e ricostruito (ipotesi)"
+    assert book.active.max_row == len(rows) + 1
+    default = reconstruct.write_table(ch)
+    assert default["csv"] == reconstruct.folder(ch) / "tabella.csv" and default["xlsx"].exists()
+
+
+def test_surface_for_reads_relief_then_mirror_then_loft(lost):
+    from hulls import clinker_section
+
+    ch = lost
+    reconstruct.build(ch)
+    poly = shapely.box(5.0, -1.5, 10.0, 1.5)
+    surface = solids.surface_for(ch, poly)
+    xs = np.array([5.5, 7.5, 8.8, 8.8])
+    ys = np.array([-0.5, 0.5, 0.5, -0.5])  # starboard on the model, port mirrored, both sides lofted
+    z = surface(xs, ys)
+    assert np.isfinite(z).all(), z
+    assert z[0] == pytest.approx(_relief_at(ch, np.array([[5.5, -0.5]]))[0])
+    for k in range(1, 4):
+        sec = clinker_section(xs[k])
+        port = sec[sec[:, 0] >= 0]
+        assert abs(z[k] - np.interp(abs(ys[k]), port[:, 0], port[:, 1])) < 0.02, (k, z[k])
+    assert np.isnan(surface(np.array([20.0]), np.array([0.0]))).all()
+
+
+def test_a_build_stopped_halfway_keeps_the_earlier_reconstruction(lost, monkeypatch):
+    ch = lost
+    reconstruct.build(ch)
+    kept = copy.deepcopy(ship.state(ch)["reconstruction"])
+    files = {p.name: p.read_bytes() for p in reconstruct.folder(ch).glob("*.ply")}
+
+    def broken(*args, **kwargs):
+        raise ship.NotReady("stopped")
+
+    monkeypatch.setattr(reconstruct, "frames_by_spacing", broken)
+    with pytest.raises(ship.NotReady):
+        reconstruct.build(ch)
+    assert ship.state(ch)["reconstruction"] == kept
+    assert {p.name: p.read_bytes() for p in reconstruct.folder(ch).glob("*.ply")} == files
