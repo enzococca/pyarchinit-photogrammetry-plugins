@@ -408,7 +408,7 @@ def test_strakes_extended_to_the_surveyed_ends(whole):
         sign = 1.0 if name.split()[-1][0] == "B" else -1.0
         for piece, end in zip(pieces, (lo, hi)):
             assert piece["source"] in measured and measured[piece["source"]]["name"] == name
-            assert piece["trend"] == "land line" and piece["seams"] == [k - 1, k]
+            assert piece["trend"] == "land line" and piece["seams"] == [k - 1, k] and not piece["uncertain"]
             xy = np.asarray(piece["ship_xy"])
             assert (np.sign(xy[:, 1]) == sign).all() or np.abs(xy[:, 1]).min() < 1e-9
             assert shapely.Polygon(xy).is_valid and shapely.Polygon(xy).exterior.is_ccw
@@ -437,6 +437,23 @@ def cut_at_nine(tmp_path_factory):
     return ch, copy.deepcopy(ch.meta[ship.KEY])
 
 
+def _straight(x, rank):
+    """The hull's z of the land ``rank`` along the last 0.5 m before x 9.0, continued straight."""
+    xs = np.linspace(8.5, 8.95, 10)
+    c = np.polyfit(xs, [_seam_z(v, rank - 1) for v in xs], 1)
+    return float(np.polyval(c, x))
+
+
+def _beyond_z_ok(out, x_from: float, truth, tolerance: float = 0.05) -> None:
+    """Every edge point past ``x_from`` within ``tolerance`` of ``truth(x, rank)`` in z."""
+    for r in out:
+        for edge, rank in zip(("lower", "upper"), r["seams"]):
+            e = np.asarray([p for p in r["edges"][edge] if p[2] is not None], float)
+            far = e[e[:, 0] > x_from]
+            for x, _y, z in far:
+                assert abs(z - truth(x, rank)) < tolerance, (r["name"], edge, x, z, truth(x, rank))
+
+
 def test_nothing_past_the_surveyed_length_unless_the_ends_are_given(cut_at_nine):
     ch, snapshot = cut_at_nine
     ch.meta[ship.KEY] = copy.deepcopy(snapshot)
@@ -446,14 +463,19 @@ def test_nothing_past_the_surveyed_length_unless_the_ends_are_given(cut_at_nine)
     assert out
     assert max(np.asarray(r["ship_xy"])[:, 0].max() for r in out) < 9.0 + 0.02
     assert not any(r["beyond"] for r in out)
-    # the stem typed at 11.5: the strakes go on to it, not past it
+    # the stem typed at 11.5, the land lines read on the surveyed part: the strakes go on to it, not past it, and
+    # their z follows the hull's (the model's open border at 9.0 does not lift it)
+    ship.state(ch)["clinker"] = {"lines": _land_lines(np.arange(0.25, 8.76, 0.5))}
     assert reconstruct.set_ends(ch, stem=11.5) == {"stem": {"x": 11.5}}
     out = reconstruct.extend(ch)
     far = max(np.asarray(r["ship_xy"])[:, 0].max() for r in out)
     assert abs(far - 11.5) < 1e-6, far
     beyond = [r for r in out if r["beyond"]]
     assert beyond and {r["name"] for r in beyond} == {f"fascia {c}{k}" for c in "BT" for k in (2, 3, 4)}
-    # a stem traced as a line in the plan, slanting: nothing past it
+    assert not any(r["uncertain"] for r in out)
+    _beyond_z_ok(beyond, 9.0, _straight)  # no section past the model: the last 0.5 m of the hull continued
+    assert any("prua" in w for w in reconstruct.state(ch)["extension"]["warnings"])
+    # a stem traced as a line in the plan, slanting: nothing past it, the edges cut on it
     line = [[10.5, -2.0], [11.0, 0.0], [11.5, 2.0]]
     reconstruct.set_ends(ch, stem={"line": line})
     out = reconstruct.extend(ch)
@@ -462,7 +484,19 @@ def test_nothing_past_the_surveyed_length_unless_the_ends_are_given(cut_at_nine)
         xy = np.asarray(r["ship_xy"])
         limit = np.interp(xy[:, 1], [-2.0, 0.0, 2.0], [10.5, 11.0, 11.5])
         assert (xy[:, 0] <= limit + 1e-6).all(), r["name"]
+        for edge in ("lower", "upper"):
+            e = np.asarray([p[:2] for p in r["edges"][edge]], float)
+            assert (e[:, 0] <= np.interp(e[:, 1], [-2.0, 0.0, 2.0], [10.5, 11.0, 11.5]) + 1e-6).all()
     assert any(shapely.Polygon(r["ship_xy"]).distance(stem) < 1e-6 for r in out)
+    # no land line, no sections: past the model a seam goes on 1 m at most, uncertain, z straight on
+    ship.state(ch).pop("clinker")
+    reconstruct.set_ends(ch, stem=11.5)
+    out = reconstruct.extend(ch)
+    beyond = [r for r in out if r["beyond"]]
+    assert beyond and all(r["uncertain"] and r["trend"] == "none" for r in beyond)
+    assert max(np.asarray(r["ship_xy"])[:, 0].max() for r in beyond) < 9.0 + 1.0 + 0.05
+    assert reconstruct.state(ch)["extension"]["warnings"]
+    _beyond_z_ok(beyond, 9.0, _straight)
     # None removes the ends
     assert reconstruct.set_ends(ch) == {}
     out = reconstruct.extend(ch)
@@ -471,7 +505,9 @@ def test_nothing_past_the_surveyed_length_unless_the_ends_are_given(cut_at_nine)
 
 def test_a_mirrored_strake_is_extended_along_its_edges(hull):
     """Port lost from 6.5, starboard traced: the mirrored port strakes go on forward of the loss along their own
-    edges (the mirror has no seams), the measured records and the mirror untouched."""
+    edges (the mirror has no seams) - with no land line and no sections 1 m at most, uncertain, y and z on the
+    hull's lands all along; the measured records and the mirror untouched; the mirror built again keeps its ids, a
+    catalogue changed after it stops the extension."""
     ch = hull
     mirrored = reconstruct.mirror(ch)
     before = copy.deepcopy(timbers.timbers_of(ch))
@@ -481,13 +517,54 @@ def test_a_mirrored_strake_is_extended_along_its_edges(hull):
     by_id = {r["id"]: r for r in mirrored}
     for k in (2, 3, 4):
         pieces = [r for r in out if r["name"] == f"fascia B{k}"]
-        (piece,) = [r for r in pieces if abs(np.asarray(r["ship_xy"])[:, 0].max() - HOLE) < 0.1]  # forward of the loss
-        assert piece["source"] in by_id and piece["side"] == "port"
-        assert np.asarray(piece["ship_xy"])[:, 0].min() < 0.25
-        e = np.asarray(piece["edges"]["lower"], float)
-        x = HOLE - 0.3
-        y = np.interp(x, e[:, 0], np.abs(e[:, 1]))
-        assert abs(y - seam_y(x)[k - 2]) < 0.02, (k, y, seam_y(x)[k - 2])
+        (piece,) = pieces
+        xy = np.asarray(piece["ship_xy"])
+        assert abs(xy[:, 0].max() - HOLE) < 0.1 and abs(xy[:, 0].min() - (HOLE - 1.0)) < 0.1, xy[:, 0]
+        assert piece["source"] in by_id and piece["side"] == "port" and piece["uncertain"]
+        for edge, rank in (("lower", k - 1), ("upper", k)):
+            for x, y, z in piece["edges"][edge]:
+                assert abs(y - seam_y(x)[rank - 1]) < 0.02, (k, edge, x, y, seam_y(x)[rank - 1])
+                assert z is not None and abs(z - _seam_z(x, rank - 1)) < 0.02, (k, edge, x, z, _seam_z(x, rank - 1))
+    # the mirror built again: the same ids, the extension's sources still there
+    again = reconstruct.mirror(ch)
+    assert [r["id"] for r in again] == [r["id"] for r in mirrored]
+    ids = {r["id"] for r in reconstruct.records_of(ch)} | {r["id"] for r in timbers.timbers_of(ch)}
+    assert all(r["source"] in ids for r in out)
+    assert reconstruct.extend(ch)[0]["id"] == out[0]["id"]
+    assert reconstruct.state(ch)["extension"]["mirror_built"] == reconstruct.state(ch)["mirror"]["built"]
+    # a record traced after the mirror: the mirror is stale, the extension refused
+    frame = ship.frame_of(ch)
+    tracing.add_traced(ch, "frame", "port", "ordinata nuova", relief.uv_of_ship(
+        [[3.30, 0.2], [3.38, 0.2], [3.38, 1.5], [3.30, 1.5]], frame.sign), "polygon")
+    with pytest.raises(ship.NotReady):
+        reconstruct.extend(ch)
+    with pytest.raises(ship.NotReady):
+        reconstruct.frames_by_spacing(ch)
+
+
+def test_extension_and_mirror_in_either_order(tmp_path):
+    """Port lost aft of 6.5, everything proposed accepted: the extension never covers the mirror's ground, so
+    extension then mirror gives what mirror then extension gives, without overlaps."""
+    ch = _lost_project(tmp_path, lambda x, y: x > HOLE)
+    snapshot = copy.deepcopy(ch.meta[ship.KEY])
+
+    def shapes(records):
+        return sorted((r["name"], r["side"], tuple(np.round(shapely.Polygon(r["ship_xy"]).bounds, 4)))
+                      for r in records)
+
+    m1 = reconstruct.mirror(ch)
+    e1 = reconstruct.extend(ch)
+    ch.meta[ship.KEY] = copy.deepcopy(snapshot)
+    e2 = reconstruct.extend(ch)
+    m2 = reconstruct.mirror(ch)
+    assert m1 and shapes(m1) == shapes(m2)
+    assert shapes(e1) == shapes(e2)
+    for a, b in zip(sorted(e1, key=lambda r: (r["name"], r["position"])), sorted(e2, key=lambda r: (r["name"], r["position"]))):
+        assert shapely.Polygon(a["ship_xy"]).symmetric_difference(shapely.Polygon(b["ship_xy"])).area < 1e-8
+    over = shapely.union_all([shapely.Polygon(r["ship_xy"]) for r in m2 if r["kind"] == "plank"])
+    for r in e2:
+        assert shapely.Polygon(r["ship_xy"]).intersection(over).area < 1e-4, r["name"]
+        assert np.asarray(r["ship_xy"])[:, 0].max() < HOLE + 0.1 or r["side"] == "starboard", r["name"]
 
 
 def _frame_x(r):

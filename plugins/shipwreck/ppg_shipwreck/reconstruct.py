@@ -34,7 +34,9 @@ The EXTENSION (``ricostruito: prolungamento``, :func:`extend`) continues each st
 hull with a fair spline through its seams, inside the surveyed length (:func:`surveyed_range`) and beyond it only to
 the stem and stern the user gives (:func:`set_ends`); the FRAMES BY SPACING (``ricostruito: passo delle ordinate``,
 :func:`frames_by_spacing`) add the frames missing between two frames at the measured room and space. Both are records
-of the same list, each kind replaced as a whole when built again, without solids (the extension's edges keep their z).
+of the same list, each kind replaced as a whole when built again, without solids (the extension's edges keep their z,
+None where nothing gives one). The order: the mirror first (the extension leaves its ground to it, and both refuse
+a mirror older than the catalogue), then the extension and the frames.
 
 Only ``chunk.meta["shipwreck"]["reconstruction"]`` and ``<chunk data>/shipwreck/reconstruction/`` are written; the
 measured records, the chunk's transform, model and products never."""
@@ -322,8 +324,10 @@ def _kept(grid: "_Relief", piece, source_width: float, over, beside) -> bool:
 def mirror(chunk, progress=None) -> list[dict]:
     """The preserved side mirrored where the other side is lost (see the module): the earlier mirror replaced, the
     new records added to ``state["reconstruction"]["timbers"]``, their solids written (into a folder of their own
-    first: whatever stops the mirror halfway leaves the earlier one as it was). Returns the new records; the timbers
-    refused (no thickness, a solid that cannot be built) go to ``state["reconstruction"]["mirror"]``."""
+    first: whatever stops the mirror halfway leaves the earlier one as it was), each keeping the id of the earlier
+    record from the same source at the same place (``position``: its plan bounds to the cm). Returns the new
+    records; the timbers refused (no thickness, a solid that cannot be built) go to
+    ``state["reconstruction"]["mirror"]``, with the fingerprint of the catalogue it read (``catalogue``)."""
     import shutil
 
     import shapely
@@ -338,7 +342,7 @@ def mirror(chunk, progress=None) -> list[dict]:
     records = timbers.timbers_of(chunk)
     candidates = _candidates(records)
     st = state(chunk)
-    n = _next_id([r for r in st.get("timbers", []) if r.get("status") != STATUS])
+    take = _ids(chunk, STATUS)
     out, refused = [], []
     key = relief.frame_key(frame)
     tmp = ship.folder(chunk) / (FOLDER + ".new")
@@ -362,7 +366,8 @@ def mirror(chunk, progress=None) -> list[dict]:
                 xy = _ring(piece) if whole else _ring(piece, grid.cell)
                 if len(xy) < 3:
                     continue
-                rid = f"R{n}"
+                at = [round(float(v), 2) for v in (xy[:, 0].min(), xy[:, 1].min(), xy[:, 0].max(), xy[:, 1].max())]
+                rid = take(source["id"], at)
                 label = name if len(pieces) == 1 else f"{name} ({j + 1})"
                 try:
                     solid = _mirrored_solid(_original_solid(chunk, source, _reflect(xy), whole, frame), rid, label)
@@ -371,13 +376,12 @@ def mirror(chunk, progress=None) -> list[dict]:
                     reason = str(exc) if isinstance(exc, NotReady) else f"{type(exc).__name__}: {exc}"
                     refused.append({"source": source["id"], "name": source["name"], "reason": reason})
                     continue
-                n += 1
                 record = {"id": rid, "kind": source["kind"], "side": side, "name": label,
                           "station": source.get("station", ""), "status": STATUS, "source": source["id"],
                           "ship_xy": xy.tolist(), "geometry": timbers.geometry("polygon", _world(frame, xy)),
                           "frame_key": key, "chunk": chunk.key, "clipped": not whole,
                           "solid": str((folder(chunk) / path.name).relative_to(chunk.data_dir)),
-                          "volume": float(solid.volume)}
+                          "volume": float(solid.volume), "position": at}
                 if solid.thickness_mm is not None:
                     record["thickness_mm"] = float(solid.thickness_mm)
                 out.append(record)
@@ -385,7 +389,7 @@ def mirror(chunk, progress=None) -> list[dict]:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     st["mirror"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": len(out),
-                    "refused": refused, "frame_key": key}
+                    "refused": refused, "frame_key": key, "catalogue": _catalogue_key(chunk)}
     progress(1.0, t(f"Simmetria: {len(out)} legni ricostruiti, {len(refused)} rifiutati",
                     f"Mirror: {len(out)} timbers reconstructed, {len(refused)} refused"))
     return out
@@ -483,6 +487,12 @@ STEP = 0.05  # m: the bins along x of a seam's points, and of a mirrored strake'
 GRID = 0.02  # m: the step along x of the extended edges
 BLEND = 0.5  # m: past the last traced point the derivative goes over into the trend over this length
 MIN_GAP = 0.05  # m: a shorter gap of a strake is not filled
+END_FIT = 0.4  # m: the last stretch of a seam's points whose robust line gives its slope at the end
+BORDER = 3  # cells: the relief's cells this close to the model's edge are not read for heights
+BEND_FIT = 1.5  # m: the last stretch of a trend's points whose parabola gives its bending at the end
+BEND_REACH = 1.0  # m: how far past its points a trend's derivative goes on bending (then held)
+OPEN_X = 0.25  # m: heights read along a seam opened over this length (a timber's top narrower than it goes)
+NO_TREND_REACH = 1.0  # m: how far a seam without a trend (no land line, no sections) goes past its points
 GAP_FACTOR = 1.5  # a space between two frames longer than this many median spaces has frames missing
 _STRAKE = re.compile(r"([BT])(\d+)(?:\s*\(\d+\))?\s*$")
 _FRAME_NUMBER = re.compile(r"^(?:ordinata|frame)\s+(\d+)\s*$")
@@ -533,11 +543,13 @@ def surveyed_range(chunk) -> tuple[float, float]:
 
 
 def _limits(chunk, surveyed: tuple[float, float]):
-    """How far the strakes may go: the surveyed range, each end given setting its own side (the one beyond the
-    middle of the surveyed range: the stem typed inside the range shortens it); the regions past a traced end."""
+    """How far the strakes may go: the surveyed range, each end given setting its own side (the side of the middle
+    of the surveyed range it lies on: a stem typed inside the range shortens it); the regions past a traced end;
+    the warnings (which end each one was taken for, an end inside the surveyed length)."""
     lo, hi = surveyed
     mid = 0.5 * (lo + hi)
-    cuts, sides = [], set()
+    cuts, sides, warnings = [], set(), []
+    names = {"stem": t("prua", "stem"), "stern": t("poppa", "stern")}
     for key, e in (state(chunk).get("ends") or {}).items():
         if "x" in e:
             x, line = float(e["x"]), None
@@ -549,6 +561,14 @@ def _limits(chunk, surveyed: tuple[float, float]):
             raise NotReady(t("Prua e poppa stanno dalla stessa parte del relitto.",
                              "Stem and stern lie on the same side of the wreck."))
         sides.add(side)
+        where = t("x maggiore", "larger x") if side > 0 else t("x minore", "smaller x")
+        warnings.append(t(f"La {names[key]} (x {x:.2f} m) è presa come l'estremità a {where}.",
+                          f"The {names[key]} (x {x:.2f} m) is taken for the end at {where}."))
+        if lo + GRID < x < hi - GRID:
+            warnings.append(t(f"La {names[key]} (x {x:.2f} m) sta dentro la lunghezza rilevata: le fasce si "
+                              "fermano lì.",
+                              f"The {names[key]} (x {x:.2f} m) lies inside the surveyed length: the strakes stop "
+                              "there."))
         if line is None:
             lo, hi = (lo, x) if side > 0 else (x, hi)
             continue
@@ -557,7 +577,7 @@ def _limits(chunk, surveyed: tuple[float, float]):
         else:
             lo = float(line[:, 0].min())
         cuts.append(_beyond(line, side))
-    return lo, hi, cuts
+    return lo, hi, cuts, warnings
 
 
 def _beyond(line: np.ndarray, side: int):
@@ -572,20 +592,38 @@ def _beyond(line: np.ndarray, side: int):
 
 
 # ----------------------------------------------------------------------------- the curves along x
+def _huber_slope(x: np.ndarray, v: np.ndarray) -> float:
+    """The slope of a robust line through the points: Huber's weights (k = 1.345 sigma, sigma from the MAD),
+    iterated, so that one point off the others (a border cell, a timber's top) does not tilt it."""
+    a = np.column_stack([x - x.mean(), np.ones(len(x))])
+    w = np.ones(len(x))
+    coef = np.zeros(2)
+    for _ in range(20):
+        sw = np.sqrt(w)
+        coef = np.linalg.lstsq(a * sw[:, None], v * sw, rcond=None)[0]
+        r = v - a @ coef
+        sigma = 1.4826 * float(np.median(np.abs(r - np.median(r))))
+        k = 1.345 * max(sigma, 1e-6)
+        w = np.minimum(1.0, k / np.maximum(np.abs(r), 1e-12))
+    return float(coef[0])
+
+
 class _Curve:
-    """A value along x fitted on its points: a smoothing spline (GCV), a polynomial for a few points; its derivative
-    and, outside the points, the line of its end (the derivative held)."""
+    """A value along x fitted on its points: a smoothing spline (GCV), a polynomial of degree <= 2 for a few points.
+    :meth:`d` holds the end's derivative outside the points (a polynomial's derivative is never let run);
+    :meth:`trend` lets it go on with the end's bending (a parabola through the last :data:`BEND_FIT` of points: the
+    spline itself is natural, without bending at its ends) for :data:`BEND_REACH` at most, then holds it."""
 
     def __init__(self, x: np.ndarray, v: np.ndarray):
         from scipy.interpolate import make_smoothing_spline
 
+        self.x, self.v = x, v
         self.lo, self.hi = float(x[0]), float(x[-1])
         self.spline = None
         if len(x) >= 5:
             try:
                 self.spline = make_smoothing_spline(x, v)
                 self.slope = self.spline.derivative()
-                self.bend = self.slope.derivative()
             except Exception:  # noqa: BLE001 - GCV on awkward points: a polynomial instead
                 self.spline = None
         if self.spline is None:
@@ -598,20 +636,35 @@ class _Curve:
         return np.polyval(self.poly, x)
 
     def d(self, x):
-        x = np.asarray(x, float)
+        x = np.clip(np.asarray(x, float), self.lo, self.hi)
         if self.spline is not None:
             return self.slope(x)
         return np.polyval(np.polyder(self.poly), x) if len(self.poly) > 1 else np.zeros_like(x)
 
+    def _bend(self, end: float) -> float:
+        near = np.abs(self.x - end) <= BEND_FIT
+        if near.sum() < 3 or np.ptp(self.x[near]) <= 0:
+            return 0.0
+        return float(2.0 * np.polyfit(self.x[near], self.v[near], 2)[0])
+
     def trend(self, x):
-        """The derivative as a trend: the spline's inside its points, outside them its end's derivative going on
-        with the end's bending for up to 1 m, then held."""
         x = np.asarray(x, float)
-        if self.spline is None:
-            return self.d(x)
         e = np.clip(x, self.lo, self.hi)
-        reach = np.clip(x - e, -1.0, 1.0)
-        return self.slope(e) + self.bend(e) * reach
+        out = np.asarray(self.d(e), float)
+        for end in (self.lo, self.hi):
+            past = (x < self.lo) if end == self.lo else (x > self.hi)
+            if np.any(past):
+                reach = np.clip(x - end, -BEND_REACH, BEND_REACH)
+                out = np.where(past, out + self._bend(end) * reach, out)
+        return out
+
+    def end_slope(self, end: float) -> float:
+        """The slope at an end of the points: a robust line (:func:`_huber_slope`) over the points within
+        :data:`END_FIT` of it; the curve's derivative with fewer than three."""
+        near = np.abs(self.x - end) <= END_FIT
+        if near.sum() < 3:
+            return float(self.d(end))
+        return _huber_slope(self.x[near], self.v[near])
 
 
 def _curve(x, v):
@@ -662,30 +715,91 @@ def _edge_points(poly, outer: bool) -> np.ndarray:
 
 
 class _Heights:
-    """Ship z read on the relief at plan points (bilinear, NaN off the model or on a timber over the planking)."""
+    """Ship z read on the relief at plan points (bilinear): NaN off the model, within :data:`BORDER` cells of its
+    edge (an open border of a model reads cells half on the void, centimetres off), or on a timber lying over the
+    planking (the measured frames, keelson, stringers). Also the relief's cells, for the mirror's ground."""
 
     def __init__(self, chunk, frame: ship.Frame, records: list[dict]):
         import shapely
+        from scipy import ndimage
 
         self.z, self.affine = relief.load(chunk, "height")
+        self.cell = float(abs(self.affine.a))
         self.sign = frame.sign
+        valid = ndimage.binary_erosion(np.isfinite(self.z), iterations=BORDER, border_value=0)
+        self.read = np.where(valid, self.z, np.nan)
         cutters = [_polygon(tracing.ship_xy_of(chunk, r, frame)) for r in records
                    if r["kind"] in tracing.CUTTERS and r["geometry"]["type"] == "polygon" and not r.get("loose")]
         self.cutters = shapely.union_all(cutters).buffer(0.01) if cutters else None
+        self._ground: dict[str, object] = {}
 
     def at(self, xy: np.ndarray) -> np.ndarray:
         import shapely
         from scipy.ndimage import map_coordinates
 
         xy = np.asarray(xy, float).reshape(-1, 2)
+        if not len(xy):
+            return np.zeros(0)
         inv = ~self.affine
         u, v = xy[:, 0], self.sign * xy[:, 1]
         col, row = inv.a * u + inv.b * v + inv.c, inv.d * u + inv.e * v + inv.f
-        z = map_coordinates(self.z, [row - 0.5, col - 0.5], order=1, mode="constant",
-                            cval=np.nan)
-        if self.cutters is not None and len(xy):
+        z = map_coordinates(self.read, [row - 0.5, col - 0.5], order=1, mode="constant", cval=np.nan)
+        if self.cutters is not None:
             z[shapely.contains_xy(self.cutters, xy[:, 0], xy[:, 1])] = np.nan
         return z
+
+    def ground(self, side: str):
+        """The mirror's ground on ``side``: its cells without the model whose reflection across the keel line has
+        it (where the other side is preserved and this one lost), opened by :data:`OPENING` cells as the mirror
+        does, in the ship plan, grown by one cell. None when there is none."""
+        if side in self._ground:
+            return self._ground[side]
+        import shapely
+        from rasterio import features
+        from scipy import ndimage
+
+        a = self.affine
+        present = np.isfinite(self.z)
+        rows, cols = np.indices(present.shape)
+        u = a.c + a.a * (cols + 0.5) + a.b * (rows + 0.5)
+        v = a.f + a.d * (cols + 0.5) + a.e * (rows + 0.5)
+        inv = ~a
+        rc = np.floor(inv.a * u + inv.b * (-v) + inv.c).astype(int)
+        rr = np.floor(inv.d * u + inv.e * (-v) + inv.f).astype(int)
+        inside = (rr >= 0) & (rr < present.shape[0]) & (rc >= 0) & (rc < present.shape[1])
+        mirrored = np.zeros_like(present)
+        mirrored[inside] = present[rr[inside], rc[inside]]
+        y = self.sign * v
+        mine = y > 0 if side == "port" else y < 0
+        lost = ndimage.binary_opening(~present & mirrored & mine, structure=np.ones((OPENING + 1, OPENING + 1), bool))
+        poly = None
+        if lost.any():
+            shapes = [shapely.geometry.shape(g) for g, val in
+                      features.shapes(lost.astype("uint8"), mask=lost, transform=a) if val == 1]
+            uv = shapely.union_all(shapes)
+            poly = shapely.transform(uv, lambda p: relief.ship_of_uv(p, self.sign)).buffer(self.cell)
+        self._ground[side] = poly
+        return poly
+
+
+def _opened(x: np.ndarray, z: np.ndarray, width: float = OPEN_X) -> np.ndarray:
+    """Heights along x opened (a running minimum, then a running maximum, each over ``width``): a raise narrower
+    than ``width`` over the planking (a frame's top not in the catalogue, a stray block) goes, the planking's run
+    stays (off by c w^2 / 8 where it bends with curvature c along x). NaN stays NaN, and is no part of a window."""
+    z = np.asarray(z, float)
+    out = np.full(len(z), np.nan)
+    ok = np.isfinite(z) & np.isfinite(x)
+    if ok.sum() < 3:
+        return np.where(ok, z, np.nan)
+    order = np.argsort(x[ok])
+    xs, zs = x[ok][order], z[ok][order]
+    lo = np.searchsorted(xs, xs - width / 2.0, "left")
+    hi = np.searchsorted(xs, xs + width / 2.0, "right")
+    low = np.array([zs[a:b].min() for a, b in zip(lo, hi)])
+    opened = np.array([low[a:b].max() for a, b in zip(lo, hi)])
+    idx = np.flatnonzero(ok)[order]
+    out[idx] = opened
+    return out
 
 
 def _binned(x: np.ndarray, y: np.ndarray, z: np.ndarray):
@@ -707,13 +821,12 @@ def _binned(x: np.ndarray, y: np.ndarray, z: np.ndarray):
 
 
 class _Seam:
-    """The points of the seam ``rank`` of a side (|y|, ship z by x): its measured seam records, where there are none
+    """The points of the seam ``rank`` of a side (|y|, ship z by x): its measured seam records; when it has none,
     the edges of the strakes beside it (a mirrored strake's z read on the other side, where the wreck is)."""
 
     def __init__(self, x, y, z):
         self.x, self.y, self.z = x, y, z
         self.fy = _curve(x, y)
-        self.fz = _curve(x, z)
         self.lo, self.hi = (float(x.min()), float(x.max())) if len(x) else (None, None)
 
 
@@ -726,26 +839,21 @@ def _seam(chunk, frame, heights: _Heights, records, recon, side: str, rank: int)
         xy = _densify(tracing.ship_xy_of(chunk, r, frame))
         xs.append(xy[:, 0])
         ys.append(xy[:, 1])
-        zs.append(heights.at(xy))
-    seam_bins = set(np.floor(np.concatenate(xs) / STEP).astype(int).tolist()) if xs else set()
-    planks = [(r, _strake_rank(r["name"])) for r in records + recon
-              if r["kind"] == "plank" and r["side"] == side and r["geometry"]["type"] == "polygon"
-              and not r.get("loose") and (r.get("status") == STATUS or timbers.is_measured(r))]
-    above = any(rk == (code, rank + 1) for _r, rk in planks)
-    for r, rk in planks:
-        if rk not in ((code, rank), (code, rank + 1)) or (rk == (code, rank) and not above):
-            continue
-        mirrored = r.get("status") == STATUS
-        if not mirrored and seams:
-            continue  # a measured strake's edge only where its seam was not traced
-        xy = _edge_points(_polygon(tracing.ship_xy_of(chunk, r, frame)), outer=rk == (code, rank))
-        if not len(xy):
-            continue
-        keep = ~np.isin(np.floor(xy[:, 0] / STEP).astype(int), list(seam_bins))
-        xy = xy[keep]
-        xs.append(xy[:, 0])
-        ys.append(xy[:, 1])
-        zs.append(heights.at(xy * [1.0, -1.0] if mirrored else xy))
+        zs.append(_opened(xy[:, 0], heights.at(xy)))
+    if not seams:  # the strakes' edges (measured or mirrored) only when the seam was never traced
+        planks = [(r, _strake_rank(r["name"])) for r in records + recon
+                  if r["kind"] == "plank" and r["side"] == side and r["geometry"]["type"] == "polygon"
+                  and not r.get("loose") and (r.get("status") == STATUS or timbers.is_measured(r))]
+        above = any(rk == (code, rank + 1) for _r, rk in planks)
+        for r, rk in planks:
+            if rk not in ((code, rank), (code, rank + 1)) or (rk == (code, rank) and not above):
+                continue
+            xy = _edge_points(_polygon(tracing.ship_xy_of(chunk, r, frame)), outer=rk == (code, rank))
+            if not len(xy):
+                continue
+            xs.append(xy[:, 0])
+            ys.append(xy[:, 1])
+            zs.append(_opened(xy[:, 0], heights.at(xy * [1.0, -1.0] if r.get("status") == STATUS else xy)))
     if not xs:
         return None
     x, y, z = _binned(np.concatenate(xs), np.concatenate(ys), np.concatenate(zs))
@@ -755,14 +863,13 @@ def _seam(chunk, frame, heights: _Heights, records, recon, side: str, rank: int)
 # ----------------------------------------------------------------------------- the trends
 class _Trend:
     """Where a seam goes past its points: the 0.2.0 land line of its rank on its side, else the stations' sheer
-    (|y| in proportion to the seam's at its end, z as the sheer's), else nothing (the seam's own end slope)."""
+    (|y| in proportion to the seam's at its end, z as the sheer's), else ``none`` (the seam's own end slope, for
+    :data:`NO_TREND_REACH` at most)."""
 
     def __init__(self, kind: str, fy=None, fz=None):
         self.kind, self.fy, self.fz = kind, fy, fz
 
     def dy(self, x, anchor_x: float, anchor_y: float):
-        if self.fy is None:
-            return None
         d = self.fy.trend(x)
         if self.kind == "sheer":
             ref = float(self.fy(np.clip(anchor_x, self.fy.lo, self.fy.hi)))
@@ -770,7 +877,7 @@ class _Trend:
         return d
 
     def dz(self, x):
-        return None if self.fz is None else self.fz.trend(x)
+        return self.fz.trend(x)
 
 
 def _land_lines(chunk) -> list[dict]:
@@ -810,48 +917,72 @@ def _trend(chunk, side: str, rank: int, sheers: dict) -> _Trend:
         fy = _curve(p[:, 0], p[:, 1])
         if fy is not None:
             return _Trend("sheer", fy, _curve(p[:, 0], p[:, 2]))
-    return _Trend("spline")
+    return _Trend("none")
 
 
 # ----------------------------------------------------------------------------- the extended edges
-def _grid(lo: float, hi: float, extra=()) -> np.ndarray:
-    xs = np.r_[np.arange(lo, hi, GRID), hi, np.asarray(list(extra), float)]
-    return np.unique(np.clip(xs, lo, hi))
+def _grid(lo: float, hi: float) -> np.ndarray:
+    return np.unique(np.clip(np.r_[np.arange(lo, hi, GRID), hi], lo, hi))
 
 
-def _go_on(curve: _Curve, end: float, xs: np.ndarray, trend) -> np.ndarray:
-    """The value of ``curve`` continued from its point ``end`` over ``xs`` (all on one side of it, ordered away from
-    it): the derivative at ``end`` going linearly over :data:`BLEND` into ``trend(x)`` (None: held)."""
+def _go_on(value: float, slope: float, end: float, xs: np.ndarray, trend) -> np.ndarray:
+    """A value continued from ``value`` at ``end`` over ``xs`` (all on one side of it, ordered away from it): the
+    slope at ``end`` going linearly over :data:`BLEND` into ``trend(x)`` (None: held)."""
     out = np.empty(len(xs))
-    v, x0 = float(curve(end)), end
-    d_end = float(curve.d(end))
+    v, x0 = float(value), end
     for i, x in enumerate(xs):
         m = 0.5 * (x0 + x)
         w = min(abs(m - end) / BLEND, 1.0)
-        d = d_end if trend is None else (1.0 - w) * d_end + w * float(trend(m))
+        d = slope if trend is None else (1.0 - w) * slope + w * float(trend(m))
         v += d * (x - x0)
         out[i], x0 = v, x
     return out
 
 
-def _edge(seam: _Seam, trend: _Trend, xs: np.ndarray) -> np.ndarray:
-    """The seam over ``xs``: (x, |y|, z), the spline inside its points, continued past them (:func:`_go_on`)."""
-    y, z = np.full(len(xs), np.nan), np.full(len(xs), np.nan)
-    inside = (xs >= seam.lo) & (xs <= seam.hi)
-    y[inside] = seam.fy(xs[inside])
-    if seam.fz is not None:
-        z[inside] = seam.fz(xs[inside])
-    for part, end in ((xs < seam.lo, seam.lo), (xs > seam.hi, seam.hi)):
+def _continued(curve: _Curve, xs: np.ndarray, trend) -> np.ndarray:
+    """``curve`` over ``xs``: inside its points the curve, past them :func:`_go_on` from its end with its robust end
+    slope (:meth:`_Curve.end_slope`) into ``trend(x, end, value)``; with no trend (None) the slope goes on with the
+    curve's own bending at that end (:meth:`_Curve.trend`'s parabola) for :data:`BEND_REACH`, then is held."""
+    out = np.full(len(xs), np.nan)
+    inside = (xs >= curve.lo) & (xs <= curve.hi)
+    out[inside] = curve(xs[inside])
+    for part, end in ((xs < curve.lo, curve.lo), (xs > curve.hi, curve.hi)):
         if not part.any():
             continue
         order = np.argsort(np.abs(xs[part] - end))
-        sub = xs[part][order]
-        y_end = float(seam.fy(end))
-        yv = _go_on(seam.fy, end, sub, (lambda m, e=end, ye=y_end: trend.dy(m, e, ye)) if trend.fy is not None else None)
-        idx = np.flatnonzero(part)[order]
-        y[idx] = np.maximum(yv, 0.0)
-        if seam.fz is not None:
-            z[idx] = _go_on(seam.fz, end, sub, trend.dz if trend.fz is not None else None)
+        value, slope = float(curve(end)), curve.end_slope(end)
+        bend = curve._bend(end) if trend is None else 0.0
+
+        def tr(m, e=end, v=value, s0=slope, b=bend):
+            if trend is None:
+                return s0 + b * float(np.clip(m - e, -BEND_REACH, BEND_REACH))
+            return trend(m, e, v)
+
+        out[np.flatnonzero(part)[order]] = _go_on(value, slope, end, xs[part][order], tr)
+    return out
+
+
+def _edge(seam: _Seam, trend: _Trend, xs: np.ndarray, heights: _Heights, sign: float) -> np.ndarray:
+    """The seam over ``xs``: (x, |y|, z).
+
+    - |y|: the seam's spline inside its points, past them continued (:func:`_continued`) into the trend's |y|;
+    - z: read on the relief at the edge wherever the model is (outside the timbers over the planking and the
+      model's border); elsewhere a spline through those heights and the seam's own, past them continued into the
+      trend's z (held without one); NaN when nothing gives a height. The stations' sections are cuts of the same
+      model as the relief: where it has no height they have none either."""
+    y = np.maximum(_continued(seam.fy, xs, trend.dy if trend.fy is not None else None), 0.0)
+    read = _opened(xs, heights.at(np.column_stack([xs, sign * y])))
+    zx = np.r_[seam.x, xs]
+    zv = np.r_[seam.z, read]
+    ok = np.isfinite(zv)
+    z = np.full(len(xs), np.nan)
+    if ok.sum() >= 2:
+        bx, _by, bz = _binned(zx[ok], np.zeros(int(ok.sum())), zv[ok])
+        fz = _curve(bx, bz)
+        if fz is not None:
+            dz = (lambda m, _e, _v: trend.dz(m)) if trend.fz is not None else None
+            z = _continued(fz, xs, dz)
+    z = np.where(np.isfinite(read), read, z)
     return np.column_stack([xs, y, z])
 
 
@@ -884,6 +1015,30 @@ def _band(lower: np.ndarray, upper: np.ndarray, sign: float):
     return _polygon(ring)
 
 
+def _edge_of_piece(e: np.ndarray, piece, sign: float, beyond) -> list:
+    """An edge (x, |y|, z) kept over a piece's x and, with a traced end, cut where it crosses the end's line (the
+    crossing added): ``[[x, y, z], ...]`` in the ship plan, z None where there is no height."""
+    import shapely
+
+    x0, _y0, x1, _y1 = piece.bounds
+    keep = (e[:, 0] >= x0 - 1e-9) & (e[:, 0] <= x1 + 1e-9)
+    e = e[keep]
+    xy = np.column_stack([e[:, 0], sign * e[:, 1]])
+    if beyond is not None and len(xy) >= 2:
+        parts = [g for g in getattr(shapely.LineString(xy).difference(beyond), "geoms",
+                                    [shapely.LineString(xy).difference(beyond)])
+                 if g.geom_type == "LineString" and not g.is_empty]
+        if parts:
+            xy = np.asarray(max(parts, key=lambda g: g.length).coords, float)[:, :2]
+        else:
+            xy = xy[:0]
+    ok = np.isfinite(e[:, 2])
+    z = (np.interp(xy[:, 0], e[ok, 0], e[ok, 2]) if ok.sum() >= 2 else np.full(len(xy), np.nan))
+    if ok.sum() >= 2:
+        z[(xy[:, 0] < e[ok, 0].min() - GRID) | (xy[:, 0] > e[ok, 0].max() + GRID)] = np.nan
+    return [[float(x), float(y), float(v) if np.isfinite(v) else None] for (x, y), v in zip(xy, z)]
+
+
 def _replace(chunk, status: str, new: list[dict]) -> None:
     st = state(chunk)
     st["timbers"] = [r for r in st.get("timbers", []) if r.get("status") != status] + new
@@ -907,23 +1062,56 @@ def _ids(chunk, status: str):
     return take
 
 
+def _catalogue_key(chunk) -> str:
+    """A fingerprint of the catalogue's records as the mirror reads them (ids, kinds, sides, names, loose, status,
+    geometry): another one later means the mirror is older than the records."""
+    import hashlib
+    import json
+
+    rows = sorted([r["id"], r["kind"], r["side"], r["name"], bool(r.get("loose")), timbers.status_of(r),
+                   np.round(np.asarray(r["geometry"]["xy"], float), 4).tolist()] for r in timbers.timbers_of(chunk))
+    return hashlib.sha1(json.dumps(rows).encode("utf-8")).hexdigest()
+
+
+def _current_mirror(chunk, frame: ship.Frame) -> str | None:
+    """The mirror's build stamp (None: never built); :class:`NotReady` when it is older than the catalogue or was
+    made in another ship frame (build it again: what follows reads it)."""
+    m = state(chunk).get("mirror")
+    if m is None:
+        return None
+    if m.get("catalogue") != _catalogue_key(chunk) or m.get("frame_key") != relief.frame_key(frame):
+        raise NotReady(t("La simmetria è più vecchia del catalogo dei legni: rifai prima la simmetria.",
+                         "The mirror is older than the catalogue of timbers: build the mirror again first."))
+    return m.get("built")
+
+
 def extend(chunk, progress=None) -> list[dict]:
-    """Each strake between two seams (measured, or mirrored: its edges are its seams) continued along the hull: its
-    seams (|y|, and z from the relief) fitted in x by a smoothing spline, over the strake's gaps inside
-    :func:`surveyed_range` and, beyond it, only up to the ends :func:`set_ends` gave; past the last point of a seam
-    its derivative goes over linearly in :data:`BLEND` into the trend of the 0.2.0 land line of its rank, else of
-    the stations' sheer. The new parts only, as band polygons (``reconstructed:extension``, named as the strake,
-    ``source`` the strake's record nearest, ``edges`` lower/upper (x, y, z), ``seams``, ``trend``, ``beyond``: past
-    the surveyed range); the earlier extension replaced. No solid yet."""
+    """Each strake between two seams (measured, or mirrored: its edges are its seams) continued along the hull.
+
+    - Its seams' |y| fitted in x by a smoothing spline (GCV) over the strake's gaps (x not covered by its measured
+      records) inside :func:`surveyed_range` and, beyond it, only up to the ends :func:`set_ends` gave.
+    - Past the last point of a seam the slope of a robust line through its last :data:`END_FIT` goes over linearly
+      in :data:`BLEND` into the trend of the 0.2.0 land line of its rank, else of the stations' sheer; with neither
+      (``trend`` "none") a seam goes on :data:`NO_TREND_REACH` at most and the piece is ``uncertain``.
+    - z read on the relief along the edge wherever the model is (:func:`_edge`); past the model continued as |y|.
+    - Never over the mirror's ground (:meth:`_Heights.ground`: this side lost, the other preserved): that is the
+      mirror's to fill, whichever is built first; :class:`NotReady` while the mirror is older than the catalogue.
+
+    The new parts only, as band polygons (``reconstructed:extension``, named as the strake, ``source`` the
+    strake's record nearest, ``sources``, ``edges`` lower/upper ``[[x, y, z], ...]`` in the ship plan (z None where
+    nothing gives a height), ``seams``, ``trend``, ``uncertain``, ``beyond``: past the surveyed range, ``position``);
+    the earlier extension replaced (ids kept for the same source and position). No solid yet. The order to build:
+    mirror, then extension and frames (``state["extension"]["mirror_built"]`` says which mirror it read)."""
     import shapely
 
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
     frame = ship.need_frame(chunk)
+    mirror_built = _current_mirror(chunk, frame)
     surveyed = surveyed_range(chunk)
     tracing.need_fresh_relief(chunk)
-    lo, hi, cuts = _limits(chunk, surveyed)
+    lo, hi, cuts, warnings = _limits(chunk, surveyed)
     records = timbers.timbers_of(chunk)
     recon = [r for r in records_of(chunk) if r.get("status") == STATUS]
     heights = _Heights(chunk, frame, [r for r in records if timbers.is_measured(r)])
@@ -953,15 +1141,24 @@ def extend(chunk, progress=None) -> list[dict]:
                             "reason": t("manca un comento su uno dei due lati", "a seam is missing on one edge")})
             continue
         polys = {r["id"]: _polygon(tracing.ship_xy_of(chunk, r, frame)) for r in members}
-        gaps = _gaps(_intervals(polys.values()), lo, hi)
+        measured = [polys[r["id"]] for r in members if r.get("status") != STATUS]
+        mirrored = [polys[r["id"]] for r in members if r.get("status") == STATUS]
+        # where a seam has no trend it goes on NO_TREND_REACH at most
+        a_lim, b_lim = lo, hi
+        for s, tr in seams:
+            if tr.kind == "none":
+                a_lim, b_lim = max(a_lim, s.lo - NO_TREND_REACH), min(b_lim, s.hi + NO_TREND_REACH)
         sign = 1.0 if side == "port" else -1.0
-        for a, b in gaps:
+        away = [g for g in (beyond, heights.ground(side)) if g is not None]
+        away += [p.buffer(heights.cell) for p in mirrored]
+        away = shapely.union_all(away) if away else None
+        (s0, tr0), (s1, tr1) = seams
+        for a, b in _gaps(_intervals(measured), a_lim, b_lim):
             xs = _grid(a, b)
-            (s0, tr0), (s1, tr1) = seams
-            lower, upper = _edge(s0, tr0, xs), _edge(s1, tr1, xs)
+            lower, upper = _edge(s0, tr0, xs, heights, sign), _edge(s1, tr1, xs, heights, sign)
             band = _band(lower, upper, sign)
-            if beyond is not None:
-                band = band.difference(beyond)
+            if away is not None:
+                band = band.difference(away)
             for piece in _pieces(band):
                 if piece.area < MIN_AREA:
                     continue
@@ -969,23 +1166,26 @@ def extend(chunk, progress=None) -> list[dict]:
                 px0, _py0, px1, _py1 = piece.bounds
                 source = min(polys, key=lambda rid: max(0.0, polys[rid].bounds[0] - px1, px0 - polys[rid].bounds[2]))
                 at = (round(px0, 2), round(px1, 2))
-                keep = (xs >= px0 - 1e-9) & (xs <= px1 + 1e-9)
-
-                def signed(e, keep=keep, sign=sign):
-                    e = e[keep].copy()
-                    e[:, 1] *= sign
-                    return [[float(v) if np.isfinite(v) else None for v in row] for row in e]
-
+                guessed = any(tr.kind == "none" and (px0 < s.lo - GRID or px1 > s.hi + GRID) for s, tr in seams)
+                kinds = sorted({tr0.kind, tr1.kind})
                 out.append({"id": take(source, at), "kind": "plank", "side": side, "name": name, "station": "",
                             "status": EXTENSION, "source": source, "sources": sorted(polys), "ship_xy": xy.tolist(),
                             "geometry": timbers.geometry("polygon", _world(frame, xy)), "frame_key": key,
-                            "chunk": chunk.key, "edges": {"lower": signed(lower), "upper": signed(upper)},
-                            "seams": [rank - 1, rank], "trend": seams[0][1].kind if seams[0][1].kind == seams[1][1].kind
-                            else f"{seams[0][1].kind}/{seams[1][1].kind}",
-                            "beyond": bool(px0 < surveyed[0] - 1e-6 or px1 > surveyed[1] + 1e-6), "position": list(at)})
+                            "chunk": chunk.key,
+                            "edges": {"lower": _edge_of_piece(lower, piece, sign, beyond),
+                                      "upper": _edge_of_piece(upper, piece, sign, beyond)},
+                            "seams": [rank - 1, rank], "trend": "/".join(kinds), "uncertain": bool(guessed),
+                            "beyond": bool(px0 < surveyed[0] - 1e-6 or px1 > surveyed[1] + 1e-6),
+                            "position": list(at)})
+                if guessed:
+                    warnings.append(t(f"{name}: nessuna linea dei gradini né sezioni, prolungata al più di "
+                                      f"{NO_TREND_REACH:g} m (incerta)",
+                                      f"{name}: no land line and no sections, extended {NO_TREND_REACH:g} m at most "
+                                      "(uncertain)"))
     _replace(chunk, EXTENSION, out)
     state(chunk)["extension"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": len(out),
-                                 "skipped": skipped, "range": [lo, hi], "surveyed": list(surveyed), "frame_key": key}
+                                 "skipped": skipped, "warnings": list(dict.fromkeys(warnings)), "range": [lo, hi],
+                                 "surveyed": list(surveyed), "frame_key": key, "mirror_built": mirror_built}
     progress(1.0, t(f"Prolungamento: {len(out)} parti di fasce", f"Extension: {len(out)} parts of strakes"))
     return out
 
@@ -1028,11 +1228,13 @@ def frames_by_spacing(chunk) -> list[dict]:
     evenly (the median space when the space is a multiple of it), each of the median room, its span across
     interpolated from the two neighbours. A frame added on both sides at one place between centre frames is one
     centre frame. Named ``ordinata N`` after the highest number (the existing numbers kept), ``notes`` saying where;
-    ``source`` the frame before it, ``sources`` both. The earlier ones replaced; the medians in
-    ``state["reconstruction"]["spacing"]``."""
+    ``source`` the frame before it, ``sources`` both. The earlier ones replaced (ids kept for the same source and
+    position); the medians and the mirror read (``mirror_built``) in ``state["reconstruction"]["spacing"]``;
+    :class:`NotReady` while the mirror is older than the catalogue."""
     import shapely
 
     frame = ship.need_frame(chunk)
+    mirror_built = _current_mirror(chunk, frame)
     records = timbers.timbers_of(chunk)
     recon = [r for r in records_of(chunk) if r.get("status") == STATUS]
     frames = [r for r in records + recon if r["kind"] == "frame" and r["geometry"]["type"] == "polygon"
@@ -1108,5 +1310,5 @@ def frames_by_spacing(chunk) -> list[dict]:
     spaces = [m["space"] for m in medians.values()]
     state(chunk)["spacing"] = {"built": datetime.now(timezone.utc).isoformat(timespec="seconds"), "count": len(out),
                                "sides": medians, "median": float(np.median(spaces)) if spaces else None,
-                               "frame_key": key}
+                               "frame_key": key, "mirror_built": mirror_built}
     return out
