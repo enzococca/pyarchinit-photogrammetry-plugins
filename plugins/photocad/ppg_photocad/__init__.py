@@ -24,7 +24,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import LAYER_PREFIX, layer_name, t
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 POLYGON_COLOUR = "#e040fb"
 LINE_COLOUR = "#ff4081"
@@ -50,11 +50,15 @@ class PhotoCADPlugin(Plugin):
                              "Vectorise orthophotos, DEMs and elevations with PhotoCAD (photocad.ai): the drawing "
                              "comes back georeferenced as DXF, GeoPackage and SVG")
         self.context = None
+        self.pane = None
 
     # ------------------------------------------------------------------ activation
     def activate(self, context) -> None:
         self.context = context
         add = context.add_action
+        if context.window is not None and hasattr(context, "add_pane"):
+            add(t("PhotoCAD...", "PhotoCAD..."), self.show_pane,
+                tip=t("Il pannello di PhotoCAD", "The PhotoCAD pane"))
         add(t("Vettorializza l'ortofoto...", "Vectorise the orthophoto..."), lambda: self.convert_dialog("ortho"),
             tip=t("Invia l'ortofoto (o una parte) a PhotoCAD", "Send the orthophoto (or a part) to PhotoCAD"))
         add(t("Vettorializza il DEM...", "Vectorise the DEM..."), lambda: self.convert_dialog("dem"),
@@ -76,14 +80,102 @@ class PhotoCADPlugin(Plugin):
         context.add_command("photocad", self.command,
                             help="PhotoCAD vectorisation: key, credit, convert, list, units, export, remove")
         if context.window is not None:
-            context.on_raster_loaded(self.draw_layers)
-            context.on_refresh(self.draw_layers)
+            context.on_raster_loaded(self._raster_loaded)
+            context.on_refresh(self._raster_loaded)
+            if hasattr(context, "add_pane"):
+                from .pane import PhotoCADPane
+
+                self.pane = PhotoCADPane()
+                context.add_pane(self.pane, "PhotoCAD", "plugin", area="right")
+                self.pane.requested.connect(self._requested)
+                self.refresh_pane()
 
     def deactivate(self) -> None:
+        self.pane = None
         view = self._view()
         if view is not None:
             for name in [n for n in list(getattr(view, "layers", {})) if n.startswith(LAYER_PREFIX)]:
                 view.remove_layer(name)
+
+    # ------------------------------------------------------------------ the pane
+    def show_pane(self) -> None:
+        if self.pane is not None:
+            self.context.show_pane(self.pane)
+
+    def _raster_loaded(self, *_args) -> None:
+        self.draw_layers()
+        self.refresh_pane()
+
+    def _source_available(self, src: str) -> bool:
+        from . import source
+
+        chunk = self._chunk()
+        if chunk is None:
+            return False
+        try:
+            source.raster_of(chunk, src)
+        except Exception:  # noqa: BLE001 - a cheap check: any failure means "not there"
+            return False
+        return True
+
+    def refresh_pane(self) -> None:
+        """The pane from the chunk: the key, the buttons that can be used, the table of the conversions."""
+        if self.pane is None:
+            return
+        from . import keys, project
+
+        w = self._window()
+        frame = getattr(w, "drawings_frame", None)
+        chunk = self._chunk()
+        self.pane.set_state(
+            key_text=self._key_status(keys),
+            ortho=self._source_available("ortho"), dem=self._source_available("dem"),
+            elevation=frame is not None and self._source_available(f"elevation:{frame}"),
+            records=[] if chunk is None else [{**r, "_summary": project.summary(r)} for r in project.records(chunk)],
+            frame=frame, free=_has_free_drawings(), units=hasattr(self.context, "add_units"))
+
+    def _key_status(self, keys) -> str:
+        """The key line of the pane, read from the keychain once and again only after the key dialog or an action
+        that used the key (a locked keychain could otherwise hold the window at every refresh)."""
+        if getattr(self, "_key_text", None) is None:
+            self._key_text = keys.status_text()
+        return self._key_text
+
+    def _requested(self, action: str, arg=None) -> None:
+        simple = {"key": self.key_dialog, "credit": self.credit, "units": self.units_dialog,
+                  "ortho": lambda: self.convert_dialog("ortho"), "dem": lambda: self.convert_dialog("dem"),
+                  "elevation": lambda: self.convert_dialog("elevation")}
+        if action in simple:
+            simple[action]()
+        elif action == "toggle":
+            self.toggle_visible(arg)
+        elif action == "fetch":
+            self.fetch_dialog(arg)
+        elif action == "export":
+            self.export_dialog(arg)
+        elif action == "remove":
+            self.remove_conversion(arg)
+        elif action == "free":
+            self.free_drawings_dialog(arg)
+        self.refresh_pane()
+
+    def toggle_visible(self, rid: str | None) -> None:
+        """Show or hide the layers of one conversion (the flag is kept in its record) and draw them again."""
+        from . import project
+
+        chunk = self._chunk()
+        rec = project.record(chunk, rid) if chunk is not None and rid else None
+        if rec is None:
+            return
+        rec["visible"] = not rec.get("visible", True)
+        project._write_json(chunk, rec)
+        self.context.mark_modified()
+        # a layer hidden by hand in the Layer pane stays hidden unless the user shows it with this button
+        hidden = getattr(self, "_hidden", set())
+        for n in (layer_name(rec), layer_name(rec) + t(" (pietre)", " (stones)")):
+            hidden.discard(n)
+        self._hidden = hidden
+        self.draw_layers()
 
     # ------------------------------------------------------------------ helpers
     def _window(self):
@@ -129,6 +221,7 @@ class PhotoCADPlugin(Plugin):
         from .gui import KeyDialog
 
         KeyDialog(self._window()).exec()
+        self._key_text = None  # the pane reads the keychain again
 
     def _key(self) -> str | None:
         from . import keys
@@ -278,6 +371,7 @@ class PhotoCADPlugin(Plugin):
                 self._say(str(rec), "warning")
                 return
             self.draw_layers()
+            self.refresh_pane()
             w = self._window()
             if w is not None and hasattr(w, "log_pane"):
                 w.log_pane.info("PhotoCAD: " + project.summary(rec))
@@ -286,7 +380,7 @@ class PhotoCADPlugin(Plugin):
 
         self.context.run(t("PhotoCAD: vettorializzazione", "PhotoCAD: vectorisation"), work, done)
 
-    def fetch_dialog(self) -> None:
+    def fetch_dialog(self, rid: str | None = None) -> None:
         from pyarchinit_photogrammetry.gui import dialogs
 
         from . import client, project
@@ -297,11 +391,14 @@ class PhotoCADPlugin(Plugin):
             self._say(t("Nessuna conversione PhotoCAD nel chunk.", "No PhotoCAD conversion in the chunk."), "warning")
             return
         recs = sorted(recs, key=lambda r: r.get("status", "done") == "done")  # those not done first
-        k = dialogs.choice(self._window(), "question", t("Recupera una conversione", "Fetch a conversion"),
-                           t("Quale conversione riprendere da PhotoCAD? Le tessere già inviate si scaricano di nuovo senza addebito.",
-                             "Which conversion to take up again from PhotoCAD? The tiles already sent are downloaded "
-                             "again at no charge."),
-                           [project.summary(r) for r in recs])
+        if rid is not None:
+            k = next((i for i, r in enumerate(recs) if r["id"] == rid), None)
+        else:
+            k = dialogs.choice(self._window(), "question", t("Recupera una conversione", "Fetch a conversion"),
+                               t("Quale conversione riprendere da PhotoCAD? Le tessere già inviate si scaricano di nuovo senza addebito.",
+                                 "Which conversion to take up again from PhotoCAD? The tiles already sent are downloaded "
+                                 "again at no charge."),
+                               [project.summary(r) for r in recs])
         if k is None:
             return
         todo = project.pending_uploads(recs[k])
@@ -327,6 +424,7 @@ class PhotoCADPlugin(Plugin):
                 self._say(str(rec), "warning")
                 return
             self.draw_layers()
+            self.refresh_pane()
             self._say("PhotoCAD: " + project.summary(rec))
 
         self.context.run(t("PhotoCAD: recupero", "PhotoCAD: fetch"), work, done)
@@ -464,7 +562,7 @@ class PhotoCADPlugin(Plugin):
         return len(units), skipped
 
     # ------------------------------------------------------------------ free drawings (program 1.7.2)
-    def free_drawings_dialog(self) -> None:
+    def free_drawings_dialog(self, rid: str | None = None) -> None:
         from pyarchinit_photogrammetry.gui import dialogs
 
         chunk = self._chunk()
@@ -472,10 +570,13 @@ class PhotoCADPlugin(Plugin):
         if chunk is None or not recs:
             self._say(t("Nessuna conversione PhotoCAD nel chunk.", "No PhotoCAD conversion in the chunk."), "warning")
             return
-        k = dialogs.choice(self._window(), "question", t("Importa come disegni liberi", "Import as free drawings"),
-                           t("Quale conversione? I suoi elementi vanno nel layer di disegni liberi «PhotoCAD».",
-                             "Which conversion? Its features go into the free-drawing layer 'PhotoCAD'."),
-                           [r["name"] for r in recs])
+        if rid is not None:
+            k = next((i for i, r in enumerate(recs) if r["id"] == rid), None)
+        else:
+            k = dialogs.choice(self._window(), "question", t("Importa come disegni liberi", "Import as free drawings"),
+                               t("Quale conversione? I suoi elementi vanno nel layer di disegni liberi «PhotoCAD».",
+                                 "Which conversion? Its features go into the free-drawing layer 'PhotoCAD'."),
+                               [r["name"] for r in recs])
         if k is None:
             return
         n = self.import_free_drawings(chunk, recs[k])
@@ -516,7 +617,7 @@ class PhotoCADPlugin(Plugin):
         return n
 
     # ------------------------------------------------------------------ export, remove
-    def export_dialog(self) -> None:
+    def export_dialog(self, rid: str | None = None) -> None:
         from PySide6.QtWidgets import QFileDialog
 
         from pyarchinit_photogrammetry.gui import dialogs
@@ -527,9 +628,12 @@ class PhotoCADPlugin(Plugin):
         if chunk is None or not recs:
             self._say(t("Nessuna conversione PhotoCAD nel chunk.", "No PhotoCAD conversion in the chunk."), "warning")
             return
-        k = dialogs.choice(self._window(), "question", "PhotoCAD", t("Quale conversione esportare?",
-                                                                     "Which conversion to export?"),
-                           [r["name"] for r in recs])
+        if rid is not None:
+            k = next((i for i, r in enumerate(recs) if r["id"] == rid), None)
+        else:
+            k = dialogs.choice(self._window(), "question", "PhotoCAD", t("Quale conversione esportare?",
+                                                                         "Which conversion to export?"),
+                               [r["name"] for r in recs])
         if k is None:
             return
         path, _f = QFileDialog.getSaveFileName(self._window(), t("Esporta il disegno PhotoCAD", "Export the PhotoCAD "
@@ -570,6 +674,7 @@ class PhotoCADPlugin(Plugin):
         project.remove(chunk, rid)
         self.context.mark_modified()
         self.draw_layers()
+        self.refresh_pane()
 
     # ------------------------------------------------------------------ command line
     @staticmethod

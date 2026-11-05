@@ -12,6 +12,10 @@ PhotoCAD è un **servizio esterno a pagamento**: l'immagine esce dal computer e 
 dell'immagine, e aspetta un sì. Niente da installare oltre al programma: la libreria standard parla con l'API; ezdxf,
 rasterio, Pillow e shapely sono già nel programma.
 
+Il **pannello PhotoCAD** (*Plugin > PhotoCAD...*), agganciato a destra accanto a PyArchInit come quelli degli altri plugin, raccoglie
+tutto: l'account (chiave, credito), i tre pulsanti *Vettorializza* e la tabella delle conversioni del chunk con *Mostra/Nascondi*,
+*Recupera...*, *Esporta...*, *Rimuovi*, *Converti in US / USM...* e *Disegni liberi...* sulla riga scelta. Le voci di menu qui sotto restano.
+
 | Dove | Cosa |
 |---|---|
 | *Plugin > PhotoCAD > Vettorializza l'ortofoto...* | Tutta l'ortofoto, la parte visibile nella vista o un'area disegnata. Opzioni: disegno dettagliato o semplificato, togli lo sfondo. |

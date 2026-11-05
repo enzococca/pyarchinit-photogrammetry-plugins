@@ -159,3 +159,91 @@ def test_the_key_dialog(window, _no_network_no_keychain, monkeypatch):
     d.b_forget.click()
     assert _no_network_no_keychain.store == {}
     d.close()
+
+
+def _convert(window, monkeypatch, kind="ortho"):
+    from pyarchinit_photogrammetry.gui import dialogs
+
+    w, plugin, ch, entry, fake, qapp, errors = window
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", lambda *a, **k: {"area": "all", "detailed": True,
+                                                                     "remove_background": False, "three_d": False})
+    monkeypatch.setattr(dialogs, "choice", lambda *a, **k: 0)
+    monkeypatch.setattr(dialogs, "message", lambda *a, **k: None)
+    plugin.convert_dialog(kind)
+    _wait(w, qapp)
+    assert not errors
+
+
+def test_the_pane_is_docked_on_the_right_and_lists_the_conversions(window, monkeypatch):
+    w, plugin, ch, entry, fake, qapp, errors = window
+    pane = plugin.pane
+    assert pane is not None
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QDockWidget
+
+    dock = next(d for d in w.findChildren(QDockWidget) if d.widget() is pane or pane in d.findChildren(type(pane)))
+    assert w.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea
+    assert pane.table.rowCount() == 0 and not pane.l_empty.isHidden()
+    plugin.context.show_raster("ortho")
+    plugin.refresh_pane()
+    assert "PHOTOCAD_API_KEY" in pane.l_key.text()
+    assert pane.buttons["ortho"].isEnabled() and pane.buttons["dem"].isEnabled()
+    assert not pane.buttons["elevation"].isEnabled()  # no elevation shown
+    assert not pane.buttons["fetch"].isEnabled()  # no row selected
+    _convert(window, monkeypatch)
+    assert pane.table.rowCount() == 1 and pane.l_empty.isHidden()
+    rec = plugin.records()[0]
+    assert rec["name"] in pane.table.item(0, 0).text() and pane.table.item(0, 3).text() == "2"
+    pane.table.selectRow(0)
+    assert all(pane.buttons[n].isEnabled() for n in ("toggle", "fetch", "export", "remove"))
+    # a conversion on the elevation: the elevation button is on, the row of that frame comes first
+    w.show_elevation(entry)
+    qapp.processEvents()
+    assert pane.buttons["elevation"].isEnabled()
+    _convert(window, monkeypatch, "elevation")
+    assert pane.table.rowCount() == 2 and pane.table.item(0, 0).text().startswith("● ")
+    assert pane.table.item(0, 0).data(Qt.ItemDataRole.UserRole) != rec["id"]
+
+
+def test_a_row_toggles_its_layer_and_the_actions_get_its_id(window, monkeypatch):
+    w, plugin, ch, entry, fake, qapp, errors = window
+    pane, v = plugin.pane, w.ortho_view
+    plugin.context.show_raster("ortho")
+    _convert(window, monkeypatch)
+    (layer,) = _photocad_layers(v)
+    rid = plugin.records()[0]["id"]
+    pane.table.selectRow(0)
+    pane.buttons["toggle"].click()
+    assert _photocad_layers(v) == [] and plugin.records()[0]["visible"] is False
+    assert "nascosta" in pane.table.item(0, 0).text()
+    pane.table.selectRow(0)
+    pane.buttons["toggle"].click()
+    assert _photocad_layers(v) == [layer] and plugin.records()[0]["visible"] is True
+    calls = []
+    monkeypatch.setattr(plugin, "fetch_dialog", lambda rid=None: calls.append(("fetch", rid)))
+    monkeypatch.setattr(plugin, "export_dialog", lambda rid=None: calls.append(("export", rid)))
+    monkeypatch.setattr(plugin, "free_drawings_dialog", lambda rid=None: calls.append(("free", rid)))
+    monkeypatch.setattr(plugin, "units_dialog", lambda: calls.append(("units", None)))
+    pane.table.selectRow(0)
+    for n in ("fetch", "export", "units"):
+        pane.buttons[n].click()
+    if plugin.context is not None and not pane.buttons["free"].isHidden():
+        pane.buttons["free"].click()
+    assert calls[:3] == [("fetch", rid), ("export", rid), ("units", None)]
+    assert len(calls) == 4 and calls[3] == ("free", rid)
+    # remove acts on the row
+    from pyarchinit_photogrammetry.gui import dialogs
+
+    monkeypatch.setattr(dialogs, "choice", lambda *a, **k: 0)
+    pane.table.selectRow(0)
+    pane.buttons["remove"].click()
+    assert plugin.records() == [] and pane.table.rowCount() == 0 and _photocad_layers(v) == []
+    assert not errors
+
+
+def test_the_menu_action_shows_the_pane(window):
+    w, plugin, ch, entry, fake, qapp, errors = window
+    shown = []
+    plugin.context.show_pane = lambda p: shown.append(p)
+    plugin.show_pane()
+    assert shown == [plugin.pane]
