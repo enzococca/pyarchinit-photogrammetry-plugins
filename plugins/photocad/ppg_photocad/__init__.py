@@ -128,11 +128,18 @@ class PhotoCADPlugin(Plugin):
         frame = getattr(w, "drawings_frame", None)
         chunk = self._chunk()
         self.pane.set_state(
-            key_text=keys.status_text(),
+            key_text=self._key_status(keys),
             ortho=self._source_available("ortho"), dem=self._source_available("dem"),
             elevation=frame is not None and self._source_available(f"elevation:{frame}"),
             records=[] if chunk is None else [{**r, "_summary": project.summary(r)} for r in project.records(chunk)],
             frame=frame, free=_has_free_drawings(), units=hasattr(self.context, "add_units"))
+
+    def _key_status(self, keys) -> str:
+        """The key line of the pane, read from the keychain once and again only after the key dialog or an action
+        that used the key (a locked keychain could otherwise hold the window at every refresh)."""
+        if getattr(self, "_key_text", None) is None:
+            self._key_text = keys.status_text()
+        return self._key_text
 
     def _requested(self, action: str, arg=None) -> None:
         simple = {"key": self.key_dialog, "credit": self.credit, "units": self.units_dialog,
@@ -214,6 +221,7 @@ class PhotoCADPlugin(Plugin):
         from .gui import KeyDialog
 
         KeyDialog(self._window()).exec()
+        self._key_text = None  # the pane reads the keychain again
 
     def _key(self) -> str | None:
         from . import keys
