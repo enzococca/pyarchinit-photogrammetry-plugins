@@ -2,15 +2,21 @@
 the line in the survey, the pseudosection and its filters.
 
 A profile is a record in ``chunk.meta["geophysics"]["ert"]`` (id, name, source, the electrodes and
-readings counted, the placement of the line, the filters, the inversion and its fit, the files) and
-an archive of arrays ``<chunk data>/geophysics/ert/<id>/profile.npz``:
+readings counted, the placement of the line with the placed electrodes - distance ``u`` from the
+start of the line, ``x``, ``y``, ``z`` -, the filters, the inversion, its fit and the names of its
+files) and an archive of arrays ``<chunk data>/geophysics/ert/<id>/profile.npz``, written once at the
+import:
 
 * the electrodes as read (``file_u``: distance along the line; ``file_x``/``file_y``: world
-  coordinates when the file has them; ``file_z``: heights when it has them) and, once the line is
-  placed, ``elec_u`` (distance from the start of the line), ``elec_x``, ``elec_y``, ``elec_z``;
+  coordinates when the file has them; ``file_z``: heights when it has them);
 * the readings: ``a b m n`` (electrodes counted from 0, -1 at infinity), ``rhoa`` (apparent
   resistivity, ohm m), ``r`` (resistance, ohm), ``err`` (relative error, a fraction), ``u`` (volts),
   ``i`` (amperes), ``ip``, ``k`` (geometric factor); NaN where the file has no value.
+
+Everything that changes is in the record or in files named per run, so the program's Undo (which takes
+``chunk.meta`` back) finds the files of the state it restores: a removed profile's folder waits in
+``geophysics/ert/.removed/`` and :func:`settle` makes the files agree with the project when it is
+opened again.
 
 Readers of this module (no pyGIMLi): the unified data format of pyGIMLi/BERT (``.ohm``, ``.shm``,
 ``.dat`` with a count of electrodes on the first line), a plain table of readings (CSV, TXT:
@@ -24,6 +30,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -130,9 +137,7 @@ class Profile:
                 out[name] = np.asarray(getattr(self, name), float)
         for k, v in self.values.items():
             out[k] = np.asarray(v, float)
-        for k, v in self.elec.items():
-            out[k] = np.asarray(v, float)
-        return out
+        return out  # the placed electrodes are in the record (placement["electrodes"]), not in the file
 
 
 # ------------------------------------------------------------------ geometry of the readings
@@ -712,25 +717,105 @@ def save(chunk, prof: Profile) -> dict:
 
 
 def load(chunk, pid: str) -> Profile:
+    """The profile: its readings from ``profile.npz`` (written once, at the import), its placed
+    electrodes from the record."""
     e = entry_of(chunk, pid)
-    with np.load(Path(chunk.data_dir) / e["file"], allow_pickle=False) as z:
+    path = Path(chunk.data_dir) / e["file"]
+    if not path.exists():
+        restore(chunk, e["id"])
+    with np.load(path, allow_pickle=False) as z:
         arr = {k: z[k] for k in z.files}
+    el = (e.get("placement") or {}).get("electrodes")
+    if el:
+        elec = {f"elec_{k}": np.asarray(el[k], float) for k in ("u", "x", "y", "z")}
+    else:  # a record written before the electrodes went into it
+        elec = {k: arr[k] for k in ("elec_u", "elec_x", "elec_y", "elec_z") if k in arr and e.get("placement")}
     prof = Profile(e["name"], arr["file_u"], arr["a"].astype(np.int64), arr["b"].astype(np.int64),
                    arr["m"].astype(np.int64), arr["n"].astype(np.int64),
                    {k: arr[k] for k in VALUES if k in arr}, arr.get("file_z"), arr.get("file_x"), arr.get("file_y"),
-                   e["id"], e.get("source", ""), e.get("format", ""), list(e.get("notes") or []),
-                   {k: arr[k] for k in ("elec_u", "elec_x", "elec_y", "elec_z") if k in arr},
+                   e["id"], e.get("source", ""), e.get("format", ""), list(e.get("notes") or []), elec,
                    bool(e.get("numbered", True)))
     return prof
 
 
-def remove(chunk, pid: str) -> None:
+TRASH = ".removed"  # profiles removed in the window, kept until the session ends (the program's Undo)
+# the files of an inversion, one name per run (and per drawing of its section): the record says which are in use
+RUN_FILES = re.compile(r"^(inversion(-[\w.]+)?\.(npz|json)|section(_view)?(-[\w.]+)?\.tif)$")
+
+
+def trash(chunk) -> Path:
+    return Path(chunk.data_dir) / FOLDER / TRASH
+
+
+def remove(chunk, pid: str, keep: bool = True) -> None:
+    """The profile out of the project. Its folder is moved aside (``keep``: the window, where Undo takes
+    the record back and :func:`restore` its files; :func:`settle` deletes it when the session ends
+    without it) or deleted (the command line)."""
     import shutil
 
     e = entry_of(chunk, pid)
     reg = registry(chunk)
     reg["ert"] = [x for x in reg.get("ert", []) if x["id"] != e["id"]]
-    shutil.rmtree(folder(chunk, e["id"]), ignore_errors=True)
+    src = folder(chunk, e["id"])
+    if not src.exists():
+        return
+    if not keep:
+        shutil.rmtree(src, ignore_errors=True)
+        return
+    dst = trash(chunk) / e["id"]
+    if dst.exists():
+        shutil.rmtree(dst, ignore_errors=True)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(src, dst)
+
+
+def restore(chunk, pid: str) -> bool:
+    """The files of a profile whose record came back (Undo of a removal) taken back from the trash."""
+    src, dst = trash(chunk) / pid, folder(chunk, pid)
+    if src.exists() and not dst.exists():
+        os.replace(src, dst)
+        return True
+    return False
+
+
+def run_files(e: dict) -> set[str]:
+    """The files of the inversion the record uses (paths relative to the data of the chunk)."""
+    inv = e.get("inversion") or {}
+    return {str(v) for v in (inv.get("files") or {}).values() if v}
+
+
+def settle(chunk) -> dict:
+    """The files of the profiles made to agree with the project as opened (the end of the previous
+    session): folders of profiles in the project taken back from the trash, the rest of the trash
+    deleted, the files of inversions and sections no record uses deleted (Undo kept them while the
+    project was open). Returns the counts."""
+    import shutil
+
+    out = {"restored": 0, "deleted": 0, "files": 0}
+    ids = {e["id"] for e in entries(chunk)}
+    for pid in ids:
+        out["restored"] += int(restore(chunk, pid))
+    tr = trash(chunk)
+    if tr.exists():
+        for p in tr.iterdir():
+            if p.name not in ids:
+                shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
+                out["deleted"] += 1
+        try:
+            tr.rmdir()
+        except OSError:
+            pass
+    root = Path(chunk.data_dir)
+    for e in entries(chunk):
+        used = {Path(root / f).resolve() for f in run_files(e)}
+        d = folder(chunk, e["id"])
+        if not d.is_dir():
+            continue
+        for p in d.iterdir():
+            if p.is_file() and RUN_FILES.match(p.name) and p.resolve() not in used:
+                p.unlink(missing_ok=True)
+                out["files"] += 1
+    return out
 
 
 def rename(chunk, pid: str, name: str) -> dict:
@@ -776,78 +861,183 @@ def line_direction(line, u) -> np.ndarray:
     return seg[k] / lens[k][:, None]
 
 
-def sample_dem(path, xy) -> np.ndarray:
-    """The DEM at the points ``xy`` (bilinear; NaN outside or on no data)."""
-    import rasterio
+WINDOW_CELLS = 4_000_000  # a DEM window larger than this is read point by point
 
-    xy = np.asarray(xy, float)
+
+def sample_dem(path, xy) -> np.ndarray:
+    """The DEM at the points ``xy`` (bilinear; NaN outside or on no data). The window around the
+    points is read in single precision when it is small; for a long diagonal line on a fine DEM
+    (hundreds of millions of cells in its box) each point reads its own 2 x 2 cells."""
+    import rasterio
+    from rasterio.windows import Window
+
+    xy = np.asarray(xy, float).reshape(-1, 2)
+    out = np.full(len(xy), np.nan)
+    if not len(xy):
+        return out
     with rasterio.open(path) as src:
         inv = ~src.transform
         col, row = inv @ (xy[:, 0], xy[:, 1])
-        col, row = np.asarray(col) - 0.5, np.asarray(row) - 0.5
-        c0, r0 = np.floor(col).astype(int), np.floor(row).astype(int)
-        out = np.full(len(xy), np.nan)
+        col, row = np.asarray(col, float) - 0.5, np.asarray(row, float) - 0.5
+        c0, r0 = np.floor(col).astype(np.int64), np.floor(row).astype(np.int64)
+        fc, fr = col - c0, row - r0
+        nod = src.nodata
+
+        def cells(win):
+            z = src.read(1, window=win, masked=True, out_dtype="float32").filled(np.nan)
+            if nod is not None and np.isfinite(nod):
+                z[z == np.float32(nod)] = np.nan
+            return z
+
         lo_c, lo_r = max(int(c0.min()), 0), max(int(r0.min()), 0)
         hi_c, hi_r = min(int(c0.max()) + 2, src.width), min(int(r0.max()) + 2, src.height)
         if hi_c <= lo_c or hi_r <= lo_r:
             return out
-        from rasterio.windows import Window
-
-        win = src.read(1, window=Window(lo_c, lo_r, hi_c - lo_c, hi_r - lo_r), masked=True)
-        z = win.astype(float).filled(np.nan)
-        nod = src.nodata
-        if nod is not None:
-            z[z == nod] = np.nan
-    fc, fr = col - c0, row - r0
-    for i in range(len(xy)):
-        cc, rr = c0[i] - lo_c, r0[i] - lo_r
-        if cc < -1 or rr < -1 or cc >= z.shape[1] or rr >= z.shape[0]:
-            continue
-        acc, wsum = 0.0, 0.0
-        for dr, dc, w in ((0, 0, (1 - fr[i]) * (1 - fc[i])), (0, 1, (1 - fr[i]) * fc[i]),
-                          (1, 0, fr[i] * (1 - fc[i])), (1, 1, fr[i] * fc[i])):
-            r, c = rr + dr, cc + dc
-            if 0 <= r < z.shape[0] and 0 <= c < z.shape[1] and np.isfinite(z[r, c]) and w > 0:
-                acc += w * z[r, c]
-                wsum += w
-        if wsum > 0.25:
-            out[i] = acc / wsum
+        whole = (hi_c - lo_c) * (hi_r - lo_r) <= WINDOW_CELLS
+        z = cells(Window(lo_c, lo_r, hi_c - lo_c, hi_r - lo_r)) if whole else None
+        for i in range(len(xy)):
+            if whole:
+                block, cc, rr = z, c0[i] - lo_c, r0[i] - lo_r
+            else:
+                if c0[i] < -1 or r0[i] < -1 or c0[i] >= src.width or r0[i] >= src.height:
+                    continue
+                bc, br = max(int(c0[i]), 0), max(int(r0[i]), 0)
+                block = cells(Window(bc, br, min(2, src.width - bc), min(2, src.height - br)))
+                cc, rr = c0[i] - bc, r0[i] - br
+            acc, wsum = 0.0, 0.0
+            for dr, dc, w in ((0, 0, (1 - fr[i]) * (1 - fc[i])), (0, 1, (1 - fr[i]) * fc[i]),
+                              (1, 0, fr[i] * (1 - fc[i])), (1, 1, fr[i] * fc[i])):
+                r, c = rr + dr, cc + dc
+                if 0 <= r < block.shape[0] and 0 <= c < block.shape[1] and np.isfinite(block[r, c]) and w > 0:
+                    acc += w * float(block[r, c])
+                    wsum += w
+            if wsum > 0.25:
+                out[i] = acc / wsum
     return out
 
 
+def survey_bounds(chunk) -> tuple[float, float, float, float] | None:
+    """The extent of the survey in the frame of the chunk (its DEM, else its orthomosaic), or None."""
+    for name in ("dem_path", "orthomosaic_path"):
+        p = getattr(chunk, name, None)
+        if p is not None and Path(p).exists():
+            try:
+                import rasterio
+
+                with rasterio.open(p) as src:
+                    b = src.bounds
+                return float(b.left), float(b.bottom), float(b.right), float(b.top)
+            except Exception:  # noqa: BLE001 - an unreadable raster: no check
+                continue
+    return None
+
+
+def check_world(chunk, x, y) -> str:
+    """The electrodes at world ``x``, ``y`` must be in the survey: a ValueError when they are far from
+    it (coordinates of another system, or of the file's own local frame); a note when the chunk has
+    nothing to compare them with."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    b = survey_bounds(chunk)
+    if b is None:
+        return t("coordinate degli elettrodi prese dal file come coordinate del chunk (nessun DEM o ortofoto per "
+                 "controllarle)", "electrode coordinates taken from the file as coordinates of the chunk (no DEM or "
+                 "orthomosaic to check them)")
+    length = float(np.hypot(np.ptp(x), np.ptp(y)))
+    m = max(100.0, 2.0 * length)
+    if x.max() < b[0] - m or x.min() > b[2] + m or y.max() < b[1] - m or y.min() > b[3] + m:
+        raise ValueError(t(
+            "Le coordinate degli elettrodi nel file (X {0:.1f} - {1:.1f}, Y {2:.1f} - {3:.1f}) sono lontane dal rilievo "
+            "(X {4:.1f} - {5:.1f}, Y {6:.1f} - {7:.1f}): non sono nel sistema del chunk (forse un sistema locale dello "
+            "strumento). Disegna la linea, oppure dalla coordinate o dai marker.",
+            "The electrode coordinates of the file (X {0:.1f} - {1:.1f}, Y {2:.1f} - {3:.1f}) are far from the survey "
+            "(X {4:.1f} - {5:.1f}, Y {6:.1f} - {7:.1f}): they are not in the system of the chunk (perhaps a local frame "
+            "of the instrument). Draw the line, or give it by coordinates or markers.")
+            .format(x.min(), x.max(), y.min(), y.max(), *b))
+    return ""
+
+
+def _ground_positions(d, first: float, line, heights: str, prof: Profile, dem, scale: float):
+    """Plan distances along ``line`` of electrodes ``d`` metres apart along the ground (the cable on a
+    slope) from the first one, ``first`` metres from the start of the line: the slope distance of the
+    DEM sampled every tenth of the spacing, or of the heights of the file between neighbours."""
+    d = np.asarray(d, float)
+    if heights == "dem" and dem is not None:
+        step = max(0.1 * prof.spacing * scale, 1e-3)
+        s = np.arange(0.0, d.max() + 3 * step, step)
+        z = sample_dem(dem, line_point(line, first + s))
+        ok = np.isfinite(z)
+        if ok.sum() < 2:
+            return first + d
+        z = np.interp(s, s[ok], z[ok])
+        cum = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(s), np.diff(z)))])
+        return first + np.interp(d, cum, s)
+    if heights == "file" and prof.file_z is not None:
+        order = np.argsort(d)
+        zs = np.asarray(prof.file_z, float)[order]
+        dd = np.diff(d[order])
+        plan = np.sqrt(np.maximum(dd ** 2 - np.diff(zs) ** 2, 0.0))
+        out = np.empty(len(d))
+        out[order] = np.concatenate([[0.0], np.cumsum(plan)])
+        return first + out
+    return first + d
+
+
 def place(chunk, pid: str, line=None, first: float = 0.0, spacing: float | None = None, heights: str = "auto",
-          z0: float | None = None, method: str = "") -> dict:
+          z0: float | None = None, method: str = "", along: str = "ground") -> dict:
     """The line of the profile in the survey: ``line`` (two or more points, world X Y of the chunk, the
-    first electrode side first) - None when the file gave the electrodes in world coordinates; the
-    first electrode ``first`` metres from the start of the line; the electrodes ``spacing`` metres
-    apart (None: as read); the heights from the DEM of the chunk (``heights`` "dem"), the file
-    ("file", plus ``z0``), flat at ``z0`` ("flat"), or "auto" (the DEM when the chunk has one, else
-    the file, else flat). The inversion done before is to be done again."""
+    first electrode side first) - None to take the electrodes where the file puts them in world
+    coordinates (refused when they are far from the survey, :func:`check_world`); the first electrode
+    ``first`` metres from the start of the line; the electrodes ``spacing`` metres apart (None: as
+    read), measured along the ground (``along`` "ground": the cable laid on a slope; the plan
+    distances come out shorter) or in plan ("plan"); the heights from the DEM of the chunk
+    (``heights`` "dem"), the file ("file", plus ``z0``), flat at ``z0`` ("flat"), or "auto" (the DEM
+    when the chunk has one, else the file, else flat). The electrodes go into the record (the
+    program's Undo takes a placement back with them). The inversion done before is to be done
+    again."""
     prof = load(chunk, pid)
     e = entry_of(chunk, pid)
     notes = []
     u_file = np.asarray(prof.file_u, float)
-    if prof.world and line is None:
-        xy = np.column_stack([prof.file_x, prof.file_y])
-        line = xy
-        u = _along(prof.file_x, prof.file_y)
-        method = method or "file"
-    else:
-        if line is None or len(line) < 2:
-            raise ValueError(t("Servono almeno due punti per la linea.", "At least two points are needed for the line."))
-        line = np.asarray(line, float)[:, :2]
-        scale = 1.0 if not spacing else float(spacing) / prof.spacing
-        u = float(first) + (u_file - u_file.min()) * scale
-        xy = line_point(line, u)
-        if u.max() > line_length(line) + 0.5 * prof.spacing * scale:
-            notes.append(t("gli elettrodi vanno oltre la fine della linea di {0:.2f} m: proseguono sulla sua direzione",
-                           "the electrodes go past the end of the line by {0:.2f} m: they follow its direction")
-                         .format(u.max() - line_length(line)))
     dem = getattr(chunk, "dem_path", None)
     dem = Path(dem) if dem is not None and Path(dem).exists() else None
     mode = heights
     if mode == "auto":
         mode = "dem" if dem is not None else ("file" if prof.file_z is not None else "flat")
+    from_file = line is None
+    if from_file:
+        if not prof.world:
+            raise ValueError(t("Servono almeno due punti per la linea.", "At least two points are needed for the line."))
+        note = check_world(chunk, prof.file_x, prof.file_y)
+        if note:
+            notes.append(note)
+        xy = np.column_stack([prof.file_x, prof.file_y])
+        line = xy
+        u = _along(prof.file_x, prof.file_y)
+        method = method or "file"
+        along = "plan"
+    else:
+        if len(line) < 2:
+            raise ValueError(t("Servono almeno due punti per la linea.", "At least two points are needed for the line."))
+        line = np.asarray(line, float)[:, :2]
+        if line_length(line) <= 1e-9:
+            raise ValueError(t("la linea ha lunghezza zero", "the line has zero length"))
+        scale = 1.0 if not spacing else float(spacing) / prof.spacing
+        d = (u_file - u_file.min()) * scale
+        if along == "ground" and mode in ("dem", "file"):
+            u = _ground_positions(d, float(first), line, mode, prof, dem, scale)
+            slope_len, plan_len = float(d.max()), float(u.max() - u.min())
+            if slope_len - plan_len > 0.001 * max(slope_len, 1e-9):
+                notes.append(t("distanze lungo il terreno: {0:.2f} m sul terreno, {1:.2f} m in pianta",
+                               "distances along the ground: {0:.2f} m on the ground, {1:.2f} m in plan")
+                             .format(slope_len, plan_len))
+        else:
+            along = "plan" if mode == "flat" and along == "ground" else along
+            u = float(first) + d
+        xy = line_point(line, u)
+        if u.max() > line_length(line) + 0.5 * prof.spacing * scale:
+            notes.append(t("gli elettrodi vanno oltre la fine della linea di {0:.2f} m: proseguono sulla sua direzione",
+                           "the electrodes go past the end of the line by {0:.2f} m: they follow its direction")
+                         .format(u.max() - line_length(line)))
     if mode == "dem":
         if dem is None:
             raise ValueError(t("Il chunk non ha un DEM: scegli le quote del file o una quota fissa.",
@@ -867,14 +1057,14 @@ def place(chunk, pid: str, line=None, first: float = 0.0, spacing: float | None 
         z = np.asarray(prof.file_z, float) + float(z0 or 0.0)
     else:
         z = np.full(len(u), float(z0 or 0.0))
-    prof.elec = {"elec_u": u, "elec_x": xy[:, 0], "elec_y": xy[:, 1], "elec_z": z}
-    save(chunk, prof)
-    e = entry_of(chunk, pid)
     e["placement"] = {"method": method or "points", "line": np.asarray(line, float).round(4).tolist(),
                       "first": float(first), "spacing": float(spacing) if spacing else round(prof.spacing, 6),
-                      "heights": mode, "z0": z0, "length": round(float(u.max() - u.min()), 3),
+                      "along": along, "heights": mode, "z0": z0, "length": round(float(u.max() - u.min()), 3),
                       "z_range": [round(float(np.min(z)), 3), round(float(np.max(z)), 3)], "notes": notes,
-                      "crs": getattr(chunk, "crs", "LOCAL")}
+                      "crs": getattr(chunk, "crs", "LOCAL"),
+                      "electrodes": {"u": np.round(u, 4).tolist(), "x": np.round(xy[:, 0], 4).tolist(),
+                                     "y": np.round(xy[:, 1], 4).tolist(), "z": np.round(z, 4).tolist()}}
+    e["updated"] = datetime.now().isoformat(timespec="seconds")
     if e.get("inversion"):
         e["inversion"]["stale"] = True
     return e

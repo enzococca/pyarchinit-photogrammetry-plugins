@@ -11,8 +11,8 @@ below its 95th percentile) or by the depth-of-investigation index of Oldenburg a
 * :func:`rasterise` - the cells of the mesh on a regular grid (every pixel the value of the cell it
   falls in);
 * :func:`colours` - the RGBA picture, log10 of the resistivity between two limits, a palette;
-* :func:`write` - ``section.tif`` (float32, ohm m), ``section_view.tif`` (RGBA for the 2D view),
-  ``cells.csv`` (u, v, x, y, z, rho, log10 rho, coverage, blanked), the legend;
+* :func:`write` - ``section-<stamp>.tif`` (float32, ohm m), ``section_view-<stamp>.tif`` (RGBA for the
+  2D view), named in the record;
 * :func:`figure` - PNG/SVG/PDF of the section or of the pseudosection with axes, electrodes and
   colour bar (Matplotlib, Agg);
 * :func:`section_mesh` and :func:`scene` - the section as vertical coloured quads under the line in
@@ -151,13 +151,18 @@ def number(v: float) -> str:
 
 # ------------------------------------------------------------------ the files
 def inversion_path(chunk, pid: str) -> Path:
-    return ert_mod.folder(chunk, pid) / "inversion.npz"
+    """The result of the inversion the record uses (``inversion-<run>.npz``)."""
+    e = ert_mod.entry_of(chunk, pid)
+    rel = ((e.get("inversion") or {}).get("files") or {}).get("result")
+    return Path(chunk.data_dir) / rel if rel else ert_mod.folder(chunk, e["id"]) / "inversion.npz"
 
 
 def load_result(chunk, pid: str) -> dict:
     e = ert_mod.entry_of(chunk, pid)
     inv = e.get("inversion") or {}
     path = inversion_path(chunk, e["id"])
+    if not path.exists():
+        ert_mod.restore(chunk, e["id"])
     if not path.exists():
         raise KeyError(t("Il profilo {0} non è ancora invertito.", "The profile {0} is not inverted yet.").format(e["name"]))
     with np.load(path, allow_pickle=False) as z:
@@ -168,7 +173,11 @@ def load_result(chunk, pid: str) -> dict:
 
 def write(chunk, pid: str, blank: dict | None = None, palette: str | None = None, lims=None) -> dict:
     """The files of the section of the profile from its inversion (written again with other blanking,
-    palette or limits); the record of the inversion updated (``display``, ``files``)."""
+    palette or limits), under new names every time - ``section-<stamp>.tif`` (float32, ohm m) and
+    ``section_view-<stamp>.tif`` (RGBA) - so that Undo finds the files of the drawing it takes back; the
+    record of the inversion updated (``display``, ``files``)."""
+    from datetime import datetime
+
     import rasterio
     from rasterio.transform import from_origin
 
@@ -190,18 +199,20 @@ def write(chunk, pid: str, blank: dict | None = None, palette: str | None = None
         disp["limits"] = list(limits(values))
     lo, hi = disp["limits"]
     out = ert_mod.folder(chunk, e["id"])
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    sec_path, view = out / f"section-{stamp}.tif", out / f"section_view-{stamp}.tif"
     u0, vtop = grid["origin"]
     cell = grid["cell"]
     tr = from_origin(u0, vtop, cell, cell)
     h, w = values.shape
     prof = {"driver": "GTiff", "width": w, "height": h, "transform": tr, "compress": "deflate"}
-    with rasterio.open(out / "section.tif", "w", count=1, dtype="float32", nodata=np.nan, **prof) as dst:
+    with rasterio.open(sec_path, "w", count=1, dtype="float32", nodata=np.nan, **prof) as dst:
         dst.write(values, 1)
         dst.set_band_description(1, "resistivity (ohm m)")
         dst.update_tags(ppg_frame="ert-section", ppg_profile=e["id"], ppg_name=e["name"], ppg_units="ohm m",
                         ppg_axes="u = metres along the line, v = elevation")
     rgba = colours(values, lo, hi, disp["palette"])
-    with rasterio.open(out / "section_view.tif", "w", count=4, dtype="uint8", **prof) as dst:
+    with rasterio.open(view, "w", count=4, dtype="uint8", **prof) as dst:
         dst.write(np.moveaxis(rgba, -1, 0))
         dst.update_tags(ppg_frame="ert-section", ppg_profile=e["id"])
     shown = np.isfinite(values)
@@ -209,8 +220,8 @@ def write(chunk, pid: str, blank: dict | None = None, palette: str | None = None
     disp["cell"] = cell
     disp["bounds"] = [u0, vtop - h * cell, u0 + w * cell, vtop]
     inv["display"] = disp
-    inv["files"] = {"section": str((out / "section.tif").relative_to(chunk.data_dir)),
-                    "view": str((out / "section_view.tif").relative_to(chunk.data_dir)),
+    inv["files"] = {**(inv.get("files") or {}), "section": str(sec_path.relative_to(chunk.data_dir)),
+                    "view": str(view.relative_to(chunk.data_dir)),
                     "result": str(inversion_path(chunk, e["id"]).relative_to(chunk.data_dir))}
     return inv
 
@@ -219,6 +230,8 @@ def view_path(chunk, pid: str) -> Path | None:
     e = ert_mod.entry_of(chunk, pid)
     rel = ((e.get("inversion") or {}).get("files") or {}).get("view")
     p = Path(chunk.data_dir) / rel if rel else None
+    if p is not None and not p.exists():
+        ert_mod.restore(chunk, e["id"])
     return p if p is not None and p.exists() else None
 
 

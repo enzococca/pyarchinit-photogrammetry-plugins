@@ -35,9 +35,9 @@ def work_folder(chunk, pid: str | None = None) -> Path:
     return (base / pid / "work") if pid else (base / "_work")
 
 
-def run(job: dict, folder: Path, progress=None) -> tuple[dict, dict]:
+def run(job: dict, folder: Path, progress=None, timeout: float | None = None) -> tuple[dict, dict]:
     python, script = _worker()
-    res = runner.run(job, folder, progress, python=python, script=script)
+    res = runner.run(job, folder, progress, python=python, script=script, timeout=timeout)
     return res, runner.load(res)
 
 
@@ -107,10 +107,13 @@ def inversion_input(chunk, pid: str) -> tuple[dict, np.ndarray]:
 
 
 def invert_profile(chunk, pid: str, params: dict | None = None, blank: dict | None = None, palette: str | None = None,
-                   progress=None) -> dict:
+                   progress=None, timeout: float | None = None) -> dict:
     """The inversion of the profile in pyGIMLi's worker: the result (mesh, resistivity, coverage)
-    in ``inversion.npz``, the section written (:func:`.ert_section.write`), the parameters, the fit
-    and the versions in the record and in ``inversion.json`` beside it (the paradata)."""
+    in ``inversion-<run>.npz``, the section written (:func:`.ert_section.write`), the parameters, the
+    fit and the versions in the record and in ``inversion-<run>.json`` beside it (the paradata). Every
+    run has files of its own, named in the record: Undo takes the record of the run before back and
+    finds its files (the unused ones go when the project is opened again, :func:`.ert.settle`).
+    ``timeout``: seconds before a silent or endless worker is stopped (None: no limit)."""
     e = ert_mod.entry_of(chunk, pid)
     pid = e["id"]
     params = {**DEFAULT_PARAMS, **(params or {})}
@@ -123,11 +126,12 @@ def invert_profile(chunk, pid: str, params: dict | None = None, blank: dict | No
     folder = work_folder(chunk, pid)
     folder.mkdir(parents=True, exist_ok=True)
     np.savez(folder / "input.npz", **arrays)
-    out = ert_mod.folder(chunk, pid) / "inversion.npz"
+    run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    out = ert_mod.folder(chunk, pid) / f"inversion-{run_id}.npz"
     tmp = folder / "result.npz"
     try:
         res, result = run({"protocol": 1, "task": "invert", "input": str(folder / "input.npz"), "params": params,
-                           "output": str(tmp)}, folder, progress)
+                           "output": str(tmp)}, folder, progress, timeout)
         tmp.replace(out)
     finally:
         tmp.unlink(missing_ok=True)
@@ -135,12 +139,15 @@ def invert_profile(chunk, pid: str, params: dict | None = None, blank: dict | No
     fit = dict(res.get("fit") or {})
     prof_entry = ert_mod.entry_of(chunk, pid)
     old_display = (prof_entry.get("inversion") or {}).get("display") or {}
+    rel = lambda p: str(p.relative_to(chunk.data_dir))  # noqa: E731
     prof_entry["inversion"] = {"params": params, "fit": fit, "versions": res.get("versions", {}),
-                               "date": datetime.now().isoformat(timespec="seconds"), "stale": False,
+                               "date": datetime.now().isoformat(timespec="seconds"), "stale": False, "run": run_id,
                                "readings_used": int(fit.get("readings", valid.sum())),
-                               "display": {k: v for k, v in old_display.items() if k in ("palette",)}}
+                               "display": {k: v for k, v in old_display.items() if k in ("palette",)},
+                               "files": {"result": rel(out)}}
     section.write(chunk, pid, blank=blank or old_display.get("blank"), palette=palette)
-    write_paradata(chunk, pid, ert_mod.folder(chunk, pid) / "inversion.json")
+    para = write_paradata(chunk, pid, ert_mod.folder(chunk, pid) / f"inversion-{run_id}.json")
+    prof_entry["inversion"]["files"]["paradata"] = rel(para)
     return prof_entry
 
 

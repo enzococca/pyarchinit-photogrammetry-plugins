@@ -140,7 +140,7 @@ def test_profile_in_the_project_placed_on_the_dem(tmp_path):
     e = ert_ops.import_profile(ch, write_csv(tmp_path / "num.csv"), name="P1", spacing=2.0)
     assert e["name"] == "P1" and e["readings"] == len(dd_readings()[0]) and e["valid"] == e["readings"]
     line = [[500010.0, 4500050.0], [500090.0, 4500050.0]]
-    e = ert.place(ch, e["id"], line, first=5.0)
+    e = ert.place(ch, e["id"], line, first=5.0, along="plan")
     prof = ert.load(ch, e["id"])
     assert np.allclose(prof.elec["elec_u"], 5.0 + 2.0 * np.arange(24))
     assert np.allclose(prof.elec["elec_x"], 500015.0 + 2.0 * np.arange(24)) and np.allclose(prof.elec["elec_y"], 4500050.0)
@@ -153,7 +153,7 @@ def test_profile_in_the_project_placed_on_the_dem(tmp_path):
     assert np.allclose(prof.elec["elec_u"], np.arange(24)) and np.allclose(prof.elec["elec_z"], 99.0)
     # a bent line: the electrodes go round the corner
     bent = [[500010.0, 4500050.0], [500020.0, 4500050.0], [500020.0, 4500080.0]]
-    ert.place(ch, e["id"], bent, spacing=1.0)
+    ert.place(ch, e["id"], bent, spacing=1.0, along="plan")
     prof = ert.load(ch, e["id"])
     assert np.allclose(prof.elec["elec_x"][15], 500020.0) and np.allclose(prof.elec["elec_y"][15], 4500055.0)
     doc.save()
@@ -221,7 +221,7 @@ def test_the_inversion_through_the_worker(tmp_path, fake):
     hot = centre[v[ok] > np.percentile(v[ok], 95)]
     assert abs(np.median(hot) - prof.elec["elec_u"].mean()) < 4.0
     # the record and the paradata
-    para = json.loads((ert.folder(ch, e["id"]) / "inversion.json").read_text())
+    para = json.loads((ch.data_dir / inv["files"]["paradata"]).read_text())
     assert para["inversion"]["fit"]["chi2"] == 1.0 and para["placement"]["heights"] == "dem"
     # a new placement or filter makes it stale
     e = ert.set_filters(ch, e["id"], rules={"max_rhoa": 1000})
@@ -238,7 +238,7 @@ def test_worker_failures_leave_nothing(tmp_path, fake, monkeypatch):
         with pytest.raises(ert_runner.WorkerError) as info:
             ert_ops.invert_profile(ch, e["id"])
         assert text in str(info.value)
-        assert not (ert.folder(ch, e["id"]) / "inversion.npz").exists()
+        assert not list(ert.folder(ch, e["id"]).glob("inversion*"))
         assert not list((ert.folder(ch, e["id"]) / "work").glob("*.npz"))
         assert not ert.entry_of(ch, e["id"]).get("inversion")
 
@@ -258,7 +258,7 @@ def test_cancelling_stops_the_worker(tmp_path, fake, monkeypatch):
     with pytest.raises(Cancelled):
         ert_ops.invert_profile(ch, e["id"], progress=prog)
     assert time.monotonic() - t0 < 15
-    assert not (ert.folder(ch, e["id"]) / "inversion.npz").exists()
+    assert not list(ert.folder(ch, e["id"]).glob("inversion*"))
 
 
 def test_reading_through_the_worker(tmp_path, fake):

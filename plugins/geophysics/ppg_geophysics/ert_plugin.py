@@ -8,8 +8,10 @@ the inversion, ``context.on_features_deleted``), the section shown as a raster o
 (``context.show_raster``: u along the line, v the elevation) with the electrodes and a legend, the 3D
 scene of the sections with the ground cut away, the units and the cores (``context.show_model``), the
 line and the electrodes on the plan as layers. Every change of a profile marks the project modified:
-the program's Undo takes ``chunk.meta`` back (the files of a newer inversion stay, the record says
-which is in use).
+the program's Undo takes ``chunk.meta`` back, and the files agree with it - the placed electrodes are
+in the record, every inversion and every drawing of a section has files named in the record, a
+removed profile waits in a trash folder until the project is opened again (:func:`.ert.settle`, when
+the window shows another document).
 
 On the command line: ``ppg plugin geophysics ert import|simulate|list|place|filter|invert|export|scene|
 remove|install|status``."""
@@ -39,6 +41,8 @@ class ErtMixin:
     _ert_shown = None  # ("pseudo" | "section", profile id): what the plugin shows in the 2D view
     _ert_plan = False  # the lines of the profiles on the plan rasters
     _ert_legend = None
+    _ert_doc = None  # the document whose files were settled (once per opened project)
+    _ert_frame = None  # the bounds of the empty frame of the pseudosection
 
     # ------------------------------------------------------------------ setup
     def _ert_activate(self, context) -> None:
@@ -75,7 +79,25 @@ class ErtMixin:
     def _ert_pane(self):
         return getattr(self.pane, "ert", None) if self.pane is not None else None
 
+    def _ert_settle(self) -> None:
+        """A project just opened (another document in the window): the files of its profiles made to
+        agree with it as saved; after an Undo of a removal, the folder of the profile taken back."""
+        doc = self.context.app.document if self.context is not None else None
+        if doc is None:
+            return
+        try:
+            if doc is not self._ert_doc:
+                self._ert_doc = doc
+                for chunk in list(getattr(doc, "chunks", []) or []):
+                    ert_mod.settle(chunk)
+            elif doc.chunk is not None:
+                for e in ert_mod.entries(doc.chunk):
+                    ert_mod.restore(doc.chunk, e["id"])
+        except OSError:
+            pass
+
     def ert_refresh(self) -> None:
+        self._ert_settle()
         pane = self._ert_pane()
         if pane is None:
             return
@@ -287,9 +309,13 @@ class ErtMixin:
         fields = []
         if with_line:
             names = [("", t("(nessuno)", "(none)"))] + [(m.label, m.label) for m in chunk.markers]
-            fields += [Field("method", t("Linea da", "Line from"), "markers" if chunk.markers else "points",
-                             choices=[("markers", t("due marker (inizio, fine)", "two markers (start, end)")),
-                                      ("points", t("coordinate digitate", "typed coordinates"))]),
+            methods = [("markers", t("due marker (inizio, fine)", "two markers (start, end)")),
+                       ("points", t("coordinate digitate", "typed coordinates"))]
+            if e.get("world"):
+                methods.insert(0, ("file", t("coordinate degli elettrodi nel file (sistema del chunk)",
+                                             "electrode coordinates of the file (system of the chunk)")))
+            fields += [Field("method", t("Linea da", "Line from"),
+                             "file" if e.get("world") else ("markers" if chunk.markers else "points"), choices=methods),
                        Field("m_start", t("Marker dell'inizio (primo elettrodo)", "Marker of the start (first electrode)"),
                              "", choices=names),
                        Field("m_end", t("Marker della fine", "Marker of the end"), "", choices=names),
@@ -299,6 +325,14 @@ class ErtMixin:
                                     "start of the line)"), 0.0, minimum=-1e4, maximum=1e4, decimals=3),
                    Field("spacing", t("Distanza fra gli elettrodi (m)", "Spacing of the electrodes (m)"),
                          float(e.get("spacing", 1.0)), minimum=0.01, maximum=1000.0, decimals=3),
+                   Field("along", t("Distanza misurata", "Spacing measured"), "ground",
+                         choices=[("ground", t("lungo il terreno (il cavo steso sul pendio)",
+                                               "along the ground (the cable laid on the slope)")),
+                                  ("plan", t("in pianta (orizzontale)", "in plan (horizontal)"))],
+                         tip=t("Sul campo la distanza fra gli elettrodi si misura lungo il cavo, sul terreno: su un "
+                               "pendio del 20 % in pianta è il 2 % più corta. Con le quote fisse non cambia nulla.",
+                               "In the field the spacing is measured along the cable, on the ground: on a 20 % slope "
+                               "it is 2 % shorter in plan. With flat heights nothing changes.")),
                    Field("heights", t("Quote degli elettrodi", "Heights of the electrodes"),
                          "dem" if has_dem else ("file" if e.get("format") == "unified" else "flat"),
                          choices=[("dem", t("dal DEM del chunk", "from the DEM of the chunk")),
@@ -336,8 +370,8 @@ class ErtMixin:
         e = ert_mod.entry_of(chunk, pid)
         line = np.asarray(xy, float)[:, :2]
         v = ParamDialog.ask(self.context.window, t("Linea ERT", "ERT line"), self._place_fields(e),
-                            intro=t("Linea di {0:.2f} m; gli elettrodi del file coprono {1:.2f} m.",
-                                    "Line of {0:.2f} m; the electrodes of the file span {1:.2f} m.").format(
+                            intro=t("Linea di {0:.2f} m in pianta; gli elettrodi del file coprono {1:.2f} m.",
+                                    "Line of {0:.2f} m in plan; the electrodes of the file span {1:.2f} m.").format(
                                 ert_mod.line_length(line), float(e.get("spacing", 1)) * (e["electrodes"] - 1)))
         if v:
             self._ert_place(pid, line, v, "drawn")
@@ -351,21 +385,22 @@ class ErtMixin:
         if window is None or chunk is None or not pid:
             return
         e = ert_mod.entry_of(chunk, pid)
+        intro = t("La linea va dal primo elettrodo verso l'ultimo; due punti o più (una linea piegata).",
+                  "The line goes from the first electrode towards the last; two points or more (a bent line).")
         if e.get("world"):
-            v = ParamDialog.ask(window, t("Linea ERT", "ERT line"), self._place_fields(e)[2:],
-                                intro=t("Il file dà gli elettrodi in coordinate: la linea passa per loro.",
-                                        "The file gives the electrodes in coordinates: the line goes through them."))
-            if v:
-                self._ert_place(pid, None, v, "file")
-            return
-        v = ParamDialog.ask(window, t("Linea ERT", "ERT line"), self._place_fields(e, with_line=True),
-                            intro=t("La linea va dal primo elettrodo verso l'ultimo; due punti o più (una linea piegata).",
-                                    "The line goes from the first electrode towards the last; two points or more (a bent "
-                                    "line)."))
+            intro = t("Il file dà gli elettrodi in coordinate X, Y: se sono nel sistema del chunk la linea passa per "
+                      "loro; se sono un sistema locale dello strumento, dai la linea con i marker, le coordinate o "
+                      "il pulsante Disegna la linea.",
+                      "The file gives the electrodes in X, Y coordinates: when they are in the system of the chunk the "
+                      "line goes through them; when they are a local frame of the instrument, give the line by markers, "
+                      "coordinates or the Draw the line button.") + "\n" + intro
+        v = ParamDialog.ask(window, t("Linea ERT", "ERT line"), self._place_fields(e, with_line=True), intro=intro)
         if not v:
             return
         try:
-            if v["method"] == "markers":
+            if v["method"] == "file":
+                line = None
+            elif v["method"] == "markers":
                 pos = self._marker_positions(chunk)
                 if v["m_start"] not in pos or v["m_end"] not in pos:
                     raise ValueError(t("Scegli due marker con una posizione.", "Choose two markers with a position."))
@@ -381,7 +416,7 @@ class ErtMixin:
         chunk = self._chunk()
         try:
             e = ert_mod.place(chunk, pid, line, float(v["first"]), float(v["spacing"]), v["heights"], float(v["z0"]),
-                              method)
+                              method, v.get("along", "ground"))
         except ValueError as exc:
             self._message("warning", str(exc))
             return
@@ -808,7 +843,7 @@ class ErtMixin:
             return
         if self._ert_shown and self._ert_shown[1] == e["id"]:
             self._ert_shown = None
-        ert_mod.remove(chunk, e["id"])
+        ert_mod.remove(chunk, e["id"], keep=True)  # Undo brings it back with its files
         self._ert_changed()
         view = self._view()
         if view is not None and self._ert_plan:
@@ -846,6 +881,8 @@ class ErtMixin:
         p.add_argument("--first", type=float, default=0.0)
         p.add_argument("--spacing", type=float, default=None)
         p.add_argument("--heights", default="auto", choices=["auto", "dem", "file", "flat"])
+        p.add_argument("--along", default="ground", choices=["ground", "plan"],
+                       help="the spacing measured along the ground (the cable on a slope) or in plan")
         p.add_argument("--z0", type=float, default=None)
         p = sub.add_parser("filter", help="the filters of the readings")
         p.add_argument("profile")
@@ -871,6 +908,8 @@ class ErtMixin:
         p.add_argument("--drop", type=float, default=section.DEFAULT_BLANK["drop"])
         p.add_argument("--doi-max", type=float, default=section.DEFAULT_BLANK["doi_max"])
         p.add_argument("--palette", default=None, choices=list(section.PALETTES))
+        p.add_argument("--timeout", type=float, default=240.0,
+                       help="minutes before a worker that does not finish is stopped (0: no limit)")
         p = sub.add_parser("export", help="tif, csv, xyz, png, svg, pdf, gpkg, json, ohm by the extension; a folder: all")
         p.add_argument("profile")
         p.add_argument("out")
@@ -947,7 +986,7 @@ class ErtMixin:
             elif ns.line:
                 line = parse_points(ns.line)
             e = ert_mod.place(chunk, ns.profile, line, ns.first, ns.spacing, ns.heights, ns.z0,
-                              "markers" if ns.markers else "points")
+                              "markers" if ns.markers else ("points" if ns.line else "file"), ns.along)
             print(json.dumps(e["placement"], ensure_ascii=False))
         elif ns.what == "filter":
             e = ert_mod.entry_of(chunk, ns.profile)
@@ -964,7 +1003,8 @@ class ErtMixin:
                       "para_dx": ns.dx, "para_max_cell": ns.max_cell, "doi": ns.doi}
             method = ns.blank or ("doi" if ns.doi == "oldenburg" else "coverage")
             e = ert_ops.invert_profile(chunk, ns.profile, params, {"method": method, "drop": ns.drop,
-                                                                   "doi_max": ns.doi_max}, ns.palette, _print_progress)
+                                                                   "doi_max": ns.doi_max}, ns.palette, _print_progress,
+                                       timeout=60.0 * ns.timeout if ns.timeout and ns.timeout > 0 else None)
             print(json.dumps({"fit": e["inversion"]["fit"], "display": e["inversion"]["display"]}, ensure_ascii=False))
         elif ns.what == "export":
             out = Path(ns.out)
@@ -978,7 +1018,7 @@ class ErtMixin:
             print(json.dumps({"file": str(path) if path else None, **what}, ensure_ascii=False))
             return 0 if path else 1
         elif ns.what == "remove":
-            ert_mod.remove(chunk, ns.profile)
+            ert_mod.remove(chunk, ns.profile, keep=False)  # no Undo on the command line
         return 0
 
 

@@ -111,7 +111,7 @@ def test_the_steps_in_the_window(window, monkeypatch, tmp_path):
     e = ert.entry_of(ch, pid)
     assert "placement" in e, (messages, errors, v.mode)
     assert e["placement"]["heights"] == "dem" and e["placement"]["method"] == "drawn"
-    assert e["placement"]["length"] == pytest.approx(23.0) and "Linea di 23.0 m" in pane.steps[1].state.text()
+    assert e["placement"]["length"] == pytest.approx(23.0, abs=0.01) and "Linea di 23.0 m" in pane.steps[1].state.text()
     assert ert_section.number(e["placement"]["z_range"][0]) in pane.steps[1].state.text()
     assert "Profili ERT" in w.ortho_view.layers and "Elettrodi ERT" in w.ortho_view.layers
     # 3. the pseudosection: the readings as points; two deleted in the view leave the inversion
@@ -156,7 +156,8 @@ def test_remove_and_the_pane_follows(window, monkeypatch, tmp_path):
     w, plugin, ch, qapp, errors, messages = window
     e = ert_ops.import_profile(ch, write_ohm(tmp_path / "a.ohm"), name="A")
     ert_ops.import_profile(ch, write_ohm(tmp_path / "b.ohm"), name="B")
-    plugin.refresh_pane()
+    plugin._ert_changed()  # as the import in the window: a step of Undo
+    qapp.processEvents()
     pane = plugin.pane.ert
     assert [pane.c_profile.itemText(i) for i in range(pane.c_profile.count())] == ["A", "B"]
     from pyarchinit_photogrammetry.gui import dialogs
@@ -165,6 +166,28 @@ def test_remove_and_the_pane_follows(window, monkeypatch, tmp_path):
     plugin.ert_remove_dialog(e["id"])
     assert [x["name"] for x in ert.entries(ch)] == ["B"] and pane.c_profile.count() == 1
     assert not ert.folder(ch, e["id"]).exists()
+    if w.history is not None:  # Undo: the record back, and its files with it
+        qapp.processEvents()
+        w.undo()
+        qapp.processEvents()
+        assert [x["name"] for x in ert.entries(w.chunk)] == ["A", "B"] and pane.c_profile.count() == 2
+        assert ert.folder(w.chunk, e["id"]).is_dir() and ert.load(w.chunk, e["id"]).count == e["readings"]
+
+
+def test_the_line_from_the_coordinates_of_the_file_in_the_window(window, monkeypatch, tmp_path):
+    w, plugin, ch, qapp, errors, messages = window
+    data = Path(__file__).resolve().parent / "data"
+    e = ert_ops.import_profile(ch, data / "gimli_world.dat", name="W")
+    plugin.refresh_pane()
+    _answer(monkeypatch, {"method": "file", "heights": "file"})
+    plugin.ert_place_dialog(e["id"])
+    assert ert.entry_of(ch, e["id"])["placement"]["method"] == "file", messages
+    f = tmp_path / "local.dat"
+    f.write_text("4\n# x y z\n0 0 10\n1 0.5 10.1\n2 1 10.2\n3 1.5 10.3\n1\n# a b m n rhoa\n1 2 3 4 10\n0\n")
+    e = ert_ops.import_profile(ch, f, name="L")
+    plugin.refresh_pane()
+    plugin.ert_place_dialog(e["id"])
+    assert "placement" not in ert.entry_of(ch, e["id"]) and "lontane dal rilievo" in messages[-1][1]
 
 
 def test_the_command_line(tmp_path, fake, capsys):
@@ -184,7 +207,7 @@ def test_the_command_line(tmp_path, fake, capsys):
     assert out["name"] == "L1" and out["array"] == "dipole-dipole"
     assert plugin.command("ert", "place", project, "L1", "--line", "500010,4500050;500040,4500050") == 0
     pl = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert pl["heights"] == "dem" and pl["length"] == pytest.approx(23.0)
+    assert pl["heights"] == "dem" and pl["length"] == pytest.approx(23.0, abs=0.01) and pl["along"] == "ground"
     assert plugin.command("ert", "filter", project, "L1", "--spikes", "6", "--remove", "1,2") == 0
     f = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert f["manual"] == [0, 1] and f["rules"]["spikes"] == 6.0

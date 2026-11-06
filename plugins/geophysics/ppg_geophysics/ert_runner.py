@@ -13,6 +13,7 @@ import json
 import queue
 import subprocess
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
@@ -66,10 +67,12 @@ def hint_for(text: str, output=()) -> str:
     return ""
 
 
-def run(job: dict, folder: Path, progress=None, python: Path | None = None, script: Path | None = None) -> dict:
+def run(job: dict, folder: Path, progress=None, python: Path | None = None, script: Path | None = None,
+        timeout: float | None = None) -> dict:
     """Run ``job`` (see :mod:`.ert_worker`) and return its result message; ``folder`` holds the job
-    file. Raises :class:`WorkerError`, :class:`.ert_environment.GimliMissing` without a Python for it,
-    ``Cancelled`` when the user stops it; in every one of those cases no result is left."""
+    file. Raises :class:`WorkerError` (also when the worker runs longer than ``timeout`` seconds: it
+    is stopped), :class:`.ert_environment.GimliMissing` without a Python for it, ``Cancelled`` when the
+    user stops it; in every one of those cases no result is left."""
     from pyarchinit_photogrammetry.core.progress import as_progress
 
     progress = as_progress(progress)
@@ -101,6 +104,13 @@ def run(job: dict, folder: Path, progress=None, python: Path | None = None, scri
     said: deque = deque(maxlen=KEEP_LINES)
     result = error = hello = last = None
     finished = False
+    started = time.monotonic()
+
+    def check_time() -> None:
+        if timeout is not None and time.monotonic() - started > float(timeout):
+            raise WorkerError(t("pyGIMLi fermato dopo {0:.0f} s senza finire (limite di tempo).",
+                                "pyGIMLi stopped after {0:.0f} s without finishing (time limit).")
+                              .format(float(timeout)), (last or {}).get("phase"), said, "\n".join(said))
     try:
         try:
             while True:
@@ -108,10 +118,12 @@ def run(job: dict, folder: Path, progress=None, python: Path | None = None, scri
                     line = lines.get(timeout=POLL)
                 except queue.Empty:
                     progress.check()
+                    check_time()
                     continue
                 if line is None:
                     break
                 progress.check()
+                check_time()
                 msg = parse(line)
                 if msg is None:
                     if line.strip():

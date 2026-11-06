@@ -130,3 +130,22 @@ def test_typed_points_that_cannot_be_read_are_refused():
         with pytest.raises(ValueError):
             parse_points(bad)
 
+
+def test_a_file_of_pygimli_goes_through_to_the_inversion(tmp_path, monkeypatch):
+    import sys
+
+    from ppg_geophysics import ert_ops
+    from test_ert import FAKE, _project
+
+    monkeypatch.setattr(ert_ops, "WORKER", FAKE)
+    monkeypatch.setattr(ert_ops, "WORKER_PYTHON", Path(sys.executable))
+    monkeypatch.delenv("PPG_ERT_FAKE", raising=False)
+    doc, ch = _project(tmp_path)
+    e = ert_ops.import_profile(ch, DATA / "gimli_topo.dat", name="G")
+    assert not e["world"] and e["values"] == ["rhoa", "err", "k"]
+    arrays, valid = ert_ops.inversion_input(ch, e["id"])
+    assert "r" not in arrays and valid.all()
+    e = ert.place(ch, e["id"], [[500010.0, 4500050.0], [500021.0, 4500050.0]], heights="file", along="plan")
+    assert e["placement"]["z_range"] == pytest.approx([100.0, 100.88])
+    e = ert_ops.invert_profile(ch, e["id"])
+    assert e["inversion"]["fit"]["readings"] == 45
