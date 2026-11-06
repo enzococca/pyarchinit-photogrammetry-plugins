@@ -72,6 +72,8 @@ class ErtMixin:
         p.view3d_requested.connect(self.ert_show_3d)
         p.plan_requested.connect(self.ert_show_plan)
         p.palette_changed.connect(self.ert_set_palette)
+        if hasattr(p, "blank_requested"):
+            p.blank_requested.connect(self.ert_blank_dialog)
         p.export_requested.connect(self.ert_export_dialog)
         p.remove_requested.connect(self.ert_remove_dialog)
         p.install_requested.connect(self.ert_install_dialog)
@@ -161,10 +163,12 @@ class ErtMixin:
         from pyarchinit_photogrammetry.gui import dialogs
 
         text = t("pyGIMLi non è installato. Il plugin lo installa in un ambiente suo, separato dal programma: Python {0} "
-                 "e pyGIMLi {1} da PyPI con uv, circa {2} MB e un paio di minuti. Installarlo ora?",
+                 "e pyGIMLi {1} da PyPI con uv, circa {2} MB (più circa {3} MB per Python se uv non lo ha già) e un paio "
+                 "di minuti. Installarlo ora?",
                  "pyGIMLi is not installed. The plugin installs it in an environment of its own, apart from the "
-                 "program: Python {0} and pyGIMLi {1} from PyPI with uv, about {2} MB and a couple of minutes. "
-                 "Install it now?").format(environment.python_for(), "1.6", environment.SIZE_MB)
+                 "program: Python {0} and pyGIMLi {1} from PyPI with uv, about {2} MB (plus about {3} MB for Python "
+                 "when uv has not it yet) and a couple of minutes. Install it now?").format(
+            environment.python_for(), "1.6", environment.SIZE_MB, environment.PYTHON_MB)
         if dialogs.choice(window, "question", self.title, text, [t("Installa", "Install")]) != 0:
             return False
         self._ert_install(then)
@@ -189,10 +193,10 @@ class ErtMixin:
                          "pyGIMLi is already installed ({0}). Install it again?").format(version)
             else:
                 text = t("Il plugin installa pyGIMLi in un ambiente suo, separato dal programma: Python {0} e pyGIMLi "
-                         "da PyPI con uv, circa {1} MB. Procedere?",
+                         "da PyPI con uv, circa {1} MB (più circa {2} MB per Python se uv non lo ha già). Procedere?",
                          "The plugin installs pyGIMLi in an environment of its own, apart from the program: Python {0} "
-                         "and pyGIMLi from PyPI with uv, about {1} MB. Go on?").format(environment.python_for(),
-                                                                                        environment.SIZE_MB)
+                         "and pyGIMLi from PyPI with uv, about {1} MB (plus about {2} MB for Python when uv has not it "
+                         "yet). Go on?").format(environment.python_for(), environment.SIZE_MB, environment.PYTHON_MB)
             if dialogs.choice(window, "question", self.title, text, [t("Installa", "Install")]) != 0:
                 return
         self._ert_install(None)
@@ -224,8 +228,12 @@ class ErtMixin:
                   choices=[("auto", t("riconosci da sole", "recognise by themselves")),
                            ("numbers", t("numeri degli elettrodi (da 1)", "numbers of the electrodes (from 1)")),
                            ("positions", t("posizioni in metri", "positions in metres"))]),
-            Field("spacing", t("Distanza fra gli elettrodi numerati (m)", "Spacing of the numbered electrodes (m)"), 1.0,
-                  minimum=0.01, maximum=1000.0, decimals=3),
+            Field("spacing", t("Distanza fra gli elettrodi numerati (m, vuoto = 1)", "Spacing of the numbered "
+                                 "electrodes (m, empty = 1)"), None, kind="optional_float",
+                  tip=t("Solo per le letture con i numeri degli elettrodi; con le posizioni in metri conta quella del "
+                        "file. Si può cambiare anche dopo, nel posizionamento della linea.",
+                        "Only for readings with the numbers of the electrodes; with positions in metres the file's "
+                        "counts. It can also be changed later, when placing the line.")),
         ], intro=t("Tabella CSV/TXT con intestazione (a, b, m, n e rhoa, oppure r, oppure u e i; err facoltativo; anche "
                    "le colonne Spa.1-4, Rho, Dev, Vp, In di Syscal) o formato unificato di pyGIMLi (.ohm, .dat). Gli "
                    "altri file (RES2DINV, ABEM, Syscal) li legge pyGIMLi.",
@@ -238,8 +246,9 @@ class ErtMixin:
 
         def job(progress):
             progress(0.05, t("Lettura delle letture", "Reading the readings"))
-            return ert_ops.import_profile(chunk, v["file"], v["name"], float(v["spacing"]), positions,
-                                          v["electrodes"] or None, progress)
+            spacing = float(v["spacing"]) if v.get("spacing") else None
+            return ert_ops.import_profile(chunk, v["file"], v["name"], spacing, positions, v["electrodes"] or None,
+                                          progress)
 
         def done(e):
             self._ert_changed(e["id"])
@@ -440,6 +449,7 @@ class ErtMixin:
         bounds = (float(u.min()) - m, -float(np.nanmax(d)) - m, float(u.max()) + m, m)
         res = (bounds[2] - bounds[0]) / 1600.0
         self._ert_shown = ("pseudo", pid)
+        self._ert_frame = (bounds[0], bounds[3], res)
         self.context.show_frame(bounds, res, "")
         window = self.context.window
         if window is not None and hasattr(window, "show_view"):
@@ -578,9 +588,15 @@ class ErtMixin:
                   minimum=0.1, maximum=50.0, decimals=2),
             Field("abs_error_u", t("Errore assoluto della tensione (µV, vuoto = nessuno)", "Absolute voltage error (µV, "
                                    "empty = none)"), None if not old["abs_error_u"] else 1e6 * float(old["abs_error_u"]),
-                  kind="optional_float"),
+                  kind="optional_float",
+                  tip=t("Diviso per la tensione di ogni lettura; senza la tensione nel file pyGIMLi la stima dalla "
+                        "resistenza con una corrente di 100 mA.",
+                        "Divided by the voltage of every reading; without the voltage in the file pyGIMLi estimates it "
+                        "from the resistance with a current of 100 mA.")),
             Field("use_file_errors", t("Usa gli errori del file quando sono più grandi", "Use the errors of the file "
-                                       "when they are larger"), bool(old["use_file_errors"])),
+                                       "when they are larger"), bool(old["use_file_errors"]),
+                  tip=t("Lettura per lettura: dove il file non dà l'errore vale quello qui sopra.",
+                        "Reading by reading: where the file gives no error the one above counts.")),
             Field("h3", t("Maglia", "Mesh"), kind="heading"),
             Field("para_depth", t("Profondità del modello (m, vuoto = automatica)", "Depth of the model (m, empty = "
                                   "automatic)"), old["para_depth"], kind="optional_float"),
@@ -673,6 +689,7 @@ class ErtMixin:
         view = self._view()
         if view is None:
             return
+        self._ert_drop_legend()
         pix = legend_pixmap(lo, hi, palette, 300, title)
         item = view.scene().addPixmap(pix)
         item.setFlag(item.GraphicsItemFlag.ItemIgnoresTransformations)
@@ -681,32 +698,107 @@ class ErtMixin:
         item.setZValue(10)
         self._ert_legend = item
 
+    def _ert_drop_legend(self) -> None:
+        """The colour bar out of the view (it is gone already when the view changed raster)."""
+        item, self._ert_legend = self._ert_legend, None
+        if item is None:
+            return
+        try:
+            scene = item.scene()
+            if scene is not None:
+                scene.removeItem(item)
+        except RuntimeError:  # the view's scene deleted it with the raster
+            pass
+
     def ert_set_palette(self, pid: str, palette: str) -> None:
+        """The section drawn again in another palette (in the background: up to 1.5 million pixels)."""
         chunk = self._chunk()
         if chunk is None:
             return
         e = ert_mod.entry_of(chunk, pid)
         if not (e.get("inversion") or {}).get("files"):
             return
-        section.write(chunk, pid, palette=palette)
-        self._ert_changed(pid)
-        if self._ert_shown == ("section", pid):
-            self.ert_show_section(pid)
+        self._ert_redraw(pid, t("Colori della sezione", "Colours of the section"),
+                         lambda: section.write(chunk, pid, palette=palette))
+
+    def _ert_redraw(self, pid: str, title: str, write) -> None:
+        def job(progress):
+            progress(0.1, title)
+            return write()
+
+        def done(_inv):
+            self._ert_changed(pid)
+            if self._ert_shown == ("section", pid):
+                self.ert_show_section(pid)
+
+        self.context.run(title, job, done)
+
+    def ert_blank_dialog(self, pid: str | None = None) -> None:
+        """The part of the section the readings do not resolve blanked again with other thresholds,
+        without inverting again."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
+
+        window = self.context.window
+        chunk = self._chunk()
+        pid = self._ert_pid(pid)
+        if window is None or chunk is None or not pid:
+            return
+        e = ert_mod.entry_of(chunk, pid)
+        inv = e.get("inversion") or {}
+        if not inv.get("files"):
+            self._message("warning", t("Inverti prima il profilo.", "Invert the profile first."))
+            return
+        blank = {**section.DEFAULT_BLANK, **((inv.get("display") or {}).get("blank") or {})}
+        methods = [("coverage", t("copertura (sensibilità cumulata)", "coverage (cumulative sensitivity)")),
+                   ("none", t("nessuno: tutta la maglia", "none: the whole mesh"))]
+        if (inv.get("params") or {}).get("doi") == "oldenburg":
+            methods.insert(1, ("doi", t("indice DOI di Oldenburg e Li", "DOI index of Oldenburg and Li")))
+        v = ParamDialog.ask(window, t("Oscuramento della sezione", "Blanking of the section"), [
+            Field("method", t("Oscura in base a", "Blank by"), blank["method"] if blank["method"] in dict(methods)
+                  else "coverage", choices=methods),
+            Field("drop", t("Copertura: oscura sotto (ordini di grandezza dal massimo)", "Coverage: blank below (orders "
+                            "of magnitude from the top)"), float(blank["drop"]), minimum=0.5, maximum=6.0, decimals=2),
+            Field("doi_max", t("Indice DOI: oscura sopra", "DOI index: blank above"), float(blank["doi_max"]),
+                  minimum=0.05, maximum=1.0, decimals=2),
+        ], intro=t("La sezione è disegnata di nuovo dalla stessa inversione: l'inversione non si rifà. L'indice DOI c'è "
+                   "solo se l'inversione l'ha calcolato (Profondità d'indagine: Oldenburg e Li).",
+                   "The section is drawn again from the same inversion: the inversion is not done again. The DOI index "
+                   "is there only when the inversion computed it (Depth of investigation: Oldenburg and Li)."))
+        if not v:
+            return
+        new = {"method": v["method"], "drop": float(v["drop"]), "doi_max": float(v["doi_max"])}
+        self._ert_redraw(pid, t("Oscuramento della sezione", "Blanking of the section"),
+                         lambda: section.write(chunk, pid, blank=new))
 
     def ert_show_3d(self, pid: str | None = None) -> bool:
+        """The 3D scene of the sections built in the background (the model of the chunk read and cut)
+        and shown in the 3D view. False when there is nothing to show."""
         chunk = self._chunk()
         window = self.context.window if self.context else None
         if chunk is None or window is None:
             return False
-        try:
-            path, what = section.scene(chunk)
-        except Exception as exc:  # noqa: BLE001
-            self._message("warning", str(exc))
-            return False
-        if path is None:
+        if not any((e.get("inversion") or {}).get("files") and e.get("placement") for e in ert_mod.entries(chunk)):
             self._message("warning", t("Nessuna sezione da mostrare: inverti e posiziona un profilo.",
                                        "No section to show: invert and place a profile."))
             return False
+
+        def job(progress):
+            progress(0.1, t("Scena 3D delle tomografie", "3D scene of the tomographies"))
+            return section.scene(chunk)
+
+        def done(result):
+            path, what = result
+            if path is None:
+                self._message("warning", t("Nessuna sezione da mostrare: inverti e posiziona un profilo.",
+                                           "No section to show: invert and place a profile."))
+                return
+            self._ert_show_scene(path, what)
+
+        self.context.run(t("Scena 3D delle tomografie", "3D scene of the tomographies"), job, done)
+        return True
+
+    def _ert_show_scene(self, path, what: dict) -> bool:
+        window = self.context.window
         title = t("Tomografie ERT ({0})", "ERT tomographies ({0})").format(", ".join(what["sections"]))
         if hasattr(self.context, "show_model"):
             if not self.context.show_model("model", path=path, title=title):
@@ -719,6 +811,8 @@ class ErtMixin:
             if hasattr(window, "show_view"):
                 window.show_view(view)
         parts = [t("terreno tagliato lungo la linea", "ground cut away along the line")] if what["terrain"] else []
+        if what.get("proxies"):
+            parts.append(t("{0} proxy delle US", "{0} proxies of the units").format(what["proxies"]))
         if what["units"]:
             parts.append(t("unità geoarcheologiche", "geoarchaeological units"))
         if what["cores"]:
@@ -782,7 +876,7 @@ class ErtMixin:
             return
         shown = self._ert_shown
         try:
-            if shown and shown[0] == "pseudo" and getattr(view, "kind", None) == "frame":
+            if shown and shown[0] == "pseudo" and getattr(view, "kind", None) == "frame" and self._ert_own_frame(view):
                 self._ert_draw_pseudo(shown[1])
                 return
             if shown and shown[0] == "section":
@@ -791,10 +885,38 @@ class ErtMixin:
                     self._ert_draw_section(shown[1])
                     return
             self._ert_shown = None
-            if self._ert_plan and view.tr is not None:
+            if self._ert_plan and view.tr is not None and self._ert_plan_raster(view, chunk):
                 self._ert_draw_plan()
         except KeyError:  # the profile left the project
             self._ert_shown = None
+
+    def _ert_own_frame(self, view) -> bool:
+        """The empty frame in the view is the one of the pseudosection (not another plugin's)."""
+        f = self._ert_frame
+        tr = getattr(view, "tr", None)
+        if f is None or tr is None:
+            return False
+        tol = 1e-6 * max(1.0, abs(f[0]), abs(f[1]))
+        return abs(tr.c - f[0]) <= tol and abs(tr.f - f[1]) <= tol and abs(tr.a - f[2]) <= 1e-9 * max(1.0, f[2])
+
+    @staticmethod
+    def _ert_plan_raster(view, chunk) -> bool:
+        """The raster in the view is a plan of the survey: not an empty frame, not a section or an
+        elevation in (u, v) - its extent meets the lines of the profiles."""
+        if getattr(view, "kind", None) == "frame":
+            return False
+        lines = [np.asarray(e["placement"]["line"], float) for e in ert_mod.entries(chunk) if e.get("placement")]
+        if not lines:
+            return False
+        try:
+            (ax, ay), (bx, by) = view.world(view.sceneRect().topLeft()), view.world(view.sceneRect().bottomRight())
+        except Exception:  # noqa: BLE001 - a view without it: draw
+            return True
+        x0, x1, y0, y1 = min(ax, bx), max(ax, bx), min(ay, by), max(ay, by)
+        for line in lines:
+            if line[:, 0].max() >= x0 and line[:, 0].min() <= x1 and line[:, 1].max() >= y0 and line[:, 1].min() <= y1:
+                return True
+        return False
 
     # ------------------------------------------------------------------ export, remove
     def ert_export_dialog(self, pid: str | None = None) -> None:

@@ -12,38 +12,58 @@ from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
 from .texts import t
 
 
+_LEGENDS: dict = {}
+
+
 def legend_pixmap(lo: float, hi: float, palette: str, width: int = 300, title: str = "Ω·m") -> QPixmap:
-    """A horizontal log colour bar from ``lo`` to ``hi`` ohm m with its ticks and ``title``."""
+    """A horizontal log colour bar from ``lo`` to ``hi`` ohm m with its ticks and ``title``, made once
+    for each set of values: the ramp is one image painted in one call, the tick marks one call (one
+    Qt call per pixel column drains a reference to None at every call with PySide6 6.12 on Linux and
+    Python 3.11, and the legend is drawn again at every change of the view)."""
+    caption = t("resistività {0} (scala logaritmica)", "resistivity {0} (log scale)").format(title)
+    key = (round(float(lo), 9), round(float(hi), 9), palette, int(width), caption)
+    pix = _LEGENDS.get(key)
+    if pix is None:
+        if len(_LEGENDS) > 32:
+            _LEGENDS.clear()
+        pix = _LEGENDS[key] = QPixmap.fromImage(_legend_image(lo, hi, palette, int(width), caption))
+    return pix
+
+
+def _legend_image(lo: float, hi: float, palette: str, width: int, caption: str) -> QImage:
     import numpy as np
+
+    from PySide6.QtCore import QLineF
 
     from .ert_section import number, ramp, ticks
 
     bar_h, pad = 14, 6
     img = QImage(width, bar_h + 34, QImage.Format.Format_ARGB32)
     img.fill(QColor(255, 255, 255, 235))
-    p = QPainter(img)
     x0, x1 = pad, width - pad
-    rgb = ramp(np.linspace(0, 1, x1 - x0), palette)
-    for i, c in enumerate(rgb):
-        p.setPen(QColor(int(c[0]), int(c[1]), int(c[2])))
-        p.drawLine(x0 + i, pad, x0 + i, pad + bar_h)
+    rgba = np.empty((bar_h, x1 - x0, 4), np.uint8)
+    rgba[..., :3] = ramp(np.linspace(0, 1, x1 - x0), palette)[None]
+    rgba[..., 3] = 255
+    rgba = np.ascontiguousarray(rgba)
+    bar = QImage(rgba.data, x1 - x0, bar_h, (x1 - x0) * 4, QImage.Format.Format_RGBA8888).copy()
+    p = QPainter(img)
+    p.drawImage(x0, pad, bar)
     p.setPen(QColor(40, 40, 40))
     p.drawRect(x0, pad, x1 - x0 - 1, bar_h)
     f = QFont()
     f.setPixelSize(10)
     p.setFont(f)
     span = np.log10(hi) - np.log10(lo)
-    for v in ticks(lo, hi):
-        x = x0 + (x1 - x0 - 1) * (np.log10(v) - np.log10(lo)) / max(span, 1e-9)
-        p.drawLine(int(x), pad + bar_h, int(x), pad + bar_h + 3)
-        text = number(v)
-        p.drawText(int(x) - 20, pad + bar_h + 4, 40, 12, Qt.AlignmentFlag.AlignHCenter, text)
+    marks = [(x0 + (x1 - x0 - 1) * (np.log10(v) - np.log10(lo)) / max(span, 1e-9), v) for v in ticks(lo, hi)]
+    if marks:
+        p.drawLines([QLineF(float(x), pad + bar_h, float(x), pad + bar_h + 3) for x, _v in marks])
+    for x, v in marks:  # a few labels (at most seven)
+        p.drawText(int(x) - 20, pad + bar_h + 4, 40, 12, Qt.AlignmentFlag.AlignHCenter, number(v))
     f.setBold(True)
     p.setFont(f)
-    p.drawText(x0, pad + bar_h + 17, x1 - x0, 12, Qt.AlignmentFlag.AlignHCenter,
-               t("resistività {0} (scala logaritmica)", "resistivity {0} (log scale)").format(title))
+    p.drawText(x0, pad + bar_h + 17, x1 - x0, 12, Qt.AlignmentFlag.AlignHCenter, caption)
     p.end()
-    return QPixmap.fromImage(img)
+    return img
 
 
 class _Step(QFrame):
@@ -87,6 +107,7 @@ class ErtPane(QWidget):
     view3d_requested = Signal(str)
     plan_requested = Signal(str)
     palette_changed = Signal(str, str)
+    blank_requested = Signal(str)
     export_requested = Signal(str)
     remove_requested = Signal(str)
     install_requested = Signal()
@@ -139,6 +160,9 @@ class ErtPane(QWidget):
         self.b_section = button(t("Sezione 2D", "2D section"))
         self.b_3d = button(t("Nella vista 3D", "In the 3D view"))
         self.b_plan = button(t("Linea sulla pianta", "Line on the plan"))
+        self.b_blank = button(t("Oscuramento...", "Blanking..."),
+                              t("La parte non risolta oscurata di nuovo con altre soglie, senza rifare l'inversione",
+                                "The unresolved part blanked again with other thresholds, without inverting again"))
         self.c_palette = QComboBox()
         for name, (it, en) in PALETTE_NAMES.items():
             self.c_palette.addItem(t(it, en), name)
@@ -152,7 +176,7 @@ class ErtPane(QWidget):
             _Step(2, t("Linea nel rilievo", "Line in the survey"), [self.b_draw, self.b_place]),
             _Step(3, t("Pseudosezione e filtri", "Pseudosection and filters"), [self.b_pseudo, self.b_filter]),
             _Step(4, t("Inversione (pyGIMLi)", "Inversion (pyGIMLi)"), [self.b_invert]),
-            _Step(5, t("Sezione", "Section"), [self.b_section, self.b_3d, self.b_plan, self.c_palette]),
+            _Step(5, t("Sezione", "Section"), [self.b_section, self.b_3d, self.b_plan, self.b_blank, self.c_palette]),
             _Step(6, t("Esportazioni", "Exports"), [self.b_export, self.b_remove]),
         ]
         for s in self.steps:
@@ -182,6 +206,7 @@ class ErtPane(QWidget):
                        (self.b_pseudo, self.pseudo_requested), (self.b_filter, self.filter_requested),
                        (self.b_invert, self.invert_requested), (self.b_section, self.section_requested),
                        (self.b_3d, self.view3d_requested), (self.b_plan, self.plan_requested),
+                       (self.b_blank, self.blank_requested),
                        (self.b_export, self.export_requested), (self.b_remove, self.remove_requested)):
             b.clicked.connect(lambda _c=False, s=sig: self._emit(s))
         self.c_palette.activated.connect(self._palette)

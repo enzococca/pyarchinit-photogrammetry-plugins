@@ -204,8 +204,9 @@ def invert(arrays: dict, params: dict, progress=None) -> dict:
     else:
         err = np.full(data.size(), rel)
     fe = file_err[idx]
-    if params.get("use_file_errors", True) and np.isfinite(fe).all() and (fe > 0).all():
-        err = np.maximum(err, fe)
+    if params.get("use_file_errors", True):  # the error of the file, where a reading has one and it is larger
+        has = np.isfinite(fe) & (fe > 0)
+        err = np.where(has, np.maximum(err, np.where(has, fe, 0.0)), err)
     data.set("err", err)
     progress(0.08, "mesh")
     spacing = float(np.median(np.diff(np.sort(sensors[:, 0])))) if len(sensors) > 1 else 1.0
@@ -231,7 +232,7 @@ def invert(arrays: dict, params: dict, progress=None) -> dict:
     out = {"nodes": nodes, "cells": cells[0], "cell_of": cells[1], "model": model, "coverage": cover,
            "response": response, "rhoa": np.asarray(data["rhoa"], float), "err": np.asarray(data["err"], float),
            "k": np.asarray(data["k"], float), "used": idx.astype(np.int64), "markers": markers,
-           "chi2_history": np.asarray(getattr(mgr.inv, "chi2History", []) or [], float)}
+           "chi2_history": _history(mgr)}
     fit = {"chi2": float(mgr.inv.chi2()), "rrms": float(mgr.inv.relrms()), "absrms": float(mgr.inv.absrms()),
            "iterations": int(_iterations(mgr)), "lam": float(inv_kw["lam"]), "readings": int(data.size()),
            "cells": int(para.cellCount()), "spacing": spacing, "topography_k": bool(topo)}
@@ -254,6 +255,15 @@ def invert(arrays: dict, params: dict, progress=None) -> dict:
     out["fit"] = fit
     progress(0.98, "done")
     return out
+
+
+def _history(mgr) -> np.ndarray:
+    """The chi2 of every iteration (a list or an array, whatever pyGIMLi gives)."""
+    h = getattr(mgr.inv, "chi2History", None)
+    try:
+        return np.asarray(h if h is not None else [], float).ravel()
+    except (TypeError, ValueError):
+        return np.zeros(0)
 
 
 def _iterations(mgr) -> int:

@@ -138,9 +138,19 @@ def test_the_steps_in_the_window(window, monkeypatch, tmp_path):
     assert x <= 0.0 + 1e-6 and 100.0 < y < 103.0
     # another palette: the section written again and shown again
     plugin.ert_set_palette(pid, "viridis")
+    _run(w, qapp)
     assert ert.entry_of(ch, pid)["inversion"]["display"]["palette"] == "viridis"
-    # 5. the 3D view: a file of the plugin with the section and the ground cut away
+    assert plugin._ert_shown == ("section", pid) and Path(v.path) == ert_section.view_path(ch, pid)
+    # the blanking changed without inverting again
+    fit_date = ert.entry_of(ch, pid)["inversion"]["date"]
+    _answer(monkeypatch, {"method": "none"})
+    plugin.ert_blank_dialog(pid)
+    _run(w, qapp)
+    inv = ert.entry_of(ch, pid)["inversion"]
+    assert inv["display"]["blank"]["method"] == "none" and inv["date"] == fit_date and not errors
+    # 5. the 3D view: a file of the plugin with the section and the ground cut away (built in the background)
     assert plugin.ert_show_3d(pid)
+    _run(w, qapp)
     assert w.model_view.paths.get("model", "").endswith(ert_section.SCENE)
     # the line on the plan again
     plugin.ert_show_plan(pid)
@@ -243,3 +253,32 @@ def test_undo_takes_a_change_of_the_profile_back(window, tmp_path):
     qapp.processEvents()
     assert ert.entry_of(w.chunk, e["id"])["filters"].get("manual", []) == []
     assert "111 letture valide su 111" in plugin.pane.ert.steps[2].state.text()
+
+
+def test_the_legend_is_one_image_made_once(window):
+    from PySide6.QtGui import QColor
+
+    from ppg_geophysics.ert_pane import legend_pixmap
+
+    a = legend_pixmap(10.0, 1000.0, "rainbow", 300, "Ω·m")
+    assert legend_pixmap(10.0, 1000.0, "rainbow", 300, "Ω·m").cacheKey() == a.cacheKey()  # cached
+    img = a.toImage()
+    near = lambda c, rgb: all(abs(a - b) <= 4 for a, b in zip(QColor(c).getRgb()[:3], rgb))  # noqa: E731
+    assert img.width() == 300 and near(img.pixel(7, 12), (0, 0, 128))  # the first colour of the ramp
+    assert near(img.pixel(292, 12), (120, 0, 90))
+
+
+def test_another_frame_and_deactivate_leave_no_ert_drawing(window, monkeypatch, tmp_path):
+    w, plugin, ch, qapp, errors, messages = window
+    e = ert_ops.import_profile(ch, write_ohm(tmp_path / "a.ohm"), name="A")
+    plugin.refresh_pane()
+    plugin.ert_show_pseudo(e["id"])
+    v = w.ortho_view
+    assert "Pseudosezione ERT" in v.layers and plugin._ert_legend is not None
+    plugin.context.show_frame((0.0, 0.0, 50.0, 20.0), 0.05, "")  # another plugin's frame
+    qapp.processEvents()
+    assert "Pseudosezione ERT" not in v.layers
+    plugin.ert_show_pseudo(e["id"])
+    legend = plugin._ert_legend
+    plugin.deactivate()
+    assert plugin._ert_legend is None and legend.scene() is None

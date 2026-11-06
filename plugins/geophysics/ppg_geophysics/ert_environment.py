@@ -36,7 +36,8 @@ PYTHONS = {("darwin", "arm64"): "3.12", ("darwin", "x86_64"): "3.13", ("win32", 
            ("win32", "x86_64"): "3.12", ("linux", "x86_64"): "3.12", ("linux", "amd64"): "3.12"}
 MARKER = "ppg-geophysics-ert.json"
 ENV_VAR = "PPG_GEOPHYSICS_ENV"
-SIZE_MB = 100
+SIZE_MB = 80  # the environment (pyGIMLi, pgcore, numpy, scipy, matplotlib)
+PYTHON_MB = 60  # the Python uv downloads when it has not that version yet
 _DATA: Path | None = None
 CHECK = r"""
 import importlib, importlib.metadata as md, json, platform
@@ -187,9 +188,10 @@ def status_text() -> str:
                  "pyGIMLi {0} of this Python, in a process of its own.").format(version)
     if kind == "environment":
         return t("pyGIMLi {0} nell'ambiente del plugin.", "pyGIMLi {0} in the environment of the plugin.").format(version)
-    return t("pyGIMLi non è installato: Installa pyGIMLi lo scarica in un ambiente del plugin (circa {0} MB).",
+    return t("pyGIMLi non è installato: Installa pyGIMLi lo scarica in un ambiente del plugin (circa {0} MB, più "
+             "circa {1} MB per Python se uv non lo ha già).",
              "pyGIMLi is not installed: Install pyGIMLi downloads it into an environment of the plugin "
-             "(about {0} MB).").format(SIZE_MB)
+             "(about {0} MB, plus about {1} MB for Python when uv has not it yet).").format(SIZE_MB, PYTHON_MB)
 
 
 def _python() -> Path:
@@ -224,8 +226,9 @@ def clean_environment(for_uv: bool = False) -> dict:
 
 def worker_environment() -> dict:
     """The variables of the worker: those of :func:`clean_environment` with a home folder of the
-    plugin (pyGIMLi writes its configuration and cache there, not into the user's folders), one
-    thread per OpenMP pool decided by pyGIMLi, Matplotlib without a display."""
+    plugin (pyGIMLi writes its configuration and cache there, not into the user's folders) and
+    Matplotlib without a display. The threads are pyGIMLi's own choice (its OpenMP runtime lives only
+    in the worker process)."""
     env = clean_environment()
     home = home_dir()
     for sub in ("Library/Caches", "Library/Preferences", ".cache", ".config", "AppData/Roaming", "AppData/Local"):
