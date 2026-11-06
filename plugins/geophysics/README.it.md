@@ -3,7 +3,7 @@
 **[Guida d'uso](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/geophysics/)**: i file da esportare, come posare una griglia sui picchetti, i filtri, come leggere i risultati.
 
 Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.3.3 o successiva): le griglie di una prospezione geofisica - magnetometria, resistività, time
+(1.3.4 o successiva): le griglie di una prospezione geofisica - magnetometria, resistività, time
 slice GPR, elettromagnetica - accanto ai prodotti fotogrammetrici dello stesso terreno.
 
 * **Import**: Surfer GRD (ASCII e binario, Surfer 6 e 7), ASCII XYZ / CSV (`x y valore`, le
@@ -49,8 +49,9 @@ nel rilievo, invertita con [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    (`x, z` lungo la linea oppure `x, y, z` del mondo). *Profilo sintetico* produce letture di un
    modello a due strati con un blocco.
 2. **Linea nel rilievo**: disegnata sull'ortofoto o sul DEM, da due marker o con coordinate digitate
-   (due punti o più: una linea spezzata), la distanza del primo elettrodo e la spaziatura; le quote
-   degli elettrodi dal DEM del chunk, dal file o piatte.
+   (due punti o più: una linea spezzata), oppure dalle coordinate degli elettrodi nel file quando sono
+   nel sistema del chunk; la distanza del primo elettrodo e la spaziatura, misurata lungo il terreno
+   (il cavo steso sul pendio) o in pianta; le quote degli elettrodi dal DEM del chunk, dal file o piatte.
 3. **Pseudosezione e filtri**: le letture come punti nella vista 2D (si selezionano e si cancellano
    quelle cattive); filtri su intervallo, errore, reciproci e picchi.
 4. **Inversione**: il gestore ERT di pyGIMLi su una mesh che segue la topografia (fattori
@@ -59,7 +60,8 @@ nel rilievo, invertita con [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    copertura o con l'indice di profondità di investigazione di Oldenburg e Li.
 5. **Sezione**: nella vista 2D nel suo riferimento (distanza lungo la linea per quota, colori
    logaritmici con la legenda in ohm m), nella vista 3D come sezione verticale sotto la linea con il
-   terreno tagliato da una parte, le unità e i carotaggi del plugin geoarcheologia; la linea e gli
+   terreno tagliato da una parte, i proxy delle US del programma, le unità e i carotaggi del plugin
+   geoarcheologia; la linea e gli
    elettrodi sulla pianta.
 6. **Esportazioni**: la sezione in GeoTIFF (riferimento u, v, con `.frame.json`), le celle della
    mesh in CSV, i pixel in XYZ con coordinate del mondo, figure PNG/SVG/PDF della sezione e della
@@ -67,7 +69,7 @@ nel rilievo, invertita con [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    versioni) in JSON, le letture tenute in `.ohm`.
 
 pyGIMLi non gira mai nel processo del programma: *Installa pyGIMLi* crea con uv un ambiente a parte
-nella cartella dati del plugin (circa 100 MB; `PPG_GEOPHYSICS_ENV` lo sposta) e ogni lettura o
+nella cartella dati del plugin (circa 80 MB, più circa 60 MB per Python se uv non lo ha già; `PPG_GEOPHYSICS_ENV` lo sposta) e ogni lettura o
 inversione gira lì, in un processo di lavoro. pyGIMLi 1.6 ha pacchetti per Windows x64, Linux x86_64
 e macOS 26 o successivo (Apple Silicon e Intel), non per Windows o Linux su ARM.
 

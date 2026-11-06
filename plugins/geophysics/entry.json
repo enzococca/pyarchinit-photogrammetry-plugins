@@ -7,6 +7,6 @@
       "description": "Griglie geofisiche (magnetometria, resistività, slice GPR, EM) importate, georeferenziate, filtrate, sovrapposte a ortofoto e DEM, esportate; tomografia di resistività: letture del georesistivimetro invertite con pyGIMLi, sezioni in 2D e nella vista 3D con unità e carotaggi, esportate in GeoTIFF, CSV, figure, GeoPackage"
     }
   },
-  "min_app": "1.3.3",
+  "min_app": "1.3.4",
   "requires": []
 }

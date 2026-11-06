@@ -3,7 +3,7 @@
 **[User guide](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/geophysics/)**: the files to export, how to place a grid on the pegs, the filters, how to read the results.
 
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.3.3 or later): the grids of a geophysical survey - magnetometry, resistivity, GPR time slices,
+(1.3.4 or later): the grids of a geophysical survey - magnetometry, resistivity, GPR time slices,
 electromagnetic - beside the photogrammetric products of the same ground.
 
 * **Import**: Surfer GRD (ASCII and binary, Surfer 6 and 7), ASCII XYZ / CSV (`x y value`, the
@@ -46,8 +46,10 @@ survey, inverted with [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    instruments (RES2DINV, ABEM, Syscal); an optional table of the electrodes (`x, z` along the line or
    world `x, y, z`). *Synthetic profile* makes readings of a two-layer model with a block.
 2. **Line in the survey**: drawn on the orthomosaic or DEM, from two markers or typed coordinates (two
-   points or more: a bent line), the first electrode's distance and the spacing; the heights of the
-   electrodes from the DEM of the chunk, from the file or flat.
+   points or more: a bent line), or from the electrode coordinates of the file when they are in the
+   system of the chunk; the first electrode's distance and the spacing, measured along the ground (the
+   cable on a slope) or in plan; the heights of the electrodes from the DEM of the chunk, from the file
+   or flat.
 3. **Pseudosection and filters**: the readings as points in the 2D view (select and delete the bad
    ones); filters on the range, the error, the reciprocals and the spikes.
 4. **Inversion**: pyGIMLi's ERT manager on a mesh that follows the topography (geometric factors
@@ -56,7 +58,8 @@ survey, inverted with [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    depth-of-investigation index of Oldenburg and Li.
 5. **Section**: in the 2D view in its own frame (distance along the line x elevation, log colours
    with the legend in ohm m), in the 3D view as a vertical section under the line with the ground cut
-   away on one side, the units and the cores of the geoarchaeology plugin; the line and the
+   away on one side, the program's proxies of the units, the units and the cores of the
+   geoarchaeology plugin; the line and the
    electrodes on the plan.
 6. **Exports**: the section as GeoTIFF (u, v frame, with `.frame.json`), the cells of the mesh as CSV,
    the pixels as XYZ with world coordinates, figures PNG/SVG/PDF of the section and the
@@ -64,7 +67,7 @@ survey, inverted with [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    as JSON, the readings kept as `.ohm`.
 
 pyGIMLi never runs in the program's process: *Install pyGIMLi* makes an environment of its own with
-uv in the plugin's data folder (about 100 MB; `PPG_GEOPHYSICS_ENV` puts it elsewhere) and every
+uv in the plugin's data folder (about 80 MB, plus about 60 MB for Python when uv has not it yet; `PPG_GEOPHYSICS_ENV` puts it elsewhere) and every
 reading or inversion runs there, in a worker process. pyGIMLi 1.6 has builds for Windows x64, Linux
 x86_64 and macOS 26 or later (Apple Silicon and Intel), not for Windows or Linux on ARM.
 
