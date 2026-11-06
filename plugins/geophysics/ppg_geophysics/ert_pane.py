@@ -102,6 +102,7 @@ class ErtPane(QWidget):
     place_requested = Signal(str)
     pseudo_requested = Signal(str)
     filter_requested = Signal(str)
+    remove_readings_requested = Signal(str)
     invert_requested = Signal(str)
     section_requested = Signal(str)
     view3d_requested = Signal(str)
@@ -152,9 +153,13 @@ class ErtPane(QWidget):
                                "of the line on the orthomosaic or DEM; double click or Enter to end"))
         self.b_place = button(t("Linea da marker o coordinate...", "Line from markers or coordinates..."))
         self.b_pseudo = button(t("Mostra la pseudosezione", "Show the pseudosection"),
-                               t("Le letture nella vista 2D: per toglierne una, selezionala con lo strumento Seleziona e "
-                                 "premi Canc", "The readings in the 2D view: to remove one, select it with the Select "
-                                 "tool and press Delete"))
+                               t("Le letture nella vista 2D, colorate secondo la resistività apparente",
+                                 "The readings in the 2D view, coloured by their apparent resistivity"))
+        self.b_remove_readings = button(t("Togli letture...", "Remove readings..."),
+                                        t("Disegna un'area sulla pseudosezione: le letture dentro escono dall'inversione "
+                                          "(Annulla, o Filtri... > Rimetti, le ridà)",
+                                          "Draw an area on the pseudosection: the readings inside leave the inversion "
+                                          "(Undo, or Filters... > Give back, returns them)"))
         self.b_filter = button(t("Filtri...", "Filters..."))
         self.b_invert = button(t("Inverti...", "Invert..."))
         self.b_section = button(t("Sezione 2D", "2D section"))
@@ -174,7 +179,7 @@ class ErtPane(QWidget):
         self.steps = [
             _Step(1, t("Letture", "Readings"), [self.b_import, self.b_simulate]),
             _Step(2, t("Linea nel rilievo", "Line in the survey"), [self.b_draw, self.b_place]),
-            _Step(3, t("Pseudosezione e filtri", "Pseudosection and filters"), [self.b_pseudo, self.b_filter]),
+            _Step(3, t("Pseudosezione e filtri", "Pseudosection and filters"), [self.b_pseudo, self.b_remove_readings, self.b_filter]),
             _Step(4, t("Inversione (pyGIMLi)", "Inversion (pyGIMLi)"), [self.b_invert]),
             _Step(5, t("Sezione", "Section"), [self.b_section, self.b_3d, self.b_plan, self.b_blank, self.c_palette]),
             _Step(6, t("Esportazioni", "Exports"), [self.b_export, self.b_remove]),
@@ -204,6 +209,7 @@ class ErtPane(QWidget):
         self.b_install.clicked.connect(self.install_requested)
         for b, sig in ((self.b_draw, self.draw_line_requested), (self.b_place, self.place_requested),
                        (self.b_pseudo, self.pseudo_requested), (self.b_filter, self.filter_requested),
+                       (self.b_remove_readings, self.remove_readings_requested),
                        (self.b_invert, self.invert_requested), (self.b_section, self.section_requested),
                        (self.b_3d, self.view3d_requested), (self.b_plan, self.plan_requested),
                        (self.b_blank, self.blank_requested),

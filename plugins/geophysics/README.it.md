@@ -52,8 +52,8 @@ nel rilievo, invertita con [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    (due punti o più: una linea spezzata), oppure dalle coordinate degli elettrodi nel file quando sono
    nel sistema del chunk; la distanza del primo elettrodo e la spaziatura, misurata lungo il terreno
    (il cavo steso sul pendio) o in pianta; le quote degli elettrodi dal DEM del chunk, dal file o piatte.
-3. **Pseudosezione e filtri**: le letture come punti nella vista 2D (si selezionano e si cancellano
-   quelle cattive); filtri su intervallo, errore, reciproci e picchi.
+3. **Pseudosezione e filtri**: le letture come punti nella vista 2D (*Togli letture...*: si disegna
+   un'area intorno a quelle cattive); filtri su intervallo, errore, reciproci e picchi.
 4. **Inversione**: il gestore ERT di pyGIMLi su una mesh che segue la topografia (fattori
    geometrici calcolati su di essa), lambda, peso verticale, modello a blocchi, dati robusti,
    errori relativo e in tensione; χ² e RMS; le parti che le letture non risolvono oscurate con la

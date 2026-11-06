@@ -93,6 +93,7 @@ class GeophysicsPlugin(ErtMixin, Plugin):
     def deactivate(self) -> None:
         self.hide_overlay()
         self._ert_drop_legend()
+        self._ert_drop_readings()
         self._ert_shown, self._ert_plan = None, False
         window = self.context.window if self.context else None
         if self._watch is not None:

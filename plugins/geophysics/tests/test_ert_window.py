@@ -114,15 +114,23 @@ def test_the_steps_in_the_window(window, monkeypatch, tmp_path):
     assert e["placement"]["length"] == pytest.approx(23.0, abs=0.01) and "Linea di 23.0 m" in pane.steps[1].state.text()
     assert ert_section.number(e["placement"]["z_range"][0]) in pane.steps[1].state.text()
     assert "Profili ERT" in w.ortho_view.layers and "Elettrodi ERT" in w.ortho_view.layers
-    # 3. the pseudosection: the readings as points; two deleted in the view leave the inversion
+    # 3. the pseudosection: the readings as one item of points (not a feature each); two inside an area drawn
+    # on it with the program's drawing leave the inversion
     plugin.ert_show_pseudo(pid)
     v = w.ortho_view
-    assert v.kind == "frame" and len(v.features("Pseudosezione ERT")) == e["readings"]
-    feats = [{"lettura": 3}, {"lettura": 4}]
-    plugin._ert_readings_deleted(feats)
+    assert v.kind == "frame" and plugin._ert_readings.count == e["readings"] and not v.features("Pseudosezione ERT")
+    assert plugin._ert_readings.scene() is v.scene()
+    plugin.ert_remove_readings(pid)
+    assert v.mode.startswith("req"), v.mode
+    box = [(3.2, -0.42), (4.8, -0.42), (4.8, -0.6), (3.2, -0.6)]  # the readings 3 and 4 (pseudo-depth 0.51 m)
+    for x, y in box:
+        QTest.mouseClick(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(x, y)))
+    QTest.mouseDClick(v.viewport(), Qt.MouseButton.LeftButton, pos=v.mapFromScene(v.scene_pt(*box[-1])))
+    qapp.processEvents()
     e = ert.entry_of(ch, pid)
-    assert e["filters"]["manual"] == [2, 3] and e["valid"] == e["readings"] - 2
+    assert e["filters"]["manual"] == [2, 3] and e["valid"] == e["readings"] - 2, messages
     assert "tolte a mano 2" in pane.steps[2].state.text()
+    assert plugin._ert_readings is not None and plugin._ert_readings.scene() is v.scene()  # drawn again
     # 4. the inversion: the section shown in the 2D view with the electrodes and the legend
     _answer(monkeypatch, {"lam": 15.0})
     plugin.ert_invert_dialog(pid)
@@ -246,7 +254,7 @@ def test_undo_takes_a_change_of_the_profile_back(window, tmp_path):
     plugin._ert_changed(e["id"])
     qapp.processEvents()
     plugin.ert_show_pseudo(e["id"])
-    plugin._ert_readings_deleted([{"lettura": 1}, {"lettura": 2}, {"lettura": 3}])
+    plugin._ert_remove(e["id"], [0, 1, 2])
     qapp.processEvents()
     assert ert.entry_of(w.chunk, e["id"])["filters"]["manual"] == [0, 1, 2]
     w.undo()
@@ -274,11 +282,45 @@ def test_another_frame_and_deactivate_leave_no_ert_drawing(window, monkeypatch, 
     plugin.refresh_pane()
     plugin.ert_show_pseudo(e["id"])
     v = w.ortho_view
-    assert "Pseudosezione ERT" in v.layers and plugin._ert_legend is not None
+    assert plugin._ert_readings is not None and plugin._ert_legend is not None
     plugin.context.show_frame((0.0, 0.0, 50.0, 20.0), 0.05, "")  # another plugin's frame
     qapp.processEvents()
-    assert "Pseudosezione ERT" not in v.layers
+    assert plugin._ert_readings is None or _gone(plugin._ert_readings)
     plugin.ert_show_pseudo(e["id"])
-    legend = plugin._ert_legend
+    legend, readings = plugin._ert_legend, plugin._ert_readings
     plugin.deactivate()
     assert plugin._ert_legend is None and legend.scene() is None
+    assert plugin._ert_readings is None and readings.scene() is None
+
+
+def _gone(item) -> bool:
+    try:
+        return item.scene() is None
+    except RuntimeError:  # deleted with the scene
+        return True
+
+
+def test_the_readings_item_paints_its_dots(window):
+    import numpy as np
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from PySide6.QtWidgets import QGraphicsScene
+
+    from ppg_geophysics import ert_view
+
+    pts = np.array([[10.0, 10.0], [30.0, 10.0], [50.0, 10.0]])
+    g = ert_view.groups(np.array([0.0, 1.0, 0.5]), lambda xs: ert_section.ramp(xs, "rainbow"),
+                        np.array([True, True, False]))
+    assert [len(i) for _rgb, i in g] == [1, 1, 1] and g[0][0] == ert_view.REMOVED
+    scene = QGraphicsScene()
+    item = ert_view.ReadingsItem(pts, g, electrodes=[[30.0, 30.0]])
+    scene.addItem(item)
+    img = QImage(64, 40, QImage.Format.Format_ARGB32)
+    img.fill(QColor("white"))
+    p = QPainter(img)
+    scene.render(p, QRectF(0, 0, 64, 40), QRectF(0, 0, 64, 40))
+    p.end()
+    rgb = lambda x, y: QColor(img.pixel(x, y)).getRgb()[:3]  # noqa: E731
+    assert rgb(10, 10)[2] > 100 and rgb(10, 10)[0] < 60  # blue: the low end
+    assert rgb(50, 10) == ert_view.REMOVED and rgb(30, 30) == ert_view.ELECTRODE
+    assert ert_view.inside(pts, [[0, 0], [40, 0], [40, 20], [0, 20]]).tolist() == [True, True, False]

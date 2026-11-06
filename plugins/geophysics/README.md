@@ -50,8 +50,8 @@ survey, inverted with [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
    system of the chunk; the first electrode's distance and the spacing, measured along the ground (the
    cable on a slope) or in plan; the heights of the electrodes from the DEM of the chunk, from the file
    or flat.
-3. **Pseudosection and filters**: the readings as points in the 2D view (select and delete the bad
-   ones); filters on the range, the error, the reciprocals and the spikes.
+3. **Pseudosection and filters**: the readings as points in the 2D view (*Remove readings...*: draw an
+   area around the bad ones); filters on the range, the error, the reciprocals and the spikes.
 4. **Inversion**: pyGIMLi's ERT manager on a mesh that follows the topography (geometric factors
    computed on it), lambda, vertical weight, blocky model, robust data, relative and voltage errors;
    chi² and RMS; the parts the readings do not resolve blanked by the coverage or by the

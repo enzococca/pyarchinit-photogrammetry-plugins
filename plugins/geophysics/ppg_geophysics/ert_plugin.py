@@ -2,9 +2,9 @@
 (:class:`ErtMixin`, mixed into :class:`ppg_geophysics.GeophysicsPlugin`).
 
 In the window: the ERT tab of the Geofisica pane (:mod:`.ert_pane`), the line drawn on the
-orthomosaic or DEM with the program's drawing (``context.request_line``), the pseudosection as points
-on an empty frame of the 2D view (``context.show_frame``; the readings selected and deleted there leave
-the inversion, ``context.on_features_deleted``), the section shown as a raster of its own frame
+orthomosaic or DEM with the program's drawing (``context.request_line``), the pseudosection as one
+graphics item of points on an empty frame of the 2D view (``context.show_frame``; the readings inside an
+area drawn there with ``context.request_polygon`` leave the inversion), the section shown as a raster of its own frame
 (``context.show_raster``: u along the line, v the elevation) with the electrodes and a legend, the 3D
 scene of the sections with the ground cut away, the units and the cores (``context.show_model``), the
 line and the electrodes on the plan as layers. Every change of a profile marks the project modified:
@@ -43,6 +43,7 @@ class ErtMixin:
     _ert_legend = None
     _ert_doc = None  # the document whose files were settled (once per opened project)
     _ert_frame = None  # the bounds of the empty frame of the pseudosection
+    _ert_readings = None  # the graphics item of the readings of the pseudosection
 
     # ------------------------------------------------------------------ setup
     def _ert_activate(self, context) -> None:
@@ -56,8 +57,6 @@ class ErtMixin:
         context.add_action(t("Installa pyGIMLi...", "Install pyGIMLi..."), self.ert_install_dialog, processing=True,
                            tip=t("L'inversione delle tomografie, in un ambiente separato dal programma",
                                  "The inversion of the tomographies, in an environment apart from the program"))
-        if context.window is not None and hasattr(context, "on_features_deleted"):
-            context.on_features_deleted(PSEUDO_LAYER, self._ert_readings_deleted)
 
     def _ert_connect(self, pane) -> None:
         p = pane
@@ -67,6 +66,8 @@ class ErtMixin:
         p.place_requested.connect(self.ert_place_dialog)
         p.pseudo_requested.connect(self.ert_show_pseudo)
         p.filter_requested.connect(self.ert_filter_dialog)
+        if hasattr(p, "remove_readings_requested"):
+            p.remove_readings_requested.connect(self.ert_remove_readings)
         p.invert_requested.connect(self.ert_invert_dialog)
         p.section_requested.connect(self.ert_show_section)
         p.view3d_requested.connect(self.ert_show_3d)
@@ -458,10 +459,10 @@ class ErtMixin:
         if window is not None and hasattr(window, "show_view"):
             window.show_view(view)
         self._fit_frame(view)
-        self._ert_status(t("Pseudosezione: x = distanza lungo la linea, y = pseudoprofondità (convenzionale). Seleziona "
-                           "le letture da togliere con lo strumento Seleziona e premi Canc.",
-                           "Pseudosection: x = distance along the line, y = pseudo-depth (conventional). Select the "
-                           "readings to remove with the Select tool and press Delete."), 20000)
+        self._ert_status(t("Pseudosezione: x = distanza lungo la linea, y = pseudoprofondità (convenzionale). Per togliere "
+                           "letture usa Togli letture... e disegna un'area intorno a loro.",
+                           "Pseudosection: x = distance along the line, y = pseudo-depth (conventional). To remove "
+                           "readings use Remove readings... and draw an area around them."), 20000)
 
     @staticmethod
     def _fit_frame(view) -> None:
@@ -474,6 +475,10 @@ class ErtMixin:
             pass
 
     def _ert_draw_pseudo(self, pid: str) -> None:
+        """The readings as one graphics item of the plugin (:mod:`.ert_view`: one ``drawPoints`` per
+        colour, not one feature of the view per reading), the electrodes on top, the legend."""
+        from .ert_view import ReadingsItem, groups
+
         chunk = self._chunk()
         view = self._view()
         prof = ert_mod.load(chunk, pid)
@@ -483,42 +488,72 @@ class ErtMixin:
         rhoa = prof.apparent()
         ok = valid & np.isfinite(rhoa) & (rhoa > 0)
         lo, hi = section.limits(rhoa[ok]) if ok.any() else (1.0, 100.0)
-        rgb = section.colours(np.where(ok, rhoa, np.nan)[None, :], lo, hi, "rainbow")[0]
-        for layer in (PSEUDO_LAYER, REMOVED_LAYER, ELECTRODES_LAYER):
-            view.remove_layer(layer)
-        batch = view.batch() if hasattr(view, "batch") else None
-        if batch is not None:
-            batch.__enter__()
-        try:
-            for i in range(prof.count):
-                attrs = {"lettura": i + 1, "a": int(prof.a[i]) + 1, "b": int(prof.b[i]) + 1 if prof.b[i] >= 0 else "",
-                         "m": int(prof.m[i]) + 1, "n": int(prof.n[i]) + 1 if prof.n[i] >= 0 else "",
-                         "rhoa": round(float(rhoa[i]), 3), "profilo": e["name"]}
-                if prof.has("err"):
-                    attrs["err_pc"] = round(float(prof.value("err")[i]) * 100, 2)
-                if ok[i]:
-                    c = rgb[i]
-                    view.add_point(float(x[i]), -float(d[i]), color="#%02x%02x%02x" % (c[0], c[1], c[2]),
-                                   layer=PSEUDO_LAYER, attrs=attrs)
-                elif np.isfinite(x[i]):
-                    view.add_point(float(x[i]), -float(d[i]), color="#9e9e9e", layer=REMOVED_LAYER, attrs=attrs)
-            for k, u in enumerate(prof.positions()):
-                view.add_point(float(u), 0.0, color="#202020", layer=ELECTRODES_LAYER, attrs={"elettrodo": k + 1})
-        finally:
-            if batch is not None:
-                batch.__exit__(None, None, None)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pos = (np.log10(rhoa) - np.log10(lo)) / max(np.log10(hi) - np.log10(lo), 1e-9)
+        pos = np.where(np.isfinite(rhoa) & (rhoa > 0), np.clip(pos, 0, 1), 0.0)
+        drawn = np.isfinite(x) & np.isfinite(d)
+        self._ert_drop_readings()
+        to_scene = lambda xs, ys: [(p.x(), p.y()) for p in (view.scene_pt(float(a), float(b))  # noqa: E731
+                                                            for a, b in zip(xs, ys))]
+        pts = np.asarray(to_scene(x[drawn], -d[drawn]), float).reshape(-1, 2)
+        el = np.asarray(to_scene(prof.positions(), np.zeros(prof.electrodes)), float).reshape(-1, 2)
+        item = ReadingsItem(pts, groups(pos[drawn], lambda xs: section.ramp(xs, "rainbow"), ok[drawn]), el)
+        item.setZValue(1)
+        view.scene().addItem(item)
+        self._ert_readings = item
         self._ert_put_legend(lo, hi, "rainbow", t("ρa Ω·m", "ρa Ω·m"))
 
-    def _ert_readings_deleted(self, features) -> None:
-        chunk = self._chunk()
-        if chunk is None or not self._ert_shown or self._ert_shown[0] != "pseudo":
+    def _ert_drop_readings(self) -> None:
+        """The readings out of the view (gone already when the view changed raster)."""
+        item, self._ert_readings = getattr(self, "_ert_readings", None), None
+        if item is None:
             return
-        pid = self._ert_shown[1]
-        idx = [int(f["lettura"]) - 1 for f in features if f.get("lettura")]
+        try:
+            scene = item.scene()
+            if scene is not None:
+                scene.removeItem(item)
+        except RuntimeError:  # deleted with the old scene
+            pass
+
+    def ert_remove_readings(self, pid: str | None = None) -> None:
+        """The readings inside an area drawn on the pseudosection taken out of the inversion (the area is
+        drawn with the program's drawing: drag a box, or click the vertices and double click or Enter)."""
+        chunk = self._chunk()
+        pid = self._ert_pid(pid)
+        if chunk is None or not pid or self.context.window is None or not hasattr(self.context, "request_polygon"):
+            return
+        if self._ert_shown != ("pseudo", pid):
+            self.ert_show_pseudo(pid)
+        self.context.request_polygon(lambda xy: self._ert_area_drawn(pid, xy), lambda: self._ert_status(
+            t("Nessuna lettura tolta", "No reading removed"), 5000), hint=t(
+            "Letture da togliere: trascina un riquadro o fai clic intorno a loro, doppio clic o Invio per finire, Esc annulla",
+            "Readings to remove: drag a box or click around them, double click or Enter to end, Esc cancels"))
+
+    def _ert_area_drawn(self, pid: str, xy) -> None:
+        from .ert_view import inside
+
+        chunk = self._chunk()
+        if chunk is None:
+            return
+        prof = ert_mod.load(chunk, pid)
+        e = ert_mod.entry_of(chunk, pid)
+        x, d = ert_mod.pseudo_positions(prof)
+        hit = inside(np.column_stack([x, -d]), xy) & ert_mod.valid_mask(prof, e.get("filters"))
+        self._ert_remove(pid, np.flatnonzero(hit).tolist())
+
+    def _ert_remove(self, pid: str, idx: list[int]) -> None:
+        """Readings (indices from 0) taken out by hand: recorded in the filters (Undo, *Filtri...* gives
+        them back), the pseudosection drawn again."""
+        chunk = self._chunk()
+        if chunk is None:
+            return
         if not idx:
+            self._ert_status(t("Nessuna lettura nell'area", "No reading in the area"), 5000)
             return
         e = ert_mod.set_filters(chunk, pid, remove_readings=idx)
         self._ert_changed(pid)
+        if self._ert_shown == ("pseudo", pid) and self._ert_own_frame(self._view()):
+            self._ert_draw_pseudo(pid)
         self._ert_status(t("{0} letture tolte; restano {1} valide", "{0} readings removed; {1} valid left")
                          .format(len(idx), e["valid"]))
 
