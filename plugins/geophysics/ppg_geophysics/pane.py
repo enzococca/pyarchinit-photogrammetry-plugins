@@ -1,11 +1,12 @@
-"""The Geofisica pane: the grids of the chunk in a table, the buttons of the plugin, the overlay
-on the raster view with its band (the slices of a GPR survey), palette and opacity, the anomalies
-drawn on the view; under the buttons, a line on the selected grid."""
+"""The Geofisica pane: two tabs. *Griglie*: the grids of the chunk in a table, the buttons of the
+plugin, the overlay on the raster view with its band (the slices of a GPR survey), palette and
+opacity, the anomalies drawn on the view; under the buttons, a line on the selected grid. *ERT*: the
+resistivity tomography profiles and their steps (:mod:`.ert_pane`)."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSlider,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+                               QScrollArea, QSlider, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from pyarchinit_photogrammetry.gui.flow_layout import FlowLayout
 
@@ -29,7 +30,14 @@ class GeophysicsPane(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        lay = QVBoxLayout(self)
+        from .ert_pane import ErtPane
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+        self.grids_page = QWidget()
+        lay = QVBoxLayout(self.grids_page)
         lay.setContentsMargins(4, 4, 4, 4)
         intro = QLabel(t("Griglie geofisiche (magnetometria, resistività, GPR, EM): importa, georeferenzia con i "
                          "marker o le coordinate dei picchetti, filtra, sovrapponi a ortofoto e DEM, esporta.",
@@ -104,6 +112,17 @@ class GeophysicsPane(QWidget):
         self.status = QLabel("")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
+        self.tabs.addTab(self.grids_page, t("Griglie", "Grids"))
+        self.ert = ErtPane()
+        scroll = QScrollArea()  # the steps of a tomography are taller than a short dock
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(self.ert)
+        self.ert_scroll = scroll
+        self.tabs.addTab(scroll, "ERT")
+        self.tabs.setTabToolTip(1, t("Tomografia elettrica di resistività (pyGIMLi)", "Electrical resistivity tomography "
+                                     "(pyGIMLi)"))
         self.entries: list[dict] = []
         self.b_import.clicked.connect(self.import_requested)
         self.b_georef.clicked.connect(lambda: self._emit(self.georef_requested))

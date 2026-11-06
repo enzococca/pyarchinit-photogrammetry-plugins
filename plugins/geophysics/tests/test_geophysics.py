@@ -216,7 +216,8 @@ def test_the_plugin_in_the_program(tmp_path):
     assert info is not None and info.active, info and info.error
     assert [a.title for a in manager.actions if a.plugin == "geophysics"] == [
         "Importa griglia geofisica...", "Griglie geofisiche...", "Sovrapponi la griglia alla vista", "Nascondi la griglia",
-        "Disegna un'anomalia"]
+        "Disegna un'anomalia", "Tomografia elettrica: importa letture...", "Tomografia elettrica (ERT)...",
+        "Installa pyGIMLi..."]
     assert "geophysics" in manager.commands
     assert [e.suffix for e in manager.exporters if e.plugin == "geophysics"] == [".gpkg"]
 
