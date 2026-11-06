@@ -409,10 +409,21 @@ class ErtMixin:
         window = self.context.window
         if window is not None and hasattr(window, "show_view"):
             window.show_view(view)
+        self._fit_frame(view)
         self._ert_status(t("Pseudosezione: x = distanza lungo la linea, y = pseudoprofondità (convenzionale). Seleziona "
                            "le letture da togliere con lo strumento Seleziona e premi Canc.",
                            "Pseudosection: x = distance along the line, y = pseudo-depth (conventional). Select the "
                            "readings to remove with the Select tool and press Delete."), 20000)
+
+    @staticmethod
+    def _fit_frame(view) -> None:
+        """The whole empty frame in the view: the program's ``fit`` frames only a raster."""
+        try:
+            from PySide6.QtCore import Qt
+
+            view.fitInView(view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        except Exception:  # noqa: BLE001 - a view without it keeps its zoom
+            pass
 
     def _ert_draw_pseudo(self, pid: str) -> None:
         chunk = self._chunk()
