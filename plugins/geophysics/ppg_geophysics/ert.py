@@ -209,7 +209,15 @@ def _numbers(text: str) -> list[float]:
 
 
 def _lines(path: Path) -> list[str]:
+    """The lines of a text file: UTF-8, UTF-16 (with its mark, or without it when every other byte is
+    zero, as some Windows programs export), else Latin-1."""
     raw = Path(path).read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16").splitlines()
+    head = raw[:4000]
+    if len(head) >= 4 and head.count(b"\0") >= 0.3 * len(head):
+        enc = "utf-16-le" if head[1:2] == b"\0" else "utf-16-be"
+        return raw.decode(enc, "replace").splitlines()
     for enc in ("utf-8-sig", "latin-1"):
         try:
             return raw.decode(enc).splitlines()
@@ -232,10 +240,61 @@ def looks_unified(path: str | Path) -> bool:
     return False
 
 
+# the unit after a token of the unified format ("u/mV") and the factor to the plugin's units (V, A, ohm m,
+# a fraction for the errors)
+UNITS = {"v": 1.0, "mv": 1e-3, "uv": 1e-6, "µv": 1e-6, "a": 1.0, "ma": 1e-3, "ua": 1e-6, "µa": 1e-6, "%": 0.01,
+         "ohm": 1.0, "ohmm": 1.0, "ohm.m": 1.0, "ohm*m": 1.0, "ohm·m": 1.0, "ωm": 1.0, "ω·m": 1.0, "m": 1.0,
+         "mrad": 1.0, "rad": 1000.0, "mohm": 1e-3}
+TOKEN_NAMES = {"rho": "rhoa", "rhoa": "rhoa", "ra": "rhoa", "res": "r", "r": "r", "u": "u", "v": "u", "i": "i",
+               "err": "err", "ip": "ip", "k": "k", "valid": "valid", "a": "a", "b": "b", "m": "m", "n": "n",
+               "x": "x", "y": "y", "z": "z"}
+HIGHEST_GROUND = 9000.0  # metres: a "height" above this is a northing, not an elevation
+
+
+def _token(word: str) -> tuple[str, float]:
+    """A token of the unified format and the factor of its unit: ``u/mV`` -> ("u", 0.001), ``err/%`` ->
+    ("err", 0.01), ``rhoa`` -> ("rhoa", 1.0)."""
+    name, _s, unit = word.strip().lower().partition("/")
+    name = TOKEN_NAMES.get(name, name)
+    unit = unit.strip().replace(" ", "")
+    if not unit:
+        return name, 1.0
+    if unit not in UNITS:
+        raise ValueError(t("unità non riconosciuta: {0}", "unit not known: {0}").format(word))
+    return name, UNITS[unit]
+
+
+def sensor_layout(x, y=None, z=None) -> dict:
+    """The electrodes of a file as the plugin keeps them: ``u`` (distance along the line), ``z``
+    (heights, None without), ``x``/``y`` (world coordinates, None without), from the columns of the
+    file (``y``/``z`` None when the file has not them). The rules of pyGIMLi's files: a 2-D profile is
+    ``x z``, or ``x y`` with y the elevation, or ``x y z`` with y the elevation and z = 0; world
+    coordinates only when z carries the heights (or y cannot be an elevation: above 9000 m, a
+    northing)."""
+    x = np.asarray(x, float)
+    zero = lambda v: v is None or np.allclose(v, 0.0)  # noqa: E731
+    flat = lambda v: v is None or np.ptp(v) == 0  # noqa: E731
+    if y is not None and z is None:  # "x y": distance and elevation
+        y, z = None, y
+    if y is None:
+        return {"u": x, "z": None if zero(z) else np.asarray(z, float), "x": None, "y": None}
+    y = np.asarray(y, float)
+    if zero(z):
+        if np.abs(y).max() > HIGHEST_GROUND:  # world x, y without heights
+            return {"u": _along(x, y), "z": None, "x": x, "y": y}
+        return {"u": x, "z": None if zero(y) else y, "x": None, "y": None}  # pyGIMLi's 2-D: y = elevation
+    z = np.asarray(z, float)
+    if flat(y):  # a line in the x-z plane
+        return {"u": x, "z": z, "x": None, "y": None}
+    return {"u": _along(x, y), "z": z, "x": x, "y": y}
+
+
 def read_unified(path: str | Path) -> Profile:
     """The unified data format (``.ohm``, ``.shm``, ``.data``, ``.dat``): electrodes with their token
-    line (``# x z`` or ``# x y z``), readings with theirs (``# a b m n rhoa err ...``), electrodes
-    numbered from 1 (0 = at infinity); ``err`` is relative, ``ip`` in mrad."""
+    line (``# x z`` or ``# x y z``, see :func:`sensor_layout`), readings with theirs (``# a b m n rhoa
+    err ...``, units after a slash converted: ``u/mV``, ``i/mA``, ``err/%``), electrodes numbered from
+    1 (0 = at infinity); ``err`` is relative, ``ip`` in mrad. A value column of zeros only - pyGIMLi
+    writes every token of its container, the unset ones as zeros - is a column the file has not."""
     lines = _lines(Path(path))
     k = 0
     tokens: list[str] = []
@@ -247,10 +306,10 @@ def read_unified(path: str | Path) -> Profile:
             k += 1
             if "#" in line:
                 body, comment = line.split("#", 1)
-                words = comment.replace("/", " ").split()
+                words = comment.split()
                 if not body.strip():
                     if words:
-                        tokens = [w.lower() for w in words]
+                        tokens = words
                     continue
                 line = body
             if line.strip():
@@ -268,14 +327,16 @@ def read_unified(path: str | Path) -> Profile:
         if line is None:
             raise ValueError(f"{path}: {count} electrodes announced, fewer found")
         sens.append([float(v) for v in line.split()])
-    stoks = tokens or (["x", "z"] if len(sens[0]) == 2 else ["x", "y", "z"])
     sens = np.asarray(sens, float)
-    col = {name: i for i, name in enumerate(stoks)}
-    x = sens[:, col.get("x", 0)]
-    y = sens[:, col["y"]] if "y" in col else None
-    z = sens[:, col["z"]] if "z" in col else None
-    if z is None and y is not None and len(stoks) == 2:  # "x y" in 2-D is x and height
-        z, y = y, None
+    stoks = [_token(w) for w in tokens] if tokens else \
+        ([("x", 1.0), ("z", 1.0)] if sens.shape[1] == 2 else [("x", 1.0), ("y", 1.0), ("z", 1.0)])
+    col = {name: (i, f) for i, (name, f) in enumerate(stoks) if i < sens.shape[1]}
+
+    def scol(name):
+        return sens[:, col[name][0]] * col[name][1] if name in col else None
+
+    x = scol("x") if "x" in col else sens[:, 0]
+    layout = sensor_layout(x, scol("y"), scol("z"))
     line = next_line()
     if line is None:
         raise ValueError(f"{path}: no readings")
@@ -289,27 +350,29 @@ def read_unified(path: str | Path) -> Profile:
         rows.append([float(v) for v in line.split()])
     if not rows:
         raise ValueError(f"{path}: no readings")
-    dtoks = tokens or ["a", "b", "m", "n", "rhoa", "err"][: len(rows[0])]
+    dtoks = [_token(w) for w in tokens] if tokens else [(w, 1.0) for w in ["a", "b", "m", "n", "rhoa", "err"]]
     width = min(len(r) for r in rows)
     arr = np.asarray([r[:width] for r in rows], float)
-    dcol = {name: i for i, name in enumerate(dtoks) if i < width}
+    dcol = {name: (i, f) for i, (name, f) in enumerate(dtoks) if i < width}
     for need in ("a", "b", "m", "n"):
         if need not in dcol:
             raise ValueError(f"{path}: the readings have no column {need!r}")
-    idx = {e: arr[:, dcol[e]].astype(np.int64) - 1 for e in ("a", "b", "m", "n")}
+    idx = {e: arr[:, dcol[e][0]].astype(np.int64) - 1 for e in ("a", "b", "m", "n")}
     values = {}
     for name in VALUES:
         if name in dcol:
-            values[name] = arr[:, dcol[name]]
+            v = arr[:, dcol[name][0]] * dcol[name][1]
+            if np.any(v != 0):  # zeros only: a token pyGIMLi wrote without values
+                values[name] = v
     if "valid" in dcol:
-        keep = arr[:, dcol["valid"]] != 0
-        idx = {e: v[keep] for e, v in idx.items()}
-        values = {kk: v[keep] for kk, v in values.items()}
-    world = y is not None and np.ptp(y) > 0
-    along = _along(x, y) if world else x
-    return Profile(Path(path).stem, along, idx["a"], idx["b"], idx["m"], idx["n"], values,
-                   file_z=z, file_x=x if world else None, file_y=y if world else None, source=str(path),
-                   fmt="unified")
+        keep = arr[:, dcol["valid"][0]] != 0
+        if keep.any():
+            idx = {e: v[keep] for e, v in idx.items()}
+            values = {kk: v[keep] for kk, v in values.items()}
+    if "err" in values:
+        values["err"] = np.abs(values["err"])
+    return Profile(Path(path).stem, layout["u"], idx["a"], idx["b"], idx["m"], idx["n"], values,
+                   file_z=layout["z"], file_x=layout["x"], file_y=layout["y"], source=str(path), fmt="unified")
 
 
 def _along(x, y) -> np.ndarray:
@@ -356,20 +419,25 @@ def _columns(header: list[str]) -> dict[str, int]:
     return out
 
 
+DECIMAL_COMMA = re.compile(r"^[-+]?\d*,\d+([eE][-+]?\d+)?$")
+
+
 def _table(path: Path) -> tuple[list[str], list[list[str]]]:
-    text = "\n".join(line for line in _lines(path) if line.strip() and not line.lstrip().startswith(("#", "//")))
-    sample = text[:4096]
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t ")
-        delim = dialect.delimiter
-    except csv.Error:
-        delim = ";" if sample.count(";") > sample.count(",") else ("," if "," in sample else None)
-    if delim == " " or delim is None:
-        rows = [line.split() for line in text.splitlines()]
+    """The header and the rows of a table: the separator is the one of the header (";", tab, ",",
+    else spaces); with ";", tab or spaces a comma in a number is a decimal comma."""
+    lines = [line for line in _lines(path) if line.strip() and not line.lstrip().startswith(("#", "//"))]
+    if not lines:
+        raise ValueError(f"{path}: empty")
+    head = lines[0]
+    delim = ";" if ";" in head else ("\t" if "\t" in head else ("," if "," in head else None))
+    text = "\n".join(lines)
+    if delim is None:
+        rows = [line.split() for line in lines]
     else:
         rows = [r for r in csv.reader(io.StringIO(text), delimiter=delim)]
-        if delim != "," and any("," in c for r in rows[1:6] for c in r):  # decimal commas
-            rows = [rows[0]] + [[c.replace(",", ".") for c in r] for r in rows[1:]]
+    if delim != ",":
+        rows = [rows[0]] + [[c.strip().replace(",", ".") if DECIMAL_COMMA.match(c.strip()) else c for c in r]
+                            for r in rows[1:]]
     rows = [[c.strip() for c in r] for r in rows if any(c.strip() for c in r)]
     if not rows:
         raise ValueError(f"{path}: empty")
@@ -386,13 +454,30 @@ def _float(text: str) -> float:
         return np.nan
 
 
+def _numbered(header: list[str], cols: dict, pos: dict) -> bool:
+    """The columns a, b, m, n are electrode numbers (not positions in metres): whole numbers from 1 in
+    a and m (b and n may say 0, -1 or nothing for the remote electrode), consecutive numbers (their
+    differences have no common step larger than 1: positions every 2 m are positions), and not
+    Syscal's ``Spa.1-4`` columns, which are positions in metres."""
+    names = [_norm(header[cols[k]]) for k in ("a", "b", "m", "n")]
+    if any(n.startswith("spa") for n in names):
+        return False
+    real = np.concatenate([pos["a"], pos["m"]] + [v[np.isfinite(v) & (v >= 1)] for v in (pos["b"], pos["n"])])
+    real = real[np.isfinite(real)]
+    if not real.size or (np.abs(real - np.round(real)) > 1e-9).any() or real.min() < 1:
+        return False
+    used = np.unique(np.round(real).astype(np.int64))
+    step = int(np.gcd.reduce(np.diff(used))) if len(used) > 1 else 1
+    return step <= 1
+
+
 def read_table(path: str | Path, spacing: float | None = None, positions: bool | None = None) -> Profile:
     """A table of readings (CSV/TXT with a header): ``a b m n`` and ``rhoa`` (or ``r``, or ``u``/``v``
     and ``i``, or Syscal's ``Vp`` mV and ``In`` mA), ``err`` when present (a fraction; percent when
-    its name says ``%``/``dev`` or its values pass 1). The electrodes: numbers from 1 (whole numbers,
-    none 0; then ``spacing`` metres apart, 1 by default) or positions along the line in metres
-    (``positions`` forces one reading or the other). An empty cell, NaN or a negative number for
-    ``b`` or ``n``: an electrode at infinity."""
+    its name says ``%``/``dev`` or its values pass 1). The electrodes: numbers from 1 (see
+    :func:`_numbered`; then ``spacing`` metres apart, 1 by default) or positions along the line in
+    metres (``positions`` forces one reading or the other). For ``b`` or ``n``: an empty cell, NaN, a
+    negative number - or 0 with numbered electrodes - is the remote electrode, at infinity."""
     path = Path(path)
     header, rows = _table(path)
     cols = _columns(header)
@@ -405,15 +490,20 @@ def read_table(path: str | Path, spacing: float | None = None, positions: bool |
     ok = np.isfinite(arr[:, cols["a"]]) & np.isfinite(arr[:, cols["m"]])
     arr = arr[ok]
     pos = {k: arr[:, cols[k]] for k in ("a", "b", "m", "n")}
-    allpos = np.concatenate([v[np.isfinite(v)] for v in pos.values()])
-    integral = bool(np.all(np.abs(allpos - np.round(allpos)) < 1e-9))
-    as_numbers = (integral and allpos.min() >= 1) if positions is None else not positions
+    as_numbers = _numbered(header, cols, pos) if positions is None else not positions
     notes = []
     if as_numbers:
-        count = int(allpos.max())
+        real = np.concatenate([pos["a"], pos["m"]] + [v[np.isfinite(v) & (v >= 1)] for v in (pos["b"], pos["n"])])
+        if (real < 1).any() or (np.abs(real - np.round(real)) > 1e-9).any():
+            raise ValueError(t("{0}: le colonne a e m non sono numeri di elettrodi (da 1): scegli «posizioni in metri».",
+                               "{0}: the columns a and m are not electrode numbers (from 1): choose 'positions in "
+                               "metres'.").format(path.name))
+        count = int(real.max())
         step = float(spacing or 1.0)
         file_u = np.arange(count) * step
-        idx = {k: np.where(np.isfinite(v) & (v >= 1), np.round(np.nan_to_num(v, nan=0.0)).astype(np.int64) - 1, -1) for k, v in pos.items()}
+        # b and n: 0, a negative number or an empty cell = the remote electrode, at infinity
+        idx = {k: np.where(np.isfinite(v) & (v >= 1), np.round(np.nan_to_num(v, nan=0.0)).astype(np.int64) - 1, -1)
+               for k, v in pos.items()}
         notes.append(t("elettrodi numerati, {0:g} m di distanza", "numbered electrodes, {0:g} m apart").format(step))
     else:
         has = [np.isfinite(v) & (v >= 0) if k in ("b", "n") else np.isfinite(v) for k, v in pos.items()]
@@ -423,9 +513,12 @@ def read_table(path: str | Path, spacing: float | None = None, positions: bool |
         for (k, v), h in zip(pos.items(), has):
             j = np.searchsorted(uniq, np.round(np.where(h, v, uniq[0]), 6))
             idx[k] = np.where(h, j, -1).astype(np.int64)
-        if spacing:
-            notes.append(t("posizioni lette in metri: la distanza scelta non conta",
-                           "positions read in metres: the spacing given does not count"))
+        d = np.diff(file_u)
+        own = float(np.median(d[d > 1e-9])) if (d > 1e-9).any() else 0.0
+        if spacing and own and abs(float(spacing) - own) > 0.01 * own:
+            notes.append(t("posizioni lette in metri ({0:g} m fra gli elettrodi): la distanza scelta ({1:g} m) non conta",
+                           "positions read in metres ({0:g} m between the electrodes): the spacing given ({1:g} m) "
+                           "does not count").format(own, float(spacing)))
     values = {}
     if "rhoa" in cols:
         values["rhoa"] = arr[:, cols["rhoa"]]
@@ -535,15 +628,26 @@ def read_any(path: str | Path, spacing: float | None = None, positions: bool | N
 
 
 def from_arrays(name: str, arrays: dict, source: str = "", fmt: str = "pygimli") -> Profile:
-    """A profile from the arrays of pyGIMLi's reader (worker ``read`` task: ``sensors`` (N, 2) distance
-    and height, ``a b m n``, the values)."""
-    sensors = np.asarray(arrays["sensors"], float)
+    """A profile from the arrays of pyGIMLi's reader (worker ``read`` task: ``sensors_xyz`` (N, 3) the
+    positions as pyGIMLi holds them - :func:`sensor_layout` - or ``sensors`` (N, 2) distance and height,
+    ``a b m n``, the values, ``valid`` when the file has it)."""
+    idx = [np.asarray(arrays[k], np.int64) for k in ("a", "b", "m", "n")]
     values = {k: np.asarray(arrays[k], float) for k in VALUES if k in arrays}
+    valid = arrays.get("valid")
+    if valid is not None and np.any(np.asarray(valid) != 0):
+        keep = np.asarray(valid) != 0
+        idx = [v[keep] for v in idx]
+        values = {k: v[keep] for k, v in values.items()}
     if "err" in values and np.nanmax(np.abs(values["err"])) > 1:
         values["err"] = values["err"] / 100.0
-    z = sensors[:, 1] if sensors.shape[1] > 1 and np.ptp(sensors[:, 1]) > 0 else None
-    return Profile(name, sensors[:, 0].copy(), *(np.asarray(arrays[k], np.int64) for k in ("a", "b", "m", "n")),
-                   values=values, file_z=z, source=source, fmt=fmt)
+    if "sensors_xyz" in arrays:
+        s = np.asarray(arrays["sensors_xyz"], float).reshape(-1, 3)
+        layout = sensor_layout(s[:, 0], s[:, 1], s[:, 2])
+    else:
+        sensors = np.asarray(arrays["sensors"], float)
+        layout = sensor_layout(sensors[:, 0], z=sensors[:, 1] if sensors.shape[1] > 1 else None)
+    return Profile(name, np.asarray(layout["u"], float).copy(), *idx, values=values, file_z=layout["z"],
+                   file_x=layout["x"], file_y=layout["y"], source=source, fmt=fmt)
 
 
 # ------------------------------------------------------------------ the project

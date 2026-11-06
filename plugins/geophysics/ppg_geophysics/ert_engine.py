@@ -80,15 +80,18 @@ def container(sensors, a, b, m, n, values: dict):
 
 
 def _arrays(data) -> dict:
-    """The electrodes and the readings of a container (the 2-D frame: x, elevation)."""
-    try:
-        data.ensure2D()
-    except Exception:  # noqa: BLE001
-        pass
+    """The electrodes and the readings of a container: ``sensors_xyz`` the positions as the file gave
+    them (the plugin tells a 2-D profile from world coordinates), ``sensors`` the 2-D frame (x,
+    elevation), the readings, ``valid`` when the container has the flag."""
     pos = np.array([[p[0], p[1], p[2]] for p in data.sensors()], float).reshape(-1, 3)
-    out = {"sensors": pos[:, :2] if np.allclose(pos[:, 2], 0) else pos[:, [0, 2]]}
+    out = {"sensors_xyz": pos.copy(), "sensors": pos[:, :2] if np.allclose(pos[:, 2], 0) else pos[:, [0, 2]]}
     for name in ("a", "b", "m", "n"):
         out[name] = np.asarray(data[name], np.int64)
+    try:
+        if data.haveData("valid"):
+            out["valid"] = np.asarray(data["valid"], float)
+    except Exception:  # noqa: BLE001
+        pass
     present = []
     for name in TOKENS:
         try:

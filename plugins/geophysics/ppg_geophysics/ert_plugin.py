@@ -983,12 +983,30 @@ class ErtMixin:
 
 
 def parse_points(text: str) -> list[list[float]]:
-    """``'X Y; X Y'`` or one point per line (commas or spaces between the numbers)."""
+    """``'X Y; X Y'`` or one point per line: the two numbers separated by spaces (then a comma inside a
+    number is a decimal comma: ``500010,5 4500050,2``) or by a comma (``500010.5,4500050.2``). A point
+    that cannot be read one way only is refused, never guessed."""
     pts = []
+    bad = t("Punto non leggibile: «{0}» (scrivi 'X Y' con il punto o la virgola decimale, oppure 'X,Y' con il punto).",
+            "Point not readable: '{0}' (write 'X Y' with a decimal point or comma, or 'X,Y' with a decimal point).")
     for part in str(text).replace("\n", ";").split(";"):
-        vals = [v for v in part.replace(",", " ").split() if v]
-        if len(vals) >= 2:
-            pts.append([float(vals[0]), float(vals[1])])
+        part = part.strip()
+        if not part:
+            continue
+        words = [w.strip().rstrip(",") for w in part.split()]
+        words = [w for w in words if w]
+        if len(words) == 1:  # "X,Y"
+            words = words[0].split(",")
+            if len(words) != 2:
+                raise ValueError(bad.format(part))
+        elif len(words) == 2:
+            words = [w.replace(",", ".") for w in words]
+        else:
+            raise ValueError(bad.format(part))
+        try:
+            pts.append([float(words[0]), float(words[1])])
+        except ValueError:
+            raise ValueError(bad.format(part)) from None
     if len(pts) < 2:
         raise ValueError(t("Servono almeno due punti (X Y).", "At least two points (X Y) are needed."))
     return pts
