@@ -136,3 +136,68 @@ def test_the_worker_stopped_after_its_time(tmp_path, fake, monkeypatch):
     with pytest.raises(ert_runner.WorkerError, match="limite di tempo"):
         ert_ops.invert_profile(ch, e["id"], timeout=1.0)
     assert not list(ert.folder(ch, e["id"]).glob("inversion*"))
+
+
+def _model(ch, n: int = 40):
+    """A model of the chunk: a grid of n x n cells on the DEM's plane, written as the program's model."""
+    from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
+
+    xs, ys = np.meshgrid(np.linspace(500000, 500100, n + 1), np.linspace(4500000, 4500100, n + 1))
+    world = np.column_stack([xs.ravel(), ys.ravel(), 100 + 0.02 * (xs.ravel() - 500000)])
+    idx = np.arange((n + 1) ** 2).reshape(n + 1, n + 1)
+    q = np.stack([idx[:-1, :-1], idx[:-1, 1:], idx[1:, 1:], idx[1:, :-1]], -1).reshape(-1, 4)
+    faces = np.concatenate([q[:, [0, 1, 2]], q[:, [0, 2, 3]]])
+    p = ch.data_dir / "model.ply"
+    write_mesh_ply(p, ch.to_internal(world), faces, np.full((len(world), 3), 120, np.uint8), double=True)
+    ch._set_product("model", p)
+    return p
+
+
+def test_the_3d_scene_leaves_the_programs_model_preview_alone(tmp_path, fake, monkeypatch):
+    doc, ch = _project(tmp_path)
+    model = _model(ch)
+    e = ert_ops.import_profile(ch, write_ohm(tmp_path / "line.ohm"), name="P")
+    ert.place(ch, e["id"], LINE, along="plan")
+    ert_ops.invert_profile(ch, e["id"])
+    monkeypatch.setattr(ert_section, "MAX_TERRAIN_FACES", 500)  # the model is "large": decimated in memory
+    path, what = ert_section.scene(ch, terrain="model")
+    assert what["terrain"] and path is not None
+    assert not (model.parent / "model_preview.ply").exists()
+
+
+def test_the_proxies_of_the_units_in_the_3d_scene(tmp_path, fake):
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh, write_mesh_ply
+
+    doc, ch = _project(tmp_path)
+    e = ert_ops.import_profile(ch, write_ohm(tmp_path / "line.ohm"), name="P")
+    ert.place(ch, e["id"], LINE, along="plan")
+    ert_ops.invert_profile(ch, e["id"])
+    box = np.array([[500020, 4500048, 99], [500024, 4500048, 99], [500024, 4500052, 99], [500020, 4500052, 99],
+                    [500020, 4500048, 100], [500024, 4500048, 100], [500024, 4500052, 100], [500020, 4500052, 100]], float)
+    faces = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                      [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
+    (ch.data_dir / "proxies").mkdir(parents=True, exist_ok=True)
+    write_mesh_ply(ch.data_dir / "proxies" / "US_1.ply", box, faces, double=True)
+    ch.meta["proxies"] = [{"name": "US 1", "us": "1", "file": "proxies/US_1.ply"},
+                          {"name": "US 9", "us": "9", "file": "proxies/missing.ply"}]
+    path, what = ert_section.scene(ch, terrain="none")
+    assert what["proxies"] == 1
+    m = read_mesh(path)
+    world = ch.to_world(np.asarray(m.xyz, float))
+    near = np.all(np.isclose(world[:, None, :], box[None], atol=1e-6), axis=2).any(axis=1)
+    assert near.sum() >= 8 and (np.asarray(m.colors)[near][:, :3] == [230, 25, 75]).all()
+    path, what = ert_section.scene(ch, terrain="none", units=False)
+    assert what["proxies"] == 0
+
+
+def test_the_cores_in_the_colours_of_geoarchaeology(tmp_path):
+    doc, ch = _project(tmp_path)
+    ch.meta["geoarchaeology"] = {
+        "units": [{"code": "1"}, {"code": "2", "colour": "#3366cc"}],
+        "boreholes": [{"id": "S1", "x": 500020.0, "y": 4500052.0, "z": 100.4,
+                       "intervals": [{"from": 0, "to": 1, "unit": "1"}, {"from": 1, "to": 2, "unit": "2"},
+                                     {"from": 2, "to": 3, "unit": "2", "colour": "#ff0000"},
+                                     {"from": 3, "to": 4, "unit": "2", "colour": "10YR 4/3"}]}]}
+    v, f, c = ert_section._cores(ch, [LINE], 50.0, 0.1)
+    rgb = [tuple(int(x) for x in c[8 * k]) for k in range(4)]
+    assert rgb == [(0xd9, 0xb7, 0x7e), (0x33, 0x66, 0xcc), (255, 0, 0), (0x33, 0x66, 0xcc)]

@@ -17,8 +17,8 @@ below its 95th percentile) or by the depth-of-investigation index of Oldenburg a
   colour bar (Matplotlib, Agg);
 * :func:`section_mesh` and :func:`scene` - the section as vertical coloured quads under the line in
   world coordinates, and the PLY of the 3D view of the program: the sections of the chunk, the
-  ground cut away along the line (the model of the chunk, else its DEM), the units and the cores of
-  the geoarchaeology plugin when the chunk has them.
+  ground cut away along the line (the model of the chunk, else its DEM), the program's proxies of the
+  stratigraphic units, the units and the cores of the geoarchaeology plugin when the chunk has them.
 """
 from __future__ import annotations
 
@@ -443,22 +443,50 @@ def _side(line, xy) -> tuple[np.ndarray, np.ndarray]:
     return sign * best, along
 
 
+MAX_TERRAIN_FACES = 300_000
+
+
+def _model_mesh(chunk, max_faces: int | None = None):
+    """The model of the chunk for the scene (internal frame: vertices, faces, colours or None), read
+    without writing anything: the program's own preview when it is up to date, the model itself when
+    it is small, else a copy decimated in memory. (The program's ``display_model`` would write a
+    preview of the size asked, which its own 3D view would then reuse.)"""
+    from pyarchinit_photogrammetry.io.mesh_ply import face_count, read_mesh
+
+    max_faces = MAX_TERRAIN_FACES if max_faces is None else max_faces
+    model = chunk.product_path("model")
+    if model is None or not Path(model).exists():
+        return None
+    model = Path(model)
+    preview = model.parent / "model_preview.ply"
+    if preview.exists() and preview.stat().st_mtime >= model.stat().st_mtime:
+        m = read_mesh(preview)
+        return np.asarray(m.xyz, float), np.asarray(m.faces, np.int64), m.colors
+    n = face_count(model)
+    if n is not None and n > max_faces:
+        from pyarchinit_photogrammetry.io.mesh_ply import PlyMesh, cluster_decimate
+
+        mesh = PlyMesh(model)
+        V, F, C = cluster_decimate(mesh.xyz(), mesh.face_chunks, mesh.colors(), max_faces)
+        return np.asarray(V, float), np.asarray(F, np.int64), C
+    m = read_mesh(model)
+    return np.asarray(m.xyz, float), np.asarray(m.faces, np.int64), m.colors
+
+
 def _terrain(chunk, kind: str = "auto"):
-    """The ground of the chunk for the 3D scene in world coordinates: the model (its preview), else
-    the DEM as a mesh of at most 400 x 400 cells. None when there is neither."""
+    """The ground of the chunk for the 3D scene in world coordinates: the model (:func:`_model_mesh`),
+    else the DEM as a mesh of at most 400 x 400 cells. None when there is neither."""
     if kind in ("auto", "model"):
         try:
-            from pyarchinit_photogrammetry.gui.scene import display_model
-
-            m = display_model(chunk, max_faces=300_000)
-        except Exception:  # noqa: BLE001 - no window, no trimesh: the DEM
+            m = _model_mesh(chunk)
+        except Exception:  # noqa: BLE001 - an unreadable model: the DEM
             m = None
-        if m is not None and len(m.faces):
-            world = chunk.to_world(np.asarray(m.vertices, float))
-            c = getattr(m.visual, "vertex_colors", None)
+        if m is not None and len(m[1]):
+            xyz, faces, c = m
+            world = chunk.to_world(np.asarray(xyz, float))
             rgb = np.asarray(c)[:, :3].astype(np.uint8) if c is not None and len(c) == len(world) else \
                 np.tile(np.array([[170, 150, 120]], np.uint8), (len(world), 1))
-            return world, np.asarray(m.faces, np.int64), rgb
+            return world, np.asarray(faces, np.int64), rgb
     if kind in ("auto", "dem"):
         dem = getattr(chunk, "dem_path", None)
         if dem is not None and Path(dem).exists():
@@ -516,22 +544,68 @@ def _units(chunk):
     return np.asarray(m.xyz, float), np.asarray(m.faces, np.int64), np.asarray(rgb, np.uint8)[:, :3]
 
 
-def _hex(colour: str | None) -> tuple[int, int, int]:
-    s = str(colour or "").lstrip("#")
+# the colours the geoarchaeology plugin gives the units without one of their own (its boreholes.PALETTE)
+UNIT_PALETTE = ["#d9b77e", "#7d5a3c", "#c9a55c", "#a0522d", "#e6d3a3", "#6b6b4b", "#c27c4c", "#8c9a6b",
+                "#b0846a", "#596e79", "#e0c08a", "#704f3c", "#a39e7a", "#8a5a6b", "#cfa98a", "#4f5d4f"]
+# the colours of the program's proxies of the units, when its gui.scene cannot be imported
+PROXY_COLOURS = [(230, 25, 75), (60, 180, 75), (255, 225, 25), (67, 99, 216), (245, 130, 49), (145, 30, 180)]
+
+
+def _hex(colour: str | None, default=(150, 150, 150)) -> tuple[int, int, int]:
+    s = str(colour or "").strip().lstrip("#")
+    if len(s) != 6:
+        return default
     try:
         return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
-    except (ValueError, IndexError):
-        return 150, 150, 150
+    except ValueError:
+        return default
+
+
+def _proxies(chunk):
+    """The program's proxies of the stratigraphic units (``chunk.meta["proxies"]``, PLY in world
+    coordinates under ``<data>/proxies/``), each in the colour the program's 3D view gives it, in
+    world coordinates: (vertices, faces, colours, count) or None."""
+    entries = chunk.meta.get("proxies") or []
+    if not entries:
+        return None
+    try:
+        from pyarchinit_photogrammetry.gui.scene import PROXY_COLORS
+
+        palette = [tuple(int(v) for v in c) for c in np.asarray(PROXY_COLORS)]
+    except Exception:  # noqa: BLE001 - no window: the first colours, copied
+        palette = PROXY_COLOURS
+    from pyarchinit_photogrammetry.io.mesh_ply import read_mesh
+
+    V, F, C, n, count = [], [], [], 0, 0
+    for i, entry in enumerate(entries):
+        p = Path(chunk.data_dir) / str(entry.get("file") or "")
+        if not entry.get("file") or not p.exists():
+            continue
+        try:
+            m = read_mesh(p)
+        except Exception:  # noqa: BLE001 - an unreadable proxy is left out
+            continue
+        xyz = np.asarray(m.xyz, float)
+        V.append(xyz)
+        F.append(np.asarray(m.faces, np.int64) + n)
+        C.append(np.tile(np.array([palette[i % len(palette)]], np.uint8), (len(xyz), 1)))
+        n += len(xyz)
+        count += 1
+    if not V:
+        return None
+    return np.vstack(V), np.vstack(F), np.vstack(C), count
 
 
 def _cores(chunk, lines, margin: float, width: float):
-    """The cores of the geoarchaeology plugin near the lines as square prisms, every interval in the
-    colour of its unit, in world coordinates."""
+    """The cores of the geoarchaeology plugin near the lines as square prisms, every interval in its
+    own colour when it has one (``#rrggbb``), else in the colour of its unit (the unit's own, else the
+    one the geoarchaeology plugin gives it), in world coordinates."""
     g = chunk.meta.get("geoarchaeology") or {}
     holes = g.get("boreholes") or []
     if not holes:
         return None
-    colour = {u.get("code"): _hex(u.get("colour")) for u in g.get("units") or []}
+    colour = {u.get("code"): _hex(u.get("colour"), _hex(UNIT_PALETTE[k % len(UNIT_PALETTE)]))
+              for k, u in enumerate(g.get("units") or [])}
     dem = getattr(chunk, "dem_path", None)
     V, F, C = [], [], []
     n = 0
@@ -555,7 +629,8 @@ def _cores(chunk, lines, margin: float, width: float):
                 F.append([n + q[0], n + q[1], n + q[2]])
                 F.append([n + q[0], n + q[2], n + q[3]])
             V.append(verts)
-            C.append(np.tile(np.array([colour.get(iv.get("unit"), (150, 150, 150))], np.uint8), (8, 1)))
+            rgb = _hex(iv.get("colour"), colour.get(iv.get("unit"), (150, 150, 150)))
+            C.append(np.tile(np.array([rgb], np.uint8), (8, 1)))
             n += 8
     if not V:
         return None
@@ -570,14 +645,15 @@ def scene(chunk, pids=None, terrain: str = "auto", side: str = "left", units: bo
     """The PLY of the 3D view (``<data>/geophysics/ert/vista_3d.ply``, the internal frame of the
     chunk): the sections of ``pids`` (all the inverted ones by default), the ground (``terrain``
     "auto", "model", "dem" or "none") cut away on the ``side`` of the lines ("left", "right"; "all"
-    keeps it whole) within a margin, the units and the cores of the geoarchaeology plugin. ``lift``:
+    keeps it whole) within a margin, the program's proxies of the stratigraphic units, the units and
+    the cores of the geoarchaeology plugin (``units``: the proxies and the units). ``lift``:
     metres the sections are raised (to see them over an opaque ground). Returns the file (None
     without a section) and what is in it."""
     from pyarchinit_photogrammetry.io.mesh_ply import write_mesh_ply
 
     if pids is None:
         pids = [e["id"] for e in ert_mod.entries(chunk) if (e.get("inversion") or {}).get("files")]
-    parts, lines, what = [], [], {"sections": [], "terrain": None, "units": False, "cores": 0}
+    parts, lines, what = [], [], {"sections": [], "terrain": None, "units": False, "proxies": 0, "cores": 0}
     for pid in pids:
         m = section_mesh(chunk, pid)
         if m is None:
@@ -604,6 +680,10 @@ def scene(chunk, pids=None, terrain: str = "auto", side: str = "left", units: bo
                 parts.append((chunk.to_internal(world[used]), remap[faces], rgb[used]))
                 what["terrain"] = terrain if terrain != "auto" else "model/dem"
     if units:
+        px = _proxies(chunk)
+        if px is not None:
+            parts.append((chunk.to_internal(px[0]), px[1], px[2]))
+            what["proxies"] = px[3]
         u = _units(chunk)
         if u is not None:
             parts.append(u)
