@@ -26,7 +26,7 @@ ELECTRODE = (32, 32, 32)
 
 def groups(x, palette_rgb_of, ok: np.ndarray):
     """The readings by colour: ``x`` their place on the ramp (0-1, NaN for none), ``palette_rgb_of(xs)`` the
-    colours of the ramp at ``xs``; the readings not ``ok`` in grey. Returns ``[(rgb, indices), ...]``."""
+    colours of the ramp at ``xs``; the readings not ``ok`` in grey, last. Returns ``[(rgb, indices), ...]``."""
     x = np.asarray(x, float)
     ok = np.asarray(ok, bool) & np.isfinite(x)
     k = np.clip(np.floor(np.nan_to_num(x) * BINS), 0, BINS - 1).astype(int)
@@ -34,7 +34,7 @@ def groups(x, palette_rgb_of, ok: np.ndarray):
     out = [(tuple(int(c) for c in centres[b]), np.flatnonzero(ok & (k == b))) for b in range(BINS)]
     out = [(rgb, idx) for rgb, idx in out if idx.size]
     gone = np.flatnonzero(~ok)
-    return ([(REMOVED, gone)] if gone.size else []) + out
+    return out + ([(REMOVED, gone)] if gone.size else [])  # the removed last: on top, seen
 
 
 class ReadingsItem(QGraphicsItem):

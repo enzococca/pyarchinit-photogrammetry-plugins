@@ -311,7 +311,7 @@ def test_the_readings_item_paints_its_dots(window):
     pts = np.array([[10.0, 10.0], [30.0, 10.0], [50.0, 10.0]])
     g = ert_view.groups(np.array([0.0, 1.0, 0.5]), lambda xs: ert_section.ramp(xs, "rainbow"),
                         np.array([True, True, False]))
-    assert [len(i) for _rgb, i in g] == [1, 1, 1] and g[0][0] == ert_view.REMOVED
+    assert [len(i) for _rgb, i in g] == [1, 1, 1] and g[-1][0] == ert_view.REMOVED
     scene = QGraphicsScene()
     item = ert_view.ReadingsItem(pts, g, electrodes=[[30.0, 30.0]])
     scene.addItem(item)
