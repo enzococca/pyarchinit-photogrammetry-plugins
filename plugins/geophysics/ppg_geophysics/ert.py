@@ -37,6 +37,7 @@ FOLDER = "geophysics/ert"
 VALUES = ("rhoa", "r", "err", "u", "i", "ip", "k")
 DEFAULT_RULES = {"min_rhoa": None, "max_rhoa": None, "max_error": None, "reciprocal": None, "spikes": None}
 SPIKE_NEIGHBOURS = 8
+SPIKE_FLOOR = 0.02  # log10 units
 
 
 class NeedsGimli(ValueError):
@@ -179,7 +180,7 @@ def array_kind(prof: Profile) -> str:
                 k = "dipole-dipole"
             elif ab[0] <= mn[0] and mn[1] <= ab[1]:
                 am, mn_, nb = mn[0] - ab[0], mn[1] - mn[0], ab[1] - mn[1]
-                k = "wenner" if abs(am - mn_) < 1e-6 * max(1, mn_) + 1e-6 and abs(nb - mn_) < 1e-6 * max(1, mn_) + 1e-6 \
+                k = "wenner" if abs(am - mn_) <= 0.02 * mn_ + 1e-6 and abs(nb - mn_) <= 0.02 * mn_ + 1e-6 \
                     else "schlumberger"
             else:
                 k = "other"
@@ -806,7 +807,9 @@ def spike_scores(prof: Profile, valid: np.ndarray | None = None) -> np.ndarray:
     ok = np.isfinite(rhoa) & (rhoa > 0) & (valid if valid is not None else True)
     x, d = pseudo_positions(prof)
     s = prof.spacing or 1.0
-    pts = np.column_stack([x / s, d / s])
+    # the span of the electrodes, not the pseudo-depth, across the levels: one level up or down of a
+    # dipole-dipole is one spacing away, as one reading along the same level
+    pts = np.column_stack([x / s, d / (0.17 * s)])
     logr = np.where(ok, np.log10(np.where(ok, rhoa, 1.0)), np.nan)
     idx = np.flatnonzero(ok)
     out = np.full(prof.count, np.nan)
@@ -818,7 +821,9 @@ def spike_scores(prof: Profile, valid: np.ndarray | None = None) -> np.ndarray:
     _dist, nb = tree.query(pts[idx], k=SPIKE_NEIGHBOURS + 1)
     med = np.median(logr[idx][nb[:, 1:]], axis=1)
     dev = logr[idx] - med
-    mad = 1.4826 * np.median(np.abs(dev - np.median(dev))) or 1e-6
+    # the robust deviation of the whole, at least SPIKE_FLOOR in log10 (5 %): with readings of 1 % noise a
+    # resistive body would otherwise look like a row of spikes along its edges
+    mad = max(1.4826 * float(np.median(np.abs(dev - np.median(dev)))), SPIKE_FLOOR)
     out[idx] = np.abs(dev) / mad
     return out
 

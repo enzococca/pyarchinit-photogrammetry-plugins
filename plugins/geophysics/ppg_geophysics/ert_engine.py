@@ -150,7 +150,7 @@ def invert(arrays: dict, params: dict, progress=None) -> dict:
     "oldenburg"), ``topography_k`` (True: the geometric factors computed numerically on the
     topography). Returns the arrays of the result."""
     progress = progress or (lambda f, p, **k: None)
-    pg = _gimli()
+    _gimli()
     from pygimli.physics import ert
 
     t0 = time.monotonic()
@@ -298,7 +298,7 @@ def simulate(sensors, model: dict, scheme: str = "dd", noise: float = 0.02, nois
     "wa" (Wenner), "slm" (Schlumberger), "pd" (pole-dipole)... Relative ``noise`` and absolute
     ``noise_u`` (volts) added."""
     progress = progress or (lambda f, p, **k: None)
-    pg = _gimli()
+    _gimli()
     import pygimli.meshtools as mt
     from pygimli.physics import ert
 

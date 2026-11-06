@@ -295,7 +295,7 @@ class ErtPane(QWidget):
             s5.set_state(t("Colori {0} - {1} Ω·m (logaritmica); oscuramento: {2}; {3:.0f} m² di sezione",
                            "Colours {0} - {1} Ω·m (log); blanking: {2}; {3:.0f} m² of section").format(
                 number(lo), number(hi), how, float(disp.get("shown_m2", 0))), done=True)
-            self.legend.setPixmap(legend_pixmap(lo, hi, pal if pal in PALETTES else "rainbow", 280))
+            self.legend.setPixmap(legend_pixmap(lo, hi, pal if pal in PALETTES else "rainbow", 220))
             self.legend.setVisible(True)
         else:
             s5.set_state(t("Inverti prima il profilo.", "Invert the profile first."), enabled=False)

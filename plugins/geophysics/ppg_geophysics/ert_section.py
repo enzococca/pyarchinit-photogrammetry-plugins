@@ -134,8 +134,9 @@ def colours(values: np.ndarray, lo: float, hi: float, palette: str = "rainbow") 
 def ticks(lo: float, hi: float) -> list[float]:
     """Round values between ``lo`` and ``hi`` for a log colour bar: 1, 2, 5 times the powers of ten."""
     out = []
+    mantissas = (1, 2, 5) if np.log10(hi / lo) > 0.9 else (1, 1.5, 2, 3, 5, 7)
     for e in range(int(np.floor(np.log10(lo))) - 1, int(np.ceil(np.log10(hi))) + 1):
-        for m in (1, 2, 5):
+        for m in mantissas:
             v = m * 10.0 ** e
             if lo * 0.999 <= v <= hi * 1.001:
                 out.append(v)
@@ -312,15 +313,28 @@ def figure(chunk, pid: str, path: str | Path, kind: str = "section", dpi: int = 
     cmap = LinearSegmentedColormap.from_list(pal, [(p, tuple(c / 255 for c in rgb)) for p, rgb in stops]) \
         .with_extremes(bad=(1, 1, 1, 0))
     x_el, z_el = prof.positions(), prof.heights()
-    fig = Figure(figsize=(11, 4.2), layout="constrained")
+    if kind == "section":
+        v, (u0, vtop), cell = read_section(chunk, pid)
+        h, w = v.shape
+        rows = np.flatnonzero(np.isfinite(v).any(axis=1))
+        width, height = w * cell, ((rows[-1] - rows[0] + 1) * cell if rows.size else h * cell)
+    else:
+        valid = ert_mod.valid_mask(prof, e.get("filters"))
+        x, d = ert_mod.pseudo_positions(prof)
+        width = float(np.nanmax(x_el) - np.nanmin(x_el)) or 1.0
+        height = float(np.nanmax(d)) or 1.0
+    ratio = height / max(width, 1e-9)
+    exaggeration = 1.0 if ratio >= 0.25 else max(1.0, round(2 * 0.25 / ratio) / 2)
+    fig_h = min(max(0.85 * 11 * ratio * exaggeration + 1.4, 3.0), 8.5)
+    fig = Figure(figsize=(11, fig_h), layout="constrained")
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(1, 1, 1)
     if kind == "section":
-        v, (u0, vtop), cell = read_section(chunk, pid)
         lo, hi = disp.get("limits") or limits(v)
-        h, w = v.shape
         im = ax.imshow(np.ma.masked_invalid(v), cmap=cmap, norm=LogNorm(lo, hi), interpolation="nearest",
-                       extent=(u0, u0 + w * cell, vtop - h * cell, vtop), origin="upper", aspect="equal")
+                       extent=(u0, u0 + w * cell, vtop - h * cell, vtop), origin="upper")
+        if rows.size:
+            ax.set_ylim(vtop - (rows[-1] + 1) * cell, max(vtop - rows[0] * cell, float(np.max(z_el))) + cell)
         ax.plot(x_el, z_el, "v", color="black", ms=3, label=t("elettrodi", "electrodes"))
         ax.plot(x_el, z_el, "-", color="black", lw=0.6)
         ax.set_ylabel(t("quota (m)", "elevation (m)"))
@@ -328,24 +342,30 @@ def figure(chunk, pid: str, path: str | Path, kind: str = "section", dpi: int = 
         title = t("{0}: resistività (inversione, χ² {1:.2f}, RMS {2:.1f} %)", "{0}: resistivity (inversion, χ² {1:.2f}, "
                   "RMS {2:.1f} %)").format(e["name"], fit.get("chi2", float("nan")), fit.get("rrms", float("nan")))
     else:
-        valid = ert_mod.valid_mask(prof, e.get("filters"))
-        x, d = ert_mod.pseudo_positions(prof)
         rhoa = prof.apparent()
         ok = valid & np.isfinite(rhoa) & (rhoa > 0)
         lo, hi = limits(rhoa[ok])
-        im = ax.scatter(x[ok], -d[ok], c=rhoa[ok], cmap=cmap, norm=LogNorm(lo, hi), s=18, marker="s")
+        im = ax.scatter(x[ok], -d[ok], c=rhoa[ok], cmap=cmap, norm=LogNorm(lo, hi), s=14, marker="s", linewidths=0)
         if (~ok).any():
             ax.scatter(x[~ok], -d[~ok], c="#9e9e9e", s=10, marker="x", label=t("letture tolte", "readings removed"))
+            ax.legend(loc="lower right", fontsize=8)
         ax.plot(x_el, np.zeros_like(x_el), "v", color="black", ms=3)
         ax.set_ylabel(t("pseudoprofondità (m)", "pseudo-depth (m)"))
-        ax.set_aspect("equal")
         title = t("{0}: pseudosezione della resistività apparente ({1} letture)",
                   "{0}: pseudosection of the apparent resistivity ({1} readings)").format(e["name"], int(ok.sum()))
+    ax.set_aspect(exaggeration)
+    if exaggeration > 1:
+        title += t(" - esagerazione verticale x{0:g}", " - vertical exaggeration x{0:g}").format(exaggeration)
     ax.set_xlabel(t("distanza lungo la linea (m)", "distance along the line (m)"))
     ax.set_title(title, fontsize=10)
     ax.grid(True, lw=0.3, alpha=0.5)
-    bar = fig.colorbar(im, ax=ax, shrink=0.85, pad=0.01)
-    bar.set_label("Ω·m")
+    bar = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.01, aspect=25)
+    marks = ticks(lo, hi)
+    bar.set_ticks(marks)
+    bar.set_ticklabels([number(m) for m in marks])
+    bar.ax.minorticks_off()
+    bar.set_label(t("resistività (Ω·m)", "resistivity (Ω·m)") if kind == "section" else
+                  t("resistività apparente (Ω·m)", "apparent resistivity (Ω·m)"))
     fig.savefig(path, dpi=dpi)
     return path
 

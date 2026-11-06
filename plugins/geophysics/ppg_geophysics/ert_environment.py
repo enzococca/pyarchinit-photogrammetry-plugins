@@ -4,7 +4,7 @@
   up with :func:`importlib.util.find_spec`, never imported here - its core (``pgcore``) brings
   compiled libraries and an OpenMP runtime of its own, which must not meet the program's;
 * otherwise an environment the plugin installs on request with ``uv`` (a Python and pyGIMLi from
-  PyPI, about 150 MB) in ``<plugin data>/ert-env`` (``PPG_GEOPHYSICS_ENV`` to put it elsewhere): the
+  PyPI, about 100 MB) in ``<plugin data>/ert-env`` (``PPG_GEOPHYSICS_ENV`` to put it elsewhere): the
   packaged application, which is not a Python and has no pip, works this way.
 
 pyGIMLi 1.6's core has wheels for Windows x64 (Python 3.12-3.14), Linux x86_64 (3.10-3.14), macOS on
@@ -36,7 +36,7 @@ PYTHONS = {("darwin", "arm64"): "3.12", ("darwin", "x86_64"): "3.13", ("win32", 
            ("win32", "x86_64"): "3.12", ("linux", "x86_64"): "3.12", ("linux", "amd64"): "3.12"}
 MARKER = "ppg-geophysics-ert.json"
 ENV_VAR = "PPG_GEOPHYSICS_ENV"
-SIZE_MB = 150
+SIZE_MB = 100
 _DATA: Path | None = None
 CHECK = r"""
 import importlib, importlib.metadata as md, json, platform

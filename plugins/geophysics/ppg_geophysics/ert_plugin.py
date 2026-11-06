@@ -488,8 +488,8 @@ class ErtMixin:
                                                "electrodes swapped")),
             Field("spikes", t("Picchi: scarto dai vicini (deviazioni robuste)", "Spikes: departure from the neighbours "
                               "(robust deviations)"), r["spikes"], kind="optional_float",
-                  tip=t("Per esempio 5: toglie le letture molto diverse da quelle vicine nella pseudosezione",
-                        "For instance 5: removes the readings far from their neighbours in the pseudosection")),
+                  tip=t("Per esempio 8: toglie le letture molto diverse da quelle vicine nella pseudosezione",
+                        "For instance 8: removes the readings far from their neighbours in the pseudosection")),
             Field("clear", t("Rimetti le letture tolte a mano ({0})", "Give back the readings removed by hand ({0})")
                   .format(len(f.get("manual") or [])), False),
         ], intro=t("Le letture nulle o negative sono sempre tolte. Vuoto = regola spenta.",
@@ -620,15 +620,18 @@ class ErtMixin:
         self._ert_put_legend(lo, hi, disp.get("palette", "rainbow"), "Ω·m")
 
     def _ert_put_legend(self, lo: float, hi: float, palette: str, title: str) -> None:
-        """The colour bar at the top left of the 2D view, the same size at every zoom (gone with the raster)."""
+        """The colour bar at the bottom left of the 2D view (where the section is blanked, below the resolved
+        part), the same size at every zoom; it goes with the raster."""
         from .ert_pane import legend_pixmap
 
         view = self._view()
         if view is None:
             return
-        item = view.scene().addPixmap(legend_pixmap(lo, hi, palette, 300, title))
+        pix = legend_pixmap(lo, hi, palette, 300, title)
+        item = view.scene().addPixmap(pix)
         item.setFlag(item.GraphicsItemFlag.ItemIgnoresTransformations)
-        item.setPos(view.sceneRect().topLeft())
+        item.setOffset(0, -pix.height())  # anchored by its bottom left corner
+        item.setPos(view.sceneRect().bottomLeft())
         item.setZValue(10)
         self._ert_legend = item
 
@@ -698,6 +701,9 @@ class ErtMixin:
                 view.zoom_to_layer(LINES_LAYER)
             except Exception:  # noqa: BLE001
                 pass
+        window = self.context.window
+        if window is not None and hasattr(window, "show_view") and view.tr is not None:
+            window.show_view(view)
 
     def _ert_draw_plan(self) -> None:
         chunk = self._chunk()
