@@ -37,6 +37,49 @@ slice GPR, elettromagnetica - accanto ai prodotti fotogrammetrici dello stesso t
   colori.
 * `ppg plugin geophysics import|list|georef|filter|export PROJECT.ppg ...` dalla riga di comando.
 
+## Tomografia di resistività elettrica (ERT, 0.2.0)
+
+La scheda *ERT* del pannello porta le letture di un georesistivimetro a una sezione di resistività
+nel rilievo, invertita con [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
+
+1. **Letture**: una tabella CSV/TXT (`a, b, m, n` e `rhoa`, oppure `r`, oppure `u` e `i`; `err` se
+   c'è; anche le colonne `Spa.1-4`, `Rho`, `Dev`, `Vp`, `In` del Syscal; elettrodi numerati da 1 o
+   posizioni in metri), il formato dati unificato di pyGIMLi (`.ohm`, `.dat`) e, tramite pyGIMLi,
+   gli altri file degli strumenti (RES2DINV, ABEM, Syscal); una tabella degli elettrodi facoltativa
+   (`x, z` lungo la linea oppure `x, y, z` del mondo). *Profilo sintetico* produce letture di un
+   modello a due strati con un blocco.
+2. **Linea nel rilievo**: disegnata sull'ortofoto o sul DEM, da due marker o con coordinate digitate
+   (due punti o più: una linea spezzata), la distanza del primo elettrodo e la spaziatura; le quote
+   degli elettrodi dal DEM del chunk, dal file o piatte.
+3. **Pseudosezione e filtri**: le letture come punti nella vista 2D (si selezionano e si cancellano
+   quelle cattive); filtri su intervallo, errore, reciproci e picchi.
+4. **Inversione**: il gestore ERT di pyGIMLi su una mesh che segue la topografia (fattori
+   geometrici calcolati su di essa), lambda, peso verticale, modello a blocchi, dati robusti,
+   errori relativo e in tensione; χ² e RMS; le parti che le letture non risolvono oscurate con la
+   copertura o con l'indice di profondità di investigazione di Oldenburg e Li.
+5. **Sezione**: nella vista 2D nel suo riferimento (distanza lungo la linea per quota, colori
+   logaritmici con la legenda in ohm m), nella vista 3D come sezione verticale sotto la linea con il
+   terreno tagliato da una parte, le unità e i carotaggi del plugin geoarcheologia; la linea e gli
+   elettrodi sulla pianta.
+6. **Esportazioni**: la sezione in GeoTIFF (riferimento u, v, con `.frame.json`), le celle della
+   mesh in CSV, i pixel in XYZ con coordinate del mondo, figure PNG/SVG/PDF della sezione e della
+   pseudosezione, la linea e gli elettrodi in GeoPackage, i paradati (parametri, adattamento,
+   versioni) in JSON, le letture tenute in `.ohm`.
+
+pyGIMLi non gira mai nel processo del programma: *Installa pyGIMLi* crea con uv un ambiente a parte
+nella cartella dati del plugin (circa 100 MB; `PPG_GEOPHYSICS_ENV` lo sposta) e ogni lettura o
+inversione gira lì, in un processo di lavoro. pyGIMLi 1.6 ha pacchetti per Windows x64, Linux x86_64
+e macOS 26 o successivo (Apple Silicon e Intel), non per Windows o Linux su ARM.
+
+```bash
+ppg plugin geophysics ert install
+ppg plugin geophysics ert import scavo.ppg linea1.csv --name "Linea 1" --spacing 1
+ppg plugin geophysics ert place scavo.ppg "Linea 1" --markers E1,E48 --heights dem
+ppg plugin geophysics ert filter scavo.ppg "Linea 1" --spikes 8 --max-error 5
+ppg plugin geophysics ert invert scavo.ppg "Linea 1" --lam 20 --doi oldenburg
+ppg plugin geophysics ert export scavo.ppg "Linea 1" esportazioni/linea1
+```
+
 ```bash
 pip install "ppg-geophysics @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/geophysics"
 ppg plugin geophysics import scavo.ppg prospezione.grd --kind magnetometry --name "Area 1"

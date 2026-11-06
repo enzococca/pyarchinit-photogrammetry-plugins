@@ -35,6 +35,48 @@ electromagnetic - beside the photogrammetric products of the same ground.
   Esporta*), the grids in the QGIS project of the program with their ramp.
 * `ppg plugin geophysics import|list|georef|filter|export PROJECT.ppg ...` from the command line.
 
+## Electrical resistivity tomography (ERT, 0.2.0)
+
+The *ERT* tab of the pane takes the readings of a resistivity meter to a resistivity section in the
+survey, inverted with [pyGIMLi](https://www.pygimli.org) (Apache-2.0):
+
+1. **Readings**: a CSV/TXT table (`a, b, m, n` and `rhoa`, or `r`, or `u` and `i`; `err` when
+   present; Syscal's `Spa.1-4`, `Rho`, `Dev`, `Vp`, `In` too; electrode numbers from 1 or positions in
+   metres), pyGIMLi's unified data format (`.ohm`, `.dat`), and through pyGIMLi the other files of the
+   instruments (RES2DINV, ABEM, Syscal); an optional table of the electrodes (`x, z` along the line or
+   world `x, y, z`). *Synthetic profile* makes readings of a two-layer model with a block.
+2. **Line in the survey**: drawn on the orthomosaic or DEM, from two markers or typed coordinates (two
+   points or more: a bent line), the first electrode's distance and the spacing; the heights of the
+   electrodes from the DEM of the chunk, from the file or flat.
+3. **Pseudosection and filters**: the readings as points in the 2D view (select and delete the bad
+   ones); filters on the range, the error, the reciprocals and the spikes.
+4. **Inversion**: pyGIMLi's ERT manager on a mesh that follows the topography (geometric factors
+   computed on it), lambda, vertical weight, blocky model, robust data, relative and voltage errors;
+   chi² and RMS; the parts the readings do not resolve blanked by the coverage or by the
+   depth-of-investigation index of Oldenburg and Li.
+5. **Section**: in the 2D view in its own frame (distance along the line x elevation, log colours
+   with the legend in ohm m), in the 3D view as a vertical section under the line with the ground cut
+   away on one side, the units and the cores of the geoarchaeology plugin; the line and the
+   electrodes on the plan.
+6. **Exports**: the section as GeoTIFF (u, v frame, with `.frame.json`), the cells of the mesh as CSV,
+   the pixels as XYZ with world coordinates, figures PNG/SVG/PDF of the section and the
+   pseudosection, the line and the electrodes as GeoPackage, the paradata (parameters, fit, versions)
+   as JSON, the readings kept as `.ohm`.
+
+pyGIMLi never runs in the program's process: *Install pyGIMLi* makes an environment of its own with
+uv in the plugin's data folder (about 100 MB; `PPG_GEOPHYSICS_ENV` puts it elsewhere) and every
+reading or inversion runs there, in a worker process. pyGIMLi 1.6 has builds for Windows x64, Linux
+x86_64 and macOS 26 or later (Apple Silicon and Intel), not for Windows or Linux on ARM.
+
+```bash
+ppg plugin geophysics ert install
+ppg plugin geophysics ert import survey.ppg line1.csv --name "Line 1" --spacing 1
+ppg plugin geophysics ert place survey.ppg "Line 1" --markers E1,E48 --heights dem
+ppg plugin geophysics ert filter survey.ppg "Line 1" --spikes 8 --max-error 5
+ppg plugin geophysics ert invert survey.ppg "Line 1" --lam 20 --doi oldenburg
+ppg plugin geophysics ert export survey.ppg "Line 1" exports/line1
+```
+
 ```bash
 pip install "ppg-geophysics @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/geophysics"
 ppg plugin geophysics import survey.ppg survey.grd --kind magnetometry --name "Area 1"
