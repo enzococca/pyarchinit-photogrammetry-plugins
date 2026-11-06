@@ -334,14 +334,17 @@ class ErtMixin:
                                     "start of the line)"), 0.0, minimum=-1e4, maximum=1e4, decimals=3),
                    Field("spacing", t("Distanza fra gli elettrodi (m)", "Spacing of the electrodes (m)"),
                          float(e.get("spacing", 1.0)), minimum=0.01, maximum=1000.0, decimals=3),
-                   Field("along", t("Distanza misurata", "Spacing measured"), "ground",
+                   Field("along", t("Distanza misurata", "Spacing measured"),
+                         "plan" if e.get("heights_in_file", e.get("format") == "unified") else "ground",
                          choices=[("ground", t("lungo il terreno (il cavo steso sul pendio)",
                                                "along the ground (the cable laid on the slope)")),
                                   ("plan", t("in pianta (orizzontale)", "in plan (horizontal)"))],
                          tip=t("Sul campo la distanza fra gli elettrodi si misura lungo il cavo, sul terreno: su un "
-                               "pendio del 20 % in pianta è il 2 % più corta. Con le quote fisse non cambia nulla.",
+                               "pendio del 20 % in pianta è il 2 % più corta. Un file con le quote (x, z, come lo "
+                               "scrivono pyGIMLi e BERT) dà le distanze in pianta. Con le quote fisse non cambia nulla.",
                                "In the field the spacing is measured along the cable, on the ground: on a 20 % slope "
-                               "it is 2 % shorter in plan. With flat heights nothing changes.")),
+                               "it is 2 % shorter in plan. A file with the heights (x, z, as pyGIMLi and BERT write it) "
+                               "gives the distances in plan. With flat heights nothing changes.")),
                    Field("heights", t("Quote degli elettrodi", "Heights of the electrodes"),
                          "dem" if has_dem else ("file" if e.get("format") == "unified" else "flat"),
                          choices=[("dem", t("dal DEM del chunk", "from the DEM of the chunk")),
@@ -1003,8 +1006,9 @@ class ErtMixin:
         p.add_argument("--first", type=float, default=0.0)
         p.add_argument("--spacing", type=float, default=None)
         p.add_argument("--heights", default="auto", choices=["auto", "dem", "file", "flat"])
-        p.add_argument("--along", default="ground", choices=["ground", "plan"],
-                       help="the spacing measured along the ground (the cable on a slope) or in plan")
+        p.add_argument("--along", default=None, choices=["ground", "plan"],
+                       help="the spacing measured along the ground (the cable on a slope) or in plan; default: in plan "
+                            "when the file gives the heights, else along the ground")
         p.add_argument("--z0", type=float, default=None)
         p = sub.add_parser("filter", help="the filters of the readings")
         p.add_argument("profile")

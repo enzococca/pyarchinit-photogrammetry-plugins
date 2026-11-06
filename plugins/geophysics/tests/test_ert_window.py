@@ -217,7 +217,7 @@ def test_the_command_line(tmp_path, fake, capsys):
     assert out["name"] == "L1" and out["array"] == "dipole-dipole"
     assert plugin.command("ert", "place", project, "L1", "--line", "500010,4500050;500040,4500050") == 0
     pl = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert pl["heights"] == "dem" and pl["length"] == pytest.approx(23.0, abs=0.01) and pl["along"] == "ground"
+    assert pl["heights"] == "dem" and pl["length"] == pytest.approx(23.0) and pl["along"] == "plan"
     assert plugin.command("ert", "filter", project, "L1", "--spikes", "6", "--remove", "1,2") == 0
     f = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert f["manual"] == [0, 1] and f["rules"]["spikes"] == 6.0

@@ -70,6 +70,12 @@ def test_the_spacing_along_the_ground(tmp_path):
     assert e["placement"]["along"] == "ground" and "lungo il terreno" in e["placement"]["notes"][0]
     e = ert.place(ch, e["id"], LINE, along="plan", heights="dem")
     assert np.allclose(np.diff(ert.load(ch, e["id"]).elec["elec_u"]), 2.0)
+    # by default: along the ground for numbered electrodes, in plan for a file with x and z (pyGIMLi, BERT)
+    from test_ert import write_csv
+
+    c = ert_ops.import_profile(ch, write_csv(tmp_path / "num.csv"), name="C", spacing=2.0)
+    assert ert.place(ch, c["id"], LINE)["placement"]["along"] == "ground"
+    assert ert.place(ch, e["id"], LINE)["placement"]["along"] == "plan"
     # the heights of the file: the slope between neighbours (8 % in pyGIMLi's file)
     g = ert_ops.import_profile(ch, DATA / "gimli_topo.dat", name="G")
     g = ert.place(ch, g["id"], LINE, along="ground", heights="file")

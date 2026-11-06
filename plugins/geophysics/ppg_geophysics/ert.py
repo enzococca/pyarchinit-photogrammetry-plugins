@@ -701,7 +701,7 @@ def save(chunk, prof: Profile) -> dict:
     entry.update({"id": prof.id, "name": prof.name, "source": prof.source, "format": prof.fmt,
                   "electrodes": prof.electrodes, "readings": prof.count, "array": array_kind(prof),
                   "spacing": round(prof.spacing, 6), "world": prof.world, "notes": list(prof.notes),
-                  "numbered": bool(prof.numbered),
+                  "numbered": bool(prof.numbered), "heights_in_file": prof.file_z is not None,
                   "values": [k for k in VALUES if prof.has(k)],
                   "file": str((out / "profile.npz").relative_to(chunk.data_dir)),
                   "updated": datetime.now().isoformat(timespec="seconds")})
@@ -982,14 +982,21 @@ def _ground_positions(d, first: float, line, heights: str, prof: Profile, dem, s
     return first + d
 
 
+def default_along(prof: Profile) -> str:
+    """How the distances of the file are measured, when nobody says: in plan when the file gives the
+    heights with them (a 2-D geometry x, z, as pyGIMLi and BERT write it), along the ground otherwise
+    (electrode numbers and a spacing, or the positions of the cable)."""
+    return "plan" if prof.file_z is not None else "ground"
+
+
 def place(chunk, pid: str, line=None, first: float = 0.0, spacing: float | None = None, heights: str = "auto",
-          z0: float | None = None, method: str = "", along: str = "ground") -> dict:
+          z0: float | None = None, method: str = "", along: str | None = None) -> dict:
     """The line of the profile in the survey: ``line`` (two or more points, world X Y of the chunk, the
     first electrode side first) - None to take the electrodes where the file puts them in world
     coordinates (refused when they are far from the survey, :func:`check_world`); the first electrode
     ``first`` metres from the start of the line; the electrodes ``spacing`` metres apart (None: as
     read), measured along the ground (``along`` "ground": the cable laid on a slope; the plan
-    distances come out shorter) or in plan ("plan"); the heights from the DEM of the chunk
+    distances come out shorter) or in plan ("plan"; None: :func:`default_along`); the heights from the DEM of the chunk
     (``heights`` "dem"), the file ("file", plus ``z0``), flat at ``z0`` ("flat"), or "auto" (the DEM
     when the chunk has one, else the file, else flat). The electrodes go into the record (the
     program's Undo takes a placement back with them). The inversion done before is to be done
@@ -997,6 +1004,7 @@ def place(chunk, pid: str, line=None, first: float = 0.0, spacing: float | None 
     prof = load(chunk, pid)
     e = entry_of(chunk, pid)
     notes = []
+    along = along or default_along(prof)
     u_file = np.asarray(prof.file_u, float)
     dem = getattr(chunk, "dem_path", None)
     dem = Path(dem) if dem is not None and Path(dem).exists() else None

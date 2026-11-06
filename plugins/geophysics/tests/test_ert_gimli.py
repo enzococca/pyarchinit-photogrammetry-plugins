@@ -73,7 +73,8 @@ def test_a_buried_block_comes_back(tmp_path, gimli, slope):
     doc.save(tmp_path / "ert.ppg")
     e = ert_ops.simulate_profile(ch, "sintetico", count=48, spacing=1.0, scheme="dd", slope=slope, noise=0.02)
     assert e["readings"] > 900 and e["array"] == "dipole-dipole"
-    e = ert.place(ch, e["id"], [[0.0, 0.0], [47.0, 0.0]], heights="file" if slope else "flat", z0=0.0)
+    e = ert.place(ch, e["id"], [[0.0, 0.0], [47.0, 0.0]], heights="file" if slope else "flat", z0=0.0,
+                  along="plan")
     e = ert_ops.invert_profile(ch, e["id"], {"lam": 20})
     fit = e["inversion"]["fit"]
     assert fit["chi2"] < 3.0 and fit["rrms"] < 5.0
@@ -106,3 +107,32 @@ def test_depth_of_investigation_of_oldenburg_and_li(tmp_path, gimli):
     shallow, bottom = np.median(doi[owner[middle & (depth < 2)]]), np.median(doi[owner[depth > depth.max() * 0.8]])
     print(f"DOI index: {shallow:.2f} in the first 2 m under the line, {bottom:.2f} at the bottom of the mesh")
     assert shallow < ert_section.DEFAULT_BLANK["doi_max"] < bottom
+
+
+def test_a_pole_dipole_line(tmp_path, gimli):
+    """The remote electrode (b = -1) through the inversion."""
+    doc = ppg.Document()
+    ch = doc.add_chunk("ERT")
+    doc.save(tmp_path / "ert.ppg")
+    e = ert_ops.simulate_profile(ch, "polo-dipolo", count=32, spacing=1.0, scheme="pd", noise=0.02)
+    prof = ert.load(ch, e["id"])
+    assert e["array"] == "pole-dipole" and (prof.b == -1).all()
+    ert.place(ch, e["id"], [[0.0, 0.0], [31.0, 0.0]], heights="flat", z0=0.0)
+    e = ert_ops.invert_profile(ch, e["id"], {"lam": 20})
+    fit = e["inversion"]["fit"]
+    print(f"pole-dipole: chi2 {fit['chi2']:.2f}, rms {fit['rrms']:.2f} %, {fit['readings']} readings")
+    assert fit["chi2"] < 3.0 and fit["readings"] > 0.9 * e["readings"]
+
+
+def test_a_file_saved_by_pygimli_is_inverted(tmp_path, gimli):
+    """pyGIMLi's own unified file (2-D with y the elevation, zero columns): read by the plugin, inverted
+    on its topography."""
+    doc = ppg.Document()
+    ch = doc.add_chunk("ERT")
+    doc.save(tmp_path / "ert.ppg")
+    e = ert_ops.import_profile(ch, Path(__file__).resolve().parent / "data" / "gimli_topo.dat")
+    e = ert.place(ch, e["id"], [[0.0, 0.0], [11.0, 0.0]], heights="file")
+    assert e["placement"]["along"] == "plan" and e["placement"]["z_range"] == pytest.approx([100.0, 100.88])
+    e = ert_ops.invert_profile(ch, e["id"], {"lam": 20})
+    fit = e["inversion"]["fit"]
+    assert fit["readings"] == 45 and fit["topography_k"] and np.isfinite(fit["chi2"])
