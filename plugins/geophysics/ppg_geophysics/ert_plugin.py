@@ -88,16 +88,22 @@ class ErtMixin:
         doc = self.context.app.document if self.context is not None else None
         if doc is None:
             return
-        try:
-            if doc is not self._ert_doc:
-                self._ert_doc = doc
-                for chunk in list(getattr(doc, "chunks", []) or []):
+        import logging
+
+        log = logging.getLogger("pyarchinit_photogrammetry")
+        if doc is not self._ert_doc:
+            self._ert_doc = doc
+            for chunk in list(getattr(doc, "chunks", []) or []):
+                try:  # settle goes on by itself past a file it cannot delete; this is for the rest
                     ert_mod.settle(chunk)
-            elif doc.chunk is not None:
-                for e in ert_mod.entries(doc.chunk):
+                except OSError as exc:
+                    log.warning("geophysics ERT: the files of chunk %s not settled: %s", getattr(chunk, "label", ""), exc)
+        elif doc.chunk is not None:
+            for e in ert_mod.entries(doc.chunk):
+                try:
                     ert_mod.restore(doc.chunk, e["id"])
-        except OSError:
-            pass
+                except OSError as exc:
+                    log.warning("geophysics ERT: profile %s not restored: %s", e.get("name"), exc)
 
     def ert_refresh(self) -> None:
         self._ert_settle()

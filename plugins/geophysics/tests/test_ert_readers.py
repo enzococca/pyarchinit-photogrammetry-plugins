@@ -149,3 +149,23 @@ def test_a_file_of_pygimli_goes_through_to_the_inversion(tmp_path, monkeypatch):
     assert e["placement"]["z_range"] == pytest.approx([100.0, 100.88])
     e = ert_ops.invert_profile(ch, e["id"])
     assert e["inversion"]["fit"]["readings"] == 45
+
+
+def test_an_unknown_unit_only_matters_on_a_column_the_plugin_reads(tmp_path):
+    f = tmp_path / "t.ohm"
+    f.write_text("4\n# x z\n0 0\n1 0\n2 0\n3 0\n1\n# a b m n rhoa t/s\n1 2 3 4 10 0.5\n0\n")
+    p = ert.read_any(f)  # the time of the reading is not read: its unit does not matter
+    assert np.allclose(p.value("rhoa"), [10.0])
+    g = tmp_path / "u.ohm"
+    g.write_text("4\n# x z\n0 0\n1 0\n2 0\n3 0\n1\n# a b m n u/furlong i rhoa\n1 2 3 4 1 1 10\n0\n")
+    with pytest.raises(ValueError, match="u/furlong"):
+        ert.read_any(g)
+
+
+def test_two_columns_of_map_coordinates_are_not_distance_and_elevation(tmp_path):
+    f = tmp_path / "xy.dat"
+    f.write_text("4\n# x y\n500000 4500000\n500001 4500000.5\n500002 4500001\n500003 4500001.5\n"
+                 "1\n# a b m n rhoa\n1 2 3 4 10\n0\n")
+    p = ert.read_any(f)
+    assert p.world and p.file_z is None and p.file_y[0] == 4500000.0
+    assert np.allclose(np.diff(p.file_u), np.hypot(1.0, 0.5))

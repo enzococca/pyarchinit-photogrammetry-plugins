@@ -44,14 +44,14 @@ class ReadingsItem(QGraphicsItem):
     def __init__(self, points, groups_, electrodes=None, parent=None):
         super().__init__(parent)
         pts = np.asarray(points, float).reshape(-1, 2)
-        self._groups = []
+        self._groups = []  # (pen, points): the pens made here once, the paint only sets and draws
         for rgb, idx in groups_:
             if len(idx):
                 poly = QPolygonF([QPointF(x, y) for x, y in pts[np.asarray(idx, int)].tolist()])
-                self._groups.append((QColor(*rgb), poly, DOT_PX if rgb != REMOVED else DOT_PX - 2))
+                self._groups.append((_pen(rgb, DOT_PX if rgb != REMOVED else DOT_PX - 2), poly))
         el = np.asarray(electrodes if electrodes is not None else np.zeros((0, 2)), float).reshape(-1, 2)
         if len(el):
-            self._groups.append((QColor(*ELECTRODE), QPolygonF([QPointF(x, y) for x, y in el.tolist()]), ELECTRODE_PX))
+            self._groups.append((_pen(ELECTRODE, ELECTRODE_PX), QPolygonF([QPointF(x, y) for x, y in el.tolist()])))
         allp = np.vstack([pts, el]) if len(pts) or len(el) else np.zeros((1, 2))
         lo, hi = allp.min(axis=0), allp.max(axis=0)
         pad = 0.05 * float(max((hi - lo).max(), 1.0)) + 20.0  # the dots have a size on the screen, not in the scene
@@ -63,14 +63,18 @@ class ReadingsItem(QGraphicsItem):
         return self._rect
 
     def paint(self, painter, _option, _widget=None) -> None:
-        pen = QPen()
-        pen.setCosmetic(True)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        for colour, poly, size in self._groups:
-            pen.setColor(colour)
-            pen.setWidthF(float(size))
+        for pen, poly in self._groups:  # two calls per colour: the calls of the program's SegmentsItem
             painter.setPen(pen)
             painter.drawPoints(poly)
+
+
+def _pen(rgb, size: float) -> QPen:
+    """A round cosmetic pen of ``size`` screen pixels in the colour ``rgb``."""
+    pen = QPen(QColor(*rgb))
+    pen.setCosmetic(True)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setWidthF(float(size))
+    return pen
 
 
 def inside(points, polygon) -> np.ndarray:

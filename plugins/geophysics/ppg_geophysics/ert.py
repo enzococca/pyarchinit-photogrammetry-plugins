@@ -256,17 +256,30 @@ TOKEN_NAMES = {"rho": "rhoa", "rhoa": "rhoa", "ra": "rhoa", "res": "r", "r": "r"
 HIGHEST_GROUND = 9000.0  # metres: a "height" above this is a northing, not an elevation
 
 
-def _token(word: str) -> tuple[str, float]:
+READ = {"a", "b", "m", "n", "x", "y", "z", "valid", *VALUES}  # the columns of the unified format the plugin reads
+
+
+def _token(word: str) -> tuple[str, float | None]:
     """A token of the unified format and the factor of its unit: ``u/mV`` -> ("u", 0.001), ``err/%`` ->
-    ("err", 0.01), ``rhoa`` -> ("rhoa", 1.0)."""
+    ("err", 0.01), ``rhoa`` -> ("rhoa", 1.0); a unit not known -> None (an error only on a column the plugin
+    reads: :func:`_factors`)."""
     name, _s, unit = word.strip().lower().partition("/")
     name = TOKEN_NAMES.get(name, name)
     unit = unit.strip().replace(" ", "")
     if not unit:
         return name, 1.0
-    if unit not in UNITS:
-        raise ValueError(t("unità non riconosciuta: {0}", "unit not known: {0}").format(word))
-    return name, UNITS[unit]
+    return name, UNITS.get(unit)
+
+
+def _factors(words: list[str], path) -> list[tuple[str, float | None]]:
+    """The tokens of a line of the unified format: an unknown unit on a column the plugin reads is an
+    error that names the column; on another column (a time, a channel...) it does not matter."""
+    out = [_token(w) for w in words]
+    for w, (name, f) in zip(words, out):
+        if f is None and name in READ:
+            raise ValueError(t("{0}: unità non riconosciuta nella colonna «{1}»",
+                               "{0}: unit not known in the column '{1}'").format(Path(path).name, w))
+    return out
 
 
 def sensor_layout(x, y=None, z=None) -> dict:
@@ -274,12 +287,15 @@ def sensor_layout(x, y=None, z=None) -> dict:
     (heights, None without), ``x``/``y`` (world coordinates, None without), from the columns of the
     file (``y``/``z`` None when the file has not them). The rules of pyGIMLi's files: a 2-D profile is
     ``x z``, or ``x y`` with y the elevation, or ``x y z`` with y the elevation and z = 0; world
-    coordinates only when z carries the heights (or y cannot be an elevation: above 9000 m, a
-    northing)."""
+    coordinates only when z carries the heights, or when y cannot be an elevation (above 9000 m: a
+    northing, also in two columns ``x y``)."""
     x = np.asarray(x, float)
     zero = lambda v: v is None or np.allclose(v, 0.0)  # noqa: E731
     flat = lambda v: v is None or np.ptp(v) == 0  # noqa: E731
-    if y is not None and z is None:  # "x y": distance and elevation
+    if y is not None and z is None:  # "x y": distance and elevation - or map coordinates without heights
+        if np.abs(np.asarray(y, float)).max() > HIGHEST_GROUND:
+            y = np.asarray(y, float)
+            return {"u": _along(x, y), "z": None, "x": x, "y": y}
         y, z = None, y
     if y is None:
         return {"u": x, "z": None if zero(z) else np.asarray(z, float), "x": None, "y": None}
@@ -333,7 +349,7 @@ def read_unified(path: str | Path) -> Profile:
             raise ValueError(f"{path}: {count} electrodes announced, fewer found")
         sens.append([float(v) for v in line.split()])
     sens = np.asarray(sens, float)
-    stoks = [_token(w) for w in tokens] if tokens else \
+    stoks = _factors(tokens, path) if tokens else \
         ([("x", 1.0), ("z", 1.0)] if sens.shape[1] == 2 else [("x", 1.0), ("y", 1.0), ("z", 1.0)])
     col = {name: (i, f) for i, (name, f) in enumerate(stoks) if i < sens.shape[1]}
 
@@ -355,7 +371,7 @@ def read_unified(path: str | Path) -> Profile:
         rows.append([float(v) for v in line.split()])
     if not rows:
         raise ValueError(f"{path}: no readings")
-    dtoks = [_token(w) for w in tokens] if tokens else [(w, 1.0) for w in ["a", "b", "m", "n", "rhoa", "err"]]
+    dtoks = _factors(tokens, path) if tokens else [(w, 1.0) for w in ["a", "b", "m", "n", "rhoa", "err"]]
     width = min(len(r) for r in rows)
     arr = np.asarray([r[:width] for r in rows], float)
     dcol = {name: (i, f) for i, (name, f) in enumerate(dtoks) if i < width}
@@ -784,37 +800,62 @@ def run_files(e: dict) -> set[str]:
     return {str(v) for v in (inv.get("files") or {}).values() if v}
 
 
+def _delete(p: Path, out: dict, key: str) -> None:
+    """One file or folder deleted for :func:`settle`; one that cannot go (Windows: a file still open)
+    is logged and left for the next opening, the rest goes on."""
+    import logging
+    import shutil
+
+    try:
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink(missing_ok=True)
+        out[key] += 1
+    except OSError as exc:
+        out["failed"] += 1
+        logging.getLogger("pyarchinit_photogrammetry").warning("geophysics ERT: %s not deleted (%s), next time", p, exc)
+
+
+KEEP = {"_work", TRASH}  # folders of geophysics/ert that are not profiles
+
+
 def settle(chunk) -> dict:
     """The files of the profiles made to agree with the project as opened (the end of the previous
     session): folders of profiles in the project taken back from the trash, the rest of the trash
-    deleted, the files of inversions and sections no record uses deleted (Undo kept them while the
-    project was open). Returns the counts."""
-    import shutil
-
-    out = {"restored": 0, "deleted": 0, "files": 0}
+    deleted, the folders of profiles no record lists (an import undone, a removal undone and done
+    again) deleted, the files of inversions and sections no record uses deleted (Undo kept them while
+    the project was open). A file that cannot be deleted is left for the next opening. Returns the
+    counts."""
+    out = {"restored": 0, "deleted": 0, "orphans": 0, "files": 0, "failed": 0}
     ids = {e["id"] for e in entries(chunk)}
     for pid in ids:
-        out["restored"] += int(restore(chunk, pid))
+        try:
+            out["restored"] += int(restore(chunk, pid))
+        except OSError:
+            out["failed"] += 1
     tr = trash(chunk)
     if tr.exists():
-        for p in tr.iterdir():
+        for p in list(tr.iterdir()):
             if p.name not in ids:
-                shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
-                out["deleted"] += 1
+                _delete(p, out, "deleted")
         try:
             tr.rmdir()
         except OSError:
             pass
-    root = Path(chunk.data_dir)
+    root = Path(chunk.data_dir) / FOLDER
+    if root.is_dir():
+        for p in list(root.iterdir()):
+            if p.is_dir() and p.name not in ids and p.name not in KEEP:
+                _delete(p, out, "orphans")
     for e in entries(chunk):
-        used = {Path(root / f).resolve() for f in run_files(e)}
+        used = {Path(Path(chunk.data_dir) / f).resolve() for f in run_files(e)}
         d = folder(chunk, e["id"])
         if not d.is_dir():
             continue
-        for p in d.iterdir():
+        for p in list(d.iterdir()):
             if p.is_file() and RUN_FILES.match(p.name) and p.resolve() not in used:
-                p.unlink(missing_ok=True)
-                out["files"] += 1
+                _delete(p, out, "files")
     return out
 
 

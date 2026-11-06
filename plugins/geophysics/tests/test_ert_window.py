@@ -324,3 +324,23 @@ def test_the_readings_item_paints_its_dots(window):
     assert rgb(10, 10)[2] > 100 and rgb(10, 10)[0] < 60  # blue: the low end
     assert rgb(50, 10) == ert_view.REMOVED and rgb(30, 30) == ert_view.ELECTRODE
     assert ert_view.inside(pts, [[0, 0], [40, 0], [40, 20], [0, 20]]).tolist() == [True, True, False]
+
+
+def test_the_readings_item_makes_its_pens_once(window, monkeypatch):
+    import numpy as np
+    from PySide6.QtGui import QImage, QPainter, QPen
+
+    from ppg_geophysics import ert_view
+
+    g = ert_view.groups(np.linspace(0, 1, 40), lambda xs: ert_section.ramp(xs, "rainbow"), np.ones(40, bool))
+    item = ert_view.ReadingsItem(np.column_stack([np.arange(40.0), np.zeros(40)]), g, electrodes=[[0.0, 5.0]])
+    calls = []
+    for name in ("setColor", "setWidthF", "setWidth"):
+        orig = getattr(QPen, name)
+        monkeypatch.setattr(QPen, name, lambda self, *a, _o=orig, _n=name: (calls.append(_n), _o(self, *a))[1])
+    img = QImage(64, 16, QImage.Format.Format_ARGB32)
+    p = QPainter(img)
+    item.paint(p, None)
+    item.paint(p, None)
+    p.end()
+    assert calls == []

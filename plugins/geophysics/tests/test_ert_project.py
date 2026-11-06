@@ -207,3 +207,41 @@ def test_the_cores_in_the_colours_of_geoarchaeology(tmp_path):
     v, f, c = ert_section._cores(ch, [LINE], 50.0, 0.1)
     rgb = [tuple(int(x) for x in c[8 * k]) for k in range(4)]
     assert rgb == [(0xd9, 0xb7, 0x7e), (0x33, 0x66, 0xcc), (255, 0, 0), (0x33, 0x66, 0xcc)]
+
+
+def test_settle_deletes_the_folders_of_profiles_no_record_lists(tmp_path, monkeypatch):
+    doc, ch = _project(tmp_path)
+    keep = ert_ops.import_profile(ch, write_ohm(tmp_path / "a.ohm"), name="A")
+    gone = ert_ops.import_profile(ch, write_ohm(tmp_path / "b.ohm"), name="B")
+    # Undo of the import of B: the record goes, its folder stays
+    ch.meta["geophysics"]["ert"] = [e for e in ch.meta["geophysics"]["ert"] if e["id"] != gone["id"]]
+    work = ert_ops.work_folder(ch)
+    work.mkdir(parents=True, exist_ok=True)
+    (ch.data_dir / ert.FOLDER / ert_section.SCENE).write_bytes(b"ply")
+    out = ert.settle(ch)
+    assert out["orphans"] == 1 and not ert.folder(ch, gone["id"]).exists()
+    assert ert.folder(ch, keep["id"]).is_dir() and work.is_dir() and (ch.data_dir / ert.FOLDER / ert_section.SCENE).exists()
+
+
+def test_settle_goes_on_when_a_file_cannot_be_deleted(tmp_path, fake, monkeypatch):
+    doc, ch = _project(tmp_path)
+    a = ert_ops.import_profile(ch, write_ohm(tmp_path / "a.ohm"), name="A")
+    b = ert_ops.import_profile(ch, write_ohm(tmp_path / "b.ohm"), name="B")
+    for e in (a, b):
+        ert.place(ch, e["id"], LINE, along="plan")
+        ert_ops.invert_profile(ch, e["id"])
+        ert_section.write(ch, e["id"], palette="viridis")  # the first drawing is no longer used
+    stuck = sorted(ert.folder(ch, a["id"]).glob("section-*.tif"))[0]
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self == stuck:
+            raise PermissionError("in use")  # as Windows with a file still open
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    out = ert.settle(ch)
+    assert stuck.exists() and out["failed"] == 1
+    assert len(list(ert.folder(ch, b["id"]).glob("section-*.tif"))) == 1  # the other profile settled
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert ert.settle(ch)["files"] >= 1 and not stuck.exists()  # at the next opening
