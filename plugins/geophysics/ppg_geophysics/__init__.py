@@ -11,7 +11,13 @@ same ground.
   and the anomalies), the QGIS project;
 * *Plugin > Geofisica* menu actions for the same; *File > Esporta > Griglie e anomalie geofisiche
   (GeoPackage)*;
-* ``ppg plugin geophysics import|list|georef|filter|export ...`` from the command line.
+* ``ppg plugin geophysics import|list|georef|filter|export ...`` from the command line;
+* electrical resistivity tomography (0.2.0): the *ERT* tab of the pane, the readings of a
+  resistivity meter, the line in the survey, the pseudosection and its filters, the inversion with
+  pyGIMLi in a worker process of its own environment, the section in 2D and in the 3D view with the
+  ground cut away, the units and the cores of the geoarchaeology plugin, the exports
+  (:mod:`.ert`, :mod:`.ert_ops`, :mod:`.ert_section`, :mod:`.ert_plugin`);
+  ``ppg plugin geophysics ert ...``.
 
 The grids live in ``<chunk data>/geophysics/<id>.tif`` and in ``chunk.meta["geophysics"]``; the
 anomalies are polygons drawn with the program's drawing, lent to the plugin (*Disegna anomalia*),
@@ -33,20 +39,23 @@ import numpy as np
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
+from .ert_plugin import ErtMixin
 from .texts import t
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 
-class GeophysicsPlugin(Plugin):
+class GeophysicsPlugin(ErtMixin, Plugin):
     version = __version__
 
     def __init__(self):
         self.title = t("Geofisica", "Geophysics")
         self.description = t("Griglie geofisiche (magnetometria, resistività, GPR, EM) sul rilievo: import, "
-                             "georeferenziazione, filtri, sovrapposizione, esportazioni",
+                             "georeferenziazione, filtri, sovrapposizione, esportazioni; tomografia elettrica (ERT) "
+                             "con pyGIMLi",
                              "Geophysical grids (magnetometry, resistivity, GPR, EM) on the survey: import, "
-                             "georeferencing, filters, overlay, exports")
+                             "georeferencing, filters, overlay, exports; electrical resistivity tomography (ERT) with "
+                             "pyGIMLi")
         self.context = None
         self.pane = None
         self.overlay = None
@@ -67,7 +76,9 @@ class GeophysicsPlugin(Plugin):
                            tip=t("Un poligono nel layer Anomalie geofisiche, con la griglia, la banda e una nota",
                                  "A polygon in the layer Anomalie geofisiche, with the grid, the band and a note"))
         context.add_command("geophysics", self.command,
-                            help="geophysical grids: import, list, georef, filter, export")
+                            help="geophysical grids: import, list, georef, filter, export; ert ... (resistivity "
+                                 "tomography)")
+        self._ert_activate(context)
         context.add_exporter(t("Griglie e anomalie geofisiche (GeoPackage)", "Geophysical grids and anomalies (GeoPackage)"),
                              ".gpkg", self.export_gpkg)
         window = context.window
@@ -81,6 +92,9 @@ class GeophysicsPlugin(Plugin):
 
     def deactivate(self) -> None:
         self.hide_overlay()
+        self._ert_drop_legend()
+        self._ert_drop_readings()
+        self._ert_shown, self._ert_plan = None, False
         window = self.context.window if self.context else None
         if self._watch is not None:
             self._watch.detach()
@@ -90,9 +104,11 @@ class GeophysicsPlugin(Plugin):
         view = getattr(window, "ortho_view", None) if window is not None else None
         if view is not None:
             from .anomalies import LAYER
+            from .ert_plugin import ELECTRODES_LAYER, LINES_LAYER, PSEUDO_LAYER, REMOVED_LAYER
 
-            if LAYER in getattr(view, "layers", {}):
-                view.remove_layer(LAYER)  # the anomalies stay in the project
+            for layer in (LAYER, LINES_LAYER, ELECTRODES_LAYER, PSEUDO_LAYER, REMOVED_LAYER):
+                if layer in getattr(view, "layers", {}):
+                    view.remove_layer(layer)  # the anomalies and the profiles stay in the project
         if window is not None and self.pane is not None:
             tabs = getattr(window, "left_tabs", None)
             if tabs is not None and not hasattr(self.context, "add_pane"):  # 1.3.4: the context removes it
@@ -130,6 +146,7 @@ class GeophysicsPlugin(Plugin):
         self.pane.export_requested.connect(self.export_dialog)
         self.pane.remove_requested.connect(self.remove_dialog)
         self.pane.qgis_requested.connect(lambda: window.open_in_qgis() if hasattr(window, "open_in_qgis") else None)
+        self._ert_connect(self.pane.ert)
         window.qgis_providers = list(getattr(window, "qgis_providers", [])) + [self._qgis_entries]
         view = getattr(window, "ortho_view", None)
         if view is not None and hasattr(self.context, "on_features_deleted"):  # program 1.3.4
@@ -153,6 +170,7 @@ class GeophysicsPlugin(Plugin):
             return
         chunk = self._chunk()
         self.pane.set_grids(entries(chunk) if chunk is not None else [])
+        self.ert_refresh()
 
     def show_pane(self) -> None:
         window = self.context.window
@@ -227,6 +245,7 @@ class GeophysicsPlugin(Plugin):
         self._draw_anomalies()
         if self._shown is not None:
             self._paint_overlay(*self._shown, quiet=True)
+        self._ert_raster_loaded()
 
     # ------------------------------------------------------------------ import
     def import_dialog(self) -> None:
@@ -657,9 +676,14 @@ class GeophysicsPlugin(Plugin):
         self._message("info", text)
 
     def export_gpkg(self, chunk, path, progress):
+        from . import ert as ert_mod
+        from .ert_ops import export_lines_gpkg
         from .export import export_gpkg
 
-        return export_gpkg(chunk, path, self.context.window if self.context else None, progress)
+        out = export_gpkg(chunk, path, self.context.window if self.context else None, progress)
+        if any(e.get("placement") for e in ert_mod.entries(chunk)):
+            export_lines_gpkg(chunk, out)  # the lines of the tomographies and their electrodes
+        return out
 
     def remove_dialog(self, grid_id: str | None = None) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import choice
@@ -727,8 +751,11 @@ class GeophysicsPlugin(Plugin):
     def command(self, *args) -> int:
         """``ppg plugin geophysics import FILE [--kind K] [--name N] [--cell C] | list | georef GRID
         (--origin X,Y --azimuth A | --pairs 'lx ly E N;...') | filter GRID NAME [k=v ...] [--copy] |
-        export GRID OUT``."""
+        export GRID OUT | ert ...`` (``ert --help``: the resistivity tomography)."""
         import argparse
+
+        if args and str(args[0]) == "ert":
+            return self.ert_command(*args[1:])
 
         from . import filters as filters_mod
         from . import georef as georef_mod
