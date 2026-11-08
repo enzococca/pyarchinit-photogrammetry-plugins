@@ -440,3 +440,57 @@ def test_too_close_to_the_ground_is_said(tmp_path):
     r["piano"]["blocchi"][0]["quota"] = 40
     codes = {w["tipo"]: w for w in design.design_warnings(r["piano"], dem=dem)}
     assert codes["troppo_vicino_al_suolo"]["minimo"] < 10.0
+
+
+# ------------------------------------------------------------------ fix round 1
+
+def _true_strips(b, piano):
+    """The shots of every strip as route.grid makes them (its own arithmetic, in its own frame)."""
+    import math
+
+    from ppg_flightplan.geometry import METRES_PER_DEGREE, centroid, metres_per_degree_lon
+    from ppg_flightplan.route import _spans
+
+    cam = pl.plan_camera(piano)
+    area = [tuple(p) for p in b["area"]]
+    c = centroid(area)
+    k = metres_per_degree_lon(c[0])
+    a = math.radians(b["orientamento"])
+    ca, sa = math.cos(a), math.sin(a)
+    edge = []
+    for p in area:
+        x, y = (p[1] - c[1]) * k, (p[0] - c[0]) * METRES_PER_DEGREE
+        edge.append((x * ca + y * sa, -x * sa + y * ca))
+    min_x, max_x = min(e[0] for e in edge), max(e[0] for e in edge)
+    width = max_x - min_x
+    step = cam.footprint(b["quota"]) * (1 - b["lato"] / 100)
+    photo = cam.footprint_short(b["quota"]) * (1 - b["avanti"] / 100)
+    strips = max(1, round(width / max(step, 1.0)))
+    out = []
+    for s in range(strips):
+        x = min_x + width * (s + 0.5) / strips
+        out.append(sum(max(1, round((e - st) / max(photo, 0.5))) for st, e in _spans(x, edge)))
+    return out
+
+
+@pytest.mark.parametrize("heading", [0, 30, 60, 90, 135])
+@pytest.mark.parametrize("mode", ["per_punto", "intervallo"])
+def test_strips_are_found_on_any_heading(heading, mode):
+    """The shots fall in the strips of the grid whatever its heading: no strip split in two, no two strips
+    merged (the corner strips of a rotated rectangle are really short, and only those are said short)."""
+    area = rectangle(630, 670)
+    r = design.design(area, "orto", 2.0, mode=mode)
+    b = r["piano"]["blocchi"][0]
+    b["orientamento"] = heading
+    true = _true_strips(b, r["piano"])
+    shots = design.shot_report(r["piano"])[0]["shots"]
+    strips = design._strips(b, r["piano"], shots)
+    assert len(strips) == len(true)
+    if mode == "per_punto":
+        assert [len(s) for s in strips] == true
+    else:                   # by interval: about the same shots per strip, the turns left out
+        assert all(abs(len(s) - n) <= 2 for s, n in zip(strips, true))
+    short = [w for w in design.design_warnings(r["piano"]) if w["tipo"] == "strisciata_corta"]
+    expected_short = sum(1 for n in true if n < 3)
+    if mode == "per_punto":
+        assert (short[0]["strisciate"] if short else 0) == expected_short

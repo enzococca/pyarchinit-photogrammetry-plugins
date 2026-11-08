@@ -20,7 +20,7 @@ from . import plan as pl
 from . import route as rt
 from . import tiles
 from .camera import Camera, camera as list_camera
-from .geometry import LatLon, METRES_PER_DEGREE, distance, metres_per_degree_lon
+from .geometry import LatLon, METRES_PER_DEGREE, centroid, distance, metres_per_degree_lon
 from .texts import t
 
 # The highest height allowed in Europe without authorisation, and the one below which nothing is designed.
@@ -671,24 +671,39 @@ def shot_report(piano: dict, dem=None, z: Optional[int] = None) -> list[dict]:
 
 
 def _strips(b: dict, piano: dict, shots: list[dict]) -> list[list[dict]]:
-    """The shots of a grid block grouped by strip: by their distance across the strips, in strip spacings."""
+    """The shots of a grid block grouped by strip, in the order of the strips.
+
+    The strips are those of :func:`~ppg_flightplan.route.grid`, found with its own arithmetic: the same centre,
+    the same rotated frame (``x cos a + y sin a`` across the strips) and the same positions
+    (``min_x + width (s + 0.5) / strips``). Every shot goes to the nearest strip; a shot farther than a quarter
+    of the pitch from every strip is on a turn (shooting by interval) and belongs to none.
+    """
     cam = pl.plan_camera(piano)
     height = float(b.get("quota", 50))
     side = float(b.get("lato", 65)) / 100
-    spacing = max(cam.footprint(height) * (1 - side), 1.0)
     area = [tuple(p) for p in b.get("area", [])]
-    if not area or not shots:
+    if len(area) < 3 or not shots:
         return []
-    c = _centre(area)
+    c = centroid(area)
     k_lon = metres_per_degree_lon(c[0])
     ang = math.radians(float(b.get("orientamento", 0)))
-    groups: dict[int, list[dict]] = {}
+    ca, sa = math.cos(ang), math.sin(ang)
+
+    def across(p: LatLon) -> float:
+        return (p[1] - c[1]) * k_lon * ca + (p[0] - c[0]) * METRES_PER_DEGREE * sa
+
+    xs = [across(p) for p in area]
+    min_x, width = min(xs), max(xs) - min(xs)
+    strip_step = cam.footprint(height) * (1 - side)
+    count = max(1, round(width / max(strip_step, 1.0)))
+    pitch = width / count
+    groups: list[list[dict]] = [[] for _ in range(count)]
     for s in shots:
-        x = (s["latlon"][1] - c[1]) * k_lon
-        y = (s["latlon"][0] - c[0]) * METRES_PER_DEGREE
-        across = x * math.cos(ang) - y * math.sin(ang)       # the grid's x: across the strips
-        groups.setdefault(int(round(across / spacing)), []).append(s)
-    return [groups[k] for k in sorted(groups)]
+        f = (across(s["latlon"]) - min_x) / pitch - 0.5 if pitch > 0 else 0.0
+        k = min(count - 1, max(0, int(round(f))))
+        if pitch <= 0 or abs(f - k) <= 0.25:
+            groups[k].append(s)
+    return [g for g in groups if g]
 
 
 def design_warnings(piano: dict, dem=None, z: Optional[int] = None) -> list[dict]:
