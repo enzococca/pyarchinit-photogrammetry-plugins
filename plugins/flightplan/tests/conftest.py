@@ -27,8 +27,8 @@ REAL_TILE_FROM_NETWORK = _tiles._tile_from_network
 def _no_network(monkeypatch):
     """No test reaches the network: the public terrain tiles answer "no data" unless a test fakes them."""
     monkeypatch.setattr(_tiles, "_tile_from_network", lambda z, x, y: None)
-    _tiles._cache.clear()
+    _tiles.clear_cache()
     _tiles.set_cache_dir(None)
     yield
-    _tiles._cache.clear()
+    _tiles.clear_cache()
     _tiles.set_cache_dir(None)

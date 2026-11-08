@@ -62,7 +62,7 @@ def test_an_empty_tile_is_not_terrain_at_minus_32768(monkeypatch):
     assert q == pytest.approx(248.2, abs=0.01)
     assert asked[0] == tiles.ZOOM and len(asked) > 1      # it tried another zoom
     # and if the data is there at no zoom, it says so instead of making it up
-    tiles._cache.clear()
+    tiles.clear_cache()
     monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: Image.new("RGB", (256, 256), (0, 0, 0)))
     assert tiles.height(45.0, 10.0) is None
 
@@ -139,6 +139,24 @@ def test_disk_cache(tmp_path, monkeypatch):
     def no_network(z, x, y):
         raise AssertionError("the network was asked again")
 
-    tiles._cache.clear()
+    tiles.clear_cache()
     monkeypatch.setattr(tiles, "_tile_from_network", no_network)
     assert tiles.height(45.0, 10.0) == pytest.approx(123.4, abs=0.01)
+
+
+def test_a_tile_the_network_did_not_give_is_asked_again_later(monkeypatch):
+    """One moment without network does not leave the heights missing for the whole session; a plan without
+    network does not wait a timeout per point either."""
+    asked = []
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: asked.append(z) or None)
+    assert tiles.height(45.0, 10.0) is None
+    first = len(asked)
+    assert tiles.height(45.0001, 10.0001) is None
+    assert len(asked) == first                         # not asked again at once
+    clock = [1000.0]
+    monkeypatch.setattr(tiles.time, "monotonic", lambda: clock[0])
+    tiles.clear_cache()
+    tiles.height(45.0, 10.0)
+    clock[0] += tiles.RETRY_AFTER_S + 1
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(77.0))
+    assert tiles.height(45.0, 10.0) == pytest.approx(77.0, abs=0.01)

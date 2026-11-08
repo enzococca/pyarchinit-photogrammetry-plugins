@@ -16,6 +16,7 @@ import io
 import math
 import os
 import threading
+import time
 import urllib.request
 from collections import OrderedDict
 from pathlib import Path
@@ -56,10 +57,22 @@ MIN_VALID_HEIGHT = -500.0
 _cache: "OrderedDict[tuple[int, int, int], Optional[Image.Image]]" = OrderedDict()
 _lock = threading.RLock()
 _cache_dir: Optional[Path] = None
+# A tile the network did not give is asked again after this many seconds: kept for ever (as the planner did)
+# the heights would stay missing for the whole session after one moment without network; asked at every
+# point, a plan without network would wait a timeout per point.
+RETRY_AFTER_S = 60.0
+_failed: dict[tuple[int, int, int], float] = {}
 
 
 class TerrainError(RuntimeError):
     pass
+
+
+def clear_cache() -> None:
+    """Forgets the tiles kept in memory and the failed requests (the disk cache stays)."""
+    with _lock:
+        _cache.clear()
+        _failed.clear()
 
 
 def set_cache_dir(path) -> None:
@@ -117,14 +130,20 @@ def _tile(z: int, x: int, y: int) -> Optional[Image.Image]:
         if key in _cache:
             _cache.move_to_end(key)
             return _cache[key]
+        if time.monotonic() - _failed.get(key, -math.inf) < RETRY_AFTER_S:
+            return None
     img = _from_disk(z, x, y)
     if img is None:
         img = _tile_from_network(z, x, y)
-        if img is not None:
-            _to_disk(z, x, y, img)
-    if img is not None and _empty(img):
-        img = None
+        if img is None:
+            with _lock:
+                _failed[key] = time.monotonic()
+            return None
+        _to_disk(z, x, y, img)
+    if _empty(img):
+        img = None              # a hole in the data: that is an answer, kept like a tile
     with _lock:
+        _failed.pop(key, None)
         _cache[key] = img
         while len(_cache) > 400:
             _cache.popitem(last=False)

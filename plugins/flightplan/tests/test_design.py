@@ -432,7 +432,7 @@ def test_design_warnings(tmp_path, monkeypatch):
     assert codes["strisciata_corta"]["scattiMinimi"] < 3
     # and the plain survey on flat ground says nothing - with a ground to measure
     monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
-    tiles._cache.clear()
+    tiles.clear_cache()
     flat = design.design(AREA, "orto", 2.0, takeoff=SOUTH)["piano"]
     assert design.shot_report(flat)[0]["shots"][0]["agl"] == pytest.approx(flat["blocchi"][0]["quota"])
     assert design.design_warnings(flat) == []
