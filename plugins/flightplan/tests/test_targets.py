@@ -228,6 +228,14 @@ def test_a_geographic_epsg_is_converted_and_a_projected_one_with_degrees_refused
         targets.read_targets_csv("A,45.0,10.0,100", epsg=32632)
 
 
+def test_a_geographic_epsg_on_numbers_in_metres_is_said_as_a_system_error():
+    """Metres given with a system in degrees: the message names the system, not the order of the columns."""
+    for text in ("A,600000,4983000,100", "name,est,nord,quota\nA,600000,4983000,100\n"):
+        with pytest.raises(targets.TargetError, match="EPSG:4258") as err:
+            targets.read_targets_csv(text, epsg=4258)
+        assert "colonne" not in str(err.value) and "metri" in str(err.value)
+
+
 def test_estimated_markers_are_flagged_one_by_one_and_kept_in_the_plan():
     chunk, _ = _chunk()
     chunk.transform = np.diag([1.0, 1.0, 1.0, 1.0])

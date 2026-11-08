@@ -247,6 +247,10 @@ def read_targets_csv(text: str, near: Optional[LatLon] = None, epsg: Optional[in
         raise TargetError(t("i numeri del file sembrano gradi, ma EPSG:{0} è in metri: controlla il sistema",
                             "the numbers of the file look like degrees, but EPSG:{0} is in metres: check the "
                             "system").format(epsg))
+    if not in_degrees and system is not None and system.is_geographic:
+        raise TargetError(t("i numeri del file sembrano metri, ma EPSG:{0} è in gradi: controlla il sistema",
+                            "the numbers of the file look like metres, but EPSG:{0} is in degrees: check the "
+                            "system").format(epsg))
     swap = False
     if without_names and in_degrees:
         # (a, b) is (lon, lat) or (lat, lon)? starting from "lat, lon", which is how it is usually written
