@@ -2,8 +2,11 @@
 
 A point is ``(lat, lon)`` in degrees. Distances use the planner's flat-earth metres: 111 320 m per degree of
 latitude, ``cos(lat)`` of that per degree of longitude. Over a survey (a few km) the error is a few parts per
-thousand and always on the side of more overlap than nominal (the degree is 0.3 % shorter than 111 320 m at 36
-degrees): the coverage the plugin shows is computed with pyproj and is the truth the user sees.
+thousand, in either direction: north-south these metres are longer than real below about 55 degrees (the
+meridian degree is 111 132 m at 45 degrees: more overlap than nominal), east-west they are slightly shorter
+than real off the equator (the parallel degree is longer than ``111 320 cos(lat)``: strips across longitude end up
+a little farther apart, 0.17 % of the spacing at 45 degrees, so the side overlap is a hair less than nominal).
+The coverage the plugin shows is computed with pyproj and is the truth the user sees.
 
 Ported from the author's Photo3D planner: algorithms, constants and rounding unchanged.
 """

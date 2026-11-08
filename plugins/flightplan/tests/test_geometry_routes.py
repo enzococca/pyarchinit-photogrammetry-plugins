@@ -130,3 +130,26 @@ def test_shot_points():
                     stops=[None, Stop(actions=("foto",), survey=False, kind="foto"), None])
     sp = shot_points(special)
     assert len(sp) == special.shots() == 3 and [pt for pt, _ in sp] == special.points
+
+
+def test_the_planner_metres_against_the_ellipsoid():
+    """The planner's flat-earth metres differ from the true ones by a few parts per thousand, in either
+    direction: north-south its metres are longer than real below about 55 degrees (more overlap than nominal),
+    east-west they are shorter than real off the equator (strips across longitude a little farther apart: less side
+    overlap, 0.17 % of the spacing at 45 degrees). The coverage computed with pyproj is the truth."""
+    from pyproj import Geod
+
+    from ppg_flightplan import geometry
+
+    geod = Geod(ellps="WGS84")
+    for lat in (0.0, 30.0, 45.0, 60.0, 75.0):
+        a, north, east = (lat, 10.0), (lat + 0.01, 10.0), (lat, 10.01)
+        true_ns = geod.inv(10.0, lat, 10.0, lat + 0.01)[2]
+        true_ew = geod.inv(10.0, lat, 10.01, lat)[2]
+        if lat:
+            assert geometry.distance(a, east) < true_ew                   # east-west: short off the equator
+        else:
+            assert geometry.distance(a, east) == pytest.approx(true_ew, rel=1e-5)    # (equal on it)
+        assert (geometry.distance(a, north) > true_ns) == (lat < 55.0)     # north-south: long below ~55 degrees
+    ratio = geometry.distance((45.0, 10.0), (45.0, 10.01)) / geod.inv(10.0, 45.0, 10.01, 45.0)[2]
+    assert 1 - ratio == pytest.approx(0.0017, abs=0.0002)
