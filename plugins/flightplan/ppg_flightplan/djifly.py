@@ -227,13 +227,105 @@ def is_local_copy(folder: Path) -> bool:
 
 PREVIEWS = "map_preview"
 
+# What a slot of DJI Fly holds, before a leg is written into it (codes stored and shown by the pane):
+SLOT_EMPTY = "vuota"            # the mission folder without its KMZ
+SLOT_PLACEHOLDER = "fittizia"   # a placeholder saved in DJI Fly for this purpose: two waypoints at most
+SLOT_OURS = "nostra"            # a leg written before by this plugin or by the planner it comes from
+SLOT_MISSION = "missione"       # anything else: a mission of the user (or a file that cannot be read)
+SAFE_SLOTS = (SLOT_EMPTY, SLOT_PLACEHOLDER, SLOT_OURS)
+PLACEHOLDER_MAX_POINTS = 2
+
+
+def slot_state(data: Optional[bytes]) -> dict:
+    """What a slot holds, from the bytes of its KMZ (None: no file): ``stato`` (one of the ``SLOT_*`` codes),
+    ``punti``, ``autore``, ``creata`` and ``nomeDji``."""
+    if data is None:
+        return {"stato": SLOT_EMPTY, "punti": None, "autore": None, "creata": None, "nomeDji": None}
+    points, author, created = kmz_info(data)
+    if author in OUR_AUTHORS:
+        state = SLOT_OURS
+    elif points is not None and points <= PLACEHOLDER_MAX_POINTS:
+        state = SLOT_PLACEHOLDER
+    else:
+        state = SLOT_MISSION
+    name = Mission("", 0.0, created=created).dji_name
+    return {"stato": state, "punti": points, "autore": author, "creata": created, "nomeDji": name}
+
+
+def slot_states(folder: Path, containers: list[str]) -> list[dict]:
+    """What every chosen slot of a waypoint folder holds (``contenitore`` + :func:`slot_state`), for the pane to
+    show before copying; DjiFlyError if a slot does not exist."""
+    out = []
+    for container in containers:
+        dest = Path(folder) / container
+        if not dest.is_dir():
+            raise DjiFlyError(t("in {0} non c'è la missione {1}", "in {0} there is no mission {1}")
+                              .format(folder, container))
+        file = dest / f"{container}.kmz"
+        out.append({"contenitore": container, **slot_state(file.read_bytes() if file.is_file() else None)})
+    return out
+
+
+class SlotsInUse(DjiFlyError):
+    """Some chosen slots hold a mission of the user: nothing was written. ``slots`` says which (the entries of
+    :func:`slot_states`); the copy goes on only with ``overwrite=True``, after the user confirmed."""
+
+    def __init__(self, slots: list[dict]):
+        self.slots = slots
+        names = ", ".join(s.get("nomeDji") or s["contenitore"] for s in slots)
+        super().__init__(t("le missioni {0} di DJI Fly non sono fittizie né tratte scritte da qui: non le ho toccate. "
+                           "Se vanno davvero sostituite, conferma la sovrascrittura (una copia resta comunque).",
+                           "the DJI Fly missions {0} are neither placeholders nor legs written from here: I left them "
+                           "alone. If they really are to be replaced, confirm the overwrite (a copy is kept anyway).")
+                         .format(names))
+
+
+def _stamp() -> str:
+    return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _backup_folder(backup_dir, waypoint_folder: Optional[Path] = None) -> Path:
+    """The folder of the copies of what is replaced: required, outside the waypoint folder (DJI Fly scans every
+    folder there)."""
+    if backup_dir is None:
+        raise DjiFlyError(t("serve una cartella per le copie delle missioni sostituite",
+                            "a folder for the copies of the replaced missions is needed"))
+    backup = Path(backup_dir).expanduser().resolve()
+    if waypoint_folder is not None:
+        root = Path(waypoint_folder).expanduser().resolve()
+        if backup == root or root in backup.parents:
+            raise DjiFlyError(t("la cartella delle copie non può stare dentro la cartella dei waypoint di DJI Fly",
+                                "the folder of the copies cannot be inside the waypoint folder of DJI Fly"))
+    backup.mkdir(parents=True, exist_ok=True)
+    return backup
+
+
+def _keep(backup: Path, container: str, data: bytes, suffix: str, stamp: str) -> Path:
+    """Writes the copy ``<container>-<date>.<suffix>`` and reads it back: no copy, no overwrite."""
+    target = backup / f"{container}-{stamp}.{suffix}"
+    k = 2
+    while target.exists():
+        target = backup / f"{container}-{stamp}-{k}.{suffix}"
+        k += 1
+    target.write_bytes(data)
+    if target.read_bytes() != data:
+        raise DjiFlyError(t("la copia di {0} non è riuscita: non sostituisco la missione",
+                            "the copy of {0} did not succeed: the mission is not replaced").format(container))
+    return target
+
 
 def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
          previews: Optional[list[Optional[bytes]]] = None,
-         created: Optional[list[Optional[float]]] = None) -> list[dict]:
+         created: Optional[list[Optional[float]]] = None, *, backup_dir=None,
+         overwrite: bool = False) -> list[dict]:
     """Writes ``container/container.kmz`` for every leg, in order, and if there are previews also
     ``map_preview/container/container.jpg``, the image the library of DJI Fly shows for the mission. The
-    containers must already be there: they are the placeholder missions saved by DJI Fly."""
+    containers must already be there: they are the placeholder missions saved by DJI Fly.
+
+    Nothing is ever lost: before a file is replaced it is copied into ``backup_dir`` (``<container>-<date>.kmz``
+    and ``.jpg``; required, outside the waypoint folder), and the outcome says where (``copia``). A slot that
+    holds a mission of the user (neither a placeholder nor a leg written from here) stops the whole copy before
+    anything is written (:class:`SlotsInUse`), unless ``overwrite`` is True."""
     _check(legs, containers)
     folder = Path(folder)
     if is_local_copy(folder):
@@ -244,20 +336,23 @@ def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
                             "writing here changes nothing on the device and the downloaded files get mixed. Use "
                             "'Download the ready folders' and drag the folders into the device with iDroid or "
                             "OpenMTP.").format(folder))
+    backup = _backup_folder(backup_dir, folder)
+    states = slot_states(folder, containers[:len(legs)])
+    busy = [s for s in states if s["stato"] not in SAFE_SLOTS]
+    if busy and not overwrite:
+        raise SlotsInUse(busy)
+    stamp = _stamp()
     outcomes = []
-    for (name, data), container in zip(legs, containers):
+    for (name, data), container, state in zip(legs, containers, states):
         dest = folder / container
-        if not dest.is_dir():
-            raise DjiFlyError(t("in {0} non c'è la missione {1}", "in {0} there is no mission {1}")
-                              .format(folder, container))
         file = dest / f"{container}.kmz"
+        kept = None
+        if file.is_file():
+            kept = _keep(backup, container, file.read_bytes(), "kmz", stamp)
         # the name DJI Fly shows is the creation time of the placeholder: it is kept in the new KMZ
         time = created[len(outcomes)] if created and len(outcomes) < len(created) else None
-        if time is None and file.is_file():
-            try:
-                time = kmz_info(file.read_bytes())[2]
-            except OSError:
-                time = None
+        if time is None:
+            time = state["creata"]
         if time:
             data = with_create_time(data, time)
         # written over DJI Fly's file: on mounted MTP devices (gvfs) the rename does not always succeed, so no
@@ -269,13 +364,17 @@ def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
         except OSError:
             written = -1
         outcome = {"tratta": name, "contenitore": container, "file": str(file), "byte": len(data),
-                   "letti": written, "verificato": written == len(data)}
+                   "letti": written, "verificato": written == len(data), "stato": state["stato"],
+                   "copia": str(kept) if kept else None}
         preview = previews[len(outcomes)] if previews and len(outcomes) < len(previews) else None
         if preview:
             preview_folder = folder / PREVIEWS / container
+            preview_file = preview_folder / f"{container}.jpg"
+            if preview_file.is_file():
+                outcome["copiaAnteprima"] = str(_keep(backup, container, preview_file.read_bytes(), "jpg", stamp))
             preview_folder.mkdir(parents=True, exist_ok=True)
-            (preview_folder / f"{container}.jpg").write_bytes(preview)
-            outcome["anteprima"] = str(preview_folder / f"{container}.jpg")
+            preview_file.write_bytes(preview)
+            outcome["anteprima"] = str(preview_file)
         outcomes.append(outcome)
     return outcomes
 
@@ -339,6 +438,38 @@ foreach ($dev in $shell.NameSpace(17).Items()) {
   }
 }
 ConvertTo-Json -InputObject $out -Depth 6 -Compress
+'''
+
+_PS_FETCH = r'''
+$ErrorActionPreference = 'Stop'
+$a = $env:PPG_FLIGHTPLAN_ARGS | ConvertFrom-Json
+$shell = New-Object -ComObject Shell.Application
+$wp = $null
+foreach ($dev in $shell.NameSpace(17).Items()) {
+  if (-not $dev.IsFolder -or $dev.Name -ne $a.device) { continue }
+  foreach ($store in $dev.GetFolder.Items()) {
+    if (-not $store.IsFolder -or $store.Name -ne $a.storage) { continue }
+    $cur = $store
+    foreach ($name in @('Android', 'data', 'dji.go.v5', 'files', 'waypoint')) {
+      $cur = $cur.GetFolder.ParseName($name); if ($null -eq $cur) { break }
+    }
+    $wp = $cur
+  }
+}
+if ($null -eq $wp) { throw "device $($a.device) / $($a.storage) not found, or without the waypoint folder" }
+$dst = $shell.NameSpace($a.backupFolder)
+foreach ($c in $a.pairs) {
+  $mission = $wp.GetFolder.ParseName($c.container)
+  if ($null -eq $mission) { throw "the device has no mission $($c.container)" }
+  $item = $mission.GetFolder.ParseName($c.file)
+  if ($null -eq $item) { continue }
+  # the mission's KMZ copied to the computer before anything is replaced
+  $dst.CopyHere($item, 16)
+  $t = 0
+  do { Start-Sleep -Milliseconds 500; $t += 1; $ok = $dst.ParseName($c.file) } while ($null -eq $ok -and $t -lt 120)
+  if ($null -eq $ok) { throw "the copy of $($c.file) from the device did not succeed" }
+}
+'ok'
 '''
 
 _PS_COPY = r'''
@@ -410,23 +541,58 @@ def mtp_devices() -> list[dict]:
     return entries
 
 
-def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str]) -> list[dict]:
-    """Copies onto the folders of the Windows MTP device (``mtp://<device>/<storage>``)."""
-    _check(legs, containers)
+def _device_of(path: str) -> tuple[str, str]:
     rest = path[len(MTP_PREFIX):]
     if "/" not in rest:
         raise DjiFlyError(t("percorso MTP non valido: {0}", "MTP path not valid: {0}").format(path))
     device, storage = rest.split("/", 1)
+    return device, storage
+
+
+def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str],
+             created: Optional[list[Optional[float]]] = None, *, backup_dir=None,
+             overwrite: bool = False) -> list[dict]:
+    """Copies onto the folders of the Windows MTP device (``mtp://<device>/<storage>``), as :func:`copy` does:
+    the KMZ of every chosen slot is first brought to the computer, into ``backup_dir`` (``<container>-<date>.kmz``),
+    and read there - so a mission of the user stops the copy (:class:`SlotsInUse`, unless ``overwrite``) and the
+    placeholder's creation time goes into the new KMZ (the name in DJI Fly stays the one matched with the leg)."""
+    _check(legs, containers)
+    device, storage = _device_of(path)
+    backup = _backup_folder(backup_dir)
+    stamp = _stamp()
     with tempfile.TemporaryDirectory(prefix="ppg-djifly-") as tmp:
+        fetched = Path(tmp) / "dal-dispositivo"
+        fetched.mkdir()
+        files = [{"container": c, "file": f"{c}.kmz"} for c in containers[:len(legs)]]
+        _powershell(_PS_FETCH, {"PPG_FLIGHTPLAN_ARGS": json.dumps(
+            {"device": device, "storage": storage, "backupFolder": str(fetched), "pairs": files})})
+        states, kept = [], []
+        for c in containers[:len(legs)]:
+            old = fetched / f"{c}.kmz"
+            data = old.read_bytes() if old.is_file() else None
+            states.append({"contenitore": c, **slot_state(data)})
+            kept.append(_keep(backup, c, data, "kmz", stamp) if data is not None else None)
+        busy = [st for st in states if st["stato"] not in SAFE_SLOTS]
+        if busy and not overwrite:
+            raise SlotsInUse(busy)
+        outgoing = Path(tmp) / "verso-il-dispositivo"
+        outgoing.mkdir()
         pairs = []
-        for (name, data), container in zip(legs, containers):
+        for k, ((name, data), container) in enumerate(zip(legs, containers)):
+            time = created[k] if created and k < len(created) else None
+            if time is None:
+                time = states[k]["creata"]
+            if time:
+                data = with_create_time(data, time)
             file = f"{container}.kmz"
-            Path(tmp, file).write_bytes(data)
+            (outgoing / file).write_bytes(data)
             pairs.append({"container": container, "file": file, "leg": name, "bytes": len(data)})
-        arguments = json.dumps({"device": device, "storage": storage, "tempFolder": tmp, "pairs": pairs})
+        arguments = json.dumps({"device": device, "storage": storage, "tempFolder": str(outgoing), "pairs": pairs})
         _powershell(_PS_COPY, {"PPG_FLIGHTPLAN_ARGS": arguments})
     return [{"tratta": c["leg"], "contenitore": c["container"],
-             "file": f"{path}/{SUBFOLDER.as_posix()}/{c['container']}/{c['file']}", "byte": c["bytes"]} for c in pairs]
+             "file": f"{path}/{SUBFOLDER.as_posix()}/{c['container']}/{c['file']}", "byte": c["bytes"],
+             "stato": st["stato"], "copia": str(k) if k else None}
+            for c, st, k in zip(pairs, states, kept)]
 
 
 def is_mtp(path: str) -> bool:

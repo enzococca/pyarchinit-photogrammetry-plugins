@@ -38,7 +38,8 @@ def dji_device(tmp_path, monkeypatch):
     for uuid, ms in ((UUID1, 1_699_000_000_000), (UUID2, 1_699_000_100_000)):
         (waypoint / uuid).mkdir(parents=True)
         (waypoint / uuid / f"{uuid}.kmz").write_bytes(_placeholder(ms))
-    return {"root": root, "waypoint": waypoint, "uuid1": UUID1, "uuid2": UUID2, "placeholder": placeholder}
+    return {"root": root, "waypoint": waypoint, "uuid1": UUID1, "uuid2": UUID2, "placeholder": placeholder,
+            "backup": tmp_path / "progetto" / "flightplan" / "djifly_backup"}
 
 
 @pytest.fixture
@@ -89,7 +90,7 @@ def test_every_leg_ends_in_place_of_its_mission_with_the_right_name(dji_device, 
     legs = dji.kmz_per_leg(test_plan)
     assert len(legs) >= 2
     two = legs[:2]
-    outcomes = djifly.copy(waypoint, two, [u2, u1])
+    outcomes = djifly.copy(waypoint, two, [u2, u1], backup_dir=dji_device["backup"])
     assert [e["contenitore"] for e in outcomes] == [u2, u1]
     # same content (points, author), but with the creation time of the placeholder
     for u, (name, data) in ((u2, two[0]), (u1, two[1])):
@@ -101,15 +102,15 @@ def test_every_leg_ends_in_place_of_its_mission_with_the_right_name(dji_device, 
     assert read.points == djifly.kmz_points(two[0][1])[0] and read.points > 2
     # the errors speak clearly: too few containers, doubled, missing, odd names
     with pytest.raises(DjiFlyError, match="servono 2 contenitori"):
-        djifly.copy(waypoint, two, [u1])
+        djifly.copy(waypoint, two, [u1], backup_dir=dji_device["backup"])
     with pytest.raises(DjiFlyError, match="due tratte"):
-        djifly.copy(waypoint, two, [u1, u1])
+        djifly.copy(waypoint, two, [u1, u1], backup_dir=dji_device["backup"])
     with pytest.raises(DjiFlyError, match="non c'è la missione"):
-        djifly.copy(waypoint, two, [u1, "spuria-che-non-esiste"])
+        djifly.copy(waypoint, two, [u1, "spuria-che-non-esiste"], backup_dir=dji_device["backup"])
     with pytest.raises(DjiFlyError, match="non valido"):
-        djifly.copy(waypoint, two, [u1, "../fuori"])
+        djifly.copy(waypoint, two, [u1, "../fuori"], backup_dir=dji_device["backup"])
     with pytest.raises(DjiFlyError, match="nessuna tratta"):
-        djifly.copy(waypoint, [], [])
+        djifly.copy(waypoint, [], [], backup_dir=dji_device["backup"])
 
 
 def test_the_ready_folders_to_drag(dji_device, test_plan):
@@ -130,7 +131,7 @@ def test_mtp_devices_exist_only_on_windows():
 
 def test_the_copy_reads_back_and_checks(dji_device):
     waypoint, u1 = dji_device["waypoint"], dji_device["uuid1"]
-    outcomes = djifly.copy(waypoint, [("a.kmz", b"x" * 100)], [u1])
+    outcomes = djifly.copy(waypoint, [("a.kmz", b"x" * 100)], [u1], backup_dir=dji_device["backup"])
     assert outcomes[0]["byte"] == 100 and outcomes[0]["letti"] == 100 and outcomes[0]["verificato"] is True
 
 
@@ -142,13 +143,13 @@ def test_the_temporary_copy_of_idroid_is_not_the_remote_controller(tmp_path, mon
     assert djifly.is_local_copy(fake)
     assert not djifly.is_local_copy(tmp_path / "DJI RC 2/Android/data/dji.go.v5/files/waypoint")
     with pytest.raises(DjiFlyError, match="iDroid"):
-        djifly.copy(fake, [("a.kmz", b"x")], ["AAA"])
+        djifly.copy(fake, [("a.kmz", b"x")], ["AAA"], backup_dir=tmp_path / "copie")
 
 
 def test_the_previews_end_in_map_preview_and_in_the_zip(dji_device):
     waypoint, u1, u2 = dji_device["waypoint"], dji_device["uuid1"], dji_device["uuid2"]
     two = [("a.kmz", b"x" * 10), ("b.kmz", b"y" * 20)]
-    outcomes = djifly.copy(waypoint, two, [u1, u2], [b"JPG1", None])
+    outcomes = djifly.copy(waypoint, two, [u1, u2], [b"JPG1", None], backup_dir=dji_device["backup"])
     assert (waypoint / "map_preview" / u1 / f"{u1}.jpg").read_bytes() == b"JPG1"
     assert outcomes[0]["anteprima"].endswith(f"{u1}.jpg") and "anteprima" not in outcomes[1]
     assert not (waypoint / "map_preview" / u2).exists()
@@ -185,7 +186,7 @@ def test_the_kmz_written_into_the_placeholder_inherits_its_creation_time(dji_dev
     assert before
     ours = dji.kmz_per_leg(test_plan)[0]
     assert djifly.kmz_info(ours[1])[2] != before
-    djifly.copy(waypoint, [ours], [u1])
+    djifly.copy(waypoint, [ours], [u1], backup_dir=dji_device["backup"])
     after = (waypoint / u1 / f"{u1}.kmz").read_bytes()
     assert djifly.kmz_info(after) == (len(pl.plan_legs(test_plan)[0].route.points), dji.AUTHOR, before)
     # in the template too there are createTime and updateTime, aligned
@@ -195,7 +196,7 @@ def test_the_kmz_written_into_the_placeholder_inherits_its_creation_time(dji_dev
             == str(int(round(before * 1000))))
     # with the time given explicitly, and in the zip
     explicit = 1_700_000_000.0
-    djifly.copy(waypoint, [ours], [u1], None, [explicit])
+    djifly.copy(waypoint, [ours], [u1], None, [explicit], backup_dir=dji_device["backup"])
     assert djifly.kmz_info((waypoint / u1 / f"{u1}.kmz").read_bytes())[2] == explicit
     with zipfile.ZipFile(io.BytesIO(djifly.zip_containers([ours], [u1], None, [explicit]))) as z:
         assert djifly.kmz_info(z.read(f"{u1}/{u1}.kmz"))[2] == explicit
@@ -208,3 +209,151 @@ def test_on_the_mac_only_volumes_is_a_device(tmp_path, monkeypatch):
     assert not djifly.is_local_copy(Path("/Volumes/SD/Android/data/dji.go.v5/files/waypoint"))
     monkeypatch.setattr(djifly, "ONLY_VOLUMES", False)
     assert not djifly.is_local_copy(tmp_path / "Downloads/waypoint")
+
+
+# ------------------------------------------------------------------ nothing of the user is ever lost
+
+UUID3 = "33333333-3333-4333-8333-333333333333"
+
+
+def _mission(n: int, author: str, created_ms: int) -> bytes:
+    """A KMZ of ``n`` waypoints written by ``author`` (DJI Fly, for a mission of the user or a placeholder)."""
+    p = Route(name="m", points=[(45.0 + 0.0003 * i, 10.0 + 0.0002 * (i % 2)) for i in range(n)], height=30.0)
+    cam = camera("mini4pro")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("wpmz/template.kml", dji.template_kml(p, cam, created_ms, author=author))
+        z.writestr("wpmz/waylines.wpml", dji.waylines_wpml(p, cam))
+    return buffer.getvalue()
+
+
+def _add_slot(waypoint, uuid, data):
+    (waypoint / uuid).mkdir(parents=True, exist_ok=True)
+    if data is not None:
+        (waypoint / uuid / f"{uuid}.kmz").write_bytes(data)
+
+
+def test_the_replaced_file_is_kept_next_to_the_project(dji_device):
+    waypoint, u1, backup = dji_device["waypoint"], dji_device["uuid1"], dji_device["backup"]
+    old = (waypoint / u1 / f"{u1}.kmz").read_bytes()
+    leg = _mission(2, dji.AUTHOR, 1_700_000_000_000)
+    outcome = djifly.copy(waypoint, [("a.kmz", leg)], [u1], backup_dir=backup)[0]
+    kept = Path(outcome["copia"])
+    assert kept.parent == backup.resolve() and kept.read_bytes() == old
+    assert re.fullmatch(rf"{u1}-\d{{8}}-\d{{6}}\.kmz", kept.name)
+    assert outcome["stato"] == djifly.SLOT_OURS
+    # a second copy in the same second does not overwrite the first copy
+    written = (waypoint / u1 / f"{u1}.kmz").read_bytes()
+    again = djifly.copy(waypoint, [("b.kmz", leg)], [u1], backup_dir=backup)[0]
+    assert Path(again["copia"]).read_bytes() == written and kept.read_bytes() == old
+    assert again["copia"] != outcome["copia"]
+
+
+def test_a_mission_of_the_user_is_not_touched_without_confirmation(dji_device):
+    waypoint, u1, backup = dji_device["waypoint"], dji_device["uuid1"], dji_device["backup"]
+    mine = _mission(7, "DJI Fly", 1_698_000_000_000)
+    _add_slot(waypoint, UUID3, mine)
+    before = (waypoint / u1 / f"{u1}.kmz").read_bytes()
+    with pytest.raises(djifly.SlotsInUse) as err:
+        djifly.copy(waypoint, [("a.kmz", b"x" * 10), ("b.kmz", b"y" * 10)], [u1, UUID3], backup_dir=backup)
+    assert [s["contenitore"] for s in err.value.slots] == [UUID3]
+    assert err.value.slots[0]["stato"] == djifly.SLOT_MISSION and err.value.slots[0]["punti"] == 7
+    assert "non le ho toccate" in str(err.value)
+    # nothing written, not even in the safe slot
+    assert (waypoint / u1 / f"{u1}.kmz").read_bytes() == before
+    assert (waypoint / UUID3 / f"{UUID3}.kmz").read_bytes() == mine
+    # confirmed: written, and the mission is kept
+    outcomes = djifly.copy(waypoint, [("a.kmz", b"x" * 10), ("b.kmz", b"y" * 10)], [u1, UUID3],
+                           backup_dir=backup, overwrite=True)
+    assert outcomes[1]["stato"] == djifly.SLOT_MISSION and Path(outcomes[1]["copia"]).read_bytes() == mine
+
+
+def test_the_states_of_the_slots_for_the_pane(dji_device):
+    waypoint = dji_device["waypoint"]
+    _add_slot(waypoint, UUID3, _mission(2, "DJI Fly", 1_698_000_000_000))
+    _add_slot(waypoint, "vuota", None)
+    _add_slot(waypoint, "rotta", b"non sono uno zip")
+    states = {s["contenitore"]: s for s in djifly.slot_states(waypoint, [dji_device["uuid1"], UUID3, "vuota", "rotta"])}
+    assert states[dji_device["uuid1"]]["stato"] == djifly.SLOT_OURS
+    assert states[UUID3]["stato"] == djifly.SLOT_PLACEHOLDER and states[UUID3]["nomeDji"]
+    assert states["vuota"]["stato"] == djifly.SLOT_EMPTY
+    assert states["rotta"]["stato"] == djifly.SLOT_MISSION          # a file that cannot be read is protected
+    # a placeholder of DJI Fly and an empty slot are written without asking
+    outcomes = djifly.copy(waypoint, [("a.kmz", b"x"), ("b.kmz", b"y")], [UUID3, "vuota"],
+                           backup_dir=dji_device["backup"])
+    assert [o["stato"] for o in outcomes] == [djifly.SLOT_PLACEHOLDER, djifly.SLOT_EMPTY]
+    assert outcomes[1]["copia"] is None
+    with pytest.raises(DjiFlyError, match="non c'è la missione"):
+        djifly.slot_states(waypoint, ["manca"])
+
+
+def test_the_copies_need_their_folder_outside_the_waypoints(dji_device):
+    waypoint, u1 = dji_device["waypoint"], dji_device["uuid1"]
+    with pytest.raises(DjiFlyError, match="cartella per le copie"):
+        djifly.copy(waypoint, [("a.kmz", b"x")], [u1])
+    with pytest.raises(DjiFlyError, match="dentro la cartella dei waypoint"):
+        djifly.copy(waypoint, [("a.kmz", b"x")], [u1], backup_dir=waypoint / "copie")
+    assert not (waypoint / "copie").exists()
+
+
+def test_the_replaced_preview_is_kept_too(dji_device):
+    waypoint, u1, backup = dji_device["waypoint"], dji_device["uuid1"], dji_device["backup"]
+    (waypoint / "map_preview" / u1).mkdir(parents=True)
+    (waypoint / "map_preview" / u1 / f"{u1}.jpg").write_bytes(b"OLD")
+    outcome = djifly.copy(waypoint, [("a.kmz", b"x")], [u1], [b"NEW"], backup_dir=backup)[0]
+    assert Path(outcome["copiaAnteprima"]).read_bytes() == b"OLD"
+    assert (waypoint / "map_preview" / u1 / f"{u1}.jpg").read_bytes() == b"NEW"
+
+
+def _fake_powershell(device_waypoint: Path):
+    """The two PowerShell scripts of the MTP copy, played on a folder: fetch the slots' KMZ, copy the legs."""
+    import json
+    import shutil
+
+    calls = []
+
+    def run(script, environment=None):
+        a = json.loads(environment["PPG_FLIGHTPLAN_ARGS"])
+        calls.append(script)
+        if script is djifly._PS_FETCH:
+            for c in a["pairs"]:
+                mission = device_waypoint / c["container"]
+                if not mission.is_dir():
+                    raise DjiFlyError(f"the device has no mission {c['container']}")
+                if (mission / c["file"]).is_file():
+                    shutil.copy(mission / c["file"], Path(a["backupFolder"]) / c["file"])
+        elif script is djifly._PS_COPY:
+            for c in a["pairs"]:
+                shutil.copy(Path(a["tempFolder"]) / c["file"], device_waypoint / c["container"] / c["file"])
+        else:
+            raise AssertionError("unknown script")
+        return "ok"
+    return run, calls
+
+
+def test_the_mtp_copy_keeps_backups_refuses_missions_and_keeps_the_creation_time(dji_device, monkeypatch,
+                                                                                  test_plan):
+    waypoint, u1, backup = dji_device["waypoint"], dji_device["uuid1"], dji_device["backup"]
+    run, calls = _fake_powershell(waypoint)
+    monkeypatch.setattr(djifly, "_powershell", run)
+    mine = _mission(7, "DJI Fly", 1_698_000_000_000)
+    _add_slot(waypoint, UUID3, mine)
+    path = "mtp://DJI RC 2/Internal shared storage"
+    leg = dji.kmz_per_leg(test_plan)[0]
+    with pytest.raises(djifly.SlotsInUse):
+        djifly.copy_mtp(path, [leg, leg], [u1, UUID3], backup_dir=backup)
+    assert calls == [djifly._PS_FETCH]                                  # nothing was sent to the device
+    assert (waypoint / UUID3 / f"{UUID3}.kmz").read_bytes() == mine
+    before = djifly.kmz_info((waypoint / u1 / f"{u1}.kmz").read_bytes())[2]
+    old = (waypoint / u1 / f"{u1}.kmz").read_bytes()
+    outcome = djifly.copy_mtp(path, [leg], [u1], backup_dir=backup)[0]
+    assert Path(outcome["copia"]).read_bytes() == old and outcome["stato"] == djifly.SLOT_OURS
+    written = (waypoint / u1 / f"{u1}.kmz").read_bytes()
+    assert djifly.kmz_info(written)[2] == before                       # the name in DJI Fly stays the same
+    assert outcome["file"].startswith(path)
+    djifly.copy_mtp(path, [leg], [u1], [1_700_000_000.0], backup_dir=backup)
+    assert djifly.kmz_info((waypoint / u1 / f"{u1}.kmz").read_bytes())[2] == 1_700_000_000.0
+    outcomes = djifly.copy_mtp(path, [leg, leg], [u1, UUID3], backup_dir=backup, overwrite=True)
+    assert Path(outcomes[1]["copia"]).read_bytes() == mine
+    with pytest.raises(DjiFlyError, match="non valido"):
+        djifly.copy_mtp("mtp://senza-memoria", [leg], [u1], backup_dir=backup)
