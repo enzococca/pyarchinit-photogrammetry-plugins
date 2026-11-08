@@ -268,6 +268,8 @@ README_TEXT = {
         'Mission Planner missions (ArduPilot): open the .waypoints in Mission Planner (Plan > Load WP File),\n'
         'check altitude and camera, write it to the drone (Write WPs). Row 0 is the home position at the takeoff.\n'
         'Distance triggering uses MAV_CMD_DO_SET_CAM_TRIGG_DIST: the camera must be wired to the autopilot.\n'
+        "Il file è per ArduPilot: con PX4 usa il .plan (qui l'imbardata «lasciala com'è» è scritta 0, cioè nord).\n"
+        'The file is for ArduPilot: with PX4 use the .plan (here the yaw "leave it as it is" is written 0, north).\n'
         + _HEIGHTS_NOTE),
     "mavlink": (
         'Piani per Parrot Anafi / Anafi Ai: condividi il .mavlink con FreeFlight 7 (o caricalo con '

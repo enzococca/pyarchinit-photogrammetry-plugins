@@ -142,6 +142,8 @@ def _rows(text):
 
 
 def test_mission_planner_waypoints():
+    # the file is for ArduPilot: the yaw left "as it is" (NaN in QGroundControl) is written 0, which PX4 would obey
+    assert "ArduPilot" in fv.README_TEXT["waypoints"] and "PX4" in fv.README_TEXT["waypoints"]
     for p, takeoff in ((route(), (44.9993, 9.9992)), (route("per_punto", poi=POI), None)):
         text = fv.mission_planner_waypoints(p, takeoff)
         assert text.splitlines()[0] == "QGC WPL 110" and text.endswith("\n")
@@ -220,6 +222,13 @@ def test_on_a_sloping_terrain_the_files_follow_it_point_by_point(monkeypatch, mo
                 rows = _rows(text)[1:] if fmt == "waypoints" else _rows(text)      # row 0 of Mission Planner: home
                 got = [float(r[10]) for r in rows if r[3] == "16"]
             assert got == pytest.approx([round(h, 1) for h in leg.route.heights], abs=0.051), (fmt, name)
+            if fmt in ("plan", "waypoints"):
+                # the takeoff climbs straight to the height of the first waypoint, not to the nominal one
+                if fmt == "plan":
+                    climb = [v["Altitude"] for v in json.loads(text)["mission"]["items"] if v["command"] == 22]
+                else:
+                    climb = [float(r[10]) for r in _rows(text)[1:] if r[3] == "22"]
+                assert climb == [round(leg.route.heights[0], 1)], (fmt, name)
     # a leg taking off from a point of its own gets heights from there: the files follow it
     key = legs[0].key
     takeoff = [44.9975, 10.0005]
