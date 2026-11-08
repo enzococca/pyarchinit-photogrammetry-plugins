@@ -584,3 +584,34 @@ def test_the_offset_is_measured_at_the_takeoff_too(tmp_path, monkeypatch):
     assert set(piano["blocchi"][0]["quote"]) == {112.6}
     assert piano["quotaDecollo"] == 147.0 and piano["fonteQuote"]["sorgente"] == "dem"
     assert piano["fonteQuote"]["scartoM"] == pytest.approx(47.0, abs=0.1)
+
+
+def test_the_takeoff_height_says_which_system_it_is_in(tmp_path, monkeypatch):
+    """From the tiles the takeoff height is above sea level; from the project DEM it is in the DEM's own
+    system (often ellipsoidal, tens of metres from sea level): the line of the reasons says which."""
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
+    dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
+                              x0=SOUTH[1] - 0.00005, y0=SOUTH[0] + 0.00005, step=0.00001))
+
+    def follows(r):
+        return next(m for m in r["motivi"] if m.startswith("Il volo segue il terreno"))
+
+    with_dem = follows(design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True, dem=dem))
+    assert "sul mare" not in with_dem and "147 m nel sistema di quote del DEM del progetto" in with_dem
+    tiles_only = follows(design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True))
+    assert "100 m sul mare" in tiles_only
+
+
+def test_heights_not_mixed_do_not_blame_the_network(tmp_path, monkeypatch):
+    monkeypatch.setattr(tiles, "_tile_from_network", _tiles_with_a_hole_at(SOUTH, 30.0))
+    dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
+                              x0=SOUTH[1] - 0.00005, y0=SOUTH[0] + 0.00005, step=0.00001))
+    takeoff = (SOUTH[0] + 0.00003, SOUTH[1])
+    r = design.design(AREA, "orto", 2.0, takeoff=takeoff, follow_terrain=True, dem=dem)
+    line = next(m for m in r["motivi"] if "non disponibili" in m)
+    assert "quota costante" in line and "quando c'è rete" not in line and "with the network" not in line
+    # without the network the sentence stays
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: None)
+    tiles.clear_cache()
+    r = design.design(AREA, "orto", 2.0, follow_terrain=True)
+    assert any("quando c'è rete" in m for m in r["motivi"])

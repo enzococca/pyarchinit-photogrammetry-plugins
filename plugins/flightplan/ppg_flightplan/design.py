@@ -266,18 +266,27 @@ def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4p
                                  "The project DEM never overlaps the free heights under the flight: the offset "
                                  "between the two sources cannot be measured, and heights of different references "
                                  "are not mixed. Only the free heights are used."))
+            from_dem = (piano.get("fonteQuote") or {}).get("sorgente") == "dem"
+            system = (t("{0:g} m nel sistema di quote del DEM del progetto, spesso ellissoidico",
+                        "{0:g} m in the height system of the project DEM, often ellipsoidal")
+                      if from_dem else t("{0:g} m sul mare", "{0:g} m above sea level")).format(outcome["quotaDecollo"])
             reasons.append(t("Il volo segue il terreno: ogni punto ha la sua quota rispetto al decollo "
-                             "({0:g} m sul mare), così la distanza dal suolo — e quindi il GSD — resta la stessa "
+                             "({0}), così la distanza dal suolo — e quindi il GSD — resta la stessa "
                              "anche dove il terreno sale. Quote da {1:g} a {2:g} m.",
                              "The flight follows the terrain: every point has its height above the takeoff "
-                             "({0:g} m above sea level), so the distance from the ground - and so the GSD - stays "
+                             "({0}), so the distance from the ground - and so the GSD - stays "
                              "the same where the terrain rises too. Heights from {1:g} to {2:g} m.")
-                           .format(outcome["quotaDecollo"], outcome["minima"], outcome["massima"]))
+                           .format(system, outcome["minima"], outcome["massima"]))
         except (tiles.TerrainError, OSError) as e:
-            reasons.append(t("Quote del terreno non disponibili ({0}): il volo resta a quota costante. "
-                             "Si può riprovare quando c'è rete.",
-                             "Terrain heights not available ({0}): the flight stays at a constant height. "
-                             "It can be tried again with the network.").format(e))
+            if isinstance(e, HeightsNotMixed):       # the network is not the cause: trying again changes nothing
+                reasons.append(t("Quote del terreno non disponibili ({0}): il volo resta a quota costante.",
+                                 "Terrain heights not available ({0}): the flight stays at a constant "
+                                 "height.").format(e))
+            else:
+                reasons.append(t("Quote del terreno non disponibili ({0}): il volo resta a quota costante. "
+                                 "Si può riprovare quando c'è rete.",
+                                 "Terrain heights not available ({0}): the flight stays at a constant height. "
+                                 "It can be tried again with the network.").format(e))
     counts = pl.compute(piano)
     tot = counts["totale"]
     reasons.append(t("Vengono {0} scatti in {1:.0f} minuti, {2:.1f} batterie e {3:.1f} km di volo.",
