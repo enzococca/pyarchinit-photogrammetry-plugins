@@ -504,10 +504,6 @@ def _tiles_with_a_hole_at(centre, radius_m, height_m=100.0):
     """Tiles all at ``height_m`` but without data (black pixels) within ``radius_m`` of ``centre``."""
     import math
 
-    from PIL import Image
-
-    from ppg_flightplan.geometry import distance
-
     def fake(z, x, y):
         img = fake_tile(height_m)
         px = img.load()
