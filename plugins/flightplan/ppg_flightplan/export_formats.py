@@ -235,10 +235,12 @@ def leg_file(p: Route, fmt: str, takeoff: Optional[LatLon] = None, name: str = "
 
 def files_per_leg(piano: dict, fmt: str) -> list[tuple[str, bytes]]:
     """One file per leg of every active block, in the order of flight, in the format asked."""
+    from .design import require_current_heights
     from .plan import plan_legs
 
     if fmt not in FORMATS:
         raise ValueError(f"formato sconosciuto: {fmt}")
+    require_current_heights(piano)      # never the old heights, nor one height, of a block that changed
     extension = FORMATS[fmt][0]
     return [(f"{leg.file_name}.{extension}", leg_file(leg.route, fmt, leg.takeoff, leg.file_name))
             for leg in plan_legs(piano, specials=False)]     # the actions of the special points do not fit here
@@ -297,9 +299,11 @@ def zip_format(piano: dict, fmt: str) -> bytes:
 def terrain_note(piano: dict) -> Optional[str]:
     """What to tell before exporting a plan that follows the terrain to these formats (None for a flat plan): the
     heights go point by point above the takeoff, and a file a drone app has never read must be tried there first."""
-    from .plan import active_blocks
+    from .design import blocks_with_old_heights
+    from .plan import active
 
-    if not any(b.get("quote") for b in active_blocks(piano)):
+    stale = set(blocks_with_old_heights(piano))
+    if not any(b.get("quote") and active(b) and i not in stale for i, b in enumerate(piano.get("blocchi", []))):
         return None
     return t("quote punto per punto sopra il decollo, seguendo il terreno: prova il file nell'app prima di volare",
              "heights point by point above the takeoff, following the terrain: try the file in the app before flying")

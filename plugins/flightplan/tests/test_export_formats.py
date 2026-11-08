@@ -240,3 +240,55 @@ def test_the_terrain_note(monkeypatch, plan):
     switched_off = _terrain_plan(monkeypatch)
     switched_off["blocchi"][0]["attivo"] = False
     assert fv.terrain_note(switched_off) is None
+
+
+# ------------------------------------------------------------------ heights computed for another block
+
+@pytest.mark.parametrize("change", [{"lato": 60}, {"orientamento": 180}, {"quota": 80}])
+def test_heights_of_a_block_changed_after_the_terrain_are_never_exported(monkeypatch, change, tmp_path):
+    """The block changed after the heights were computed: the side overlap (other points), the heading (the same
+    number of points in the reverse order) or the height above the ground. No file may fly the old heights, nor
+    one height, while the note says the terrain is followed: the export refuses until the terrain is redone."""
+    from ppg_flightplan import export_dji, gis
+
+    piano = _terrain_plan(monkeypatch)
+    piano["blocchi"][0].update(change)
+    for fmt in fv.FORMATS:
+        with pytest.raises(design.StaleHeights, match="ricalcola il terreno"):
+            fv.files_per_leg(piano, fmt)
+        with pytest.raises(design.StaleHeights):
+            fv.zip_format(piano, fmt)
+    with pytest.raises(design.StaleHeights, match="«A»"):
+        export_dji.kmz_per_leg(piano)
+    with pytest.raises(design.StaleHeights):
+        export_dji.zip_kmz(piano)
+    with pytest.raises(design.StaleHeights):
+        gis.plan_kml(piano)
+    with pytest.raises(design.StaleHeights):
+        gis.write_gpkg(piano, tmp_path / "piano.gpkg", "EPSG:32632")
+    assert not (tmp_path / "piano.gpkg").exists()
+    assert fv.terrain_note(piano) is None
+    assert design.blocks_with_old_heights(piano) == [0]
+    # redone, the files follow the terrain again
+    design.refresh_terrain(piano)
+    assert design.blocks_with_old_heights(piano) == []
+    legs = pl.plan_legs(piano, specials=False)
+    got = [v["Altitude"] for v in json.loads(fv.files_per_leg(piano, "plan")[0][1])["mission"]["items"]
+           if v["command"] == 16]
+    assert got == pytest.approx([round(h, 1) for h in legs[0].route.heights], abs=0.051)
+    assert len(set(got)) > 1 and fv.terrain_note(piano)
+
+
+def test_a_switched_off_block_with_old_heights_does_not_stop_the_export(monkeypatch):
+    piano = _terrain_plan(monkeypatch)
+    piano["blocchi"].append(dict(piano["blocchi"][0], nome="B", lato=60, attivo=False))
+    assert fv.files_per_leg(piano, "plan")
+
+
+def test_a_plan_of_the_planner_without_the_signature_is_checked_by_the_count(monkeypatch):
+    piano = _terrain_plan(monkeypatch)
+    piano["blocchi"][0].pop("firmaQuote")
+    assert fv.files_per_leg(piano, "litchi")          # heights as many as the points: taken as they are
+    piano["blocchi"][0]["lato"] = 60
+    with pytest.raises(design.StaleHeights):
+        fv.files_per_leg(piano, "litchi")

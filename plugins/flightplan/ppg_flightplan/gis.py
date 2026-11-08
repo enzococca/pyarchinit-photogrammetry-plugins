@@ -136,8 +136,10 @@ def plan_kml(piano: dict, title: Optional[str] = None, ground_takeoff: Optional[
     from the takeoff height - the one given (for a plan without terrain following, which has no
     ``quotaDecollo``: e.g. the project DEM at the takeoff, with ``height_source`` saying which system), else the
     one the plan measured (``quotaDecollo`` in the system of ``fonteQuote``)."""
+    from .design import require_current_heights
     from .plan import plan_routes, plan_takeoffs
 
+    require_current_heights(piano)
     if ground_takeoff is None:
         ground = piano.get("quotaDecollo")
         ground_takeoff = None if ground is None else float(ground)
@@ -256,8 +258,11 @@ def write_gpkg(piano: dict, path, crs: Optional[str], ground_takeoff: Optional[f
     from pyarchinit_photogrammetry.io import gpkg
     from pyproj import Transformer
 
+    from .design import require_current_heights
     from .plan import active, plan_camera, plan_legs, plan_takeoffs
     from .specials import ground_of_grid
+
+    require_current_heights(piano)
 
     srs = gpkg.srs_of(crs)
     if srs[0] <= 0:

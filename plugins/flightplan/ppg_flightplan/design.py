@@ -13,6 +13,8 @@ shot on the terrain (:func:`shot_report`) and the warnings of the design (:func:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -614,6 +616,7 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
         ground = ground_heights(p.points, dem, z, offset)
         heights = terrain_heights(p.points, float(b.get("quota", p.height)), ground_takeoff, ground)
         b["quote"] = heights
+        b[HEIGHTS_SIGNATURE] = heights_signature(b, piano)
         b["seguiTerreno"] = True
         every += heights
         grounds_seen += ground
@@ -634,12 +637,27 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
     return outcome
 
 
+# The key of a block that says for which points (and which height above the ground) its "quote" were computed. A
+# plan of the planner does not have it: its heights are then checked by their number only.
+HEIGHTS_SIGNATURE = "firmaQuote"
+
+
+def heights_signature(b: dict, piano: dict) -> str:
+    """What the heights of a block depend on: its waypoints (in their order) and its height above the ground. A
+    change of overlap, heading, area, mode or height gives another signature, also when the number of points
+    stays the same (the same strips flown the other way round)."""
+    p, _ = pl.route_of_block({k: v for k, v in b.items() if k != "quote"}, piano)
+    data = {"punti": [[round(lat, 7), round(lon, 7)] for lat, lon in p.points],
+            "quota": round(float(b.get("quota", p.height)), 3)}
+    return hashlib.sha1(json.dumps(data, separators=(",", ":")).encode()).hexdigest()
+
+
 def blocks_with_old_heights(piano: dict) -> list[int]:
     """The blocks that say they follow the terrain but whose heights no longer match their points.
 
-    It happens when the block changes after the computation (shooting mode, height, overlaps): the points
-    become others and the heights, still the old ones, would be dropped in silence - the file would fly flat
-    while the pane says "follows the terrain".
+    It happens when the block changes after the computation (shooting mode, height, overlaps, heading): the points
+    become others and the heights, still the old ones, would be dropped in silence (or, as many as before, put
+    on other points) - the file would fly wrong while the pane says "follows the terrain".
     """
     old = []
     for i, b in enumerate(piano.get("blocchi", [])):
@@ -649,7 +667,31 @@ def blocks_with_old_heights(piano: dict) -> list[int]:
         q = b.get("quote")
         if not q or len(q) != len(p.points):
             old.append(i)
+        elif b.get(HEIGHTS_SIGNATURE) is not None and b[HEIGHTS_SIGNATURE] != heights_signature(b, piano):
+            old.append(i)
     return old
+
+
+class StaleHeights(ValueError):
+    """Blocks following the terrain whose heights were computed for another shape of the block: no file is
+    written from them (it would fly the old heights, or one height) until the terrain is computed again."""
+
+    def __init__(self, piano: dict, blocks: list[int]):
+        self.blocks = blocks
+        names = ", ".join(f"«{piano['blocchi'][i].get('nome') or i + 1}»" for i in blocks)
+        super().__init__(t("{0}: cambiato dopo il calcolo delle quote sul terreno - ricalcola il terreno prima di "
+                           "esportare",
+                           "{0}: changed after the heights on the terrain were computed - compute the terrain again "
+                           "before exporting").format(names))
+
+
+def require_current_heights(piano: dict) -> None:
+    """:class:`StaleHeights` when an active block following the terrain has heights computed for another shape of
+    it. Called by every writer of a file with per-point heights (KMZ, QGroundControl, Mission Planner, Parrot,
+    Litchi, KML, GeoPackage)."""
+    stale = [i for i in blocks_with_old_heights(piano) if pl.active(piano["blocchi"][i])]
+    if stale:
+        raise StaleHeights(piano, stale)
 
 
 def takeoffs_to_measure(piano: dict) -> bool:
@@ -717,6 +759,7 @@ def remove_terrain(piano: dict, only: Optional[int] = None) -> dict:
     for i, b in enumerate(blocks):
         if only is not None and i != only:
             continue
+        b.pop(HEIGHTS_SIGNATURE, None)
         if b.pop("quote", None):
             count += 1
         b.pop("seguiTerreno", None)
