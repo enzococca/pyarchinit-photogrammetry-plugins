@@ -305,7 +305,7 @@ def test_the_replaced_preview_is_kept_too(dji_device):
     assert (waypoint / "map_preview" / u1 / f"{u1}.jpg").read_bytes() == b"NEW"
 
 
-def _fake_powershell(device_waypoint: Path):
+def _fake_powershell(device_waypoint: Path, partial: bool = False):
     """The two PowerShell scripts of the MTP copy, played on a folder: fetch the slots' KMZ, copy the legs."""
     import json
     import shutil
@@ -316,12 +316,17 @@ def _fake_powershell(device_waypoint: Path):
         a = json.loads(environment["PPG_FLIGHTPLAN_ARGS"])
         calls.append(script)
         if script is djifly._PS_FETCH:
+            sizes = {}
             for c in a["pairs"]:
                 mission = device_waypoint / c["container"]
                 if not mission.is_dir():
                     raise DjiFlyError(f"the device has no mission {c['container']}")
                 if (mission / c["file"]).is_file():
-                    shutil.copy(mission / c["file"], Path(a["backupFolder"]) / c["file"])
+                    sizes[c["file"]] = (mission / c["file"]).stat().st_size
+                    data = (mission / c["file"]).read_bytes()
+                    # the shell's copy still running when the script reads it: only part of the file
+                    (Path(a["backupFolder"]) / c["file"]).write_bytes(data[:len(data) // 2] if partial else data)
+            return "ok\n" + json.dumps(sizes)
         elif script is djifly._PS_COPY:
             for c in a["pairs"]:
                 shutil.copy(Path(a["tempFolder"]) / c["file"], device_waypoint / c["container"] / c["file"])
@@ -357,3 +362,34 @@ def test_the_mtp_copy_keeps_backups_refuses_missions_and_keeps_the_creation_time
     assert Path(outcomes[1]["copia"]).read_bytes() == mine
     with pytest.raises(DjiFlyError, match="non valido"):
         djifly.copy_mtp("mtp://senza-memoria", [leg], [u1], backup_dir=backup)
+
+
+def test_a_backup_cut_short_by_the_device_never_lets_the_mission_be_replaced(dji_device, monkeypatch):
+    """CopyHere is asynchronous: a backup shorter than the file on the device is not a copy, so the slot is not
+    replaced - not even with overwrite=True - and the short file is not taken for a mission of the user."""
+    waypoint, backup = dji_device["waypoint"], dji_device["backup"]
+    mine = _mission(7, "DJI Fly", 1_698_000_000_000)
+    _add_slot(waypoint, UUID3, mine)
+    run, calls = _fake_powershell(waypoint, partial=True)
+    monkeypatch.setattr(djifly, "_powershell", run)
+    path = "mtp://DJI RC 2/Internal shared storage"
+    for overwrite in (False, True):
+        with pytest.raises(DjiFlyError, match="incompleta") as err:
+            djifly.copy_mtp(path, [("a.kmz", b"NEW")], [UUID3], backup_dir=backup, overwrite=overwrite)
+        assert not isinstance(err.value, djifly.SlotsInUse)
+    assert calls == [djifly._PS_FETCH, djifly._PS_FETCH]                  # nothing ever sent to the device
+    assert (waypoint / UUID3 / f"{UUID3}.kmz").read_bytes() == mine
+    assert not list(backup.glob(f"{UUID3}-*"))                           # no truncated file passed off as a copy
+
+
+def test_a_fetch_that_does_not_say_the_sizes_is_refused(dji_device, monkeypatch):
+    waypoint, u1 = dji_device["waypoint"], dji_device["uuid1"]
+    run, _ = _fake_powershell(waypoint)
+
+    def without_sizes(script, environment=None):
+        out = run(script, environment)
+        return "ok" if script is djifly._PS_FETCH else out
+    monkeypatch.setattr(djifly, "_powershell", without_sizes)
+    with pytest.raises(DjiFlyError, match="incompleta"):
+        djifly.copy_mtp("mtp://D/S", [("a.kmz", b"NEW")], [u1], backup_dir=dji_device["backup"], overwrite=True)
+

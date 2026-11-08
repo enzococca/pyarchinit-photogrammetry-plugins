@@ -458,18 +458,29 @@ foreach ($dev in $shell.NameSpace(17).Items()) {
 }
 if ($null -eq $wp) { throw "device $($a.device) / $($a.storage) not found, or without the waypoint folder" }
 $dst = $shell.NameSpace($a.backupFolder)
+$sizes = @{}
 foreach ($c in $a.pairs) {
   $mission = $wp.GetFolder.ParseName($c.container)
   if ($null -eq $mission) { throw "the device has no mission $($c.container)" }
   $item = $mission.GetFolder.ParseName($c.file)
   if ($null -eq $item) { continue }
-  # the mission's KMZ copied to the computer before anything is replaced
+  $size = [long]$item.Size
+  $sizes[$c.file] = $size
+  # the mission's KMZ copied to the computer before anything is replaced. CopyHere is asynchronous and the file
+  # appears as soon as the copy starts: wait until it has the size it has on the device and the shell let it go
   $dst.CopyHere($item, 16)
-  $t = 0
-  do { Start-Sleep -Milliseconds 500; $t += 1; $ok = $dst.ParseName($c.file) } while ($null -eq $ok -and $t -lt 120)
-  if ($null -eq $ok) { throw "the copy of $($c.file) from the device did not succeed" }
+  $local = Join-Path $a.backupFolder $c.file
+  $t = 0; $done = $false
+  while (-not $done -and $t -lt 240) {
+    Start-Sleep -Milliseconds 500; $t += 1
+    if ((Test-Path -LiteralPath $local) -and (Get-Item -LiteralPath $local).Length -eq $size) {
+      try { $fs = [System.IO.File]::Open($local, 'Open', 'Read', 'None'); $fs.Close(); $done = $true } catch { }
+    }
+  }
+  if (-not $done) { throw "the copy of $($c.file) from the device did not end" }
 }
 'ok'
+ConvertTo-Json -InputObject $sizes -Compress
 '''
 
 _PS_COPY = r'''
@@ -549,6 +560,20 @@ def _device_of(path: str) -> tuple[str, str]:
     return device, storage
 
 
+def _sizes_of(answer) -> Optional[dict]:
+    """The sizes on the device of the files fetched (the last line of the fetch script: a JSON object), or None
+    when the script did not say them."""
+    for line in reversed(str(answer or "").strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                found = json.loads(line)
+            except ValueError:
+                return None
+            return {str(k): int(v) for k, v in found.items()} if isinstance(found, dict) else None
+    return None
+
+
 def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str],
              created: Optional[list[Optional[float]]] = None, *, backup_dir=None,
              overwrite: bool = False) -> list[dict]:
@@ -564,12 +589,29 @@ def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str],
         fetched = Path(tmp) / "dal-dispositivo"
         fetched.mkdir()
         files = [{"container": c, "file": f"{c}.kmz"} for c in containers[:len(legs)]]
-        _powershell(_PS_FETCH, {"PPG_FLIGHTPLAN_ARGS": json.dumps(
+        answer = _powershell(_PS_FETCH, {"PPG_FLIGHTPLAN_ARGS": json.dumps(
             {"device": device, "storage": storage, "backupFolder": str(fetched), "pairs": files})})
-        states, kept = [], []
+        sizes = _sizes_of(answer)
+        fetched_data = {}
         for c in containers[:len(legs)]:
             old = fetched / f"{c}.kmz"
             data = old.read_bytes() if old.is_file() else None
+            expected = sizes.get(f"{c}.kmz") if sizes is not None else None
+            # a copy that is not whole is no copy: never replace the slot (overwrite or not), never call it a mission
+            if data is not None and (expected is None or len(data) != expected):
+                raise DjiFlyError(t("la copia della missione {0} portata dal dispositivo è incompleta "
+                                    "({1} byte di {2}): non sostituisco nulla, riprova",
+                                    "the copy of mission {0} brought from the device is incomplete ({1} bytes of {2}): "
+                                    "nothing is replaced, try again").format(c, len(data), expected or "?"))
+            if data is None and expected is not None:
+                raise DjiFlyError(t("la copia della missione {0} portata dal dispositivo è incompleta (0 byte di {1}): "
+                                    "non sostituisco nulla, riprova",
+                                    "the copy of mission {0} brought from the device is incomplete (0 bytes of {1}): "
+                                    "nothing is replaced, try again").format(c, expected))
+            fetched_data[c] = data
+        states, kept = [], []
+        for c in containers[:len(legs)]:
+            data = fetched_data[c]
             states.append({"contenitore": c, **slot_state(data)})
             kept.append(_keep(backup, c, data, "kmz", stamp) if data is not None else None)
         busy = [st for st in states if st["stato"] not in SAFE_SLOTS]
