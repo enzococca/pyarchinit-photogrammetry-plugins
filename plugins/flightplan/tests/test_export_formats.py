@@ -27,9 +27,9 @@ def route(mode="intervallo", poi=None, heights=None):
 
 
 def test_the_course_in_degrees():
-    assert fv.course_degrees((35.0, 36.0), (36.0, 36.0)) == pytest.approx(0.0)
-    assert fv.course_degrees((35.0, 36.0), (35.0, 37.0)) == pytest.approx(90.0, abs=0.5)
-    assert fv.course_degrees((35.0, 36.0), (34.0, 36.0)) == pytest.approx(180.0)
+    assert fv.course_degrees((45.0, 10.0), (46.0, 10.0)) == pytest.approx(0.0)
+    assert fv.course_degrees((45.0, 10.0), (45.0, 11.0)) == pytest.approx(90.0, abs=0.5)
+    assert fv.course_degrees((45.0, 10.0), (44.0, 10.0)) == pytest.approx(180.0)
 
 
 def test_the_qgroundcontrol_plan_has_takeoff_distance_trigger_waypoints_and_return():
