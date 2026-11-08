@@ -193,3 +193,17 @@ def test_an_orthophoto_that_cannot_be_read_leaves_the_map_grey(tmp_path, test_pl
     most = max(img.getcolors(maxcolors=1 << 20))[1]
     assert all(abs(a - b) <= 3 for a, b in zip(most, legmap.GREY))
     assert "rotta.tif" in caplog.text
+
+
+def test_local_sockets_are_still_allowed():
+    import socket
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    with socket.create_connection(server.getsockname(), timeout=1):
+        pass
+    server.close()
+    a, b = socket.socketpair()                   # AF_UNIX on macOS and Linux
+    a.close()
+    b.close()
