@@ -237,6 +237,23 @@ def _leg_ground(piano: dict, leg, general: Optional[float]) -> Optional[float]:
     return None
 
 
+def _integer(value) -> Optional[int]:
+    """A code as an integer for the INTEGER column, None when it is not a whole number (a plan of the planner may
+    carry codes as text)."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f.is_integer() else None
+
+
+def _real(value) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def write_gpkg(piano: dict, path, crs: Optional[str], ground_takeoff: Optional[float] = None,
                dem_name: str = "") -> None:
     """The plan into the GeoPackage ``path``, in ``crs`` (the chunk's; its horizontal part for a compound system):
@@ -275,7 +292,8 @@ def write_gpkg(piano: dict, path, crs: Optional[str], ground_takeoff: Optional[f
 
     if ground_takeoff is not None:
         general = float(ground_takeoff)
-        source = {"sorgente": "dem", "file": file_name(dem_name)} if dem_name else piano.get("fonteQuote")
+        # a value from the project DEM: said so, with its file name when given (never the plan's other source)
+        source = {"sorgente": "dem", "file": file_name(dem_name)} if dem_name else {"sorgente": "dem"}
     else:
         q = piano.get("quotaDecollo")
         general = None if q is None else float(q)
@@ -335,7 +353,8 @@ def write_gpkg(piano: dict, path, crs: Optional[str], ground_takeoff: Optional[f
     target = piano.get("target") or {}
     for pt in target.get("punti") or []:
         targets.append((shapely.Point(*xy(float(pt["lat"]), float(pt["lon"]))),
-                        {"nome": str(pt.get("nome", "")), "codice": pt.get("codice"), "quota": pt.get("quota"),
+                        {"nome": str(pt.get("nome", "")), "codice": _integer(pt.get("codice")),
+                         "quota": _real(pt.get("quota")),
                          "stimato": 1 if pt.get("stimato") else 0,
                          "riferimento_quote": t("quota del file dei target ({0})",
                                                 "height of the targets' file ({0})").format(target.get("crs", ""))}))

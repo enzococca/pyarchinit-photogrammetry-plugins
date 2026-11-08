@@ -176,6 +176,24 @@ def test_gpkg_heights_without_a_known_takeoff(tmp_path, plan):
     rows = gpkg.read_table(path, "ppg_scatti")
     assert {round(g.z, 3) for g, v in rows if v["blocco"] == 0} == {410.0}
     assert "dem.tif" in rows[0][1]["riferimento_quote"] and "/Volumes" not in rows[0][1]["riferimento_quote"]
+    # a DEM value without its name: still said to be the project DEM's, never the plan's other source
+    tiles_plan = dict(plan, fonteQuote={"sorgente": "tegole"})
+    gis.write_gpkg(tiles_plan, path, CRS, ground_takeoff=300.0)
+    reference = gpkg.read_table(path, "ppg_scatti")[0][1]["riferimento_quote"]
+    assert "DEM del progetto" in reference and "Terrain Tiles" not in reference
+
+
+def test_gpkg_target_codes_are_integers_or_nothing(tmp_path, plan):
+    piano = dict(plan, target={"crs": "EPSG:4326", "punti": [
+        {"nome": "T1", "codice": "12", "lat": 45.0, "lon": 10.0, "quota": None},
+        {"nome": "T2", "codice": "GCP-A", "lat": 45.0001, "lon": 10.0, "quota": None},
+        {"nome": "T3", "codice": 7.0, "lat": 45.0002, "lon": 10.0, "quota": "251.5"}]})
+    path = tmp_path / "t.gpkg"
+    gis.write_gpkg(piano, path, CRS)
+    con = sqlite3.connect(path)
+    rows = con.execute("SELECT codice, typeof(codice), quota, typeof(quota) FROM ppg_target ORDER BY fid").fetchall()
+    con.close()
+    assert rows == [(12, "integer", None, "null"), (None, "null", None, "null"), (7, "integer", 251.5, "real")]
 
 
 def test_gpkg_refuses_a_file_that_is_not_a_geopackage(tmp_path, plan):
