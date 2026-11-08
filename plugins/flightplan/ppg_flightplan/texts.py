@@ -57,6 +57,16 @@ WARNINGS: dict[str, tuple[str, str]] = {
     # the terrain
     "oltre_limite_di_serie": ("Il piano sale oltre il limite di serie di 120 m sul decollo",
                               "The plan climbs above the stock limit of 120 m over the takeoff"),
+    # the design on the terrain
+    "gsd_oltre": ("Alcuni scatti hanno un GSD più grosso di un quarto di quello voluto: "
+                  "il terreno scende sotto il decollo",
+                  "Some shots have a GSD more than a quarter coarser than wanted: the terrain falls below the takeoff"),
+    "sovrapposizione_calata": ("Dove il terreno sale la sovrapposizione laterale scende sotto il 60%",
+                               "Where the terrain rises the side overlap falls under 60%"),
+    "troppo_vicino_al_suolo": ("Alcuni scatti sono a meno di 10 m dal suolo: segui il terreno o alza la quota",
+                               "Some shots are less than 10 m from the ground: follow the terrain or raise the height"),
+    "strisciata_corta": ("Strisciate con meno di tre scatti: molte virate per poca copertura",
+                         "Strips with fewer than three shots: many turns for little coverage"),
     # the GNSS targets
     "codice_doppio": ("Due target con lo stesso numero", "Two targets with the same number"),
     "lontani_dal_sito": ("I target sono a più di 5 km dal sito", "The targets are more than 5 km from the site"),

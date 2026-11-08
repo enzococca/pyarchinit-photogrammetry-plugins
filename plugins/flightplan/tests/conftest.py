@@ -16,3 +16,19 @@ from planfixtures import reference_plan  # noqa: E402
 @pytest.fixture
 def plan() -> dict:
     return reference_plan()
+
+
+from ppg_flightplan import tiles as _tiles  # noqa: E402
+
+REAL_TILE_FROM_NETWORK = _tiles._tile_from_network
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """No test reaches the network: the public terrain tiles answer "no data" unless a test fakes them."""
+    monkeypatch.setattr(_tiles, "_tile_from_network", lambda z, x, y: None)
+    _tiles._cache.clear()
+    _tiles.set_cache_dir(None)
+    yield
+    _tiles._cache.clear()
+    _tiles.set_cache_dir(None)
