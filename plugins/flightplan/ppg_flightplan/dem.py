@@ -2,7 +2,9 @@
 
 The chunk's DEM (or any GeoTIFF of heights) is read and queried point by point by latitude and longitude,
 so the next flight can follow the terrain as it really is, not as it is in the world model. It plays the
-role of the planner's "DEM of the flights": same duck type, ``height(lat, lon) -> float | None``.
+role of the planner's "DEM of the flights". The duck type the design asks of a DEM is
+``height(lat, lon) -> float | None`` and ``to_json() -> dict`` (``file``, ``epsg``: the outcome of the terrain
+and the plan's ``fonteQuote`` name it); ``heights(latlons)`` is used when present, for speed.
 
 Adapted from the author's Photo3D planner: rasterio and pyproj read any coordinate system (Photo3D read only
 degrees and WGS84 UTM, with its own projection). The cell is the one that contains the point (GeoTIFF
