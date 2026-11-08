@@ -103,6 +103,9 @@ def _check(cam: Camera) -> None:
         if not getattr(cam, f) > 0:
             raise ValueError(t("camera «{0}»: {1} deve essere maggiore di zero",
                                "camera '{0}': {1} must be greater than zero").format(cam.name, f))
+    if cam.pixels_high is not None and not cam.pixels_high > 0:
+        raise ValueError(t("camera «{0}»: pixels_high deve essere maggiore di zero",
+                           "camera '{0}': pixels_high must be greater than zero").format(cam.name))
 
 
 CAMERAS: list[Camera] = [
@@ -195,8 +198,10 @@ def camera_from_exif(path) -> Camera:
     long_px, short_px = max(width, height), min(width, height)
     width_mm = FULL_FRAME_LONG_MM * float(focal) / float(f35)
     label = " ".join(x for x in (info.get("make"), info.get("model")) if x) or Path(path).name
-    return Camera(id=f"exif-{_slug(label)}-{long_px}", name=f"{label} (EXIF)", width_mm=round(width_mm, 4),
-                  height_mm=round(width_mm * short_px / long_px, 4), focal_mm=float(focal), pixels=long_px)
+    cam = Camera(id=f"exif-{_slug(label)}-{long_px}", name=f"{label} (EXIF)", width_mm=round(width_mm, 4),
+                 height_mm=round(width_mm * short_px / long_px, 4), focal_mm=float(focal), pixels=long_px)
+    _check(cam)
+    return cam
 
 
 def camera_from_sensor(sensor) -> Camera:
@@ -215,9 +220,11 @@ def camera_from_sensor(sensor) -> Camera:
                             .format(getattr(sensor, "label", "")))
     width_mm = float(focal_mm) * long_px / f_px
     label = str(getattr(sensor, "label", "") or f"sensore {getattr(sensor, 'key', '')}")
-    return Camera(id=f"sensor-{getattr(sensor, 'key', 0)}-{_slug(label)}", name=f"{label} (sensore calibrato)",
-                  width_mm=round(width_mm, 4), height_mm=round(width_mm * short_px / long_px, 4),
-                  focal_mm=float(focal_mm), pixels=long_px)
+    cam = Camera(id=f"sensor-{getattr(sensor, 'key', 0)}-{_slug(label)}", name=f"{label} (sensore calibrato)",
+                 width_mm=round(width_mm, 4), height_mm=round(width_mm * short_px / long_px, 4),
+                 focal_mm=float(focal_mm), pixels=long_px)
+    _check(cam)
+    return cam
 
 
 def manual_camera(name: str, width_mm: float, height_mm: float, focal_mm: float, pixels: int,

@@ -97,3 +97,14 @@ def test_a_broken_camera_of_the_plan_is_refused_not_replaced():
     # an id of the list that is not the plan's own camera still works as before
     assert camera("mini4pro", broken).id == "mini4pro"
 
+
+def test_every_sensor_value_is_checked(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="pixels_high"):
+        Camera.from_json(dict(camera("mini4pro").to_json(), pixelAlta=-8000))
+    # the EXIF path checks the camera it makes: an absurd tag does not give a negative sensor
+    import pyarchinit_photogrammetry.io.exif as exif
+
+    monkeypatch.setattr(exif, "read_exif", lambda path: {"focal_length_mm": -6.7, "focal_length_35mm": 24,
+                                                         "width": 4032, "height": 3024, "make": "X", "model": "Y"})
+    with pytest.raises(ValueError, match="width_mm"):
+        camera_from_exif(tmp_path / "x.jpg")
