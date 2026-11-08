@@ -19,6 +19,8 @@ import math
 import re
 from typing import Optional
 
+import numpy as np
+
 from . import plan as pl
 from .geometry import LatLon, distance
 from .texts import t
@@ -317,7 +319,9 @@ def _horizontal(crs: str):
 def targets_from_markers(chunk, only_with_reference: bool = True) -> dict:
     """The markers of the chunk as targets: those with a reference position (measured in the field), in the
     chunk's system, converted to degrees with pyproj. With ``only_with_reference=False`` also the markers the
-    survey placed without a measure (their estimated position, warning ``stimati``: not GCPs). The name is the
+    survey placed without a measure (their estimated position, warning ``stimati``), each flagged
+    ``"stimato": True`` - kept in the plan with the point, so they are never taken for GCPs - and only when the
+    chunk is georeferenced (with the identity transform they are left out, warning ``stimati_saltati``). The name is the
     marker's label, the number its own code or the one in its name."""
     crs = getattr(chunk, "crs", None)
     if not crs or str(crs).upper() == "LOCAL":
@@ -326,17 +330,22 @@ def targets_from_markers(chunk, only_with_reference: bool = True) -> dict:
     from pyproj import CRS, Transformer
 
     tr = Transformer.from_crs(_horizontal(crs), CRS.from_epsg(4326), always_xy=True)
+    transform = getattr(chunk, "transform", None)
+    georeferenced = transform is not None and not np.allclose(np.asarray(transform, dtype=float), np.eye(4))
     warnings: list[str] = []
     found, seen = [], set()
     for m in chunk.markers:
         loc = m.reference.location if m.reference is not None else None
+        estimated = False
         if loc is not None and len(loc) >= 2 and loc[0] is not None and loc[1] is not None:
             x, y = float(loc[0]), float(loc[1])
             z = float(loc[2]) if len(loc) > 2 and loc[2] is not None else None
         elif not only_with_reference and m.position is not None:
-            import numpy as np
-
+            if not georeferenced:                # internal coordinates read as the chunk's would be nonsense
+                warnings.append("stimati_saltati")
+                continue
             x, y, z = (float(v) for v in chunk.to_world(np.asarray(m.position, dtype=float).reshape(1, 3))[0])
+            estimated = True
             warnings.append("stimati")
         else:
             continue
@@ -345,8 +354,11 @@ def targets_from_markers(chunk, only_with_reference: bool = True) -> dict:
         if code is not None and code in seen:
             warnings.append("codice_doppio")
         seen.add(code)
-        found.append({"nome": str(m.label), "codice": code, "lat": round(lat, 8), "lon": round(lon, 8),
-                      "est": x, "nord": y, "quota": z})
+        target = {"nome": str(m.label), "codice": code, "lat": round(lat, 8), "lon": round(lon, 8),
+                  "est": x, "nord": y, "quota": z}
+        if estimated:
+            target["stimato"] = True             # the survey's own position: to fly over, never a GCP
+        found.append(target)
     if not found:
         raise TargetError(t("nessun marker del chunk ha coordinate misurate",
                             "no marker of the chunk has measured coordinates"))
@@ -358,7 +370,7 @@ def special_point(target: dict, metres: float = METRES_ABOVE_GROUND) -> dict:
     return {"id": "target-" + re.sub(r"[^A-Za-z0-9]+", "-", str(target["nome"])).strip("-").lower(),
             "nome": str(target["nome"]), "tipo": "foto", "punto": [target["lat"], target["lon"]], "aggancio": False,
             "discesa": {"modo": "suolo", "metri": float(metres)}, "inclinazione": -90, "scaletta": True,
-            "target": str(target["nome"])}
+            "target": str(target["nome"]), **({"stimato": True} if target.get("stimato") else {})}
 
 
 def put_targets(piano: dict, read: dict, block: Optional[int] = None, metres: float = METRES_ABOVE_GROUND) -> dict:

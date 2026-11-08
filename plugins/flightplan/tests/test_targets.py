@@ -156,6 +156,8 @@ def test_markers_become_targets():
 
 def test_markers_estimated_only_when_asked():
     chunk, _ = _chunk()
+    chunk.transform = np.eye(4)
+    chunk.transform[0, 3] = 0.001                                    # georeferenced (not the identity)
     read = targets.targets_from_markers(chunk, only_with_reference=False)
     assert [t["nome"] for t in read["punti"]] == ["target 1", "cima", "T3"]
     assert "stimati" in read["avvisi"]
@@ -225,3 +227,24 @@ def test_a_geographic_epsg_is_converted_and_a_projected_one_with_degrees_refused
     with pytest.raises(targets.TargetError):
         targets.read_targets_csv("A,45.0,10.0,100", epsg=32632)
 
+
+def test_estimated_markers_are_flagged_one_by_one_and_kept_in_the_plan():
+    chunk, _ = _chunk()
+    chunk.transform = np.diag([1.0, 1.0, 1.0, 1.0])
+    chunk.transform[0, 3] = 0.001                                    # georeferenced (not the identity)
+    read = targets.targets_from_markers(chunk, only_with_reference=False)
+    flags = {t["nome"]: t.get("stimato", False) for t in read["punti"]}
+    assert flags == {"target 1": False, "cima": False, "T3": True}
+    assert all("stimato" not in t for t in read["punti"] if t["nome"] != "T3")
+    piano = targets.put_targets(_plan(), read)
+    saved = {t["nome"]: t.get("stimato", False) for t in piano["target"]["punti"]}
+    assert saved["T3"] is True
+    specials = {sp["nome"]: sp.get("stimato", False) for sp in piano["blocchi"][0]["speciali"]}
+    assert specials == {"target 1": False, "cima": False, "T3": True}
+
+
+def test_estimated_markers_of_a_chunk_not_georeferenced_are_left_out():
+    chunk, _ = _chunk()                                              # transform still the identity
+    read = targets.targets_from_markers(chunk, only_with_reference=False)
+    assert [t["nome"] for t in read["punti"]] == ["target 1", "cima"]
+    assert "stimati_saltati" in read["avvisi"] and "stimati" not in read["avvisi"]

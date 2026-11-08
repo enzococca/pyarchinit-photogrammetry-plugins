@@ -80,6 +80,8 @@ WARNINGS: dict[str, tuple[str, str]] = {
     "senza_quota": ("Alcuni target senza quota: vanno bene per volarci sopra, non come GCP",
                     "Some targets without a height: fine to fly over, not as GCPs"),
     "zona_dedotta": ("Zona UTM dedotta dal sito", "UTM zone deduced from the site"),
+    "stimati_saltati": ("Marker senza coordinate misurate lasciati fuori: il chunk non è georeferenziato",
+                        "Markers without measured coordinates left out: the chunk is not georeferenced"),
     "stimati": ("Alcuni target sono marker senza coordinate misurate: posizione stimata dal rilievo, non usarli "
                 "come GCP",
                 "Some targets are markers without measured coordinates: position estimated by the survey, do not "
