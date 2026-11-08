@@ -410,7 +410,7 @@ def test_shot_report_gsd_with_terrain(tmp_path):
     assert all(s["ground"] is None and s["agl"] is None and s["gsd_cm"] is None for s in blind[0]["shots"])
 
 
-def test_design_warnings(tmp_path):
+def test_design_warnings(tmp_path, monkeypatch):
     dem, _ = _sloping_dem(tmp_path)
     cam = camera("mini4pro")
     # a constant 40 m over a terrain rising 30 m, taking off at the bottom: the overlap falls up there
@@ -430,8 +430,12 @@ def test_design_warnings(tmp_path):
     sliver = design.design(rectangle(20, 30), "orto", 2.0)
     codes = {w["tipo"]: w for w in design.design_warnings(sliver["piano"])}
     assert codes["strisciata_corta"]["scattiMinimi"] < 3
-    # and the plain survey on flat ground says nothing
-    assert design.design_warnings(design.design(AREA, "orto", 2.0)["piano"]) == []
+    # and the plain survey on flat ground says nothing - with a ground to measure
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
+    tiles._cache.clear()
+    flat = design.design(AREA, "orto", 2.0, takeoff=SOUTH)["piano"]
+    assert design.shot_report(flat)[0]["shots"][0]["agl"] == pytest.approx(flat["blocchi"][0]["quota"])
+    assert design.design_warnings(flat) == []
 
 
 def test_too_close_to_the_ground_is_said(tmp_path):

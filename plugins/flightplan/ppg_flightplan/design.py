@@ -65,6 +65,9 @@ GOALS = [
 GSD_TOLERANCE = 1.25           # a shot whose GSD is coarser than this times the block's nominal one
 MIN_EFFECTIVE_SIDE = 0.6       # side overlap under which a strip is said to lose it
 MIN_SHOTS_PER_STRIP = 3        # fewer than this in a strip: it adds turns and little coverage
+# Distance from the ground under which a shot is said too close: a clearance, not the floor of the heights
+# above the takeoff (MIN_HEIGHT), even if both are ten metres today.
+MIN_CLEARANCE_M = 10.0
 
 
 def goal(id_: str) -> dict:
@@ -829,7 +832,7 @@ def design_warnings(piano: dict, dem=None, z: Optional[int] = None) -> list[dict
         if coarse:
             out.append({"tipo": "gsd_oltre", "blocco": entry["block"], "nome": entry["name"],
                         "scatti": len(coarse), "nominale": round(nominal, 2), "massimo": round(max(coarse), 2)})
-        low = [s["agl"] for s in shots if s["agl"] is not None and s["agl"] < MIN_HEIGHT]
+        low = [s["agl"] for s in shots if s["agl"] is not None and s["agl"] < MIN_CLEARANCE_M]
         if low:
             out.append({"tipo": "troppo_vicino_al_suolo", "blocco": entry["block"], "nome": entry["name"],
                         "scatti": len(low), "minimo": round(min(low), 1)})
