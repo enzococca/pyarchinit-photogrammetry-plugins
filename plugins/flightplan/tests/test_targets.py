@@ -170,3 +170,58 @@ def test_markers_of_a_local_chunk_are_refused():
     chunk.markers = [m for m in chunk.markers if m.reference.location is None]
     with pytest.raises(targets.TargetError):
         targets.targets_from_markers(chunk)
+
+
+# ---- fix round 1
+
+def _grid_rows(epsg, points, north_first=False):
+    forward = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    rows = []
+    for k, (lat, lon) in enumerate(points, 1):
+        e, n = forward.transform(lon, lat)
+        a, b = (n, e) if north_first else (e, n)
+        rows.append(f"T{k},{a:.3f},{b:.3f},{400 + k}")
+    return "\n".join(rows)
+
+
+def _on(read, points, tol_m=0.05):
+    return all(distance((t["lat"], t["lon"]), p) < tol_m for t, p in zip(read["punti"], points))
+
+
+def test_a_grid_where_the_east_is_larger_is_not_swapped():
+    """Swiss LV95: east 2.6 M, north 1.2 M. The UTM rule (north the larger) put these points in the Atlantic;
+    either order is now told by where the system is used."""
+    points = [(46.5, 8.0), (46.5008, 8.0010), (46.4995, 8.0012)]
+    for north_first in (False, True):
+        read = targets.read_targets_csv(_grid_rows(2056, points, north_first), epsg=2056)
+        assert _on(read, points) and "ordine_incerto" not in read["avvisi"]
+
+
+def test_british_grid_order_from_the_site_the_order_or_the_system():
+    """The British grid: both orders fall inside Great Britain, so the area of use cannot tell. The site does,
+    or ``order``; with neither, the system's own axis order (east, north) is taken and the doubt is said."""
+    points = [(51.0, -1.5), (51.0008, -1.4990), (50.9995, -1.4988)]
+    read = targets.read_targets_csv(_grid_rows(27700, points), epsg=27700)
+    assert _on(read, points) and "ordine_incerto" in read["avvisi"]
+    north_first = _grid_rows(27700, points, north_first=True)
+    assert _on(targets.read_targets_csv(north_first, epsg=27700, near=(51.0, -1.5)), points)
+    assert _on(targets.read_targets_csv(north_first, epsg=27700, order="latlon"), points)
+    assert _on(targets.read_targets_csv(_grid_rows(27700, points), epsg=27700, order="lonlat"), points)
+
+
+def test_utm_keeps_the_rule_of_the_larger_north():
+    points = [SITE, (45.0010, 10.0005)]
+    read = targets.read_targets_csv(_grid_rows(32632, points, north_first=True), epsg=32632)
+    assert _on(read, points, 0.01) and read["avvisi"] == []
+
+
+def test_a_geographic_epsg_is_converted_and_a_projected_one_with_degrees_refused():
+    lat, lon = 45.0, 10.0
+    lon_m, lat_m = Transformer.from_crs("EPSG:4326", "EPSG:4806", always_xy=True).transform(lon, lat)
+    read = targets.read_targets_csv(f"name,lon,lat\nA,{lon_m:.8f},{lat_m:.8f}\n", epsg=4806)
+    assert read["crs"] == "EPSG:4806"
+    assert distance((read["punti"][0]["lat"], read["punti"][0]["lon"]), (lat, lon)) < 0.01
+    assert read["punti"][0]["est"] == round(lon_m, 8)                # as written in the file
+    with pytest.raises(targets.TargetError):
+        targets.read_targets_csv("A,45.0,10.0,100", epsg=32632)
+

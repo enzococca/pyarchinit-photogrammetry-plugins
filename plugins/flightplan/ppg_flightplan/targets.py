@@ -108,22 +108,84 @@ def _rows(text: str) -> tuple[list[list[str]], bool]:
 
 def _to_degrees(epsg: int):
     """From metres of ``epsg`` to (lat, lon): the planner's formula for UTM WGS84, pyproj for any other system."""
-    if 32601 <= epsg <= 32660 or 32701 <= epsg <= 32760:
+    if _is_utm(epsg):
         zone, north = epsg % 100, epsg < 32700
         return lambda east, north_m: latlon_from_utm(east, north_m, zone, north)
-    try:
-        from pyproj import Transformer
-        from pyproj.exceptions import CRSError
+    from pyproj import Transformer
 
-        tr = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
-    except (CRSError, ValueError) as e:
-        raise TargetError(t("EPSG:{0} non è un sistema che conosco ({1})",
-                            "EPSG:{0} is not a system I know ({1})").format(epsg, e)) from e
+    tr = Transformer.from_crs(_system(epsg), "EPSG:4326", always_xy=True)
 
     def convert(east: float, north_m: float) -> tuple[float, float]:
         lon, lat = tr.transform(east, north_m)
         return lat, lon
     return convert
+
+
+def _system(epsg: int):
+    from pyproj import CRS
+    from pyproj.exceptions import CRSError
+
+    try:
+        return CRS.from_epsg(epsg)
+    except (CRSError, ValueError) as e:
+        raise TargetError(t("EPSG:{0} non è un sistema che conosco ({1})",
+                            "EPSG:{0} is not a system I know ({1})").format(epsg, e)) from e
+
+
+def _is_utm(epsg: int) -> bool:
+    return 32601 <= epsg <= 32660 or 32701 <= epsg <= 32760
+
+
+def _metres_swap(raw: list, epsg: int, convert, near: Optional[LatLon], order: Optional[str],
+                 warnings: list[str]) -> bool:
+    """Without a header, which of the two numbers is the north? ``True`` = the first.
+
+    In UTM the north is the larger of the two (above 9 degrees of latitude it has seven digits): the planner's
+    rule. In other grids the east can be the larger (Swiss LV95, the British grid in the south), so the rule
+    would throw the points far away without a word. There: ``order`` (``"latlon"`` = north first,
+    ``"lonlat"`` = east first) if given; else the order whose points all fall where the system is used (its
+    area of use); else, of the orders still possible, the one nearer to ``near``; else the system's own axis
+    order, and the doubt is said (``ordine_incerto``)."""
+    if order in ("latlon", "lonlat"):
+        return order == "latlon"
+    if _is_utm(epsg):
+        return sum(1 for g in raw if g[1] > g[2]) > len(raw) / 2
+
+    def places(swapped: bool) -> Optional[list[LatLon]]:
+        out = []
+        for g in raw:
+            e, n = (g[2], g[1]) if swapped else (g[1], g[2])
+            try:
+                lat, lon = convert(e, n)
+            except Exception:  # noqa: BLE001 - a projection that fails is an order that does not hold
+                return None
+            if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+                return None
+            out.append((lat, lon))
+        return out
+
+    system = _system(epsg)
+    area = system.area_of_use
+    margin = 0.5                                   # degrees: points just outside the official area still count
+
+    def inside(pts: Optional[list[LatLon]]) -> bool:
+        if pts is None:
+            return False
+        if area is None:
+            return True
+        return all(area.south - margin <= la <= area.north + margin and area.west - margin <= lo <= area.east + margin
+                   for la, lo in pts)
+
+    candidates = {sw: places(sw) for sw in (False, True)}
+    possible = [sw for sw in (False, True) if inside(candidates[sw])]
+    if len(possible) == 1:
+        return possible[0]
+    if near and possible:
+        return min(possible, key=lambda sw: sum(distance(near, p) for p in candidates[sw]))
+    axes = system.axis_info
+    north_first = bool(axes) and axes[0].direction.lower() == "north"
+    warnings.append("ordine_incerto")
+    return north_first
 
 
 def read_targets_csv(text: str, near: Optional[LatLon] = None, epsg: Optional[int] = None,
@@ -178,29 +240,32 @@ def read_targets_csv(text: str, near: Optional[LatLon] = None, epsg: Optional[in
 
     in_degrees = all(abs(g[1]) <= 180 and abs(g[2]) <= 180 for g in raw)
     without_names = any(g[4] is None for g in raw)
+    system = _system(int(epsg)) if epsg is not None else None
+    if in_degrees and system is not None and not system.is_geographic:
+        raise TargetError(t("i numeri del file sembrano gradi, ma EPSG:{0} è in metri: controlla il sistema",
+                            "the numbers of the file look like degrees, but EPSG:{0} is in metres: check the "
+                            "system").format(epsg))
     swap = False
-    if without_names:
-        if in_degrees:
-            # (a, b) is (lon, lat) or (lat, lon)? starting from "lat, lon", which is how it is usually written
-            if order in ("latlon", "lonlat"):
-                swap = order == "latlon"
-            elif any(abs(g[1]) > 90 for g in raw):
-                swap = False                        # the first is beyond 90: it cannot be a latitude
-            elif any(abs(g[2]) > 90 for g in raw):
-                swap = True
-            elif near:
-                def farness(as_lonlat: bool) -> float:
-                    return sum(distance(near, (g[2], g[1]) if as_lonlat else (g[1], g[2])) for g in raw)
-                swap = farness(False) < farness(True)
-            else:
-                swap = True
-                warnings.append("ordine_incerto")
+    if without_names and in_degrees:
+        # (a, b) is (lon, lat) or (lat, lon)? starting from "lat, lon", which is how it is usually written
+        if order in ("latlon", "lonlat"):
+            swap = order == "latlon"
+        elif any(abs(g[1]) > 90 for g in raw):
+            swap = False                        # the first is beyond 90: it cannot be a latitude
+        elif any(abs(g[2]) > 90 for g in raw):
+            swap = True
+        elif near:
+            def farness(as_lonlat: bool) -> float:
+                return sum(distance(near, (g[2], g[1]) if as_lonlat else (g[1], g[2])) for g in raw)
+            swap = farness(False) < farness(True)
         else:
-            # in UTM the north is the larger of the two (above 9 degrees of latitude it has seven digits)
-            swap = sum(1 for g in raw if g[1] > g[2]) > len(raw) / 2
+            swap = True
+            warnings.append("ordine_incerto")
     convert = None
     if in_degrees:
         crs = "EPSG:4326"
+        if system is not None and system.to_epsg() != 4326:
+            crs, convert = f"EPSG:{epsg}", _to_degrees(int(epsg))    # another datum (ETRS89, Monte Mario...)
     else:
         if epsg is None:
             if near is None:
@@ -210,13 +275,15 @@ def read_targets_csv(text: str, near: Optional[LatLon] = None, epsg: Optional[in
             warnings.append("zona_dedotta")
         crs = f"EPSG:{epsg}"
         convert = _to_degrees(int(epsg))
+        if without_names:
+            swap = _metres_swap(raw, int(epsg), convert, near, order, warnings)
 
     found, seen = [], set()
     for name, a, b, height, _kind, code in raw:
         if swap:
             a, b = b, a
         east, north = a, b                              # in degrees: east = lon, north = lat
-        lat, lon = (north, east) if in_degrees else convert(east, north)
+        lat, lon = convert(east, north) if convert else (north, east)
         if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
             raise TargetError(t("il punto «{0}» esce fuori dal mondo: controlla l'ordine delle colonne",
                                 "the point “{0}” falls off the world: check the order of the columns").format(name))
