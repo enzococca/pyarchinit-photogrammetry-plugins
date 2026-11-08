@@ -312,7 +312,7 @@ def _fake_powershell(device_waypoint: Path, partial: bool = False):
 
     calls = []
 
-    def run(script, environment=None):
+    def run(script, environment=None, **kw):
         a = json.loads(environment["PPG_FLIGHTPLAN_ARGS"])
         calls.append(script)
         if script is djifly._PS_FETCH:
@@ -386,7 +386,7 @@ def test_a_fetch_that_does_not_say_the_sizes_is_refused(dji_device, monkeypatch)
     waypoint, u1 = dji_device["waypoint"], dji_device["uuid1"]
     run, _ = _fake_powershell(waypoint)
 
-    def without_sizes(script, environment=None):
+    def without_sizes(script, environment=None, **kw):
         out = run(script, environment)
         return "ok" if script is djifly._PS_FETCH else out
     monkeypatch.setattr(djifly, "_powershell", without_sizes)
@@ -410,3 +410,53 @@ def test_a_write_that_fails_says_the_slot_its_copy_and_what_was_done(dji_device,
     assert e.slot == u2 and Path(e.backup).is_file() and str(e.backup) in str(e) and u2 in str(e)
     assert [o["contenitore"] for o in e.outcomes] == [u1]
     assert "device gone" in str(e)
+
+
+def test_a_size_of_zero_from_the_device_is_not_trusted(dji_device, monkeypatch):
+    """Some MTP shells report 0 bytes: an empty "copy" must never let the mission be replaced."""
+    import json
+
+    waypoint, backup = dji_device["waypoint"], dji_device["backup"]
+    mine = _mission(7, "DJI Fly", 1_698_000_000_000)
+    _add_slot(waypoint, UUID3, mine)
+    run, calls = _fake_powershell(waypoint)
+
+    def zero(script, environment=None, **kw):
+        if script is djifly._PS_FETCH:
+            a = json.loads(environment["PPG_FLIGHTPLAN_ARGS"])
+            for c in a["pairs"]:
+                (Path(a["backupFolder"]) / c["file"]).write_bytes(b"")
+            return "ok\n" + json.dumps({c["file"]: 0 for c in a["pairs"]})
+        return run(script, environment)
+    monkeypatch.setattr(djifly, "_powershell", zero)
+    with pytest.raises(DjiFlyError, match="incompleta"):
+        djifly.copy_mtp("mtp://D/S", [("a.kmz", b"NEW")], [UUID3], backup_dir=backup, overwrite=True)
+    assert calls == [] and (waypoint / UUID3 / f"{UUID3}.kmz").read_bytes() == mine
+    assert not list(backup.glob(f"{UUID3}-*"))
+
+
+def test_a_powershell_that_does_not_end_is_a_dji_fly_error(monkeypatch):
+    import subprocess
+
+    def slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
+    monkeypatch.setattr(djifly.subprocess, "run", slow)
+    with pytest.raises(DjiFlyError, match="PowerShell"):
+        djifly._powershell(djifly._PS_FETCH, {"PPG_FLIGHTPLAN_ARGS": "{}"})
+    assert djifly.FETCH_DEADLINE_S < djifly.POWERSHELL_TIMEOUT_S
+    assert '$a.deadlineSeconds' in djifly._PS_FETCH and "ExtendedProperty('System.Size')" in djifly._PS_FETCH
+
+
+def test_the_fetch_is_given_its_deadline(dji_device, monkeypatch):
+    import json
+
+    seen = []
+    run, _ = _fake_powershell(dji_device["waypoint"])
+
+    def spy(script, environment=None, **kw):
+        seen.append((json.loads(environment["PPG_FLIGHTPLAN_ARGS"]), kw))
+        return run(script, environment)
+    monkeypatch.setattr(djifly, "_powershell", spy)
+    djifly.copy_mtp("mtp://D/S", [("a.kmz", b"NEW")], [dji_device["uuid1"]], backup_dir=dji_device["backup"])
+    assert seen[0][0]["deadlineSeconds"] == djifly.FETCH_DEADLINE_S
+    assert seen[1][1]["timeout"] > 0                     # the copy script gets time for every leg

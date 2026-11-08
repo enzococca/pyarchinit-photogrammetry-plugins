@@ -479,23 +479,31 @@ foreach ($dev in $shell.NameSpace(17).Items()) {
 if ($null -eq $wp) { throw "device $($a.device) / $($a.storage) not found, or without the waypoint folder" }
 $dst = $shell.NameSpace($a.backupFolder)
 $sizes = @{}
+# one deadline for the whole fetch, shorter than the time the program gives the script
+$deadline = (Get-Date).AddSeconds([int]$a.deadlineSeconds)
 foreach ($c in $a.pairs) {
   $mission = $wp.GetFolder.ParseName($c.container)
   if ($null -eq $mission) { throw "the device has no mission $($c.container)" }
   $item = $mission.GetFolder.ParseName($c.file)
   if ($null -eq $item) { continue }
-  $size = [long]$item.Size
+  # System.Size is the reliable size on WPD/MTP namespaces; FolderItem.Size (32 bits) may say 0
+  $size = $null
+  try { $size = $item.ExtendedProperty('System.Size') } catch { $size = $null }
+  if ($null -eq $size -or [long]$size -le 0) { $size = $item.Size }
+  $size = [long]$size
   $sizes[$c.file] = $size
   # the mission's KMZ copied to the computer before anything is replaced. CopyHere is asynchronous and the file
   # appears as soon as the copy starts: wait until it has the size it has on the device and the shell let it go
   $dst.CopyHere($item, 16)
   $local = Join-Path $a.backupFolder $c.file
-  $t = 0; $done = $false
-  while (-not $done -and $t -lt 240) {
-    Start-Sleep -Milliseconds 500; $t += 1
-    if ((Test-Path -LiteralPath $local) -and (Get-Item -LiteralPath $local).Length -eq $size) {
-      try { $fs = [System.IO.File]::Open($local, 'Open', 'Read', 'None'); $fs.Close(); $done = $true } catch { }
-    }
+  $done = $false
+  while (-not $done -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 500
+    try {
+      if ($size -gt 0 -and (Test-Path -LiteralPath $local) -and (Get-Item -LiteralPath $local).Length -eq $size) {
+        $fs = [System.IO.File]::Open($local, 'Open', 'Read', 'None'); $fs.Close(); $done = $true
+      }
+    } catch { }
   }
   if (-not $done) { throw "the copy of $($c.file) from the device did not end" }
 }
@@ -533,12 +541,25 @@ foreach ($c in $a.pairs) {
 '''
 
 
-def _powershell(script: str, environment: Optional[dict] = None) -> str:
+# The fetch from the device ends within FETCH_DEADLINE_S (all the slots together); the program waits for any
+# PowerShell script POWERSHELL_TIMEOUT_S at least.
+FETCH_DEADLINE_S = 150
+POWERSHELL_TIMEOUT_S = 180
+COPY_SECONDS_PER_LEG = 60          # _PS_COPY waits up to a minute for every file to appear on the device
+
+
+def _powershell(script: str, environment: Optional[dict] = None, timeout: float = POWERSHELL_TIMEOUT_S) -> str:
     env = dict(os.environ)
     if environment:
         env.update(environment)
-    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                        "-Command", script], capture_output=True, text=True, env=env, timeout=180)
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-Command", script], capture_output=True, text=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise DjiFlyError(t("PowerShell non ha finito in {0:.0f} s: il dispositivo non risponde? Nulla è stato "
+                            "sostituito se la copia dal dispositivo non era finita",
+                            "PowerShell did not finish in {0:.0f} s: is the device answering? Nothing was replaced "
+                            "if the copy from the device had not ended").format(timeout)) from None
     if r.returncode != 0:
         raise DjiFlyError((r.stderr or r.stdout).strip()
                           or t("PowerShell non ha risposto", "PowerShell did not answer"))
@@ -610,24 +631,25 @@ def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str],
         fetched.mkdir()
         files = [{"container": c, "file": f"{c}.kmz"} for c in containers[:len(legs)]]
         answer = _powershell(_PS_FETCH, {"PPG_FLIGHTPLAN_ARGS": json.dumps(
-            {"device": device, "storage": storage, "backupFolder": str(fetched), "pairs": files})})
+            {"device": device, "storage": storage, "backupFolder": str(fetched), "pairs": files,
+             "deadlineSeconds": FETCH_DEADLINE_S})})
         sizes = _sizes_of(answer)
         fetched_data = {}
         for c in containers[:len(legs)]:
             old = fetched / f"{c}.kmz"
             data = old.read_bytes() if old.is_file() else None
+            # the script names a file only when the slot has one on the device; a size of 0 says nothing
+            on_device = sizes is None or f"{c}.kmz" in sizes or data is not None
             expected = sizes.get(f"{c}.kmz") if sizes is not None else None
+            if expected is not None and expected <= 0:
+                expected = None
             # a copy that is not whole is no copy: never replace the slot (overwrite or not), never call it a mission
-            if data is not None and (expected is None or len(data) != expected):
+            if on_device and (data is None or expected is None or len(data) != expected):
                 raise DjiFlyError(t("la copia della missione {0} portata dal dispositivo è incompleta "
                                     "({1} byte di {2}): non sostituisco nulla, riprova",
-                                    "the copy of mission {0} brought from the device is incomplete ({1} bytes of {2}): "
-                                    "nothing is replaced, try again").format(c, len(data), expected or "?"))
-            if data is None and expected is not None:
-                raise DjiFlyError(t("la copia della missione {0} portata dal dispositivo è incompleta (0 byte di {1}): "
-                                    "non sostituisco nulla, riprova",
-                                    "the copy of mission {0} brought from the device is incomplete (0 bytes of {1}): "
-                                    "nothing is replaced, try again").format(c, expected))
+                                    "the copy of mission {0} brought from the device is incomplete "
+                                    "({1} bytes of {2}): nothing is replaced, try again")
+                                  .format(c, 0 if data is None else len(data), expected or "?"))
             fetched_data[c] = data
         states, kept = [], []
         for c in containers[:len(legs)]:
@@ -650,7 +672,8 @@ def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str],
             (outgoing / file).write_bytes(data)
             pairs.append({"container": container, "file": file, "leg": name, "bytes": len(data)})
         arguments = json.dumps({"device": device, "storage": storage, "tempFolder": str(outgoing), "pairs": pairs})
-        _powershell(_PS_COPY, {"PPG_FLIGHTPLAN_ARGS": arguments})
+        _powershell(_PS_COPY, {"PPG_FLIGHTPLAN_ARGS": arguments},
+                    timeout=max(POWERSHELL_TIMEOUT_S, COPY_SECONDS_PER_LEG * len(pairs) + 60))
     return [{"tratta": c["leg"], "contenitore": c["container"],
              "file": f"{path}/{SUBFOLDER.as_posix()}/{c['container']}/{c['file']}", "byte": c["bytes"],
              "stato": st["stato"], "copia": str(k) if k else None}
