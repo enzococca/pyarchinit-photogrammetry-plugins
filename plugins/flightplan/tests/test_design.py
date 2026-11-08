@@ -494,3 +494,93 @@ def test_strips_are_found_on_any_heading(heading, mode):
     expected_short = sum(1 for n in true if n < 3)
     if mode == "per_punto":
         assert (short[0]["strisciate"] if short else 0) == expected_short
+
+
+def _tiles_with_a_hole_at(centre, radius_m, height_m=100.0):
+    """Tiles all at ``height_m`` but without data (black pixels) within ``radius_m`` of ``centre``."""
+    import math
+
+    from PIL import Image
+
+    from ppg_flightplan.geometry import distance
+
+    def fake(z, x, y):
+        img = fake_tile(height_m)
+        px = img.load()
+        n = 2 ** z * 256
+        reach = radius_m + tiles.metres_per_pixel(z, centre[0])      # the pixel holding the centre, at any zoom
+        for r in range(256):
+            lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y * 256 + r + 0.5) / n))))
+            for c in range(256):
+                lon = (x * 256 + c + 0.5) / n * 360.0 - 180.0
+                if distance((lat, lon), centre) < reach:
+                    px[c, r] = (0, 0, 0)
+        return img
+    return fake
+
+
+def test_a_dem_that_never_meets_the_tiles_is_not_mixed_with_them(tmp_path, monkeypatch):
+    """A small project DEM (a trench) under the takeoff, ellipsoidal heights 47 m above the tiles, none of
+    the route on it, and the tiles without data right there: no offset can be measured, so the two references
+    are not mixed - the plan is the tiles' plan, and it says the DEM was left out."""
+    monkeypatch.setattr(tiles, "_tile_from_network", _tiles_with_a_hole_at(SOUTH, 30.0))
+    dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
+                              x0=SOUTH[1] - 0.00005, y0=SOUTH[0] + 0.00005, step=0.00001))
+    assert dem.height(*SOUTH) == 147.0 and tiles.height(*SOUTH) is None
+    takeoff = (SOUTH[0] + 0.00003, SOUTH[1])                 # on the DEM, in the hole of the tiles
+    with_dem = design.design(AREA, "orto", 2.0, takeoff=takeoff, follow_terrain=True, dem=dem)
+    piano = with_dem["piano"]
+    # before: takeoff 147 from the DEM, route 100 from the tiles: every point 47 m lower (65.6 m)
+    assert "quote" not in piano["blocchi"][0] or set(piano["blocchi"][0]["quote"]) != {65.6}
+    assert any("non si mescolano" in m for m in with_dem["motivi"])
+    assert piano.get("fonteQuote", {}).get("sorgente") != "dem"
+    codes = {w["tipo"] for w in design.design_warnings(piano, dem=dem)}
+    assert "scarto_non_misurato" in codes
+
+
+def test_a_dem_in_a_hole_of_the_tiles_is_left_out_and_said(tmp_path, monkeypatch):
+    """The DEM under a point of the route where the tiles have no data, the takeoff on the tiles: the DEM
+    never meets them, so the tiles are used for everything and the outcome says the DEM was left out."""
+    route, _ = pl.route_of_block(_plan()["blocchi"][0], _plan())
+    spot = route.points[len(route.points) // 2]
+    monkeypatch.setattr(tiles, "_tile_from_network", _tiles_with_a_hole_at(spot, 10.0))
+    dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
+                              x0=spot[1] - 0.00005, y0=spot[0] + 0.00005, step=0.00001))
+    piano = _plan(decollo=list(SOUTH))
+    outcome = design.apply_terrain(piano, dem=dem)
+    assert outcome["avvisi"][0] == {"tipo": "scarto_non_misurato", "dem": str(dem.path)}
+    assert "dem" not in outcome or outcome.get("scartoM") is None
+    assert piano["fonteQuote"]["sorgente"] == "tegole" and piano["quotaDecollo"] == 100.0
+    assert max(piano["blocchi"][0]["quote"]) == 60.0          # nothing 47 m off anywhere
+
+
+def test_a_dem_around_the_takeoff_only_measures_its_offset_there(tmp_path, monkeypatch):
+    """The reviewer's case: tiles at 100 m everywhere, a DEM of 147 m around the takeoff only. The planner
+    took the takeoff from the DEM and the route from the tiles without correction: 65.6 m instead of 112.6 m
+    over the takeoff. Now the offset is measured at the takeoff and the flight is the tiles-only one."""
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
+    dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
+                              x0=SOUTH[1] - 0.00005, y0=SOUTH[0] + 0.00005, step=0.00001))
+    with_dem = design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True, dem=dem)
+    tiles_only = design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True)
+    heights = with_dem["piano"]["blocchi"][0]["quote"]
+    assert set(heights) == {with_dem["quota"]} == {112.6}
+    assert heights == tiles_only["piano"]["blocchi"][0]["quote"]
+    assert with_dem["piano"]["fonteQuote"] == {"sorgente": "dem", "file": str(dem.path), "epsg": 4326,
+                                               "scartoM": 47.0}
+    assert tiles_only["piano"]["fonteQuote"]["sorgente"] == "tegole"
+    assert design.design_warnings(with_dem["piano"], dem=dem) == []
+
+
+def test_the_offset_is_measured_at_the_takeoff_too(tmp_path, monkeypatch):
+    """The same trench, but the tiles reach it: the offset is measured there (47 m) and the DEM rules."""
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
+    dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
+                              x0=SOUTH[1] - 0.00005, y0=SOUTH[0] + 0.00005, step=0.00001))
+    piano = _plan(decollo=list(SOUTH))
+    piano["blocchi"][0]["quota"] = 112.6
+    outcome = design.apply_terrain(piano, dem=dem)
+    assert outcome["scartoM"] == pytest.approx(47.0, abs=0.1)
+    assert set(piano["blocchi"][0]["quote"]) == {112.6}
+    assert piano["quotaDecollo"] == 147.0 and piano["fonteQuote"]["sorgente"] == "dem"
+    assert piano["fonteQuote"]["scartoM"] == pytest.approx(47.0, abs=0.1)

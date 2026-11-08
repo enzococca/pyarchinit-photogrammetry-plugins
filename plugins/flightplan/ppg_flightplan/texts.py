@@ -67,6 +67,10 @@ WARNINGS: dict[str, tuple[str, str]] = {
                                "Some shots are less than 10 m from the ground: follow the terrain or raise the height"),
     "strisciata_corta": ("Strisciate con meno di tre scatti: molte virate per poca copertura",
                          "Strips with fewer than three shots: many turns for little coverage"),
+    "scarto_non_misurato": ("DEM del progetto lasciato fuori: non si sovrappone mai alle quote libere sotto il "
+                            "volo, e quote di riferimenti diversi non si mescolano",
+                            "Project DEM left out: it never overlaps the free heights under the flight, and heights "
+                            "of different references are not mixed"),
     # the GNSS targets
     "codice_doppio": ("Due target con lo stesso numero", "Two targets with the same number"),
     "lontani_dal_sito": ("I target sono a più di 5 km dal sito", "The targets are more than 5 km from the site"),
