@@ -102,3 +102,23 @@ def test_convert_list_units_export_remove(plugin, monkeypatch, capsys, tmp_path)
     assert plugin.command("remove", path, recs[2]["id"]) == 1
     for p in tmp_path.rglob("*"):
         assert not p.is_file() or fakecad.KEY.encode() not in p.read_bytes(), p
+
+
+def test_fetch_accept_places_a_soft_drawing_refused_for_its_residual(plugin, monkeypatch, capsys, tmp_path):
+    """``convert`` refuses a drawing on a soft image and says to look at the overlay; ``fetch --accept`` places it
+    without sending anything again."""
+    monkeypatch.setenv("PHOTOCAD_API_KEY", fakecad.KEY)
+    fake = fakecad.FakePhotoCAD(credits=3, soft_px=4)
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path / "p")
+    doc.save()
+    path = str(doc.path)
+    assert plugin.command("convert", path, "--source", "ortho", "--yes") == 1
+    out = capsys.readouterr().out
+    assert "overlay.jpg" in out and "--accept" in out
+    capsys.readouterr()
+    assert plugin.command("list", path, "--json") == 0
+    (rec,) = json.loads(capsys.readouterr().out)
+    assert plugin.command("fetch", path, "--id", rec["id"]) == 1          # without --accept: still refused
+    assert plugin.command("fetch", path, "--id", rec["id"], "--accept", "--out", str(tmp_path / "s.gpkg")) == 0
+    assert (tmp_path / "s.gpkg").exists() and len(fake.calls("POST")) == 1

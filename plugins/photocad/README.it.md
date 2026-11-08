@@ -60,7 +60,7 @@ picco netto: il punteggio al punto trovato deve essere almeno 1,3 volte la media
 in entrambe le direzioni (un muro a corsi spostato lungo i corsi combacia ancora con i letti di posa); quando il punto
 trovato è al bordo della ricerca (prima si cerca una volta tre volte più lontano); o con uno scarto oltre 2 px. Khutm:
 picco 1,6 lungo i corsi, 2,1 di traverso. `fetch --search-px N` ricolloca gratis una conversione finita con un'altra
-ricerca. Le tessere poi si uniscono: da ciascuna ciò
+ricerca. Su un'immagine morbida (sott'acqua, foschia) i tratti possono stare qualche pixel accanto ai bordi anche con il disegno al suo posto: quando la ricerca ha trovato un accordo netto entro la sua portata e solo lo scarto supera la soglia, il rifiuto scrive `overlay.jpg` (l'immagine con il disegno in rosso) nella cartella di ogni tessera e lo dice; dopo averla guardata, `fetch --accept` (o *Accetta dopo il controllo* nella finestra, che apre la sovrapposizione e chiede) lo colloca, gratis, con la registrazione segnata `accepted: visual`. Gli altri rifiuti non si possono accettare. Le tessere poi si uniscono: da ciascuna ciò
 che è più vicino al suo centro (le copie nelle sovrapposizioni una volta sola). Su un prospetto ogni vertice può
 andare anche nel mondo, alla profondità letta dal rilievo del prospetto.
 

@@ -239,6 +239,8 @@ def register(items_mm: list[dict], page_mm, image_bytes: bytes, search_px: float
                           "(+-{1} px), ne serve almeno {2}", "no clear match: the score at the place found is {0:.2f} "
                           "times the median around it (+-{1} px), at least {2} is needed").format(
             peak, PEAK_AROUND, PEAK_RATIO))
+    out["checks"] = {"border": bool(at_border), "peak": bool(peak < PEAK_RATIO),
+                     "residual": bool(residual > MAX_RESIDUAL or near < MIN_NEAR)}
     if residual > MAX_RESIDUAL or near < MIN_NEAR:
         problems.append(t("il disegno non combacia con i bordi dell'immagine (scarto mediano {0:.1f} px, {1:.0f} % "
                           "dei punti entro 2 px)", "the drawing does not match the edges of the image (median "
@@ -247,6 +249,35 @@ def register(items_mm: list[dict], page_mm, image_bytes: bytes, search_px: float
         return out
     out["ok"] = True
     return out
+
+
+def only_residual(reg: dict) -> bool:
+    """A refusal for the residual alone: the search found a clear peak inside its reach, only the lines lie further
+    than :data:`MAX_RESIDUAL` px from the image's edges - as on a soft image (under water, mist), where the drawing
+    may well be in its place. Such a placement can be accepted after looking at the overlay; any other refusal
+    cannot."""
+    checks = reg.get("checks") or {}
+    return (not reg.get("ok") and checks.get("residual") is True and checks.get("border") is False
+            and checks.get("peak") is False)
+
+
+def overlay(items_mm: list[dict], reg: dict, image_bytes: bytes) -> bytes:
+    """The image with the drawing placed by ``reg`` in red (JPEG): to look at before accepting a placement."""
+    import cv2
+
+    img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    s, (cx, cy), (pw, ph) = reg["scale"], reg["centre"], reg["page_mm"]
+    width = max(1, int(round(min(img.shape[:2]) / 600)))
+    for it in items_mm:
+        xy = np.asarray(it["xy"], float)
+        if xy.ndim != 2 or len(xy) < 2:
+            continue
+        cols = cx + reg["dx"] + s * (xy[:, 0] - pw / 2)
+        rows = cy + reg["dy"] - s * (xy[:, 1] - ph / 2)
+        pts = np.c_[cols, rows].round().astype(np.int32)
+        cv2.polylines(img, [pts], bool(it.get("closed")), (0, 0, 255), width, cv2.LINE_AA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return buf.tobytes()
 
 
 def _peak(score, pts, s, dx, dy, cx, cy, pw, ph) -> tuple[float, float, float, float]:
