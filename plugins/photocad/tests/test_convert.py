@@ -114,6 +114,42 @@ def test_a_drawing_that_is_not_the_image_is_refused(tmp_path, monkeypatch):
     assert "proporzioni" in str(err.value)
 
 
+def test_a_soft_image_refused_only_for_its_residual_can_be_accepted_after_a_look(tmp_path, monkeypatch):
+    """Under water the edges of the image are soft: PhotoCAD's lines lie a few pixels beside them although the
+    drawing is in its place (Lagoi 2026-11-08: 6 px, peak 1.8-2.0). The refusal says so, leaves an overlay to check,
+    and fetch(accept=True) places it - free, nothing sent again - marked as accepted after a look."""
+    fake = fakecad.FakePhotoCAD(soft_px=4)
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path)
+    with pytest.raises(project.FrameMismatch) as err:
+        project.convert(ch, "ortho", fakecad.KEY)
+    (rec,) = project.records(ch)
+    reg = rec["tiles"][0]["registration"]
+    assert not reg["ok"] and reg["checks"] == {"border": False, "peak": False, "residual": True}
+    overlay = project.folder_of(ch, rec) / "t0" / "overlay.jpg"
+    assert overlay.exists() and str(overlay) in str(err.value) and "--accept" in str(err.value)
+    posts = sum(1 for m, *_ in fake.requests if m == "POST")
+    rec = project.fetch(ch, rec["id"], fakecad.KEY, accept=True)
+    assert rec["status"] == "done" and rec["tiles"][0]["registration"]["accepted"] == "visual"
+    assert sum(1 for m, *_ in fake.requests if m == "POST") == posts
+    (square,) = _polygons(ch, rec)
+    centre = np.asarray(fakecad.square_world()).reshape(2, 2).mean(axis=0)
+    assert np.hypot(*(np.asarray(square.centroid.coords[0]) - centre)) <= 2 * PX
+
+
+def test_accept_never_places_a_drawing_with_other_problems(tmp_path, monkeypatch):
+    fake = fakecad.FakePhotoCAD(garbage=True)
+    monkeypatch.setattr(client, "_urlopen", fake)
+    doc, ch = fakecad.project(tmp_path, square=[fakecad.SQUARE, fakecad.SQUARE2])
+    with pytest.raises(project.FrameMismatch) as err:
+        project.convert(ch, "ortho", fakecad.KEY)
+    assert "--accept" not in str(err.value)
+    (rec,) = project.records(ch)
+    with pytest.raises(project.FrameMismatch):
+        project.fetch(ch, rec["id"], fakecad.KEY, accept=True)
+    assert project.records(ch)[0]["status"] == "mismatch"
+
+
 def test_declined_nothing_is_sent(tmp_path, fake):
     doc, ch = fakecad.project(tmp_path)
     with pytest.raises(project.Declined):

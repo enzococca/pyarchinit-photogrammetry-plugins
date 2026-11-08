@@ -107,7 +107,8 @@ class FakePhotoCAD:
     def __init__(self, credits: int = 5, polls: int = 2, fail: dict | None = None, status_failed: bool = False,
                  free: int = 5, account: str = "real", page_pad=(0, 0, 0, 0), garbage: bool = False,
                  open_lines: bool = False, ring: bool = False, tiny: bool = False, gap_px: float = 0.5,
-                 honour_keys: bool = True, boxes_px=None, offset_px=(0, 0), random_lines: int = 0):
+                 honour_keys: bool = True, boxes_px=None, offset_px=(0, 0), random_lines: int = 0,
+                 soft_px: float = 0.0):
         self.credits = credits
         self.free = free  # free conversions left
         self.account = account  # "real": the shape photocad.ai gives (2026-11-04); "flat": an older guess
@@ -124,6 +125,9 @@ class FakePhotoCAD:
         self.boxes_px = boxes_px  # the outlines to draw, in pixels of the image (else: the dark blobs)
         self.offset_px = tuple(offset_px)  # the drawing moved inside its page (a placement the search cannot reach)
         self.random_lines = random_lines  # instead of the outlines, random polylines over the page
+        # the outlines wander this many pixels (sd) around the edges: a soft image (under water), the lines beside
+        # its edges although the drawing is in its place
+        self.soft_px = soft_px
         self.gap_px = gap_px  # 0: the sides chained end to end exactly, as at Khutm
         self.ring = ring  # four open lines around a white rectangle (background: never a stone)
         self.tiny = tiny  # a 4 x 4 px closed loop inside the first blob (smaller than the minimum area)
@@ -258,6 +262,17 @@ class FakePhotoCAD:
         for c0, r0, c1, r1 in boxes:
             if self.garbage:  # somewhere else: shifted by a third of the page and mirrored
                 c0, c1 = pc1 - (c1 - pc0) + (pc1 - pc0) // 3, pc1 - (c0 - pc0) + (pc1 - pc0) // 3
+            if self.soft_px:  # the outline traced by hand on a blurred edge: every 2 px a point a few px off it
+                rng = np.random.default_rng(5)
+                corners = [(c0, r0), (c1, r0), (c1, r1), (c0, r1), (c0, r0)]
+                pts = []
+                for (a, b), (e, f) in zip(corners, corners[1:]):
+                    n = max(2, int(np.hypot(e - a, f - b) / 2))
+                    for u in np.linspace(0, 1, n, endpoint=False):
+                        dc, dr = rng.normal(0, self.soft_px, 2)
+                        pts.append(mm(a + u * (e - a) + dc, b + u * (f - b) + dr))
+                outlines.append(pts)
+                continue
             outlines.append([mm(c0, r0), mm(c1, r0), mm(c1, r1), mm(c0, r1)])
         c0, r0, c1, _r1 = boxes[0]
         line = [mm(c0, r0), mm((c0 + c1) / 2, r0), mm(c1, r0)]

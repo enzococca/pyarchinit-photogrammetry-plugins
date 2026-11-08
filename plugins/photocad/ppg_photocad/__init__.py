@@ -24,7 +24,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import LAYER_PREFIX, layer_name, t
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 POLYGON_COLOUR = "#e040fb"
 LINE_COLOUR = "#ff4081"
@@ -38,6 +38,23 @@ def _has_free_drawings() -> bool:
         return importlib.util.find_spec("pyarchinit_photogrammetry.core.free_drawings") is not None
     except (ImportError, ValueError):
         return False
+
+
+def _open_file(path) -> None:
+    """The file in the system's viewer (macOS open, Windows startfile, xdg-open)."""
+    import os
+    import subprocess
+    import sys
+
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["/usr/bin/open", str(path)], close_fds=False)  # posix_spawn: no fork after SpatiaLite
+        elif sys.platform.startswith("win"):
+            os.startfile(str(path))  # noqa: S606
+        else:
+            subprocess.Popen(["xdg-open", str(path)], close_fds=False)
+    except OSError:
+        pass
 
 
 class PhotoCADPlugin(Plugin):
@@ -355,6 +372,33 @@ class PhotoCADPlugin(Plugin):
             self.context.mark_modified()
         return True
 
+    def _offer_accept(self, chunk, exc) -> bool:
+        """After a refusal for the residual alone (a soft image: the search found a clear match): the overlay
+        shown, and the placement accepted on the user's word - free, nothing sent again. True when asked."""
+        from pyarchinit_photogrammetry.gui import dialogs
+
+        from . import project, register
+
+        if not isinstance(exc, project.FrameMismatch):
+            return False
+        bad = [(rec, tl) for rec in project.records(chunk) if rec.get("status") == "mismatch"
+               for tl in rec.get("tiles") or [] if tl.get("status") == "mismatch"]
+        if not bad or not all(register.only_residual(tl["registration"]) for _, tl in bad):
+            return False
+        rec = bad[-1][0]
+        looks = [project.folder_of(chunk, rec) / tl["folder"] / "overlay.jpg" for r, tl in bad if r is rec]
+        for path in looks:
+            if path.exists():
+                _open_file(path)
+        answer = dialogs.choice(self._window(), "question", "PhotoCAD", str(exc) + "\n\n" + t(
+            "Nella sovrapposizione (aperta) i tratti rossi stanno sui contorni dell'immagine?",
+            "In the overlay (opened) do the red lines sit on the outlines of the image?"),
+            [t("Accetta dopo il controllo", "Accept after a look")], cancel=t("Lascia rifiutato", "Leave refused"))
+        if answer is None:
+            return True
+        self.fetch_dialog(rec["id"], accept=True)
+        return True
+
     def _upload(self, chunk, prep, key, opts) -> None:
         from . import client, project
 
@@ -368,7 +412,8 @@ class PhotoCADPlugin(Plugin):
         def done(rec):
             self.context.mark_modified()  # also a failure: the paid conversion is kept in the project
             if isinstance(rec, Exception):
-                self._say(str(rec), "warning")
+                if not self._offer_accept(chunk, rec):
+                    self._say(str(rec), "warning")
                 return
             self.draw_layers()
             self.refresh_pane()
@@ -380,7 +425,7 @@ class PhotoCADPlugin(Plugin):
 
         self.context.run(t("PhotoCAD: vettorializzazione", "PhotoCAD: vectorisation"), work, done)
 
-    def fetch_dialog(self, rid: str | None = None) -> None:
+    def fetch_dialog(self, rid: str | None = None, accept: bool = False) -> None:
         from pyarchinit_photogrammetry.gui import dialogs
 
         from . import client, project
@@ -414,14 +459,15 @@ class PhotoCADPlugin(Plugin):
 
         def work(progress):
             try:
-                return project.fetch(chunk, rid, key, progress)
+                return project.fetch(chunk, rid, key, progress, accept=accept)
             except (client.PhotoCADError, ValueError) as exc:
                 return exc
 
         def done(rec):
             self.context.mark_modified()
             if isinstance(rec, Exception):
-                self._say(str(rec), "warning")
+                if accept or not self._offer_accept(chunk, rec):
+                    self._say(str(rec), "warning")
                 return
             self.draw_layers()
             self.refresh_pane()
@@ -709,6 +755,9 @@ class PhotoCADPlugin(Plugin):
         p.add_argument("--search-px", type=float, default=None,
                        help="offset searched by the registration, image pixels (default 24; widened once by itself)")
         p.add_argument("--yes", action="store_true", help="send tiles not sent yet without asking")
+        p.add_argument("--accept", action="store_true",
+                       help="place a drawing refused only for its residual (a soft image, a clear match), after "
+                            "looking at the overlay.jpg of its tiles")
         p = sub.add_parser("list", help="the conversions of the chunk (and its elevations)")
         p.add_argument("project")
         p.add_argument("--chunk")
@@ -839,7 +888,7 @@ class PhotoCADPlugin(Plugin):
                     return 1
             try:
                 run = (self.context.run if self.context is not None else (lambda title, f, done=None: f(None)))
-                rec = run("PhotoCAD fetch", lambda p: project.fetch(chunk, ns.id, key, p, ns.search_px))
+                rec = run("PhotoCAD fetch", lambda p: project.fetch(chunk, ns.id, key, p, ns.search_px, ns.accept))
             except (client.PhotoCADError, ValueError) as exc:
                 print(f"error: {exc}")
                 doc.save()

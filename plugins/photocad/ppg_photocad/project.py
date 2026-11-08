@@ -319,7 +319,7 @@ def _fail(chunk, rec, exc, status=None, code=None):
                                     code if code is not None else getattr(exc, "code", ""))
 
 
-def _complete(chunk, rec: dict, c, progress, search_px: float | None = None) -> dict:
+def _complete(chunk, rec: dict, c, progress, search_px: float | None = None, accept: bool = False) -> dict:
     """Upload, wait, download and place the tiles of ``rec`` still to do (a record of the chunk, changed in place)."""
     tiles = _tiles(rec)
     opts = rec.get("options") or {}
@@ -409,7 +409,7 @@ def _complete(chunk, rec: dict, c, progress, search_px: float | None = None) -> 
         if tile.get("status") not in ("complete", "mismatch"):
             continue
         try:
-            _download_tile(chunk, rec, tile, c, progress, search_px)
+            _download_tile(chunk, rec, tile, c, progress, search_px, accept)
         except Cancelled:
             rec["status"] = _status(rec)
             _write_json(chunk, rec)
@@ -425,16 +425,27 @@ def _complete(chunk, rec: dict, c, progress, search_px: float | None = None) -> 
     if bad:
         rec["status"] = "mismatch"
         _write_json(chunk, rec)
+        from . import register
+
         problems = "; ".join(f"PhotoCAD {tl['photocad_id']}: " + ", ".join(tl["registration"]["problems"]) for tl in bad)
-        raise FrameMismatch(t("Il disegno di PhotoCAD non combacia con l'immagine inviata ({0}). Non è stato messo nel "
-                              "rilievo; i file sono in {1}.", "PhotoCAD's drawing does not match the image sent ({0}). "
-                              "It was not placed in the survey; the files are in {1}.").format(
-            problems, folder_of(chunk, rec)), 0, "frame")
+        text = t("Il disegno di PhotoCAD non combacia con l'immagine inviata ({0}). Non è stato messo nel rilievo; i file "
+                 "sono in {1}.", "PhotoCAD's drawing does not match the image sent ({0}). It was not placed in the "
+                 "survey; the files are in {1}.").format(problems, folder_of(chunk, rec))
+        if all(register.only_residual(tl["registration"]) for tl in bad):
+            looks = ", ".join(str(_tile_dir(chunk, rec, tl) / "overlay.jpg") for tl in bad)
+            text += " " + t("La ricerca ha trovato un accordo netto: solo i tratti cadono lontano dai bordi, come su "
+                            "un'immagine morbida (sott'acqua). Guarda la sovrapposizione in {0}: se i tratti stanno sui "
+                            "contorni, collocalo con 'fetch --accept' (o Accetta dopo il controllo), senza addebito.",
+                            "The search found a clear match: only the lines lie away from the edges, as on a soft image "
+                            "(under water). Look at the overlay in {0}: if the lines sit on the outlines, place it with "
+                            "'fetch --accept' (or Accept after a look), at no charge.").format(looks)
+        raise FrameMismatch(text, 0, "frame")
     _merge(chunk, rec, progress)
     return rec
 
 
-def _download_tile(chunk, rec: dict, tile: dict, c, progress, search_px: float | None = None) -> None:
+def _download_tile(chunk, rec: dict, tile: dict, c, progress, search_px: float | None = None,
+                   accept: bool = False) -> None:
     """The drawing of a complete tile at its natural size (mm, no ``longest``: PhotoCAD writes mm whatever ``units``
     says), its registration on the tile's image, the tile placed (``placed``) or refused (``mismatch``)."""
     from . import register
@@ -459,7 +470,12 @@ def _download_tile(chunk, rec: dict, tile: dict, c, progress, search_px: float |
     reg = register.register(items, tile.get("page_mm"), image, search_px)
     tile["registration"] = reg
     tile["files"] = files
-    if not reg["ok"]:
+    if not reg["ok"] and register.only_residual(reg):
+        (d / "overlay.jpg").write_bytes(register.overlay(items, reg, image))  # to look at before accepting
+        files["overlay"] = "overlay.jpg"
+        if accept:  # looked at by the user: placed, and said so in the record
+            reg["accepted"] = "visual"
+    if not reg["ok"] and not reg.get("accepted"):
         tile["status"] = "mismatch"
         return
     m, tx, ty = register.similarity(reg, tile["image"])
@@ -703,10 +719,12 @@ def find(chunk, ident: str) -> dict | None:
     return None
 
 
-def fetch(chunk, ident: str, key: str, progress=None, search_px: float | None = None) -> dict:
+def fetch(chunk, ident: str, key: str, progress=None, search_px: float | None = None, accept: bool = False) -> dict:
     """Go on with a conversion already made (by its id or a PhotoCAD id): tiles not sent are sent with their
     idempotency key, running ones waited for, finished ones (also those placed already) downloaded and placed again.
-    The record, status ``done``."""
+    ``accept``: a tile refused for its residual alone (:func:`register.only_residual`; its ``overlay.jpg`` looked
+    at) is placed all the same, its registration marked ``accepted: visual``; any other refusal stays. The record,
+    status ``done``."""
     rec = find(chunk, ident)
     if rec is None:
         raise ValueError(t("Nessuna conversione «{0}» in questo chunk.", "No conversion '{0}' in this chunk.")
@@ -714,7 +732,7 @@ def fetch(chunk, ident: str, key: str, progress=None, search_px: float | None = 
     for tile in _tiles(rec):
         if tile.get("status") == "placed":  # downloaded and placed again (free): a newer registration, --search-px
             tile["status"] = "complete"
-    return dict(_complete(chunk, rec, _client(key), progress or (lambda *a: None), search_px))
+    return dict(_complete(chunk, rec, _client(key), progress or (lambda *a: None), search_px, accept))
 
 
 def convert(chunk, src: str, key: str, bbox=None, detailed: bool = True, remove_background: bool = False,

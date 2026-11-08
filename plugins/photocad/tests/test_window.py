@@ -247,3 +247,38 @@ def test_the_menu_action_shows_the_pane(window):
     plugin.context.show_pane = lambda p: shown.append(p)
     plugin.show_pane()
     assert shown == [plugin.pane]
+
+
+def test_a_soft_drawing_refused_is_offered_to_accept_after_a_look(window, monkeypatch):
+    """A drawing refused only for its residual: the overlay opened, the question asked, and on "Accetta" the
+    conversion placed with nothing sent again; "Lascia rifiutato" leaves it refused."""
+    import ppg_photocad
+    from pyarchinit_photogrammetry.gui import dialogs
+
+    w, plugin, ch, entry, fake, qapp, errors = window
+    soft = fakecad.FakePhotoCAD(credits=9, soft_px=4)
+    monkeypatch.setattr(client, "_urlopen", soft)
+    plugin.context.show_raster("ortho")
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", lambda *a, **k: {"area": "all", "detailed": True,
+                                                                      "remove_background": False, "three_d": False})
+    monkeypatch.setattr(dialogs, "message", lambda *a, **k: None)
+    opened, questions = [], []
+    monkeypatch.setattr(ppg_photocad, "_open_file", lambda p: opened.append(p))
+
+    def choice(parent, kind, title, text, options, **k):
+        questions.append(text)
+        return 0 if "Invio a PhotoCAD" in title or "sovrapposizione" not in text else answer[0]
+
+    answer = [None]
+    monkeypatch.setattr(dialogs, "choice", choice)
+    plugin.convert_dialog("ortho")
+    _wait(w, qapp)
+    assert len(soft.calls("POST")) == 1 and opened and opened[-1].name == "overlay.jpg"
+    from ppg_photocad import project
+
+    assert project.records(ch)[-1]["status"] == "mismatch"          # left refused
+    answer[0] = 0
+    plugin.fetch_dialog(project.records(ch)[-1]["id"])
+    _wait(w, qapp)
+    _wait(w, qapp)
+    assert project.records(ch)[-1]["status"] == "done" and len(soft.calls("POST")) == 1

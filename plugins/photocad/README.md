@@ -58,7 +58,7 @@ is kept in `conversion.json` as a diagnostic. The drawing is refused, and nothin
 clear peak: the score at the optimum must be at least 1.3 times the median of the placements +-40 px around it, in
 both directions (a coursed wall shifted along its courses still fits its bed joints); when the optimum lies on the
 border of the search (searched once more three times as far first); or with a residual over 2 px. Khutm: peak 1.6
-along the courses, 2.1 across. `fetch --search-px N` places a finished conversion again with another search, free. The tiles are then merged: from each tile what is nearer its own centre (the copies in the overlaps once).
+along the courses, 2.1 across. `fetch --search-px N` places a finished conversion again with another search, free. On a soft image (under water, mist) the lines can lie a few pixels beside the edges although the drawing is in its place: when the search found a clear match inside its reach and only the residual is over, the refusal writes `overlay.jpg` (the image with the drawing in red) in each tile's folder and says so; after looking at it, `fetch --accept` (or *Accetta dopo il controllo* in the window, which opens the overlay and asks) places it, free, its registration marked `accepted: visual`. Any other refusal cannot be accepted. The tiles are then merged: from each tile what is nearer its own centre (the copies in the overlaps once).
 On an elevation each vertex can also go to the world, at the depth read from the elevation's relief.
 
 Files, in `<chunk data>/photocad/<id>/`: per tile `t0/`, `t1/`...: `image.jpg` (what was sent), `photocad_mm.dxf` (as

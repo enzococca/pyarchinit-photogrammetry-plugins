@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-photocad"
-version = "0.1.1"
+version = "0.1.2"
 description = "pyarchinit-photogrammetry plugin: the orthophoto, the DEM or an elevation vectorised by PhotoCAD (photocad.ai, an external paid service), the drawing brought back georeferenced as DXF, GeoPackage and SVG, as a layer of the 2D view and as US/USM; the API key in the system keychain"
 readme = "README.md"
 license = "GPL-2.0-or-later"
