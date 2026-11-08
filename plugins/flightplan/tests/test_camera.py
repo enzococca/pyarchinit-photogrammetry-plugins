@@ -78,3 +78,22 @@ def test_manual_camera():
 def test_every_listed_camera_comes_back_from_json():
     for c in CAMERAS:
         assert Camera.from_json(c.to_json()) == c
+
+
+def test_a_broken_camera_of_the_plan_is_refused_not_replaced():
+    """A camera stored on purpose in the plan never becomes the Mini 4 Pro in silence: strips, step and GSD
+    would be planned with another sensor."""
+    from ppg_flightplan import plan as pl
+
+    good = manual_camera("Mia camera", 13.2, 8.8, 8.8, 5472).to_json()
+    broken = dict(good, focaleMm=0)
+    with pytest.raises(CameraUnknown, match="Mia camera"):
+        camera(good["id"], broken)
+    with pytest.raises(CameraUnknown):
+        camera(good["id"], {k: v for k, v in good.items() if k != "larghezzaMm"})
+    piano = {"camera": good["id"], "cameraPersonale": broken, "blocchi": []}
+    with pytest.raises(CameraUnknown):
+        pl.plan_camera(piano)
+    # an id of the list that is not the plan's own camera still works as before
+    assert camera("mini4pro", broken).id == "mini4pro"
+

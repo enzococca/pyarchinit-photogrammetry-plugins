@@ -150,12 +150,18 @@ CAMERAS: list[Camera] = [
 
 def camera(id_: str, custom: Optional[dict] = None) -> Camera:
     """The camera ``id_``: the plan's own camera (``custom``, :meth:`Camera.to_json`) when its id is that one,
-    else the one of the list; an unknown id gives the first of the list, as the planner does."""
+    else the one of the list; an unknown id gives the first of the list, as the planner does.
+
+    A plan's own camera that is broken (a value missing or not positive) raises :class:`CameraUnknown`: it was
+    chosen on purpose, and planning strips, steps and GSD with another sensor without a word would be wrong.
+    """
     if custom and str(custom.get("id")) == str(id_):
         try:
             return Camera.from_json(custom)
-        except ValueError:
-            pass
+        except ValueError as e:
+            raise CameraUnknown(t("la camera del piano «{0}» non è valida: {1}",
+                                  "the plan's camera '{0}' is not valid: {1}")
+                                .format(custom.get("nome") or id_, e)) from None
     for c in CAMERAS:
         if c.id == id_:
             return c
