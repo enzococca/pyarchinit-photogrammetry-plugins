@@ -393,3 +393,20 @@ def test_a_fetch_that_does_not_say_the_sizes_is_refused(dji_device, monkeypatch)
     with pytest.raises(DjiFlyError, match="incompleta"):
         djifly.copy_mtp("mtp://D/S", [("a.kmz", b"NEW")], [u1], backup_dir=dji_device["backup"], overwrite=True)
 
+
+
+def test_a_write_that_fails_says_the_slot_its_copy_and_what_was_done(dji_device, monkeypatch):
+    waypoint, u1, u2, backup = dji_device["waypoint"], dji_device["uuid1"], dji_device["uuid2"], dji_device["backup"]
+    real = Path.write_bytes
+
+    def failing(self, data):
+        if self.name == f"{u2}.kmz" and self.parent.name == u2:
+            raise OSError("device gone")
+        return real(self, data)
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    with pytest.raises(djifly.WriteFailed) as err:
+        djifly.copy(waypoint, [("a.kmz", b"x"), ("b.kmz", b"y")], [u1, u2], backup_dir=backup)
+    e = err.value
+    assert e.slot == u2 and Path(e.backup).is_file() and str(e.backup) in str(e) and u2 in str(e)
+    assert [o["contenitore"] for o in e.outcomes] == [u1]
+    assert "device gone" in str(e)

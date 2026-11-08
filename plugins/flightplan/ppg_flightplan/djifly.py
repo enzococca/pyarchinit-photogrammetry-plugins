@@ -280,6 +280,20 @@ class SlotsInUse(DjiFlyError):
                          .format(names))
 
 
+class WriteFailed(DjiFlyError):
+    """Writing into a slot failed halfway (a device gone, a full card): ``slot``, the copy of what was there
+    (``backup``, None if the slot was empty) and the ``outcomes`` of the slots done before, for the pane to say
+    what to put back and where it is."""
+
+    def __init__(self, slot: str, backup, outcomes: list[dict], cause: Exception):
+        self.slot, self.backup, self.outcomes = slot, backup, list(outcomes)
+        where = (t("la copia di quel che c'era è in {0}", "the copy of what was there is in {0}").format(backup)
+                 if backup else t("lo slot era vuoto", "the slot was empty"))
+        super().__init__(t("scrittura della missione {0} non riuscita ({1}): {2}; {3} tratte scritte prima",
+                           "writing mission {0} failed ({1}): {2}; {3} legs written before")
+                         .format(slot, cause, where, len(self.outcomes)))
+
+
 def _stamp() -> str:
     return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -357,7 +371,10 @@ def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
             data = with_create_time(data, time)
         # written over DJI Fly's file: on mounted MTP devices (gvfs) the rename does not always succeed, so no
         # temporary file
-        file.write_bytes(data)
+        try:
+            file.write_bytes(data)
+        except OSError as e:
+            raise WriteFailed(container, kept, outcomes, e) from e
         # read back from the device: on mounted MTP paths the write can half succeed
         try:
             written = file.stat().st_size
@@ -372,8 +389,11 @@ def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
             preview_file = preview_folder / f"{container}.jpg"
             if preview_file.is_file():
                 outcome["copiaAnteprima"] = str(_keep(backup, container, preview_file.read_bytes(), "jpg", stamp))
-            preview_folder.mkdir(parents=True, exist_ok=True)
-            preview_file.write_bytes(preview)
+            try:
+                preview_folder.mkdir(parents=True, exist_ok=True)
+                preview_file.write_bytes(preview)
+            except OSError as e:
+                raise WriteFailed(container, kept, outcomes + [outcome], e) from e
             outcome["anteprima"] = str(preview_file)
         outcomes.append(outcome)
     return outcomes
