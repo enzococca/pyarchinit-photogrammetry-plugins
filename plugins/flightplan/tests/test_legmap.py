@@ -181,3 +181,15 @@ def test_no_test_reaches_the_network():
 
     with pytest.raises(RuntimeError, match="network"):
         socket.create_connection(("192.0.2.1", 80), timeout=0.1)
+
+
+def test_an_orthophoto_that_cannot_be_read_leaves_the_map_grey(tmp_path, test_plan, caplog):
+    broken = tmp_path / "rotta.tif"
+    broken.write_bytes(b"II*\x00 non sono un GeoTIFF")
+    background = legmap.orthophoto_background(SimpleNamespace(orthomosaic_path=broken))
+    assert background is not None
+    assert background((9.99, 44.99, 10.01, 45.01), 50, 50) is None
+    img = Image.open(io.BytesIO(legmap.leg_image(test_plan, 1, background=background)))
+    most = max(img.getcolors(maxcolors=1 << 20))[1]
+    assert all(abs(a - b) <= 3 for a, b in zip(most, legmap.GREY))
+    assert "rotta.tif" in caplog.text

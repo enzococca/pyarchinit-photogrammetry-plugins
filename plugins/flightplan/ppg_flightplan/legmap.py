@@ -12,6 +12,7 @@ the satellite tiles it fetched are replaced by the chunk's orthophoto.
 from __future__ import annotations
 
 import io
+import logging
 import math
 import zipfile
 from pathlib import Path
@@ -22,6 +23,8 @@ from PIL import Image, ImageDraw, ImageFont
 from .geometry import LatLon, densify
 from .specials import num
 from .texts import t
+
+_log = logging.getLogger(__name__)
 
 COLOURS = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa", "#00acc1", "#6d4c41", "#c0ca33"]
 GREY = (214, 220, 226)
@@ -94,7 +97,7 @@ def orthophoto_background(chunk) -> Optional[Background]:
     if not path or not Path(path).is_file():
         return None
 
-    def background(bounds, width: int, height: int) -> Optional[Image.Image]:
+    def read(bounds, width: int, height: int) -> Optional[Image.Image]:
         import numpy as np
         import rasterio
         from pyproj import Transformer
@@ -128,6 +131,19 @@ def orthophoto_background(chunk) -> Optional[Background]:
         image[:] = GREY
         image[valid] = np.moveaxis(rgb, 0, -1)[valid]
         return Image.fromarray(image, "RGB")
+
+    told = []
+
+    def background(bounds, width: int, height: int) -> Optional[Image.Image]:
+        """The window of the orthophoto, or None (grey) when it cannot be read: a broken or half-written file, a
+        system PROJ does not handle. The cause is logged once."""
+        try:
+            return read(bounds, width, height)
+        except Exception as e:  # noqa: BLE001 - a map without background is better than no map
+            if not told:
+                told.append(True)
+                _log.warning("orthophoto %s not read for the map of the leg: %s", path, e)
+            return None
 
     background.attribution = t("sfondo: ortofoto del progetto", "background: the project's orthophoto")
     return background
