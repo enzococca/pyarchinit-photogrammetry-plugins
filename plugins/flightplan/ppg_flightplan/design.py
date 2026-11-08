@@ -672,6 +672,23 @@ def blocks_with_old_heights(piano: dict) -> list[int]:
     return old
 
 
+def adopt_heights(piano: dict) -> list[int]:
+    """Signs the blocks of a plan that came in without the signature (a plan of the planner, or one saved before
+    it existed) whose heights are as many as their points: they are taken as computed for the block as it is, so
+    a later change that keeps the number of points is caught. To call when a plan is opened or imported.
+    Returns the blocks signed; a block whose heights do not match its points stays unsigned (and stale)."""
+    signed = []
+    for i, b in enumerate(piano.get("blocchi", [])):
+        if not b.get("seguiTerreno") or b.get(HEIGHTS_SIGNATURE) is not None:
+            continue
+        p, _ = pl.route_of_block({k: v for k, v in b.items() if k != "quote"}, piano)
+        q = b.get("quote")
+        if q and len(q) == len(p.points):
+            b[HEIGHTS_SIGNATURE] = heights_signature(b, piano)
+            signed.append(i)
+    return signed
+
+
 class StaleHeights(ValueError):
     """Blocks following the terrain whose heights were computed for another shape of the block: no file is
     written from them (it would fly the old heights, or one height) until the terrain is computed again."""

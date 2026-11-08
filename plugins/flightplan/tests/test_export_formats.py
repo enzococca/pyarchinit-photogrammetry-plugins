@@ -301,3 +301,27 @@ def test_a_plan_of_the_planner_without_the_signature_is_checked_by_the_count(mon
     piano["blocchi"][0]["lato"] = 60
     with pytest.raises(design.StaleHeights):
         fv.files_per_leg(piano, "litchi")
+
+
+def test_a_plan_without_the_signature_is_signed_when_it_comes_in(monkeypatch):
+    """A plan of the planner (or saved before the signature) is taken as it is when it comes in - its heights as
+    many as its points - and signed then: a later change of the block that keeps the number of points (the strips
+    flown the other way round) is caught like in a plan made here."""
+    piano = _terrain_plan(monkeypatch)
+    piano["blocchi"][0].pop("firmaQuote")
+    assert design.adopt_heights(piano) == [0]
+    assert piano["blocchi"][0]["firmaQuote"] == design.heights_signature(piano["blocchi"][0], piano)
+    assert design.adopt_heights(piano) == []          # already signed: nothing to do
+    piano["blocchi"][0]["orientamento"] = 180
+    with pytest.raises(design.StaleHeights):
+        fv.files_per_leg(piano, "litchi")
+
+
+def test_a_plan_whose_heights_do_not_match_its_points_is_not_signed(monkeypatch):
+    piano = _terrain_plan(monkeypatch)
+    piano["blocchi"][0].pop("firmaQuote")
+    piano["blocchi"][0]["quote"] = piano["blocchi"][0]["quote"][:-1]
+    assert design.adopt_heights(piano) == []
+    assert "firmaQuote" not in piano["blocchi"][0]
+    with pytest.raises(design.StaleHeights):
+        fv.files_per_leg(piano, "litchi")
