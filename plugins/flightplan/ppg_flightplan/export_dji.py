@@ -313,8 +313,9 @@ def kmz_per_leg(piano: dict) -> list[tuple[str, bytes]]:
     return [(f"{leg.file_name}.kmz", kmz(leg.route, cam)) for leg in plan_legs(piano)]
 
 
-def zip_kmz(piano: dict) -> bytes:
-    """An archive with a KMZ for every leg of every block, plus the KML of the whole plan."""
+def zip_kmz(piano: dict, ground_takeoff: Optional[float] = None, height_source: Optional[dict] = None) -> bytes:
+    """An archive with a KMZ for every leg of every block, plus the KML of the whole plan (its takeoff height as
+    :func:`ppg_flightplan.gis.plan_kml` takes it)."""
     from .gis import plan_kml
     from .plan import slug
 
@@ -323,7 +324,7 @@ def zip_kmz(piano: dict) -> bytes:
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
         for file_name, data in kmz_per_leg(piano):
             z.writestr(file_name, data)
-        z.writestr(f"{base}.kml", plan_kml(piano))
+        z.writestr(f"{base}.kml", plan_kml(piano, ground_takeoff=ground_takeoff, height_source=height_source))
     return buffer.getvalue()
 
 

@@ -315,3 +315,19 @@ def test_special_points_survive_the_kmz():
     assert back.stops is not None
     assert [bool(s and s.low) for s in back.stops] == [bool(s and s.low) for s in new.stops]
     assert math.isclose(back.height, 60.0)
+
+
+def test_a_flat_plan_gets_its_takeoff_height_from_the_caller():
+    """Without terrain following the plan has no quotaDecollo: the caller (the DEM at the takeoff) gives it."""
+    piano = reference_plan()
+    assert "quotaDecollo" not in piano
+    source = {"sorgente": "dem", "file": "dem.tif"}
+    root = ET.fromstring(gis.plan_kml(piano, ground_takeoff=312.5, height_source=source))
+    lines = [c for c in values(root, "coordinates") if len(c.split()) > 2]
+    assert {float(t.split(",")[2]) for t in lines[0].split()} == {422.5}
+    assert "dem.tif" in values(root, "description")[0]
+    with zipfile.ZipFile(io.BytesIO(dji.zip_kmz(piano, ground_takeoff=312.5, height_source=source))) as z:
+        inside = ET.fromstring(z.read("campo-di-prova.kml"))
+    data = {d.get("name"): d for d in inside.iter() if local(d) == "Data"}
+    assert values(data[dji.DATA_TAKEOFF_HEIGHT], "value") == ["312.5"]
+    assert dji.read_kml("x", gis.plan_kml(piano, ground_takeoff=312.5), MINI4).routes[0].height == 110

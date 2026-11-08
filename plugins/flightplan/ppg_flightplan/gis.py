@@ -114,12 +114,17 @@ def geojson(routes: list[Route], cam: Camera, high: bool, areas: Optional[list[l
     return json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False, indent=1)
 
 
-def plan_kml(piano: dict, title: Optional[str] = None) -> str:
+def plan_kml(piano: dict, title: Optional[str] = None, ground_takeoff: Optional[float] = None,
+             height_source: Optional[dict] = None) -> str:
     """The KML of the whole plan: the active routes, the takeoffs, the terrain grid, and the heights absolute
-    from the takeoff height the plan measured (``quotaDecollo`` in the system of ``fonteQuote``)."""
+    from the takeoff height - the one given (for a plan without terrain following, which has no
+    ``quotaDecollo``: e.g. the project DEM at the takeoff, with ``height_source`` saying which system), else the
+    one the plan measured (``quotaDecollo`` in the system of ``fonteQuote``)."""
     from .plan import plan_routes, plan_takeoffs
 
-    ground = piano.get("quotaDecollo")
+    if ground_takeoff is None:
+        ground = piano.get("quotaDecollo")
+        ground_takeoff = None if ground is None else float(ground)
+        height_source = piano.get("fonteQuote") if height_source is None else height_source
     return kml(plan_routes(piano), title or piano.get("nome", "piano"), plan_takeoffs(piano),
-               terrain=piano.get("terreno"), ground_takeoff=None if ground is None else float(ground),
-               height_source=piano.get("fonteQuote"))
+               terrain=piano.get("terreno"), ground_takeoff=ground_takeoff, height_source=height_source)
