@@ -481,15 +481,36 @@ class NoHeightSource(tiles.TerrainError):
     """No project DEM and the public tiles not chosen: the network is never used unasked."""
 
     def __init__(self):
-        super().__init__(t("nessun DEM del progetto e tegole pubbliche non scelte: le quote del terreno non si "
-                           "misurano (la rete si usa solo se scegli le tegole)",
-                           "no project DEM and the public tiles not chosen: the terrain heights are not measured "
-                           "(the network is used only when you choose the tiles)"))
+        super().__init__(t("nessun DEM del progetto e tegole pubbliche non scelte: il suolo non si misura (la rete si "
+                           "usa solo se scegli le tegole) - scegli le tegole pubbliche o aggiungi un DEM",
+                           "no project DEM and the public tiles not chosen: the ground is not measured (the network "
+                           "is used only when you choose the tiles) - choose the public tiles or add a DEM"))
+
+
+# The user chose the public tiles for the ground of the special points of a plan that does not follow the terrain
+# (a target descent "metres above the ground" in a chunk without a DEM): the network may be asked for them.
+TILES_CHOSEN = "tegoleScelte"
 
 
 def tiles_chosen(piano: dict) -> bool:
-    """Whether the user chose the public tiles for this plan (its heights come from them)."""
-    return (piano.get("fonteQuote") or {}).get("sorgente") == "tegole"
+    """Whether the user chose the public tiles for this plan (its heights come from them, or the ground of its
+    special points is to be measured on them)."""
+    return (piano.get("fonteQuote") or {}).get("sorgente") == "tegole" or bool(piano.get(TILES_CHOSEN))
+
+
+def ground_source_missing(piano: dict, has_dem: bool) -> Optional[str]:
+    """A sentence when the plan needs the ground (blocks following the terrain without a source, or descents of the
+    special points) and has nowhere to read it without asking the network unasked: no project DEM and the public
+    tiles not chosen. None when it is fine."""
+    following = any(b.get("seguiTerreno") for b in piano.get("blocchi", []))
+    if not (following or pl.specials_need_ground(piano)) or has_dem or tiles_chosen(piano):
+        return None
+    if (piano.get("fonteQuote") or {}).get("sorgente") == "dem":
+        return None                                    # DemGone says it at the export
+    return t("le discese dei punti speciali e le quote sul terreno hanno bisogno del suolo: il chunk non ha un DEM e "
+             "le tegole pubbliche non sono state scelte - scegli le tegole pubbliche (rete) o aggiungi un DEM",
+             "the descents of the special points and the heights on the terrain need the ground: the chunk has no DEM "
+             "and the public tiles were not chosen - choose the public tiles (network) or add a DEM")
 
 
 def _reference_and_ground(piano: dict, z: int, dem, use_tiles: bool = True) -> _Ground:
@@ -534,7 +555,7 @@ def _reference_and_ground(piano: dict, z: int, dem, use_tiles: bool = True) -> _
     if dem is not None:
         probe = [reference]
         for b in blocks:
-            if pl.active(b):
+            if pl.active(b) or b.get("seguiTerreno"):       # a block switched off keeps following the terrain
                 p, _ = pl.route_of_block(b, piano)
                 probe += p.points
         probe += [(float(d[0]), float(d[1])) for d in (piano.get("decolli") or {}).values()]
@@ -628,7 +649,8 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
     It works **block by block**: each has its own "follow the terrain" tick, because in a plan one may want it
     on a grid climbing the mound and not on a ring turning at a fixed height around it. With ``only`` a single
     block is redone (the one just ticked); without it, all those asking for it - and if none asks, all the
-    active ones, because then the whole plan wants it.
+    active ones, because then the whole plan wants it. The blocks switched off that follow the terrain are redone
+    too: their heights refer to the takeoff, and switched on again they would fly from the old one.
 
     With a ``dem`` the public tiles are asked only where the DEM does not reach (and only with ``use_tiles``).
     """
@@ -638,15 +660,15 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
     g = _reference_and_ground(piano, z, dem, use_tiles)
     reference, ground_takeoff, offset, dem = g.reference, g.ground_takeoff, g.offset, g.dem
     asked = [i for i, b in enumerate(blocks) if pl.active(b) and b.get("seguiTerreno")]
+    resting = [i for i, b in enumerate(blocks) if not pl.active(b) and b.get("seguiTerreno")]
     if only is not None:
         to_do = [only] if 0 <= only < len(blocks) else []
-    elif asked:
-        to_do = asked
     else:
-        to_do = [i for i, b in enumerate(blocks) if pl.active(b)]
+        to_do = sorted((asked or [i for i, b in enumerate(blocks) if pl.active(b)]) + resting)
     every: list[float] = []
     grounds_seen: list[Optional[float]] = []
     points = 0
+    done: list[int] = []
     for i in to_do:
         b = blocks[i]
         p, _ = pl.route_of_block(b, piano)
@@ -655,16 +677,23 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
         ground = ground_heights(p.points, dem, z, offset, use_tiles)
         heights = terrain_heights(p.points, float(b.get("quota", p.height)), ground_takeoff, ground)
         b["quote"] = heights
-        b[HEIGHTS_SIGNATURE] = heights_signature(b, piano)
         b["seguiTerreno"] = True
+        done.append(i)
+        if not pl.active(b):
+            continue                       # redone, but it does not fly: not in the numbers of the flight
         every += heights
         grounds_seen += ground
         points += len(p.points)
-    if not every:
+    if not done:
         raise ValueError(t("nessun blocco da far seguire al terreno", "no block to make follow the terrain"))
     piano["seguiTerreno"] = any(b.get("seguiTerreno") for b in blocks)
     _takeoffs_and_grid(piano, dem, z, offset, ground_takeoff, reference, use_tiles, g.dem_covers)
-    warnings = height_warnings(every, grounds_seen, ground_takeoff)
+    for i in done:
+        # signed after the takeoff and its ground are written: the signature carries them
+        blocks[i][HEIGHTS_SIGNATURE] = heights_signature(blocks[i], piano)
+    if not every:
+        every = [q for i in done for q in blocks[i].get("quote") or []]       # only blocks switched off
+    warnings = height_warnings(every, grounds_seen, ground_takeoff) if grounds_seen else []
     if g.dem_left_out:
         warnings.insert(0, _left_out_warning(g))
     outcome = {"avvisi": warnings, "punti": points, "blocchi": len(to_do), "quotaDecollo": round(ground_takeoff, 1),
@@ -682,12 +711,21 @@ HEIGHTS_SIGNATURE = "firmaQuote"
 
 
 def heights_signature(b: dict, piano: dict) -> str:
-    """What the heights of a block depend on: its waypoints (in their order) and its height above the ground. A
-    change of overlap, heading, area, mode or height gives another signature, also when the number of points
-    stays the same (the same strips flown the other way round)."""
+    """What the heights of a block depend on: its waypoints (in their order), its height above the ground, and the
+    reference they are counted from - the point and the ground of the takeoff, and the ground of the per-leg
+    takeoffs. A change of overlap, heading, area, mode or height gives another signature, also when the number of
+    points stays the same (the same strips flown the other way round); so does a takeoff measured again
+    elsewhere: a block whose heights were computed from another takeoff (switched off while the terrain was
+    redone, say) is stale, never flown from the wrong ground."""
     p, _ = pl.route_of_block({k: v for k, v in b.items() if k != "quote"}, piano)
+    ref = piano.get("riferimentoQuote") or piano.get("puntoDecollo")
+    legs = sorted((str(k), [round(float(v["punto"][0]), 7), round(float(v["punto"][1]), 7)],
+                   round(float(v["suolo"]), 1)) for k, v in (piano.get("suoloDecolli") or {}).items())
     data = {"punti": [[round(lat, 7), round(lon, 7)] for lat, lon in p.points],
-            "quota": round(float(b.get("quota", p.height)), 3)}
+            "quota": round(float(b.get("quota", p.height)), 3),
+            "riferimento": [round(float(ref[0]), 7), round(float(ref[1]), 7)] if ref else None,
+            "suoloDecollo": None if piano.get("quotaDecollo") is None else round(float(piano["quotaDecollo"]), 1),
+            "decolli": legs}
     return hashlib.sha1(json.dumps(data, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -733,11 +771,13 @@ class StaleHeights(ValueError):
     moved whose ground could not be measured again: no file is written (it would fly the old heights, one
     height, or heights and descents counted from the old takeoff) until the terrain is computed again."""
 
-    def __init__(self, piano: dict, blocks: list[int], takeoff: Optional[str] = None):
+    def __init__(self, piano: dict, blocks: list[int], takeoff: Optional[str] = None, text: Optional[str] = None):
         self.blocks = blocks
         self.takeoff = takeoff
         self.reasons: list[str] = []
-        if blocks:
+        if text:
+            pass                                 # said as it is (no source for the ground: what to do)
+        elif blocks:
             names = ", ".join(f"«{piano['blocchi'][i].get('nome') or i + 1}»" for i in blocks)
             text = t("{0}: cambiato dopo il calcolo delle quote sul terreno - ricalcola il terreno prima di "
                      "esportare",
@@ -821,21 +861,37 @@ class DemGone(tiles.TerrainError):
                            "the heights of the plan come from the project DEM, which is not there now"))
 
 
+def height_sources(piano: dict, dem) -> tuple[object, bool]:
+    """The DEM and whether the public tiles may be asked, for a refresh: never the network unasked.
+
+    - heights from the tiles (``fonteQuote`` "tegole", or the tiles chosen for the ground of the special points,
+      ``tegoleScelte``): the tiles, not the chunk's DEM;
+    - heights from the project DEM, chosen for a block following the terrain: the DEM, and the tiles where it ends
+      (as *Follow the terrain > Project DEM* says);
+    - anything else (special points measured on the DEM, a plan of the planner without a source): the DEM alone.
+    """
+    source = (piano.get("fonteQuote") or {}).get("sorgente")
+    if source == "tegole" or (source is None and piano.get(TILES_CHOSEN)):
+        return None, True
+    following = any(b.get("seguiTerreno") for b in piano.get("blocchi", []))
+    return dem, source == "dem" and following
+
+
 def refresh_terrain(piano: dict, dem=None) -> dict:
     """Redoes the heights of the blocks that have old ones: called before saving and exporting, so a file that
     says "follows the terrain" really follows it.
 
     When the takeoff moved (:func:`takeoffs_to_measure`) EVERY block following the terrain is redone, not only
-    the changed ones: their heights are counted from the ground of the takeoff.
+    the changed ones (switched off too): their heights are counted from the ground of the takeoff. A block redone
+    may measure the takeoff again: the blocks whose signature no longer matches are redone after it.
 
-    The heights are measured with the source the plan was computed with (``fonteQuote``): the public tiles stay
-    the tiles even if the chunk now has a DEM, the project DEM stays the DEM (and fails if it is gone, instead of
-    asking the network). A plan without a source (special points only, or a plan of the planner) uses ``dem``,
-    with the tiles where it does not reach.
+    The heights are measured with the source the plan was computed with (:func:`height_sources`): the public
+    tiles stay the tiles even if the chunk now has a DEM, the project DEM stays the DEM (and fails if it is gone);
+    the network is never asked unless the tiles were chosen. ``falliti`` says the blocks that could not be redone
+    (:func:`ppg_flightplan.project.prepare` refuses the export then).
     """
     source = (piano.get("fonteQuote") or {}).get("sorgente")
-    if source == "tegole":
-        dem = None
+    dem, use_tiles = height_sources(piano, dem)
     old = blocks_with_old_heights(piano)
     redone, failed = [], []
     following = [i for i, b in enumerate(piano.get("blocchi", [])) if b.get("seguiTerreno")]
@@ -851,28 +907,31 @@ def refresh_terrain(piano: dict, dem=None) -> dict:
         if not old:
             # no block follows the terrain, but the special points want to know it
             try:
-                measure_ground(piano, dem=dem)
+                measure_ground(piano, dem=dem, use_tiles=use_tiles)
                 return {"rifatti": [], "falliti": [], "suolo": True}
             except (tiles.TerrainError, OSError, ValueError) as e:
-                return {"rifatti": [], "falliti": [{"blocco": None, "motivo": str(e)}]}
-    for i in old:
-        try:
-            apply_terrain(piano, only=i, dem=dem)
-            redone.append(i)
-        except (tiles.TerrainError, OSError, ValueError) as e:
-            failed.append({"blocco": i, "motivo": str(e)})
-    after = (piano.get("fonteQuote") or {}).get("sorgente")
-    if redone and source and after != source:
-        # the source changed under the redone blocks (the DEM left out): the others are redone with it too, so
-        # one source holds for the whole plan, as the KML and the GeoPackage declare
-        for i in following:
-            if i in redone or i in [f["blocco"] for f in failed]:
-                continue
+                return {"rifatti": [], "falliti": [{"blocco": None, "motivo": str(e),
+                                                    "senzaFonte": isinstance(e, NoHeightSource)}]}
+    todo = list(old)
+    for _round in range(3):
+        for i in todo:
             try:
-                apply_terrain(piano, only=i, dem=dem)
-                redone.append(i)
+                apply_terrain(piano, only=i, dem=dem, use_tiles=use_tiles)
+                if i not in redone:
+                    redone.append(i)
             except (tiles.TerrainError, OSError, ValueError) as e:
-                failed.append({"blocco": i, "motivo": str(e)})
+                failed.append({"blocco": i, "motivo": str(e), "senzaFonte": isinstance(e, NoHeightSource)})
+        tried = set(redone) | {f["blocco"] for f in failed}
+        after = (piano.get("fonteQuote") or {}).get("sorgente")
+        if redone and source and after != source:
+            # the source changed under the redone blocks (the DEM left out): the others are redone with it too
+            todo = [i for i in following if i not in tried]
+            source = after
+        else:
+            # a block redone measured the takeoff again (another ground): the others signed for the old one follow
+            todo = [i for i in blocks_with_old_heights(piano) if i not in {f["blocco"] for f in failed}]
+        if not todo:
+            break
     return {"rifatti": sorted(redone), "falliti": failed}
 
 
@@ -888,7 +947,8 @@ def remove_terrain(piano: dict, only: Optional[int] = None) -> dict:
             count += 1
         b.pop("seguiTerreno", None)
     if not any(b.get("seguiTerreno") for b in blocks) and not pl.specials_need_ground(piano):
-        for key in ("seguiTerreno", "quotaDecollo", "puntoDecollo", "suoloDecolli", "terreno", "fonteQuote"):
+        for key in ("seguiTerreno", "quotaDecollo", "puntoDecollo", "suoloDecolli", "terreno", "fonteQuote",
+                    TILES_CHOSEN):
             piano.pop(key, None)
     return {"blocchi": count}
 

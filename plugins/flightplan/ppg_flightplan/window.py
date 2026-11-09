@@ -1022,17 +1022,23 @@ class WindowPart:
             if old_piano and old_piano.get("dettaglioTerreno"):
                 piano["dettaglioTerreno"] = old_piano["dettaglioTerreno"]
             warnings: list[str] = []
+            if old_piano and old_piano.get(design_mod.TILES_CHOSEN):
+                piano[design_mod.TILES_CHOSEN] = True             # the choice of the public tiles stays
             if old_piano and any(b.get("seguiTerreno") for b in old_piano.get("blocchi") or []):
                 progress(0.4, t("Quote del terreno", "Terrain heights"))
-                source = (old_piano.get("fonteQuote") or {}).get("sorgente")
-                dem = project.chunk_dem(chunk) if source == "dem" else None
+                # the source of the plan before: the tiles only if they were chosen (a plan of the planner without
+                # a source is redone on the project DEM, or not at all)
+                opened = project.chunk_dem(chunk)
+                dem, use_tiles = design_mod.height_sources(old_piano, opened)
+                if opened is not None and dem is None:
+                    opened.close()
                 try:
                     for b in piano["blocchi"]:
                         b["seguiTerreno"] = True
                     from . import tiles
 
                     terrain = design_mod.apply_terrain(piano, z=tiles.zoom_for_detail(piano.get("dettaglioTerreno")),
-                                                       dem=dem)
+                                                       dem=dem, use_tiles=use_tiles)
                     warnings += [warning_text(w.get("tipo", "")) for w in terrain.get("avvisi") or []]
                     reasons.append(t("Il volo segue ancora il terreno, come il piano di prima.",
                                      "The flight still follows the terrain, as the plan before."))
@@ -1061,6 +1067,9 @@ class WindowPart:
             finally:
                 if dem is not None:
                     dem.close()
+            missing = design_mod.ground_source_missing(piano, dem is not None)
+            if missing:
+                warnings.append(missing[:1].upper() + missing[1:] + ".")
             return piano, reasons, warnings
 
         def done(result):
@@ -1365,18 +1374,36 @@ class WindowPart:
         self._put_targets(chunk, e, copy.deepcopy(e["piano"]), read)
 
     def _put_targets(self, chunk, e, piano: dict, read: dict) -> None:
-        from . import project, targets
+        from . import design, project, targets
+        from . import plan as pl
 
         targets.put_targets(piano, read, metres=float(self.pane.s_metres.value()) if self.pane is not None
                             else targets.METRES_ABOVE_GROUND)
         codes = list(read.get("avvisi") or [])
         if codes:
             piano["target"]["avvisi"] = codes
+        ask_tiles = False
+        if pl.specials_need_ground(piano):
+            dem = project.chunk_dem(chunk)
+            if dem is not None:
+                dem.close()
+            missing = design.ground_source_missing(piano, dem is not None)
+            if missing:
+                # the descents need the ground and there is no DEM: the network only if the user says so
+                k = self._choice(missing[:1].upper() + missing[1:] + ".",
+                                 [t("Usa le tegole pubbliche (rete)", "Use the public tiles (network)")],
+                                 kind="question")
+                if k == 0:
+                    piano[design.TILES_CHOSEN] = True
+                else:
+                    ask_tiles = True
         project.update_plan(chunk, e["id"], piano)
         self._changed()
         n = len(read.get("punti") or [])
         self._status_text(plural(n, t("{0} target nel piano.", "{0} target in the plan."),
-                                 t("{0} target nel piano.", "{0} targets in the plan.")))
+                                 t("{0} target nel piano.", "{0} targets in the plan."))
+                          + (" " + t("Senza DEM né tegole pubbliche l'esportazione si rifiuta.",
+                                     "Without a DEM or the public tiles the export is refused.") if ask_tiles else ""))
         if "ordine_incerto" in codes:
             self._message("warning", warning_text("ordine_incerto") + "\n\n" +
                           t("Guarda i target sulla vista: se sono lontani dal sito, rifai l'import con l'EPSG giusto.",

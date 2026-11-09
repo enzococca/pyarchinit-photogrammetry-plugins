@@ -403,8 +403,26 @@ def prepare(piano: dict, dem=None) -> tuple[dict, dict]:
     heights, or descents, counted from the old takeoff."""
     piano = copy.deepcopy(piano)
     outcome = design.refresh_terrain(piano, dem)
+    unsourced = next((f["motivo"] for f in outcome.get("falliti") or [] if f.get("senzaFonte")), None)
+    stale = [i for i in design.blocks_with_old_heights(piano) if 0 <= i < len(piano.get("blocchi", []))]
+    if unsourced and not stale:
+        # nowhere to read the ground without asking the network unasked: say what to do, nothing else
+        e = design.StaleHeights(piano, [], text=unsourced[:1].upper() + unsourced[1:])
+        e.reasons = [unsourced]
+        raise e
     try:
         design.require_exportable(piano)
+        # a block that flies and could not be redone is refused also when its signature happens to match
+        from . import plan as pl
+
+        blocks = piano.get("blocchi", [])
+        failed = [f["blocco"] for f in outcome.get("falliti") or []
+                  if f.get("blocco") is not None and 0 <= f["blocco"] < len(blocks) and pl.active(blocks[f["blocco"]])]
+        if failed:
+            raise design.StaleHeights(piano, sorted(set(failed)))
+        if any(f.get("blocco") is None for f in outcome.get("falliti") or []):
+            raise design.StaleHeights(piano, [], takeoff=t("il suolo dei punti speciali non si è potuto misurare",
+                                                           "the ground of the special points could not be measured"))
     except design.StaleHeights as e:
         e.reasons = [f.get("motivo") for f in outcome.get("falliti") or [] if f.get("motivo")]
         if e.reasons:

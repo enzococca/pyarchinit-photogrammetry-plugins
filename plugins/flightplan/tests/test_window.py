@@ -592,3 +592,16 @@ def test_manual_camera_starts_from_the_list(gui, monkeypatch):
     plugin.camera_by_hand()
     assert (seen["width"], seen["height"], seen["focal"], seen["pixels"]) == (17.3, 13.0, 12.29, 5280)
     assert "Mavic 3E" in seen["intro"] and plugin.pane.camera_id().startswith("manual-")
+
+
+def test_the_project_dem_says_it_asks_the_tiles_where_it_ends():
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from ppg_flightplan.pane import FlightPlanPane
+
+    QApplication.instance() or QApplication([])
+    p = FlightPlanPane()
+    tip = p.c_source.itemData(p.c_source.findData("dem"), Qt.ItemDataRole.ToolTipRole)
+    assert "tegole pubbliche" in tip and "non arriva" in tip
+    assert "rete" in p.c_source.toolTip()

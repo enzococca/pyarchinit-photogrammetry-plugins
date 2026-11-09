@@ -262,6 +262,19 @@ class FlightPlanPane(QWidget):
         self.c_source = QComboBox()
         self.c_source.addItem(t("DEM del progetto", "Project DEM"), "dem")
         self.c_source.addItem(t("Tegole pubbliche (rete)", "Public tiles (network)"), "tiles")
+        self.c_source.setItemData(0, t("Il DEM del chunk; dove non arriva sotto il volo si chiedono le tegole pubbliche "
+                                       "(rete), spostate dello scarto misurato dove ci sono entrambi",
+                                       "The chunk's DEM; where it does not reach under the flight the public tiles "
+                                       "are asked (network), shifted by the offset measured where both exist"),
+                                  Qt.ItemDataRole.ToolTipRole)
+        self.c_source.setItemData(1, t("Le tegole libere del terreno di AWS: serve la rete",
+                                       "The free terrain tiles of AWS: the network is needed"),
+                                  Qt.ItemDataRole.ToolTipRole)
+        self.c_source.setToolTip(t("Da dove vengono le quote del terreno. La rete si usa solo per le tegole pubbliche: "
+                                   "se le scegli, o dove il DEM del progetto non arriva sotto il volo.",
+                                   "Where the terrain heights come from. The network is used only for the public "
+                                   "tiles: when you choose them, or where the project DEM does not reach under the "
+                                   "flight."))
         self.c_detail = QComboBox()
         for code, (it, en) in (("normale", ("Dettaglio normale", "Normal detail")),
                                ("fine", ("Dettaglio fine", "Fine detail")),

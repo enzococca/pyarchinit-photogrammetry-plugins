@@ -169,6 +169,8 @@ class FlightPlanPlugin(WindowPart, Plugin):
         p.add_argument("--markers", action="store_true", help="the chunk's markers with measured coordinates")
         p.add_argument("--estimated", action="store_true", help="with --markers: also the estimated ones")
         p.add_argument("--remove", action="store_true")
+        p.add_argument("--tiles", action="store_true",
+                       help="measure the ground of the descents on the public tiles (network) when there is no DEM")
         p = sub.add_parser("coverage", parents=[common], help="the coverage predicted on the chunk's DEM")
         p.add_argument("--cell", type=float, help="cell of the grid, metres")
         p.add_argument("--low", type=int, default=coverage.LOW, help="fewer photos than this: low coverage")
@@ -469,8 +471,9 @@ class FlightPlanPlugin(WindowPart, Plugin):
         return 0
 
     def _targets(self, ns, doc, chunk, piano, id_) -> int:
+        from . import design as design_mod
         from . import plan as pl
-        from . import targets
+        from . import project, targets
         from .geometry import centroid
 
         if ns.remove:
@@ -489,9 +492,19 @@ class FlightPlanPlugin(WindowPart, Plugin):
             near = centroid(points) if points else None
             read = targets.read_targets_csv(Path(ns.csv).read_text(encoding="utf-8-sig"), near=near, epsg=ns.epsg)
         targets.put_targets(piano, read, metres=ns.metres)
+        if ns.tiles:
+            piano[design_mod.TILES_CHOSEN] = True
+        notes = [warning_text(w) for w in read.get("avvisi") or []]
+        if pl.specials_need_ground(piano):
+            dem = project.chunk_dem(chunk)
+            if dem is not None:
+                dem.close()
+            missing = design_mod.ground_source_missing(piano, dem is not None)
+            if missing:
+                notes.append(missing + " (--tiles)")
         self._keep(ns, doc, chunk, piano, id_)
-        print(json.dumps({"target": len(read["punti"]), "crs": read.get("crs"),
-                          "avvisi": [warning_text(w) for w in read.get("avvisi") or []]}, indent=1, ensure_ascii=False))
+        print(json.dumps({"target": len(read["punti"]), "crs": read.get("crs"), "avvisi": notes}, indent=1,
+                         ensure_ascii=False))
         return 0
 
     def _export(self, ns, doc, chunk, piano, id_) -> int:

@@ -267,7 +267,8 @@ def test_a_plan_saved_before_gets_the_terrain_at_the_first_save(monkeypatch):
     heights = list(piano["blocchi"][0]["quote"])
     for key in ("terreno", "puntoDecollo", "suoloDecolli"):
         piano.pop(key, None)
-    assert design.blocks_with_old_heights(piano) == []
+    # the signature carries the takeoff: without it the heights are stale too, and redone the same
+    assert design.blocks_with_old_heights(piano) == [0]
     assert design.takeoffs_to_measure(piano) is True
     outcome = design.refresh_terrain(piano)
     assert outcome["rifatti"] == [0] and "terreno" in piano
@@ -758,3 +759,103 @@ def test_the_refresh_keeps_the_source_of_the_plan(tmp_path, monkeypatch):
     assert outcome["rifatti"] == [] and "DEM" in outcome["falliti"][0]["motivo"] and calls == []
     with pytest.raises(design.StaleHeights):
         project.prepare(on_dem)
+
+
+# ------------------------------------------------------------------ the re-review
+
+def test_a_block_switched_off_while_the_terrain_is_redone_is_never_flown_from_the_old_takeoff(monkeypatch):
+    """The reviewer's case: B switched off, the takeoff moved downhill, Follow the terrain pressed, B switched on
+    again. B kept the heights of the old takeoff with a matching signature, and flew 66 m too low (33 m above the
+    takeoff where 99 m were needed). Now a full computation redoes B too; and a B left with heights from another
+    takeoff is stale by its signature, redone at the export."""
+    import copy
+
+    from ppg_flightplan import project
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    piano = _two_blocks(decollo=list(NORTH))
+    design.apply_terrain(piano)
+    old_b = list(piano["blocchi"][1]["quote"])
+    piano["blocchi"][1]["attivo"] = False
+    piano["decollo"] = list(SOUTH)
+    design.apply_terrain(piano)                              # the button: a full computation
+    piano["blocchi"][1]["attivo"] = True
+    expected = copy.deepcopy(piano)
+    design.apply_terrain(expected)
+    assert piano["blocchi"][1]["quote"] == expected["blocchi"][1]["quote"] != old_b
+    fresh, _ = project.prepare(piano)
+    assert fresh["blocchi"][1]["quote"] == expected["blocchi"][1]["quote"]
+    # the same with B left behind (only A redone, as an older plan or a partial computation would leave it)
+    piano = _two_blocks(decollo=list(NORTH))
+    design.apply_terrain(piano)
+    piano["decollo"] = list(SOUTH)
+    design.apply_terrain(piano, only=0)
+    assert design.takeoffs_to_measure(piano) is False          # the takeoff is the new one...
+    assert design.blocks_with_old_heights(piano) == [1]        # ...and B's heights are not counted from it
+    fresh, outcome = project.prepare(piano)
+    assert outcome["rifatti"] == [1] and fresh["blocchi"][1]["quote"] == expected["blocchi"][1]["quote"]
+    # without the network to redo it, B is refused, never exported with the old heights
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: None)
+    tiles.clear_cache()
+    with pytest.raises(design.StaleHeights, match="«B»"):
+        project.prepare(piano)
+
+
+def _flat_with_a_target(**extra) -> dict:
+    piano = _plan(decollo=list(SOUTH), **extra)
+    b = piano["blocchi"][0]
+    b.pop("seguiTerreno")
+    b["speciali"] = [{"id": "s1", "nome": "T", "tipo": "foto", "punto": [45.0010, 10.0000], "aggancio": False,
+                      "discesa": {"modo": "suolo", "metri": 10}}]
+    return piano
+
+
+def test_a_target_descent_without_a_dem_and_without_the_tiles_asks_nothing_and_is_refused(monkeypatch):
+    """A descent "metres above the ground" in a chunk without a DEM: the ground is not measured on the public tiles
+    unless they were chosen; the export is refused and says how to go on."""
+    from ppg_flightplan import project
+
+    calls = _recording_network(monkeypatch)
+    piano = _flat_with_a_target()
+    assert "tegole pubbliche" in design.ground_source_missing(piano, has_dem=False)
+    assert design.ground_source_missing(piano, has_dem=True) is None
+    with pytest.raises(design.StaleHeights, match="tegole pubbliche") as err:
+        project.prepare(piano)
+    assert calls == [] and "fonteQuote" not in piano and err.value.reasons
+    # the tiles chosen: measured on them
+    piano[design.TILES_CHOSEN] = True
+    assert design.ground_source_missing(piano, has_dem=False) is None
+    fresh, outcome = project.prepare(piano)
+    assert calls and outcome.get("suolo") and fresh["fonteQuote"]["sorgente"] == "tegole"
+
+
+def test_a_planner_plan_without_a_source_is_not_redone_on_the_tiles_unasked(monkeypatch):
+    """A plan of the planner follows the terrain with no height source: without a DEM it is not redone on the public
+    tiles by Design or by the export; the export is refused, and no request is made."""
+    from ppg_flightplan import project
+
+    calls = _recording_network(monkeypatch)
+    piano = _plan(decollo=list(SOUTH))
+    route, _ = pl.route_of_block(piano["blocchi"][0], piano)
+    piano["blocchi"][0]["quote"] = [60.0] * len(route.points)
+    design.adopt_heights(piano)
+    dem, use_tiles = design.height_sources(piano, None)
+    assert dem is None and use_tiles is False
+    with pytest.raises(design.NoHeightSource):
+        design.apply_terrain(piano, dem=dem, use_tiles=use_tiles)    # what Design does with it
+    with pytest.raises(design.StaleHeights):
+        project.prepare(piano)
+    assert calls == []
+
+
+def test_prepare_refuses_a_block_that_could_not_be_redone(monkeypatch):
+    """Even when the signatures happen to match, a flying block in the refresh's failures is refused."""
+    from ppg_flightplan import project
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    piano = _plan(decollo=list(SOUTH))
+    design.apply_terrain(piano)
+    monkeypatch.setattr(design, "refresh_terrain",
+                        lambda p, dem=None: {"rifatti": [], "falliti": [{"blocco": 0, "motivo": "rete assente"}]})
+    with pytest.raises(design.StaleHeights, match="rete assente"):
+        project.prepare(piano)

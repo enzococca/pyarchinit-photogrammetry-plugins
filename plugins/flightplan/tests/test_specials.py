@@ -12,7 +12,9 @@ from terrainfixtures import AREA, tile_rising_north
 # ---- the terrain for the special points, also when no block follows it
 
 def _flat_plan_with_a_special_point(descent, takeoff=(44.9970, 10.0000), where=(45.0020, 10.0000)):
+    # the public tiles chosen for the ground (the chunk of these tests has no DEM): never asked unasked
     return {"nome": "campo", "camera": "mini4pro", "alta": False, "minutiBatteria": 18, "decollo": list(takeoff),
+            design.TILES_CHOSEN: True,
             "blocchi": [{"tipo": "griglia", "nome": "A", "area": [list(p) for p in AREA], "quota": 60,
                          "inclinazione": -90, "avanti": 80, "lato": 70, "orientamento": 0, "velocita": 5,
                          "modo": "per_punto",
