@@ -521,6 +521,12 @@ class ShipwreckPlugin(Plugin):
                     "Under the level the bottom seen through water is apparent: in a nadir view the true depth is about the "
                     "apparent one times n. A first approximation, stated on the drawings."))
         if v:
+            if v["on"] and not water["on"] and lines.cloud_corrected(chunk):
+                pressed = self._choose(t("Acqua", "Water"), lines.double_correction_text(),
+                                       [t("Correggi lo stesso", "Correct anyway"), t("Lascia spenta", "Leave it off")])
+                if pressed is None:
+                    return
+                v["on"] = pressed == 0
             lines.set_water(chunk, v["level"], v["n"], v["on"])
             self._changed()
 
@@ -2096,6 +2102,8 @@ class ShipwreckPlugin(Plugin):
             elif ns.what == "water":
                 if ns.level is None:
                     raise ship.NotReady("--level")
+                if ns.on and lines.cloud_corrected(chunk):
+                    print(lines.double_correction_text())
                 lines.set_water(chunk, ns.level, ns.n, ns.on)
             elif ns.what == "drawings":
                 from . import relief

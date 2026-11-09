@@ -348,3 +348,45 @@ def test_the_check_plate_dialog(window, tmp_path):
     press(untick=("ordinata", "comento", "corso"))
     assert plugin._check_plate(plate, counts) is None  # nothing ticked: nothing to import
     assert timbers.timbers_of(ch) == []
+
+
+def test_a_cloud_the_program_corrected_is_said_before_correcting_again(hull, capsys):
+    from ppg_shipwreck import ShipwreckPlugin
+
+    doc, ch, frame = hull
+    assert not lines.cloud_corrected(ch)
+    doc.save()
+    plugin = ShipwreckPlugin()
+    assert plugin.command("water", str(doc.path), "--level", "-0.4", "--on") == 0
+    out = capsys.readouterr().out
+    assert "twice" not in out and "due volte" not in out
+    ch.meta["dense"] = {"refraction": {"level": frame.z0 - 0.4, "n": 1.34}}
+    doc.save()
+    assert lines.cloud_corrected(ch)
+    assert plugin.command("water", str(doc.path), "--level", "-0.4", "--on") == 0
+    out = capsys.readouterr().out
+    assert "due volte" in out or "twice" in out
+    assert plugin.command("water", str(doc.path), "--level", "-0.4") == 0  # the correction off: nothing to say
+    out = capsys.readouterr().out
+    assert "due volte" not in out and "twice" not in out
+
+
+def test_the_window_asks_before_a_second_correction(hull, monkeypatch):
+    from ppg_shipwreck import ShipwreckPlugin
+
+    doc, ch, frame = hull
+    ch.meta["dense"] = {"refraction": {"level": frame.z0 - 0.4, "n": 1.34}}
+    plugin = ShipwreckPlugin()
+    monkeypatch.setattr(plugin, "_need_chunk", lambda: ch)
+    monkeypatch.setattr(plugin, "_changed", lambda: None)
+    monkeypatch.setattr(plugin, "_ask", lambda *a, **k: {"level": -0.4, "n": 1.34, "on": True})
+    asked = []
+    for pressed, on in ((1, False), (0, True)):
+        monkeypatch.setattr(plugin, "_choose", lambda title, text, options, p=pressed: asked.append(text) or p)
+        plugin._do_water()
+        assert lines.is_on(ch) is on
+    assert len(asked) == 2 and all("due volte" in a or "twice" in a for a in asked)
+    monkeypatch.setattr(plugin, "_choose", lambda *a: None)  # Annulla: nothing changes
+    lines.set_water(ch, -0.4, 1.34, False)
+    plugin._do_water()
+    assert not lines.is_on(ch)
