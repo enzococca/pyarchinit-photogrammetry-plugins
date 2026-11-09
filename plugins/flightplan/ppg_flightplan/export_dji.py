@@ -311,10 +311,11 @@ def kmz(route: Route, cam: Camera, now_ms: Optional[int] = None) -> bytes:
 
 def kmz_per_leg(piano: dict) -> list[tuple[str, bytes]]:
     """A KMZ for every leg of every active block, in the order of flight: file name and bytes."""
-    from .design import require_current_heights
+    from .design import require_current_heights, require_safe_heights
     from .plan import plan_camera, plan_legs
 
     require_current_heights(piano)      # a block changed after its heights: never fly the old ones, nor one height
+    require_safe_heights(piano)         # nor heights cut at the ceiling, nor a leg takeoff kilometres away
     cam = plan_camera(piano)
     return [(f"{leg.file_name}.kmz", kmz(leg.route, cam)) for leg in plan_legs(piano)]
 

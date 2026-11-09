@@ -22,7 +22,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from .texts import t, warning_text
 from .window import WindowPart, copy_legs
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 
 class CommandError(Exception):
@@ -482,7 +482,6 @@ class FlightPlanPlugin(WindowPart, Plugin):
         from . import design as design_mod
         from . import plan as pl
         from . import project, targets
-        from .geometry import centroid
 
         if ns.remove:
             targets.remove_targets(piano)
@@ -496,9 +495,8 @@ class FlightPlanPlugin(WindowPart, Plugin):
                 raise CommandError("--markers needs the project")
             read = targets.targets_from_markers(chunk, only_with_reference=not ns.estimated)
         else:
-            points = [q for b in pl.active_blocks(piano) for q in pl.route_of_block(b, piano)[0].points]
-            near = centroid(points) if points else None
-            read = targets.read_targets_csv(Path(ns.csv).read_text(encoding="utf-8-sig"), near=near, epsg=ns.epsg)
+            read = targets.read_targets_csv(Path(ns.csv).read_text(encoding="utf-8-sig"), near=pl.site_centre(piano),
+                                            epsg=ns.epsg)
         targets.put_targets(piano, read, metres=ns.metres)
         if ns.tiles:
             piano[design_mod.TILES_CHOSEN] = True

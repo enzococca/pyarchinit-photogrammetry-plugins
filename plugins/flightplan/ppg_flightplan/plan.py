@@ -276,3 +276,60 @@ def plan_takeoffs(piano: dict) -> list[tuple[str, LatLon]]:
         if leg.takeoff and leg.takeoff != general:
             out.append((f"Decollo {leg.file_name}", leg.takeoff))
     return out
+
+
+def far_leg_takeoffs(piano: dict) -> list[tuple[str, str, float]]:
+    """The legs whose own takeoff (``decolli``) is farther than :data:`FAR_TAKEOFF_M` from every point of the leg:
+    (key, file name, metres). Such a takeoff is not taken as one for the heights (:func:`_relative_to_its_takeoff`),
+    so the export refuses it (:class:`ppg_flightplan.design.FarLegTakeoff`) instead of counting the heights from
+    another takeoff than the one set."""
+    own = piano.get("decolli") or {}
+    if not own:
+        return []
+    out = []
+    for leg in plan_legs(piano):
+        d = own.get(leg.key)
+        if not d or not leg.route.points:
+            continue
+        point = (float(d[0]), float(d[1]))
+        metres = min(distance(point, q) for q in leg.route.points)
+        if metres > FAR_TAKEOFF_M:
+            out.append((leg.key, leg.file_name, round(metres)))
+    return out
+
+
+# A leg whose first or last waypoint moved more than this, or whose waypoints are not as many, changed.
+LEG_MOVED_M = 2.0
+
+
+def moved_leg_takeoffs(old: dict, new: dict) -> list[str]:
+    """The keys of the per-leg takeoffs of ``new`` (kept from ``old`` by key after a new design) whose leg is not the
+    one it was: the keys are positional (block - number of the leg), so a kept takeoff may now belong to a leg in
+    another place. The caller asks to check them."""
+    own = new.get("decolli") or {}
+    if not own:
+        return []
+    before = {leg.key: leg.route.points for leg in plan_legs(old)}
+    out = []
+    for leg in plan_legs(new):
+        if leg.key not in own:
+            continue
+        was, now = before.get(leg.key), leg.route.points
+        if not was or len(was) != len(now) or not now or distance(was[0], now[0]) > LEG_MOVED_M \
+                or distance(was[-1], now[-1]) > LEG_MOVED_M:
+            out.append(leg.key)
+    return out
+
+
+def site_centre(piano: dict) -> Optional[LatLon]:
+    """Where the plan is: the centre of the waypoints of the active blocks, else of the areas of all its blocks (all
+    switched off), else of the area drawn; None for an empty plan. Reading targets, the order of two columns of
+    degrees is chosen by the side nearer to it."""
+    points = [q for b in active_blocks(piano) for q in route_of_block(b, piano)[0].points]
+    if not points:
+        points = [(float(p[0]), float(p[1])) for b in piano.get("blocchi", []) for p in b.get("area") or []]
+        points += [(float(c[0]), float(c[1])) for b in piano.get("blocchi", []) if b.get("centro")
+                   for c in [b["centro"]]]
+    if not points:
+        points = [(float(p[0]), float(p[1])) for p in piano.get("areaDisegnata") or []]
+    return centroid(points) if points else None
