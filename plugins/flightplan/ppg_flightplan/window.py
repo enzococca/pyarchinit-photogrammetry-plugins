@@ -567,8 +567,9 @@ class WindowPart:
                      "After the flight: add the photos of the flight to the chunk (File > Add photos), then "
                      "Compare."), False
         if stored:
-            return t("Da rifare: il piano o le foto sono cambiati dopo il confronto.",
-                     "To do again: the plan or the photos changed after the comparison."), False
+            return t("Da rifare: il piano, le foto, l'allineamento o il DEM sono cambiati dopo il confronto.",
+                     "To do again: the plan, the photos, the alignment or the DEM changed after the comparison."), \
+                False
         aligned = bool(getattr(chunk, "aligned_cameras", None))
         return (t("Pronto: Confronta mette gli scatti previsti contro le foto del chunk",
                   "Ready: Compare puts the planned shots against the photos of the chunk")

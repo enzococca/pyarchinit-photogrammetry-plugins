@@ -14,8 +14,10 @@ the coverage the plan predicted.
   in metres on a local azimuthal projection centred on the plan (pyproj).
 * **The coverage obtained**, when the chunk is aligned and has a projected system: the program's field check
   (:func:`pyarchinit_photogrammetry.engine.fieldcheck.coverage`, aligned photos framing every cell) at the cell of
-  the predicted coverage, resampled on the predicted grid; cells the reconstruction does not reach count as seen by
-  no photo. ``cells_worse``: cells predicted at or above the threshold and obtained below it.
+  the predicted coverage, resampled on the predicted grid. Cells the reconstruction does not reach are not
+  measured: counted apart (``outside_reconstruction``), left out of ``cells_worse`` (cells measured, predicted at or
+  above the threshold and obtained below it) and of the obtained fractions. The comparison with its coverage
+  becomes old when the alignment, the georeference or the DEM change (:func:`coverage_basis`).
 
 The result of :func:`compare` is JSON-ready except the keys beginning with ``_`` (the obtained grid), which
 :func:`write` turns into rasters. :func:`compare_for` does the whole step for a plan of the project and keeps the
@@ -64,14 +66,23 @@ def relative_height(path) -> Optional[float]:
 
 def photo_positions(chunk) -> list[dict]:
     """Every enabled photo of the chunk: ``label``, ``key``, ``latlon`` ((lat, lon) or None), ``source``
-    (``reference``, ``exif`` or None), ``relative_height`` (from the XMP, or None) and ``aligned``."""
+    (``reference``, ``exif`` or None), ``relative_height`` (from the XMP, or None) and ``aligned``. The references
+    are converted one system at a time: a system that cannot be converted sends only its photos to the EXIF GPS
+    (``source`` "exif", counted in the statistics as ``from_exif``)."""
     from pyarchinit_photogrammetry.markers import gcp
 
     cams = [c for c in chunk.cameras if getattr(c, "enabled", True)]
-    try:
-        refs, _crs = gcp.camera_references(chunk, cams, crs="EPSG:4326")
-    except Exception:  # noqa: BLE001 - a reference system that cannot be read: the EXIF below
-        refs = {}
+    groups: dict = {}
+    for c in cams:
+        if c.reference.location:
+            groups.setdefault(str(c.meta.get("reference_crs", chunk.crs)), []).append(c)
+    refs: dict = {}
+    for group in groups.values():   # one system at a time: one that cannot be read leaves the others as they are
+        try:
+            got, _crs = gcp.camera_references(chunk, group, crs="EPSG:4326")
+            refs.update(got)
+        except Exception:  # noqa: BLE001 - a reference system that cannot be read: the EXIF below for those
+            pass
     out = []
     for cam in cams:
         latlon, source = None, None
@@ -107,8 +118,32 @@ def photos_signature(chunk) -> str:
     for c in chunk.cameras:
         loc = c.reference.location
         parts.append([c.key, bool(getattr(c, "enabled", True)), bool(c.aligned),
-                      None if loc is None else [round(float(v), 3) for v in loc],
+                      None if loc is None else [float(v).hex() for v in loc],     # full floats: degrees too
                       c.meta.get("reference_crs")])
+    return hashlib.sha1(json.dumps(parts, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def coverage_basis(chunk, id_: str) -> str:
+    """What the coverage obtained depends on besides the photos' references: the chunk's transform, the poses of
+    the aligned photos, the tie points (their file), the chunk's DEM and the predicted coverage of the plan ``id_``
+    (its stamp, DEM, cell and threshold). A re-alignment, an optimisation, a new georeference or a new DEM changes
+    it, and the comparison with its coverage becomes old."""
+    from . import project
+
+    def floats(a) -> list:
+        return [float(v).hex() for v in np.asarray(a, float).ravel()]
+
+    tp = chunk.product_path("tie_points") if hasattr(chunk, "product_path") else None
+    tp_id = None
+    if tp is not None and Path(tp).is_file():
+        st = Path(tp).stat()
+        tp_id = [Path(tp).name, st.st_size, st.st_mtime_ns]
+    transform = getattr(chunk, "transform", None)
+    pred = project.coverage_record(chunk, id_) or {}
+    parts = {"transform": None if transform is None else floats(transform),
+             "poses": [[c.key, floats(c.transform)] for c in chunk.cameras if c.transform is not None],
+             "tie_points": tp_id, "dem": project._dem_signature(chunk),
+             "predicted": [pred.get("stamp"), pred.get("dem"), pred.get("cell"), pred.get("low")]}
     return hashlib.sha1(json.dumps(parts, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
@@ -225,13 +260,17 @@ def compare(piano: dict, chunk, max_distance: Optional[float] = None, progress: 
         from scipy.spatial import cKDTree
 
         tree = cKDTree(sxy)
+        widest = float(reach.max())
         for j, p in enumerate(placed):
             if j in taken_photo:
                 continue
             d, i = tree.query(pxy[j])
             row = {"foto": p["label"], "lat": round(p["latlon"][0], 8), "lon": round(p["latlon"][1], 8),
                    "distanza_m": round(float(d), 1), "leg": shots[int(i)]["leg"]}
-            (repeats if d <= reach[int(i)] else extra).append(row)
+            # within the reach of any shot (each with its own leg's step), not only of the nearest one: a repeat
+            near = tree.query_ball_point(pxy[j], r=widest)
+            within = any(np.hypot(*(sxy[k] - pxy[j])) <= reach[k] for k in near)
+            (repeats if within else extra).append(row)
     by_leg: dict[int, dict] = {}
     for s in shots:
         r = by_leg.setdefault(s["leg"], {"leg": s["leg"], "tratta": s["tratta"], "planned": 0, "matched": 0,
@@ -244,6 +283,7 @@ def compare(piano: dict, chunk, max_distance: Optional[float] = None, progress: 
     stats = {"planned": len(shots), "taken": len(placed), "matched": len(matched), "missing": len(missing),
              "extra": len(extra), "repeats": len(repeats),
              "without_position": len(photos) - len(placed),
+             "from_exif": sum(1 for p in placed if p.get("source") == "exif"),
              "median_offset_m": _round(np.median(offsets)) if offsets else None,
              "p90_offset_m": _round(np.percentile(offsets, 90)) if offsets else None,
              "median_dh_m": _round(np.median(dhs), 3) if dhs else None,
@@ -285,12 +325,14 @@ def obtained_coverage(chunk, predicted, progress=None):
     inside = predicted.inside
     low = int(predicted.low)
     pred = predicted.counts
-    worse = inside & (pred >= low) & (obtained < low)
+    reached = inside & (out >= 0)            # cells the field check measured (inside its reconstruction)
+    worse = reached & (pred >= low) & (obtained < low)
     n = int(inside.sum())
-    stats = {"cell": round(float(predicted.cell), 4), "low": low, "cells": n,
-             "obtained_low_fraction": round(float((obtained[inside] < low).mean()), 4) if n else None,
+    m = int(reached.sum())
+    stats = {"cell": round(float(predicted.cell), 4), "low": low, "cells": n, "cells_measured": m,
+             "obtained_low_fraction": round(float((obtained[reached] < low).mean()), 4) if m else None,
              "predicted_low_fraction": round(float((pred[inside] < low).mean()), 4) if n else None,
-             "obtained_median": round(float(np.median(obtained[inside])), 1) if n else None,
+             "obtained_median": round(float(np.median(obtained[reached])), 1) if m else None,
              "predicted_median": round(float(np.median(pred[inside])), 1) if n else None,
              "cells_worse": int(worse.sum()),
              "area_worse_m2": round(float(worse.sum()) * float(predicted.cell) ** 2, 1),
@@ -390,6 +432,12 @@ def compare_for(chunk, id_: str, max_distance: Optional[float] = None, progress:
         raise KeyError(t("nessun piano «{0}» nel chunk", "no plan '{0}' in the chunk").format(id_))
     stamp = e["stamp"]
     photos = photo_positions(chunk)
+    if not planned_shots(e["piano"]):
+        raise CompareError(t("il piano non ha scatti: nessun blocco acceso", "the plan has no shots: no active block"))
+    if not any(p["latlon"] is not None for p in photos):     # before any coverage is computed for nothing
+        raise CompareError(t("nessuna foto del chunk ha una posizione (riferimento o GPS dell'EXIF): aggiungi le foto "
+                             "del volo", "no photo of the chunk has a position (reference or EXIF GPS): add the "
+                             "photos of the flight"))
     predicted = None
     if project.has_crs(chunk) and getattr(chunk, "aligned_cameras", None):
         try:
@@ -408,6 +456,7 @@ def compare_for(chunk, id_: str, max_distance: Optional[float] = None, progress:
     rec = {"stamp": stamp, "photos": photos_signature(chunk), "stats": result["stats"], "legs": result["legs"],
            "missing": result["missing"], "extra": result["extra"], "coverage": result.get("coverage"),
            "max_distance_m": result["max_distance_m"],
+           "basis": coverage_basis(chunk, id_) if result.get("coverage") else None,
            "files": {k: Path(p).relative_to(chunk.data_dir).as_posix() for k, p in paths.items()}}
     progress(1.0, t("Confronto fatto", "Comparison done"))
     if project.entry(chunk, id_) is None:
@@ -419,7 +468,8 @@ def compare_for(chunk, id_: str, max_distance: Optional[float] = None, progress:
 
 def comparison_record(chunk, id_: str) -> Optional[dict]:
     """The comparison kept for the plan ``id_`` when it is still current: the plan (stamp) and the photos
-    (:func:`photos_signature`) as they were, its files there; else None."""
+    (:func:`photos_signature`) as they were, with a coverage obtained also what it depended on
+    (:func:`coverage_basis`), its files there; else None."""
     from . import project
 
     e = project.entry(chunk, id_)
@@ -428,6 +478,8 @@ def comparison_record(chunk, id_: str) -> Optional[dict]:
         return None
     if rec.get("photos") != photos_signature(chunk):
         return None
+    if rec.get("coverage") and rec.get("basis") != coverage_basis(chunk, id_):
+        return None                         # re-aligned, optimised, georeferenced again, another DEM
     files = rec.get("files") or {}
     if not files or not all((Path(chunk.data_dir) / f).is_file() for f in files.values()):
         return None
@@ -466,6 +518,12 @@ def summary_line(rec: dict) -> str:
     if s.get("extra"):
         parts.append(plural(s["extra"], t("{0} foto lontana dal piano", "{0} photo far from the plan"),
                             t("{0} foto lontane dal piano", "{0} photos far from the plan")))
+    if s.get("repeats"):
+        parts.append(plural(s["repeats"], t("{0} foto ripetuta", "{0} repeated photo"),
+                            t("{0} foto ripetute", "{0} repeated photos")))
+    if s.get("from_exif"):
+        parts.append(plural(s["from_exif"], t("{0} foto col GPS dell'EXIF", "{0} photo with the EXIF GPS"),
+                            t("{0} foto col GPS dell'EXIF", "{0} photos with the EXIF GPS")))
     if s.get("without_position"):
         parts.append(plural(s["without_position"], t("{0} foto senza posizione", "{0} photo without a position"),
                             t("{0} foto senza posizione", "{0} photos without a position")))
@@ -477,6 +535,12 @@ def summary_line(rec: dict) -> str:
                         "worse than predicted.").format(
             c["low"], num(100 * c["obtained_low_fraction"], 0), num(100 * (c["predicted_low_fraction"] or 0), 0),
             plural(c["cells_worse"], t("{0} cella", "{0} cell"), t("{0} celle", "{0} cells")))
+        if c.get("outside_reconstruction"):
+            text += " " + plural(c["outside_reconstruction"],
+                                 t("{0} cella dell'area è fuori dalla ricostruzione: non misurata.",
+                                   "{0} cell of the area is outside the reconstruction: not measured."),
+                                 t("{0} celle dell'area sono fuori dalla ricostruzione: non misurate.",
+                                   "{0} cells of the area are outside the reconstruction: not measured."))
     return text
 
 
@@ -497,6 +561,8 @@ def for_sheet(rec: dict) -> dict:
              "missing")), ("extra", ("Foto lontane dal piano", "Photos far from the plan")),
              ("repeats", ("Foto ripetute", "Repeated photos")),
              ("without_position", ("Foto senza posizione", "Photos without a position")),
+             ("from_exif", ("Foto col GPS dell'EXIF (nessun riferimento usabile)",
+                            "Photos with the EXIF GPS (no usable reference)")),
              ("median_offset_m", ("Scarto mediano (m)", "Median offset (m)")),
              ("p90_offset_m", ("Scarto al 90° percentile (m)", "Offset at the 90th percentile (m)")),
              ("median_dh_m", ("Quota mediana rispetto al piano (m)", "Median height from the plan (m)")))
@@ -516,6 +582,8 @@ def for_sheet(rec: dict) -> dict:
                  ("predicted_median", ("Foto per cella previste (mediana)", "Photos per cell predicted (median)")),
                  ("obtained_median", ("Foto per cella ottenute (mediana)", "Photos per cell obtained (median)")),
                  ("cells_worse", ("Celle peggio del previsto", "Cells worse than predicted")),
+                 ("outside_reconstruction", ("Celle fuori dalla ricostruzione (non misurate)",
+                                             "Cells outside the reconstruction (not measured)")),
                  ("area_worse_m2", ("Area peggio del previsto (m²)", "Area worse than predicted (m²)")),
                  ("cell", ("Cella (m)", "Cell (m)")))
         for key, pair in cover:

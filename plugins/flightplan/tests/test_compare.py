@@ -125,6 +125,7 @@ def test_extra_photos(tmp_path):
     out = compare.compare(piano, ch)
     assert out["stats"]["extra"] == 2 and len(out["extra"]) == 2 and out["stats"]["repeats"] == 1
     assert out["stats"]["missing"] == 0 and all(x["distanza_m"] > 150 for x in out["extra"])
+    assert "1 foto ripetuta" in compare.summary_line(out) and "2 foto lontane dal piano" in compare.summary_line(out)
 
 
 def test_nothing_to_compare(tmp_path):
@@ -244,6 +245,123 @@ def test_command_compare(tmp_path, capsys):
     assert again.chunk.meta["flightplan"]["comparison"][id_]["stats"]["missing"] == 4
     assert plugin.command("compare", str(doc.path), "--plan-id", "pnothere0") == 1
     assert plugin.command("compare", str(doc.path), "--max-distance", "-1") == 1
+
+
+def test_a_reference_in_degrees_moved_by_a_metre_makes_it_old(tmp_path):
+    doc, ch = synth.chunk(tmp_path)
+    id_ = project.add_plan(ch, grid_plan())
+    shots = compare.planned_shots(project.entry(ch, id_)["piano"])
+    cams = _add_photos(ch, _xy([s["latlon"] for s in shots]))
+    for c, s in zip(cams, shots):                       # the EXIF GPS as the program keeps it: lon, lat in degrees
+        c.reference.location = [s["latlon"][1], s["latlon"][0], 160.0]
+        c.meta["reference_crs"] = "EPSG:4326"
+    rec = compare.compare_for(ch, id_)
+    assert rec["stats"]["matched"] == len(shots) and compare.comparison_record(ch, id_) is rec
+    cams[0].reference.location[1] += 1e-5               # about 1 m north
+    assert compare.comparison_record(ch, id_) is None
+
+
+def test_one_system_that_cannot_be_read_leaves_the_others(tmp_path, monkeypatch):
+    from pyarchinit_photogrammetry.markers import gcp
+
+    doc, ch = synth.chunk(tmp_path)
+    cams = _add_photos(ch, [(synth.X0, synth.Y0), (synth.X0 + 10, synth.Y0)])
+    cams[1].meta["reference_crs"] = "EPSG:9999"
+    real = gcp.camera_references
+
+    def refs(chunk, group, crs=None, relative=False):
+        if any(c.meta.get("reference_crs") == "EPSG:9999" for c in group):
+            raise ValueError("a system that cannot be read")
+        return real(chunk, group, crs=crs, relative=relative)
+
+    monkeypatch.setattr(gcp, "camera_references", refs)
+    from pyarchinit_photogrammetry.io import exif
+
+    monkeypatch.setattr(exif, "read_exif", lambda p: {"gps": (9.0, 41.5, 100.0)})
+    a, b = compare.photo_positions(ch)
+    assert a["source"] == "reference" and b["source"] == "exif" and b["latlon"] == (41.5, 9.0)
+
+
+def test_alignment_georeference_or_dem_changed_make_the_coverage_old(tmp_path, monkeypatch):
+    from pyarchinit_photogrammetry.engine import fieldcheck
+
+    doc, ch = synth.chunk(tmp_path, dem=100.0)
+    id_ = project.add_plan(ch, grid_plan())
+    shots = compare.planned_shots(project.entry(ch, id_)["piano"])
+
+    def fake(chunk, resolution=None, progress=None, used=None):
+        pred = project.read_coverage(chunk, id_)
+        return pred.counts.astype(np.int32), pred.transform, None
+
+    monkeypatch.setattr(fieldcheck, "coverage", fake)
+    _aligned(monkeypatch, ch)
+    # nothing to compare: refused before any predicted coverage is computed
+    with pytest.raises(compare.CompareError):
+        compare.compare_for(ch, id_)
+    assert id_ not in project.peek(ch).get("coverage", {})
+    _add_photos(ch, _xy([s["latlon"] for s in shots]))
+    rec = compare.compare_for(ch, id_)
+    assert rec["coverage"] and rec["basis"] and compare.comparison_record(ch, id_) is rec
+    old = ch.transform.copy()
+    ch.transform = old.copy()
+    ch.transform[0, 3] += 0.01                          # georeferenced again (or re-aligned): another frame
+    assert compare.comparison_record(ch, id_) is None
+    ch.transform = old
+    assert compare.comparison_record(ch, id_) is rec
+    cams = ch.cameras
+    cams[0].transform = np.eye(4)                       # a pose changed by an optimisation
+    assert compare.comparison_record(ch, id_) is None
+    cams[0].transform = None
+    assert compare.comparison_record(ch, id_) is rec
+    synth.write_dem(ch.data_dir / "dem.tif", 101.0)     # a new DEM
+    import os
+    import time
+
+    st = (ch.data_dir / "dem.tif").stat()
+    os.utime(ch.data_dir / "dem.tif", (time.time() + 5, st.st_mtime + 5))
+    assert compare.comparison_record(ch, id_) is None
+
+
+def test_obtained_grid_shifted_and_smaller(tmp_path, monkeypatch):
+    """The field check's grid has another origin (0.37 cell off) and stops 3 cells inside the area on every side
+    (-1 beyond): the reprojection puts the hole where it is, and the cells it does not reach are not
+    measured."""
+    from rasterio.transform import Affine
+
+    from pyarchinit_photogrammetry.engine import fieldcheck
+
+    doc, ch = synth.chunk(tmp_path)
+    piano = grid_plan()
+    shots = compare.planned_shots(piano)
+    _add_photos(ch, _xy([s["latlon"] for s in shots]))
+    predicted = coverage.predict(piano, CRS)
+    cell = predicted.cell
+    h, w = predicted.counts.shape
+    pt = predicted.transform
+    shift = 0.37 * cell
+    hole = np.zeros((h, w), bool)
+    hole[h // 3:h // 3 + 12, w // 3:w // 3 + 15] = True
+    rows, cols = np.nonzero(predicted.inside)
+    kept = np.zeros((h, w), bool)                       # the area less 3 cells on every side: beyond, -1
+    kept[rows.min() + 3:rows.max() - 2, cols.min() + 3:cols.max() - 2] = True
+
+    def fake(chunk, resolution=None, progress=None, used=None):
+        # the source grid: the predicted cells shifted east and south by 0.37 cell; a -1 margin of 3 cells
+        src = np.where(hole, 0, predicted.counts).astype(np.int32)
+        src[~kept] = -1
+        return src, Affine(pt.a, 0, pt.c + shift, 0, pt.e, pt.f - shift), None
+
+    monkeypatch.setattr(fieldcheck, "coverage", fake)
+    _aligned(monkeypatch, ch)
+    out = compare.compare(piano, ch, predicted=predicted)
+    c = out["coverage"]
+    # nearest: a shift under half a cell keeps every cell where it was
+    assert c["cells_worse"] == 12 * 15
+    margin = ~kept
+    assert c["outside_reconstruction"] == int((margin & predicted.inside).sum()) > 0
+    assert c["cells_measured"] == int((~margin & predicted.inside).sum())
+    raster = out["_raster"]
+    assert (raster["worse"] == (hole & predicted.inside & (predicted.counts >= predicted.low))).all()
 
 
 # ------------------------------------------------------------------ the window
