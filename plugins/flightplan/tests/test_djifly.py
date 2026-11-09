@@ -460,3 +460,40 @@ def test_the_fetch_is_given_its_deadline(dji_device, monkeypatch):
     djifly.copy_mtp("mtp://D/S", [("a.kmz", b"NEW")], [dji_device["uuid1"]], backup_dir=dji_device["backup"])
     assert seen[0][0]["deadlineSeconds"] == djifly.FETCH_DEADLINE_S
     assert seen[1][1]["timeout"] > 0                     # the copy script gets time for every leg
+
+
+def test_a_leg_of_another_plan_is_asked_before_it_is_replaced(dji_device, test_plan):
+    """A slot holding a leg written from here is "ours" only for the plan that wrote it: the leg of another plan
+    (another site) is asked before, like a mission of the user; the plan's own slots are written without asking."""
+    from ppg_flightplan.window import copy_legs
+
+    waypoint, u1, u2, backup = dji_device["waypoint"], dji_device["uuid1"], dji_device["uuid2"], dji_device["backup"]
+    other = _mission(9, dji.AUTHOR, 1_700_000_000_000)                  # a leg written from here, 9 points
+    (waypoint / u1 / f"{u1}.kmz").write_bytes(other)
+    assert djifly.slot_states(waypoint, [u1])[0]["stato"] == djifly.SLOT_OURS          # without a plan: as before
+    assert djifly.slot_states(waypoint, [u1], own=set())[0]["stato"] == djifly.SLOT_OTHER_PLAN
+    piano = dict(test_plan)
+    legs = pl.plan_legs(piano)
+    slots = [u1, u2] + [f"{k:08X}-0000-4000-8000-000000000000" for k in range(len(legs) - 2)]
+    for s in slots[2:]:
+        (waypoint / s).mkdir(parents=True)
+    with pytest.raises(djifly.SlotsInUse) as err:
+        copy_legs(None, piano, waypoint, slots, backup)
+    assert [s["contenitore"] for s in err.value.slots] == [u1]
+    assert (waypoint / u1 / f"{u1}.kmz").read_bytes() == other
+    copy_legs(None, piano, waypoint, slots, backup, overwrite=True)     # confirmed
+    assert set(v["cartella"] for v in piano["djiFly"].values()) == set(slots)
+    # now they are this plan's: a second copy asks nothing
+    copy_legs(None, piano, waypoint, slots, backup)
+
+
+def test_the_legs_counted_again_after_the_refresh_are_said(dji_device, test_plan):
+    """The missions were chosen for the legs before the terrain refresh; if the refreshed plan has more legs the
+    copy stops and says so, before writing anything."""
+    from ppg_flightplan.window import copy_legs
+
+    waypoint, u1 = dji_device["waypoint"], dji_device["uuid1"]
+    before = (waypoint / u1 / f"{u1}.kmz").read_bytes()
+    with pytest.raises(DjiFlyError, match="quote del terreno rifatte"):
+        copy_legs(None, test_plan, waypoint, [u1], dji_device["backup"])
+    assert (waypoint / u1 / f"{u1}.kmz").read_bytes() == before

@@ -1493,7 +1493,7 @@ class WindowPart:
             names = [m.folder for m in djifly.missions(folder)]          # in the order DJI Fly made them
             names += sorted(d.name for d in folder.iterdir() if d.is_dir() and d.name not in names
                             and d.name != djifly.PREVIEWS and not d.name.startswith("."))   # slots without a KMZ
-            states = djifly.slot_states(folder, names)
+            states = djifly.slot_states(folder, names, own_slots(e["piano"]))
             safe = [s for s in states if s["stato"] in djifly.SAFE_SLOTS]
             busy = [s for s in states if s["stato"] not in djifly.SAFE_SLOTS]
             chosen = (safe + busy)[:n]
@@ -1688,8 +1688,15 @@ def _design_warning_text(w: dict) -> str:
 def _slot_text(state: str) -> str:
     return {"vuota": t("vuota", "empty"), "fittizia": t("fittizia", "placeholder"),
             "nostra": t("tratta scritta da qui", "leg written from here"),
+            "altro_piano": t("TRATTA DI UN ALTRO PIANO: si sovrascrive solo se confermi",
+                             "A LEG OF ANOTHER PLAN: overwritten only if you confirm"),
             "missione": t("MISSIONE DELL'UTENTE: si sovrascrive solo se confermi",
                           "A MISSION OF THE USER: overwritten only if you confirm")}.get(state, state)
+
+
+def own_slots(piano: dict) -> set:
+    """The DJI Fly containers this plan wrote its legs into (its ``djiFly`` entries)."""
+    return {str(v.get("cartella")) for v in (piano.get("djiFly") or {}).values() if v.get("cartella")}
 
 
 def copy_legs(chunk, fresh: dict, folder, containers: list[str], backup, overwrite: bool = False) -> list[dict]:
@@ -1700,15 +1707,23 @@ def copy_legs(chunk, fresh: dict, folder, containers: list[str], backup, overwri
     from . import plan as pl
 
     legs = export_dji.kmz_per_leg(fresh)
+    if len(legs) > len(containers):
+        # the missions were chosen on the plan before the terrain refresh, which changed its legs
+        raise djifly.DjiFlyError(t("il piano, con le quote del terreno rifatte, ha {0} tratte e le missioni scelte "
+                                   "sono {1}: nulla è stato scritto; copia di nuovo per sceglierne {0}",
+                                   "the plan, with its terrain heights made again, has {0} legs and {1} missions "
+                                   "were chosen: nothing was written; copy again to choose {0}")
+                                 .format(len(legs), len(containers)))
+    own = own_slots(fresh)
     background = legmap.orthophoto_background(chunk) if chunk is not None else None
     previews = [legmap.dji_preview(fresh, k, background=background) for k in range(len(legs))]
     if djifly.is_mtp(str(folder)):
         states = {}
-        done = djifly.copy_mtp(str(folder), legs, containers, backup_dir=backup, overwrite=overwrite)
+        done = djifly.copy_mtp(str(folder), legs, containers, backup_dir=backup, overwrite=overwrite, own=own)
     else:
         folder = djifly.normalise(str(folder))
-        states = {s["contenitore"]: s for s in djifly.slot_states(folder, containers[:len(legs)])}
-        done = djifly.copy(folder, legs, containers, previews, backup_dir=backup, overwrite=overwrite)
+        states = {s["contenitore"]: s for s in djifly.slot_states(folder, containers[:len(legs)], own)}
+        done = djifly.copy(folder, legs, containers, previews, backup_dir=backup, overwrite=overwrite, own=own)
     given = fresh.setdefault("djiFly", {})
     for leg, outcome in zip(pl.plan_legs(fresh), done):
         container = outcome.get("contenitore")
