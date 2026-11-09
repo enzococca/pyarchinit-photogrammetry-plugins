@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppg-flightplan"
+version = "0.1.0"
+description = "pyarchinit-photogrammetry plugin: drone flight plans for the survey - area, camera, GSD and height, overlaps, strips, shots, time and batteries, terrain following, predicted coverage on the DEM, and the files the drones read"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+authors = [{ name = "Enzo Cocca", email = "enzo.ccc@gmail.com" }]
+requires-python = ">=3.10"
+# numpy, pyproj, rasterio, shapely, Pillow and openpyxl come with the program: nothing more
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/flightplan"
+
+[project.entry-points."pyarchinit_photogrammetry.plugins"]
+flightplan = "ppg_flightplan:FlightPlanPlugin"
+
+[tool.setuptools]
+packages = ["ppg_flightplan"]

@@ -24,6 +24,8 @@ env:
   PPG_APP_SHIPWRECK: "pyarchinit-photogrammetry[gui,postgis,bim,mesh]>=1.7.1"
   # photocad needs 1.7.1 (the elevations' drawings, context.add_units); its tests use a fake PhotoCAD and a fake keychain
   PPG_APP_PHOTOCAD: "pyarchinit-photogrammetry[gui,postgis]>=1.7.1"
+  # flightplan needs 1.7.4 (context.add_rail_group); its tests never touch the network
+  PPG_APP_FLIGHTPLAN: "pyarchinit-photogrammetry[gui,postgis]>=1.7.4"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
@@ -50,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [plugins/architecture, plugins/blender-em, plugins/conservation, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/masonry, plugins/mesh-tools, plugins/photocad,
+        plugin: [plugins/architecture, plugins/blender-em, plugins/conservation, plugins/flightplan, plugins/geoarchaeology, plugins/geophysics, plugins/gis-archive, plugins/masonry, plugins/mesh-tools, plugins/photocad,
                  plugins/powerlines, plugins/samgeo, plugins/geoai, plugins/landscape, plugins/sentinel2, plugins/shipwreck, plugins/spirula,
                  plugins/terrain, plugins/terrio, plugins/underwater, template]
     services:
@@ -81,6 +83,7 @@ jobs:
           if [ "${{ matrix.plugin }}" = "plugins/conservation" ]; then app="$PPG_APP_CONSERVATION"; extra="-e plugins/masonry"; fi
           if [ "${{ matrix.plugin }}" = "plugins/shipwreck" ]; then app="$PPG_APP_SHIPWRECK"; fi
           if [ "${{ matrix.plugin }}" = "plugins/photocad" ]; then app="$PPG_APP_PHOTOCAD"; fi
+          if [ "${{ matrix.plugin }}" = "plugins/flightplan" ]; then app="$PPG_APP_FLIGHTPLAN"; fi
           python -m pip install "$app" pytest -e "${{ matrix.plugin }}" $extra
       - name: MeshLab for the tests of mesh-tools (its other tests run without it)
         if: matrix.plugin == 'plugins/mesh-tools'
