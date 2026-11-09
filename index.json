@@ -63,6 +63,26 @@
       "sha256": "f18cdd728d8bde912f359a59e5bb5aa728a8449bcaf69a83ac2615bdce9b4b6e"
     },
     {
+      "name": "flightplan",
+      "version": "0.1.0",
+      "title": "Flight plans",
+      "description": "Drone flight plans for the survey: area, camera, GSD and height, overlaps, strips, shots, time and batteries, terrain following on the chunk's DEM, predicted coverage, and the files the drones read (DJI WPML KMZ, DJI Fly, Litchi, QGroundControl, Mission Planner, Parrot, KML, GeoPackage); after the flight, the plan compared with the photos",
+      "i18n": {
+        "it": {
+          "title": "Piani di volo",
+          "description": "Piani di volo per il rilievo da drone: area, camera, GSD e quota, sovrapposizioni, strisciate, scatti, tempi e batterie, volo che segue il terreno sul DEM del chunk, copertura prevista e i file per i droni (KMZ WPML DJI, DJI Fly, Litchi, QGroundControl, Mission Planner, Parrot, KML, GeoPackage); dopo il volo, il piano confrontato con le foto"
+        }
+      },
+      "author": "Enzo Cocca",
+      "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/flightplan",
+      "license": "GPL-2.0-or-later",
+      "api": 1,
+      "min_app": "1.7.4",
+      "requires": [],
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/flightplan-v0.1.0/ppg_flightplan-0.1.0-py3-none-any.whl",
+      "sha256": "92800c79a1a19124538462c4069d0f684bc20370a07ecea6d68b907efc55fdee"
+    },
+    {
       "name": "geoai",
       "version": "0.2.0",
       "title": "GeoAI",
