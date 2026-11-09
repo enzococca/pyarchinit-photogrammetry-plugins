@@ -162,6 +162,7 @@ class FlightPlanPlugin(WindowPart, Plugin):
         p = sub.add_parser("terrain", parents=[common], help="the heights following the terrain")
         p.add_argument("--detail", choices=tuple(tiles.DETAILS), default=None)
         p.add_argument("--off", action="store_true", help="back to one height per block")
+        p.add_argument("--tiles", action="store_true", help="the public terrain tiles (network) instead of the DEM")
         p = sub.add_parser("targets", parents=[common], help="GNSS targets as special points")
         p.add_argument("--csv", help="the targets' CSV")
         p.add_argument("--epsg", type=int, help="the system of the CSV's coordinates")
@@ -458,7 +459,10 @@ class FlightPlanPlugin(WindowPart, Plugin):
         else:
             if ns.detail:
                 piano["dettaglioTerreno"] = ns.detail
-            dem = project.chunk_dem(chunk)
+            dem = None if ns.tiles else project.chunk_dem(chunk)
+            if dem is None and not ns.tiles:
+                # the network only when asked: no DEM, and the tiles not chosen
+                raise CommandError("the chunk has no DEM: --tiles to use the public terrain tiles (network)")
             try:
                 out = design_mod.apply_terrain(piano, z=tiles.zoom_for_detail(piano.get("dettaglioTerreno")),
                                                dem=dem)

@@ -76,7 +76,7 @@ Il drone non legge mai KML, GeoJSON o GeoPackage.
 ppg plugin flightplan cameras
 ppg plugin flightplan design PROGETTO.ppg --bbox O,S,E,N --goal orto --value 2 [--terrain] [--takeoff LAT,LON]
 ppg plugin flightplan show PROGETTO.ppg
-ppg plugin flightplan terrain PROGETTO.ppg [--detail fine] [--off]
+ppg plugin flightplan terrain PROGETTO.ppg [--detail fine] [--tiles] [--off]
 ppg plugin flightplan targets PROGETTO.ppg --csv target.csv [--epsg N]      # oppure --markers
 ppg plugin flightplan coverage PROGETTO.ppg [--cell M] [--low N]
 ppg plugin flightplan export PROGETTO.ppg --format kmz-zip --out volo.zip

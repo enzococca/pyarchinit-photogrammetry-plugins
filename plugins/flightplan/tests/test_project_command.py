@@ -382,3 +382,13 @@ def ppg_chunk(path):
     import pyarchinit_photogrammetry as ppg
 
     return ppg.Document.open(path).chunk
+
+
+def test_terrain_without_a_dem_asks_for_the_tiles(tmp_path, capsys):
+    """No network unasked: without a DEM `terrain` wants --tiles."""
+    plugin = _plugin(tmp_path)
+    plan_file = tmp_path / "plan.json"
+    assert plugin.command("design", "--coords", _coords(), "--plan", str(plan_file)) == 0
+    capsys.readouterr()
+    assert plugin.command("terrain", "--plan", str(plan_file)) == 1
+    assert "--tiles" in capsys.readouterr().out
