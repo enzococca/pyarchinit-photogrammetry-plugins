@@ -20,6 +20,7 @@ from pathlib import Path
 from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import t, warning_text
+from .window import WindowPart, copy_legs
 
 __version__ = "0.1.0"
 
@@ -28,7 +29,7 @@ class CommandError(Exception):
     """A message for the user of the command line: printed, the command returns 1."""
 
 
-class FlightPlanPlugin(Plugin):
+class FlightPlanPlugin(WindowPart, Plugin):
     name = "flightplan"
     title = "Piani di volo"
     version = __version__
@@ -37,14 +38,24 @@ class FlightPlanPlugin(Plugin):
 
     def __init__(self):
         self.context = None
+        self.pane = None
+        self._window_init()
 
     def activate(self, context) -> None:
         self.context = context
+        actions = self._add_actions(context)
         context.add_command("flightplan", self.command,
                             help="drone flight plans: cameras, design, show, terrain, targets, coverage, export, "
                                  "djifly, add, list, remove, use")
         for title, suffix, fmt in self.exporters():
             context.add_exporter(title, suffix, self._exporter(fmt))
+        if context.window is not None:
+            self._attach_window(context, actions)
+
+    def deactivate(self) -> None:
+        """The layers of the plan off the view and the QGIS provider out; the program takes away the pane, the
+        actions, the rail group, the tree items and the connections (``context.release``)."""
+        self._detach_window()
 
     # ------------------------------------------------------------------ export formats of the program
     @staticmethod
@@ -63,12 +74,14 @@ class FlightPlanPlugin(Plugin):
             if e is None:
                 raise ValueError(t("il chunk non ha un piano di volo", "the chunk has no flight plan"))
             before = e["stamp"]
-            files = project.export(chunk, e["id"], fmt, path, progress)
-            after = project.entry(chunk, e["id"])
-            if after is not None and after["stamp"] != before and self.context is not None:
-                # the terrain heights were redone: the plan changed (the snapshots of undo see it)
-                self.context.call_in_gui(self.context.mark_modified)
-            return files
+            try:
+                return project.export(chunk, e["id"], fmt, path, progress)
+            finally:
+                # the terrain heights were redone: the plan changed (the snapshots of undo see it) - also when
+                # writing the file failed after the refresh
+                after = project.entry(chunk, e["id"])
+                if after is not None and after["stamp"] != before and self.context is not None:
+                    self.context.call_in_gui(self.context.mark_modified)
         return export
 
     # ------------------------------------------------------------------ command line
@@ -261,6 +274,9 @@ class FlightPlanPlugin(Plugin):
                 raise CommandError(f"no plan {ns.plan_id!r}: see ppg plugin flightplan list")
             (project.remove_plan if what == "remove" else project.set_active)(chunk, ns.plan_id)
             self._save(doc)
+            if what == "remove" and doc is not None and getattr(doc, "path", None) \
+                    and (self.context is None or self.context.window is None):
+                project.purge_removed(chunk)        # saved, and no undo in the command line: the files go
             print(json.dumps({"rimosso" if what == "remove" else "attivo": ns.plan_id}))
             return 0
         if what == "add":
@@ -493,7 +509,6 @@ class FlightPlanPlugin(Plugin):
 
     def _djifly(self, ns, doc, chunk, piano, id_) -> int:
         from . import djifly, export_dji, legmap, project
-        from . import plan as pl
 
         if bool(ns.folder) == bool(ns.zip):
             raise CommandError("give --folder PATH (the waypoint folder) or --zip OUT")
@@ -504,29 +519,19 @@ class FlightPlanPlugin(Plugin):
         finally:
             if dem is not None:
                 dem.close()
-        legs = export_dji.kmz_per_leg(fresh)
-        background = legmap.orthophoto_background(chunk) if chunk is not None else None
-        previews = [legmap.dji_preview(fresh, k, background=background) for k in range(len(legs))]
         if ns.zip:
+            legs = export_dji.kmz_per_leg(fresh)
+            background = legmap.orthophoto_background(chunk) if chunk is not None else None
+            previews = [legmap.dji_preview(fresh, k, background=background) for k in range(len(legs))]
             Path(ns.zip).parent.mkdir(parents=True, exist_ok=True)
             Path(ns.zip).write_bytes(djifly.zip_containers(legs, containers, previews))
             if outcome.get("rifatti") or outcome.get("suolo"):
                 self._keep(ns, doc, chunk, fresh, id_)
             print(json.dumps({"file": [str(ns.zip)]}, indent=1))
             return 0
-        backup = (project.folder(chunk) / "djifly_backup") if chunk is not None else \
+        backup = (project.folder(chunk) / "djifly_backup") if chunk is not None and id_ is not None else \
             Path(ns.plan).resolve().parent / "djifly_backup"
-        if djifly.is_mtp(ns.folder):
-            states = {}
-            done = djifly.copy_mtp(ns.folder, legs, containers, backup_dir=backup, overwrite=ns.overwrite)
-        else:
-            folder = djifly.normalise(ns.folder)
-            states = {s["contenitore"]: s for s in djifly.slot_states(folder, containers[:len(legs)])}
-            done = djifly.copy(folder, legs, containers, previews, backup_dir=backup, overwrite=ns.overwrite)
-        given = fresh.setdefault("djiFly", {})
-        for leg, outcome_leg in zip(pl.plan_legs(fresh), done):
-            container = outcome_leg.get("contenitore")
-            given[leg.key] = {"cartella": container, "nomeDji": (states.get(container) or {}).get("nomeDji")}
+        done = copy_legs(chunk, fresh, ns.folder, containers, backup, ns.overwrite)
         self._keep(ns, doc, chunk, fresh, id_)
         print(json.dumps(done, indent=1, ensure_ascii=False))
         return 0

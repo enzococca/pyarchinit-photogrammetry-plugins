@@ -177,6 +177,27 @@ def restore_files(chunk) -> dict:
     return {"restored": back, "removed": away}
 
 
+def purge_removed(chunk) -> list[str]:
+    """The folders in ``flightplan/.removed/`` of plans that are not in the meta, deleted: their ids. To call only
+    when no undo can bring those plans back - a project just opened (its meta is the project as saved), or the
+    command line after saving. A folder of a plan that is in the meta (an undo put it back and the files have
+    not followed yet) is left there."""
+    removed = folder(chunk) / REMOVED
+    if not removed.is_dir():
+        return []
+    known = {p.get("id") for p in peek(chunk).get("plans") or []}
+    gone = []
+    for d in removed.iterdir():
+        if d.is_dir() and d.name not in known:
+            shutil.rmtree(d, ignore_errors=True)
+            gone.append(d.name)
+    try:
+        removed.rmdir()                     # empty: away too
+    except OSError:
+        pass
+    return gone
+
+
 # ------------------------------------------------------------------ the chunk's system
 def _horizontal(chunk):
     from pyproj import CRS
@@ -346,6 +367,11 @@ def coverage_for(chunk, id_: str, progress: Optional[Callable] = None, cell: Opt
     rec = {"stamp": e["stamp"], "files": {k: Path(p).relative_to(chunk.data_dir).as_posix() for k, p in paths.items()},
            "stats": cov.stats, "cell": cov.cell, "low": cov.low, "surface": cov.surface, "shots": cov.shots,
            "dem": _dem_signature(chunk)}
+    if entry(chunk, id_) is None:
+        # the plan left the meta while the coverage was being computed (an undo of its addition): no record for
+        # a plan that is not there; its folder goes aside with the others
+        restore_files(chunk)
+        return rec
     state(chunk)["coverage"][id_] = rec
     return rec
 
@@ -539,7 +565,8 @@ def plan_gpkg(chunk, id_: str) -> Optional[Path]:
         out.parent.mkdir(parents=True, exist_ok=True)
         from .gis import write_gpkg
 
-        write_gpkg(piano, out, str(chunk.crs), ground_takeoff=ground, dem_name=dem_name(chunk) if ground else "")
+        write_gpkg(piano, out, str(chunk.crs), ground_takeoff=ground,
+                   dem_name=dem_name(chunk) if ground is not None else "")
     except (design.StaleHeights, ValueError, OSError):
         return None
     mark.write_text(e["stamp"])

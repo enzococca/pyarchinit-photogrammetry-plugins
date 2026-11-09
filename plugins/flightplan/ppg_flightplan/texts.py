@@ -97,3 +97,60 @@ def warning_text(code: str) -> str:
 
 def name() -> str:
     return t(*NAME)
+
+
+# The layers of the plan on the 2D view: names of data (as the program's own layers), the same in every language.
+LAYER_AREA = "Piano di volo: area"
+LAYER_STRIPS = "Piano di volo: strisciate"
+LAYER_SHOTS = "Piano di volo: scatti"
+LAYER_TAKEOFF = "Piano di volo: decollo"
+LAYER_TARGETS = "Piano di volo: target"
+LAYER_LOW = "Piano di volo: copertura bassa"
+LAYERS = (LAYER_AREA, LAYER_STRIPS, LAYER_SHOTS, LAYER_TAKEOFF, LAYER_TARGETS, LAYER_LOW)
+
+# The steps of the pane, in order: key, (Italian, English).
+STEPS: tuple[tuple[str, tuple[str, str]], ...] = (
+    ("area", ("Area", "Area")),
+    ("camera", ("Camera", "Camera")),
+    ("params", ("Parametri", "Parameters")),
+    ("plan", ("Piano", "Plan")),
+    ("terrain", ("Terreno", "Terrain")),
+    ("coverage", ("Copertura", "Coverage")),
+    ("targets", ("Target", "Targets")),
+    ("export", ("Esporta", "Export")),
+    ("after", ("Dopo il volo", "After the flight")),
+)
+
+
+def step_title(key: str) -> str:
+    return t(*dict(STEPS)[key])
+
+
+# The formats of the export step: code of project.FORMATS -> (Italian, English).
+FORMAT_NAMES: dict[str, tuple[str, str]] = {
+    "kmz": ("DJI WPML (KMZ, uno per tratta)", "DJI WPML (KMZ, one per leg)"),
+    "kmz-zip": ("DJI WPML (tutte le tratte in uno zip)", "DJI WPML (every leg in a zip)"),
+    "djifly-zip": ("DJI Fly: cartelle pronte da trascinare (zip)", "DJI Fly: ready folders to drag (zip)"),
+    "plan": ("QGroundControl (.plan)", "QGroundControl (.plan)"),
+    "waypoints": ("Mission Planner / ArduPilot (.waypoints)", "Mission Planner / ArduPilot (.waypoints)"),
+    "mavlink": ("Parrot (.mavlink)", "Parrot (.mavlink)"),
+    "litchi": ("Litchi (CSV)", "Litchi (CSV)"),
+    "kml": ("KML del piano", "KML of the plan"),
+    "geojson": ("GeoJSON del piano", "GeoJSON of the plan"),
+    "gpkg": ("GeoPackage del piano", "GeoPackage of the plan"),
+    "area-kml": ("Aree in KML per le app DJI", "Areas in KML for the DJI apps"),
+    "sheet-xlsx": ("Scheda del volo (Excel)", "Flight sheet (Excel)"),
+    "sheet-html": ("Scheda del volo (HTML)", "Flight sheet (HTML)"),
+    "maps-zip": ("Mappe delle tratte (zip)", "Maps of the legs (zip)"),
+}
+
+
+def format_name(code: str) -> str:
+    pair = FORMAT_NAMES.get(code)
+    return t(*pair) if pair else code
+
+
+def num(value, digits: int = 2) -> str:
+    """A number for the pane: at most ``digits`` decimals, trailing zeros dropped, the decimal comma in Italian."""
+    text = f"{float(value):.{digits}f}".rstrip("0").rstrip(".") if digits else f"{float(value):.0f}"
+    return text if lang() == "en" else text.replace(".", ",")
