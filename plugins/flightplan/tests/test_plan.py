@@ -147,5 +147,5 @@ def test_the_plugin_is_declared():
     import ppg_flightplan
 
     p = ppg_flightplan.FlightPlanPlugin()
-    assert ppg_flightplan.__version__ == p.version == "0.1.0"
+    assert ppg_flightplan.__version__ == p.version == "0.1.1"
     assert p.title == "Piani di volo" and p.description

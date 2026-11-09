@@ -8,7 +8,8 @@ i piani di volo del drone, progettati prima di andare sul campo e controllati do
   chunk o scritta a mano: i valori dei sensori non si inventano mai), un obiettivo (ortofoto, DEM, modello 3D completo,
   ispezione ravvicinata, ricognizione veloce, GSD a mano) o una quota, sovrapposizioni, velocità, direzione, doppia
   griglia, obliqui, scatto per punto o a intervallo. Il piano: blocchi e tratte che stanno in una batteria, scatti,
-  minuti, batterie, GSD, avvisi.
+  minuti, batterie, GSD, avvisi. Lo scatto ad alta risoluzione della camera è spento all'inizio (per lo stesso GSD si
+  vola più in alto): spunta *Alta risoluzione* quando lo vuoi.
 - **Volo che segue il terreno** sul DEM del progetto (le tegole pubbliche del terreno di AWS dove finisce, o al suo
   posto): ogni punto con la sua quota sul decollo, i decolli delle tratte corretti con il loro suolo.
 - **Copertura prevista** sul DEM del chunk: foto per cella e GSD per cella, celle con copertura bassa, una mappa RGBA
@@ -66,7 +67,7 @@ Il drone non legge mai KML, GeoJSON o GeoPackage.
   DEM sono piane al decollo; le celle fuori dalla ricostruzione non si misurano.
 - Senza un'ortofoto nel progetto le mappe delle tratte sono su sfondo grigio (nessuna tegola di mappe di terzi).
 - Un chunk in un sistema locale: area solo da un file o in gradi, niente disegno sulla vista, niente copertura.
-- Le riprese ravvicinate (una trincea, una parete) non sono nella 0.1.0.
+- Le riprese ravvicinate (una trincea, una parete) non sono nella 0.1.
 - Il confronto e la copertura diventano «Da rifare» quando cambiano il piano o le foto, dopo un nuovo allineamento, un
   DEM nuovo o posizioni nuove.
 
@@ -74,7 +75,7 @@ Il drone non legge mai KML, GeoJSON o GeoPackage.
 
 ```
 ppg plugin flightplan cameras
-ppg plugin flightplan design PROGETTO.ppg --bbox O,S,E,N --goal orto --value 2 [--terrain] [--takeoff LAT,LON]
+ppg plugin flightplan design PROGETTO.ppg --bbox O,S,E,N --goal orto --value 2 [--terrain] [--takeoff LAT,LON] [--high-res]
 ppg plugin flightplan show PROGETTO.ppg
 ppg plugin flightplan terrain PROGETTO.ppg [--detail fine] [--tiles] [--off]
 ppg plugin flightplan targets PROGETTO.ppg --csv target.csv [--epsg N]      # oppure --markers

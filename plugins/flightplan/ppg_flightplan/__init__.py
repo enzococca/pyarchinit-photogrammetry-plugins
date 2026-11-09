@@ -22,7 +22,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from .texts import t, warning_text
 from .window import WindowPart, copy_legs
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 class CommandError(Exception):
