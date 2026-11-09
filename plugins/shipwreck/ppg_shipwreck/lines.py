@@ -211,11 +211,16 @@ def chunk_water(chunk) -> dict | None:
         from pyarchinit_photogrammetry.engine import water as program_water
     except ImportError:
         return None
-    found = program_water.level_of(chunk)
-    if not found or found.get("level") is None:
+    try:  # only a default: a level the program cannot read is no level here
+        found = program_water.level_of(chunk)
+        if not found or found.get("level") is None:
+            return None
+        level, n = float(found["level"]), float(found.get("n") or REFRACTION)
+    except Exception:
         return None
-    n = float(found.get("n") or REFRACTION)
-    return {"level_world": float(found["level"]), "n": n if 1.0 <= n <= 2.0 else REFRACTION, "on": False,
+    if not np.isfinite(level) or not np.isfinite(n):
+        return None
+    return {"level_world": level, "n": n if 1.0 <= n <= 2.0 else REFRACTION, "on": False,
             "from": "chunk", "source": found.get("source")}
 
 

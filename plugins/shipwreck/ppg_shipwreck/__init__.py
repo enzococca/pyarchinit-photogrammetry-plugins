@@ -1272,7 +1272,10 @@ class ShipwreckPlugin(Plugin):
             return
         before = self._snapshot(chunk)
         records = classified.accept(chunk, prop, kinds=kinds)
-        self._status(plural(len(records), ("legno importato", "legni importati"), ("timber imported", "timbers imported")))
+        text = imported_text(len(records), len(prop["already"]))
+        self._status(text)
+        if prop["already"]:
+            self._message("information", text)
         self._step(chunk, before, t("disegno classificato", "classified drawing"))
 
     def _check_plate(self, plate, counts: dict) -> list[str] | None:
@@ -2192,8 +2195,9 @@ class ShipwreckPlugin(Plugin):
         except ship.NotReady as exc:
             print(exc)
             return 1
-        doc.save()
-        print(plural(len(records), ("legno importato", "legni importati"), ("timber imported", "timbers imported")))
+        if records:
+            doc.save()
+        print(imported_text(len(records), len(prop["already"])))
         return 0
 
     def _reconstruction_command(self, args: list[str]) -> int:
@@ -2456,6 +2460,15 @@ class ShipwreckPlugin(Plugin):
             return 1
         doc.save()
         return 0
+
+
+def imported_text(imported: int, already: int) -> str:
+    """What an import of a classified drawing did: the timbers added and those already in the catalogue."""
+    text = plural(imported, ("legno importato", "legni importati"), ("timber imported", "timbers imported"))
+    if already:
+        text += t(f"; {already} già nel catalogo da un disegno classificato, saltati",
+                  f"; {already} already in the catalogue from a classified drawing, skipped")
+    return text + "."
 
 
 def classified_layers(chunk) -> list[str]:

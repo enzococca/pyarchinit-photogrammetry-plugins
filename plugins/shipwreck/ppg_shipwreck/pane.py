@@ -77,7 +77,7 @@ STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
             "The timber selected traced again on the relief: same id and name"),
            ("trace_add", ("Aggiungi...", "Add..."), "Un legno disegnato a mano sul rilievo",
             "A timber traced by hand on the relief"),
-           ("classified", ("Disegno classificato...", "Classified drawing..."),
+           ("classified", ("Importa un disegno classificato...", "Import a classified drawing..."),
             "Un disegno (layer o file) ordinato dal programma lungo la chiglia: ordinate, comenti e fasce nel catalogo "
             "dopo la tavola di controllo",
             "A drawing (layer or file) sorted by the program along the keel: frames, seams and strakes into the "

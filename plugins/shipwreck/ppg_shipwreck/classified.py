@@ -8,7 +8,8 @@ B1``, ``fascia T2``).
 
 Nothing enters the catalogue before the check plate: :func:`propose` reads and classifies, :func:`plate` draws it
 with the plugin's names, :func:`accept` writes the records the user keeps (``status`` measured, ``source``
-``orient:<element id>``). A proposal lives in memory only: it is not stored in the project.
+``orient:<drawing>:<element id>``); a timber already imported from a classified drawing (same kind and vertices) is
+skipped, so importing the same drawing again adds nothing. A proposal lives in memory only: it is not stored in the project.
 
 Without the program 1.7.7 :data:`orient_lines` is None and :func:`available` False: the window hides the action and
 the command line says what is missing."""
@@ -119,8 +120,9 @@ def propose(chunk, source, params=None) -> dict:
                         "x": float(e.position), "y": float(xy[:, 1].mean()),
                         "width": None if e.width is None else float(e.width), "length": float(e.length)})
     _names(records, frame)
-    return {"classification": result, "records": records, "source": {kind: value},
-            "frame_key": relief.frame_key(frame), "accepted": []}
+    label = f"{kind}:{Path(value).name if kind == 'file' else value}"
+    return {"classification": result, "records": records, "source": {kind: value}, "label": label,
+            "frame_key": relief.frame_key(frame), "accepted": [], "already": []}
 
 
 def counts(proposal: dict) -> dict:
@@ -142,11 +144,24 @@ def plate(chunk, proposal: dict, path) -> Path:
     return proposal["classification"].plate(Path(path), language="it" if _italian() else "en", names=names, title=title)
 
 
+def _key(kind: str, world_xy) -> tuple:
+    """A timber of a classified drawing by its kind and its vertices (world x, y to the millimetre, in any order)."""
+    pts = np.round(np.asarray(world_xy, float).reshape(-1, 2), 3)
+    return kind, frozenset(map(tuple, pts.tolist()))
+
+
+def imported_keys(chunk) -> set:
+    """The :func:`_key` of every timber of the catalogue that came from a classified drawing (``source`` orient:...)."""
+    return {_key(r["kind"], r["geometry"]["xy"]) for r in timbers.timbers_of(chunk)
+            if str(r.get("source") or "").startswith("orient:")}
+
+
 def accept(chunk, proposal: dict, ids=None, kinds=None) -> list[dict]:
     """The records ``ids`` of ``proposal`` (element ids; None: all not yet accepted, of ``kinds`` when given) into the
-    catalogue: ``status`` measured, ``source`` ``orient:<id>``, ``ship_xy`` as classified, ``geometry`` in the chunk's
-    coordinates. A proposal read in another ship frame, an id unknown or already accepted is refused. Returns the
-    records written."""
+    catalogue: ``status`` measured, ``source`` ``orient:<drawing>:<id>``, ``ship_xy`` as classified, ``geometry`` in
+    the chunk's coordinates. A proposal read in another ship frame, an id unknown or already accepted from this
+    proposal is refused. A timber already in the catalogue from a classified drawing (same kind and vertices: the same
+    drawing imported again) is skipped: its id goes to ``proposal["already"]``. Returns the records written."""
     frame = ship.need_frame(chunk)
     key = relief.frame_key(frame)
     if proposal.get("frame_key") != key:
@@ -168,12 +183,21 @@ def accept(chunk, proposal: dict, ids=None, kinds=None) -> list[dict]:
                                   f"Elements already in the catalogue: {', '.join(again)}."))
         chosen = [by_id[i] for i in dict.fromkeys(ids)]
     out = []
+    there = imported_keys(chunk)
+    proposal["already"] = []
+    label = proposal.get("label", "")
     for r in chosen:
-        out.append(timbers.add(chunk, r["kind"], r["side"], r["name"],
-                               timbers.geometry(r["geometry"], tracing._world(frame, r["ship_xy"])),
-                               ship_xy=[[float(x), float(y)] for x, y in r["ship_xy"]], status="measured",
-                               chunk=chunk.key, source=f"orient:{r['id']}", frame_key=key))
+        world = tracing._world(frame, r["ship_xy"])
+        k = _key(r["kind"], world)
         proposal["accepted"].append(r["id"])
+        if k in there:
+            proposal["already"].append(r["id"])
+            continue
+        there.add(k)
+        out.append(timbers.add(chunk, r["kind"], r["side"], r["name"], timbers.geometry(r["geometry"], world),
+                               ship_xy=[[float(x), float(y)] for x, y in r["ship_xy"]], status="measured",
+                               chunk=chunk.key, source=f"orient:{label}:{r['id']}" if label else f"orient:{r['id']}",
+                               frame_key=key))
     if out:
         tracing.update_visible(chunk)
     return out

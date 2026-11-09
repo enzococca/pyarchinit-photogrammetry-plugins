@@ -54,16 +54,41 @@ def test_frames_and_seams_from_a_drawing(hull, tmp_path):
     measured = {r["id"]: r for r in timbers.measure(ch)}
     f1 = next(r for r in records if r["kind"] == "frame")
     assert abs(measured[f1["id"]]["width"] - 0.08) < 0.01
+    assert rec["source"] == f"orient:layer:Rilievo:{prop['accepted'][records.index(rec)]}"
     with pytest.raises(ship.NotReady, match="già nel catalogo"):
-        classified.accept(ch, prop, [records[0]["source"].split(":")[1]])
+        classified.accept(ch, prop, [prop["accepted"][0]])
     assert classified.accept(ch, prop) == []  # all accepted already
+
+
+def test_the_same_drawing_imported_again_adds_nothing(hull):
+    from pyarchinit_photogrammetry.core import free_drawings
+
+    doc, ch, frame = hull
+    draw_timbers(ch, frame)
+    assert len(classified.accept(ch, classified.propose(ch, "Rilievo"))) == 13
+    again = classified.propose(ch, "Rilievo")
+    assert classified.accept(ch, again) == [] and len(again["already"]) == 13
+    assert len(timbers.timbers_of(ch)) == 13
+    # explicit ids too
+    ids = [r["id"] for r in again["records"]][:2]
+    fresh = classified.propose(ch, "Rilievo")
+    assert classified.accept(ch, fresh, ids) == [] and fresh["already"] == ids
+    # the drawing grown by one seam: only that one comes in
+    w = frame.to_world(np.array([[3.5, 1.2, 0.0], [6.5, 1.2, 0.0]]))
+    free_drawings.add(ch, "line", w, layer="Rilievo")
+    grown = classified.propose(ch, "Rilievo")
+    new = classified.accept(ch, grown)
+    assert [r["kind"] for r in new] == ["seam"] and len(timbers.timbers_of(ch)) == 14
+    # a timber taken out of the catalogue comes back with the next import
+    timbers.remove(ch, [new[0]["id"]])
+    assert len(classified.accept(ch, classified.propose(ch, "Rilievo"))) == 1
 
 
 def test_nothing_imported_before_accept(hull):
     doc, ch, frame = hull
     draw_timbers(ch, frame)
     before = json.dumps(ch.meta, sort_keys=True, default=str)
-    prop = classified.propose(ch, ("layer", "Rilievo"), {"pair_max": 0.5})
+    prop = classified.propose(ch, ("layer", "Rilievo"), {"pair_isolation": 1.0})  # seams stay seams beside frames
     assert prop["records"] and timbers.timbers_of(ch) == []
     assert json.dumps(ch.meta, sort_keys=True, default=str) == before
     # only the kinds and the ids chosen
@@ -143,6 +168,14 @@ def test_water_level_from_the_chunk_when_none_set(hull):
     assert "from" not in w and abs(w["level"] + 0.2) < 1e-9
 
 
+def test_a_water_level_the_program_cannot_read_is_no_default(hull):
+    doc, ch, frame = hull
+    ch.meta["water"] = {"level": 11.0, "built_in": "not a matrix", "x": 0.0, "y": 0.0}
+    assert lines.water_of(ch) is None and not lines.is_on(ch)
+    ch.meta["water"] = {"level": "nan"}
+    assert lines.water_of(ch) is None
+
+
 def test_cli_classified(hull, capsys, tmp_path):
     from ppg_shipwreck import ShipwreckPlugin
 
@@ -164,6 +197,12 @@ def test_cli_classified(hull, capsys, tmp_path):
     assert "9 legni importati" in out
     got = timbers.timbers_of(ppg.Document.open(p).chunk)
     assert sorted({r["kind"] for r in got}) == ["frame", "plank"] and len(got) == 9
+    assert plugin.command("classified", p, "--layer", "Rilievo", "--accept") == 0  # again: the frames and plank skipped
+    out = capsys.readouterr().out
+    assert "4 legni importati; 9 già nel catalogo da un disegno classificato, saltati" in out
+    assert plugin.command("classified", p, "--layer", "Rilievo", "--accept") == 0
+    assert "0 legni importati; 13 già nel catalogo" in capsys.readouterr().out
+    assert len(timbers.timbers_of(ppg.Document.open(p).chunk)) == 13
     assert plugin.command("classified", p, "--layer", "Nessuno") == 1
     assert "nessuna linea" in capsys.readouterr().out
     assert plugin.command("classified", p, "--layer", "Rilievo", "--kinds", "keel", "--accept") == 1
@@ -245,6 +284,12 @@ def test_the_action_in_the_window_is_one_undo_step(window, monkeypatch):
     assert timbers.timbers_of(ch) == []
     w.history.redo()
     assert len(timbers.timbers_of(ch)) == 12
+    # the same drawing again: nothing added, said, no entry of Annulla
+    entries = len(w.history.entries)
+    plugin._requested("classified")
+    wait()
+    assert len(timbers.timbers_of(ch)) == 12 and len(w.history.entries) == entries
+    assert any("12 già nel catalogo" in m for m in said), said
     # cancelled at the plate: nothing
     monkeypatch.setattr(plugin, "_check_plate", lambda plate, counts: None)
     entries = len(w.history.entries)
@@ -261,3 +306,45 @@ def test_the_action_is_hidden_without_the_program(monkeypatch):
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(classified, "orient_lines", None)
     assert ShipwreckPane().buttons["classified"].isHidden()
+
+
+def test_the_check_plate_dialog(window, tmp_path):
+    """The real dialog, offscreen: a box per kind with its count, unticked kinds left out, Cancel = None."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QDialogButtonBox, QLabel
+
+    w, ch, plugin, wait, said = window
+    prop = classified.propose(ch, "Rilievo")
+    plate = classified.plate(ch, prop, tmp_path / "tavola.png")
+    counts = classified.counts(prop)
+    seen = {}
+
+    def press(untick=(), ok=True):
+        def run():
+            dlg = next((d for d in QApplication.topLevelWidgets() if isinstance(d, QDialog) and d.isVisible()), None)
+            if dlg is None:  # not shown yet
+                QTimer.singleShot(20, run)
+                return
+            boxes = dlg.findChildren(QCheckBox)
+            seen["boxes"] = [(b.text(), b.isChecked(), b.isEnabled()) for b in boxes]
+            seen["image"] = any(not lab.pixmap().isNull() for lab in dlg.findChildren(QLabel))
+            for b in boxes:
+                if any(b.text().startswith(u) for u in untick):
+                    b.setChecked(False)
+            buttons = dlg.findChild(QDialogButtonBox)
+            which = QDialogButtonBox.StandardButton.Ok if ok else QDialogButtonBox.StandardButton.Cancel
+            buttons.button(which).click()
+
+        QTimer.singleShot(0, run)
+
+    press()
+    assert plugin._check_plate(plate, counts) == ["frame", "seam", "plank"]
+    assert seen["boxes"] == [("ordinata: 8", True, True), ("comento: 4", True, True),
+                             ("corso di fasciame: 1", True, True)] and seen["image"]
+    press(untick=("comento",))
+    assert plugin._check_plate(plate, counts) == ["frame", "plank"]
+    press(ok=False)
+    assert plugin._check_plate(plate, counts) is None
+    press(untick=("ordinata", "comento", "corso"))
+    assert plugin._check_plate(plate, counts) is None  # nothing ticked: nothing to import
+    assert timbers.timbers_of(ch) == []
