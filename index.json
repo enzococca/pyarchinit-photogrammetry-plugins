@@ -64,7 +64,7 @@
     },
     {
       "name": "flightplan",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "title": "Flight plans",
       "description": "Drone flight plans for the survey: area, camera, GSD and height, overlaps, strips, shots, time and batteries, terrain following on the chunk's DEM, predicted coverage, and the files the drones read (DJI WPML KMZ, DJI Fly, Litchi, QGroundControl, Mission Planner, Parrot, KML, GeoPackage); after the flight, the plan compared with the photos",
       "i18n": {
@@ -79,8 +79,8 @@
       "api": 1,
       "min_app": "1.7.4",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/flightplan-v0.1.1/ppg_flightplan-0.1.1-py3-none-any.whl",
-      "sha256": "0f9b056dbf07a17c2ab9f048511fb69d81fc514881fff6a3409f42373d3f49ad"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/flightplan-v0.1.2/ppg_flightplan-0.1.2-py3-none-any.whl",
+      "sha256": "3a2181833956a57ec23d4c70aa30934bad8b4efdd75aadd58d8d2a6543080693"
     },
     {
       "name": "geoai",
