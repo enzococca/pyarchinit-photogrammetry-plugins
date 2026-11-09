@@ -19,7 +19,8 @@ drone flight plans designed before going to the field, and checked after the fli
   height difference from DJI's XMP) and the coverage the aligned photos give against the predicted one.
 
 Everything is in the **Flight plans** pane (docked on the right, nine steps with their state), in a group of the tool
-rail of the 2D view, in *File > Export*, in the workspace tree and on the command line. The user guide is on the
+rail of the 2D view, in the workspace tree and on the command line; *File > Export* has five of the formats (the DJI
+KMZ, QGroundControl, Litchi, GeoPackage and the Excel sheet). The user guide is on the
 [program's site](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/flightplan/).
 
 The planner - serpentine grids, rings, routes given point by point, legs that fit one battery, the camera profiles, the
@@ -64,7 +65,7 @@ The drone never reads the KML, GeoJSON or GeoPackage.
 - Without an orthophoto in the project the maps of the legs are on grey (no third-party map tiles).
 - A chunk in a local system: area only from a file or from degrees, no drawing on the view, no coverage.
 - Close-up shooting (a trench, a wall face) is not in 0.1.0.
-- The comparison and the coverage become "Da rifare" when the plan or the photos change, after a new alignment, a new
+- The comparison and the coverage become "To do again" when the plan or the photos change, after a new alignment, a new
   DEM or new positions.
 
 ## Command line

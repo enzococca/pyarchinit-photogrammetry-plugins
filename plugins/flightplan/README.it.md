@@ -20,7 +20,8 @@ i piani di volo del drone, progettati prima di andare sul campo e controllati do
   differenza di quota dall'XMP di DJI) e la copertura data dalle foto allineate contro quella prevista.
 
 Tutto è nel pannello **Piani di volo** (agganciato a destra, nove passi con il loro stato), in un gruppo della colonna
-degli strumenti della vista 2D, in *File > Esporta*, nell'albero dell'area di lavoro e sulla riga di comando. La guida è
+degli strumenti della vista 2D, nell'albero dell'area di lavoro e sulla riga di comando; *File > Esporta* ha cinque dei
+formati (KMZ DJI, QGroundControl, Litchi, GeoPackage e la scheda Excel). La guida è
 sul [sito del programma](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/flightplan/).
 
 Il pianificatore - griglie a serpentina, anelli, percorsi punto per punto, tratte che stanno in una batteria, i profili
