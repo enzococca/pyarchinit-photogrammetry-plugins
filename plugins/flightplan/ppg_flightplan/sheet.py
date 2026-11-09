@@ -67,6 +67,8 @@ COVERAGE_LABELS = {
     "gsd_median_cm": ("GSD mediano (cm/px)", "Median GSD (cm/px)"),
     "gsd_max_cm": ("GSD massimo (cm/px)", "Largest GSD (cm/px)"),
     "occlusion": ("Ostacoli considerati", "Occlusion considered"),
+    "cells_without_dem": ("Celle fuori dal DEM, prese piane al decollo (frazione)",
+                          "Cells outside the DEM, taken flat at the takeoff (fraction)"),
 }
 
 
