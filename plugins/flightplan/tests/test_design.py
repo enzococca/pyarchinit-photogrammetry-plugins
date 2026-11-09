@@ -576,8 +576,8 @@ def test_a_dem_around_the_takeoff_only_measures_its_offset_there(tmp_path, monke
     monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
     dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
                               x0=SOUTH[1] - 0.00005, y0=SOUTH[0] + 0.00005, step=0.00001))
-    with_dem = design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True, dem=dem)
-    tiles_only = design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True)
+    with_dem = design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True, dem=dem, high=True)
+    tiles_only = design.design(AREA, "orto", 2.0, takeoff=SOUTH, follow_terrain=True, high=True)
     heights = with_dem["piano"]["blocchi"][0]["quote"]
     assert set(heights) == {with_dem["quota"]} == {112.6}
     assert heights == tiles_only["piano"]["blocchi"][0]["quote"]
@@ -944,3 +944,12 @@ def test_the_reasons_say_the_overlaps_the_plan_uses_once():
     assert "Strisciate a 30° scelti a mano, sovrapposizione 80% avanti e 70% laterale" in text
     assert "Quota scelta a mano: 70 m" in text and text.count("% avanti") == 1 and by_hand["quota"] == 70.0
 
+
+def test_high_resolution_is_off_by_default():
+    """0.1.1: the normal resolution unless asked: with the Mini 4 Pro at 3 cm/px the high one would ask more than
+    120 m and be clipped."""
+    normal = design.design(AREA, "orto", 3.0)
+    assert normal["piano"]["alta"] is False and normal["piano"]["blocchi"][0]["alta"] is False
+    assert normal["quota"] < design.MAX_HEIGHT and normal["gsd"] == pytest.approx(3.0, abs=0.05)
+    high = design.design(AREA, "orto", 3.0, high=True)
+    assert high["piano"]["alta"] is True and high["quota"] == design.MAX_HEIGHT

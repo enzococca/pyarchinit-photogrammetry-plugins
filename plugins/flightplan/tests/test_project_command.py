@@ -223,7 +223,7 @@ def test_export_refreshes_the_terrain(tmp_path, capsys):
     doc, ch = synth.chunk(tmp_path, dem=lambda x, y: 100.0 + (x - synth.X0) * 0.1)
     path = str(doc.path)
     plugin = _plugin(tmp_path)
-    assert plugin.command("design", path, "--coords", _coords(), "--terrain") == 0
+    assert plugin.command("design", path, "--coords", _coords(), "--terrain", "--high-res") == 0
     id_ = _out(capsys)["id"]
     import pyarchinit_photogrammetry as ppg
 
@@ -261,8 +261,9 @@ def test_command_without_project(tmp_path, capsys):
     plugin = _plugin(tmp_path)
     plan_file = tmp_path / "plan.json"
     assert plugin.command("design", "--coords", _coords(), "--plan", str(plan_file), "--camera", "air3",
-                          "--name", "Senza progetto") == 0
+                          "--name", "Senza progetto", "--high-res") == 0
     assert plan_file.is_file() and json.loads(plan_file.read_text())["camera"] == "air3"
+    assert json.loads(plan_file.read_text())["alta"] is True
     capsys.readouterr()
     out = tmp_path / "x.csv"
     assert plugin.command("export", "--plan", str(plan_file), "--format", "litchi", "--out", str(out)) == 0
@@ -392,3 +393,18 @@ def test_terrain_without_a_dem_asks_for_the_tiles(tmp_path, capsys):
     capsys.readouterr()
     assert plugin.command("terrain", "--plan", str(plan_file)) == 1
     assert "--tiles" in capsys.readouterr().out
+
+
+def test_design_resolution_flags(tmp_path, capsys):
+    """0.1.1: the normal resolution by default; --high-res asks the high one; --low-res (0.1.0 scripts) is the
+    default and still accepted; both together are refused."""
+    plugin = _plugin(tmp_path)
+    for flags, high in (((), False), (("--low-res",), False), (("--high-res",), True)):
+        plan_file = tmp_path / f"plan{len(flags)}{high}.json"
+        assert plugin.command("design", "--coords", _coords(), "--plan", str(plan_file), "--value", "3",
+                              *flags) == 0
+        assert json.loads(plan_file.read_text())["alta"] is high
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        plugin.command("design", "--coords", _coords(), "--plan", str(tmp_path / "x.json"), "--high-res",
+                       "--low-res")

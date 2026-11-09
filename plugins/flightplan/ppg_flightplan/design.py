@@ -165,7 +165,7 @@ def _custom(custom_camera) -> Optional[dict]:
     return custom_camera.to_json() if isinstance(custom_camera, Camera) else dict(custom_camera)
 
 
-def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4pro", high: bool = True,
+def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4pro", high: bool = False,
            battery_minutes: float = 18.0, follow_terrain: bool = False, mode: str = "per_punto",
            takeoff: Optional[LatLon] = None, name: str = "Piano progettato", dem=None, margin_m: float = 0.0,
            double_grid: bool = False, obliques: Optional[bool] = None, custom_camera=None,
@@ -173,6 +173,7 @@ def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4p
            direction: Optional[int] = None, height: Optional[float] = None) -> dict:
     """The complete plan for that goal, with the reason of every choice.
 
+    ``high`` the camera's high-resolution shot (off by default: it asks a higher flight for the same GSD);
     ``margin_m`` grows the area before the grid; ``double_grid`` adds a second nadir grid crossed at 90
     degrees; ``obliques`` None follows the goal, True/False forces the two crossed oblique passes on or off;
     ``custom_camera`` (a :class:`Camera` or its JSON) is stored in the plan as ``cameraPersonale`` and used.

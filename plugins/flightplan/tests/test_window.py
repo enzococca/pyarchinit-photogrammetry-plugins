@@ -500,7 +500,7 @@ def test_copy_into_djifly(gui, tmp_path, monkeypatch):
     assert len(asked) == 1 and "MISSIONE DELL'UTENTE" in asked[0] and user in asked[0]
     assert (waypoint / user / f"{user}.kmz").read_bytes() != mission
     backups = list((project.folder(ch) / "djifly_backup").rglob("*.kmz"))
-    assert backups and backups[0].read_bytes() == mission
+    assert any(b.read_bytes() == mission for b in backups)      # the legs written before have their copies too
 
 
 def test_a_stale_coverage_leaves_the_view(gui):
@@ -617,6 +617,20 @@ def test_the_parameters_text_says_the_overlaps_used(gui):
     assert "sovrapposizione 75% avanti e 70% laterale" in text
     assert text.count("% avanti") == 1 and "80%" not in text
     assert project.active_plan(ch)["piano"]["blocchi"][0]["avanti"] == 75
+
+
+def test_high_resolution_off_for_new_plans_kept_for_old_ones(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from ppg_flightplan.pane import FlightPlanPane
+
+    pane = FlightPlanPane()
+    assert not pane.k_high.isChecked() and pane.parameters()["high"] is False
+    pane.set_parameters({"camera": "mini4pro", "alta": True, "blocchi": []})      # a plan saved with it on
+    assert pane.k_high.isChecked()
+    pane.set_parameters({"camera": "mini4pro", "blocchi": []})                    # without the key: off, as read
+    assert not pane.k_high.isChecked()
 
 
 @pytest.mark.parametrize("lang", ["it", "en"])

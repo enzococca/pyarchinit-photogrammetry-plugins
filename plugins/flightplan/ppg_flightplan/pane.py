@@ -196,7 +196,11 @@ class FlightPlanPane(QWidget):
                                t("Il sensore calibrato del chunk", "The calibrated sensor of the chunk"))
         self.b_manual = button(t("A mano...", "By hand..."), self.camera_manual_requested)
         self.k_high = QCheckBox(t("Alta risoluzione", "High resolution"))
-        self.k_high.setChecked(True)
+        self.k_high.setToolTip(t("Lo scatto ad alta risoluzione della camera: per lo stesso GSD si vola più in alto. "
+                                 "Spento all'inizio.",
+                                 "The camera's high-resolution shot: for the same GSD the drone flies higher. "
+                                 "Off at the start."))
+        self.k_high.setChecked(False)
         self.k_high.toggled.connect(lambda _b: self._camera_changed())
         self.s_battery = _spin(3, 60, 18, 1, 1.0, " min")
         self.s_battery.valueChanged.connect(lambda _v: self._camera_changed())
@@ -476,7 +480,7 @@ class FlightPlanPane(QWidget):
         try:
             if piano.get("camera"):
                 self.set_camera(str(piano["camera"]))
-            self.k_high.setChecked(bool(piano.get("alta", True)))
+            self.k_high.setChecked(bool(piano.get("alta", False)))
             self.s_battery.setValue(float(piano.get("minutiBatteria", 18)))
             goal = (piano.get("obiettivo") or {}).get("id")
             i = self.c_goal.findData(goal) if goal else -1
