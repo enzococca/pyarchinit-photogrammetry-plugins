@@ -85,7 +85,8 @@ def test_the_height_of_every_point_keeps_the_distance_from_the_ground():
                                      grounds=[250.0, 265.0, 280.0])
     assert heights == [80.0, 95.0, 110.0]
     # without terrain data the nominal height stays, nothing is made up
-    assert design.terrain_heights([(0, 0)], 80.0, 250.0, [None]) == [80.0]
+    with pytest.raises(ValueError):                              # an unknown ground is never filled
+        design.terrain_heights([(0, 0)], 80.0, 250.0, [None])
     # The terrain rises 50 m: to stay 100 m FROM THE GROUND 150 m above the takeoff are needed, and given.
     # Cutting at 120 would mean flying 70 m from the ground instead of 100 - and on a steeper slope ending
     # below the ground. Below, it stays above the minimum: flying higher than wanted does no harm.
@@ -551,11 +552,21 @@ def test_a_dem_in_a_hole_of_the_tiles_is_left_out_and_said(tmp_path, monkeypatch
     dem = RasterDem(write_dem(tmp_path / "trincea.tif", [[147.0] * 10] * 10,
                               x0=spot[1] - 0.00005, y0=spot[0] + 0.00005, step=0.00001))
     piano = _plan(decollo=list(SOUTH))
-    outcome = design.apply_terrain(piano, dem=dem)
-    assert outcome["avvisi"][0] == {"tipo": "scarto_non_misurato", "dem": str(dem.path)}
-    assert "dem" not in outcome or outcome.get("scartoM") is None
+    # the DEM left out, the point in the hole of the tiles has no ground: it is not filled with a guess (the planner
+    # wrote 60 m above the takeoff there), the block is refused and says how many points
+    with pytest.raises(design.GroundUnknown, match="1 punti"):
+        design.apply_terrain(piano, dem=dem)
+    assert "quote" not in piano["blocchi"][0]
+    # without the hole the DEM is still left out and said, and nothing is 47 m off anywhere
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
+    tiles.clear_cache()
+    far = RasterDem(write_dem(tmp_path / "lontano.tif", [[147.0] * 10] * 10,
+                              x0=spot[1] - 0.00005, y0=spot[0] + 0.00005, step=0.00001))
+    monkeypatch.setattr(design, "_overlap", lambda *a, **k: (None, 1, 5))   # the two never meet
+    outcome = design.apply_terrain(piano, dem=far)
+    assert outcome["avvisi"][0] == {"tipo": "scarto_non_misurato", "dem": str(far.path)}
     assert piano["fonteQuote"]["sorgente"] == "tegole" and piano["quotaDecollo"] == 100.0
-    assert max(piano["blocchi"][0]["quote"]) == 60.0          # nothing 47 m off anywhere
+    assert max(piano["blocchi"][0]["quote"]) == 60.0
 
 
 def test_a_dem_around_the_takeoff_only_measures_its_offset_there(tmp_path, monkeypatch):
@@ -859,3 +870,55 @@ def test_prepare_refuses_a_block_that_could_not_be_redone(monkeypatch):
                         lambda p, dem=None: {"rifatti": [], "falliti": [{"blocco": 0, "motivo": "rete assente"}]})
     with pytest.raises(design.StaleHeights, match="rete assente"):
         project.prepare(piano)
+
+
+# ------------------------------------------------------------------ the third review: unknown ground
+
+def _half_dem(tmp_path):
+    """A DEM rising 0.1 m per metre to the north that covers only the south half of AREA (up to 45.000 N)."""
+    step = 0.00002
+    lats = 45.000 - (np.arange(300) + 0.5) * step
+    row = 100.0 + (lats - 45.0) * 111_000 * 0.1
+    return RasterDem(write_dem(tmp_path / "meta.tif", np.repeat(row[:, None], 500, axis=1),
+                               x0=9.995, y0=45.000, step=step))
+
+
+def test_a_dem_covering_half_the_flight_is_refused_not_filled(tmp_path, monkeypatch):
+    """The reviewer's repro2, P1: a plan following the terrain without a height source (the planner's), a DEM under
+    half the flight, no tiles: half the points had no ground and were written at the block's height above the
+    TAKEOFF (into the ground uphill). Now the block is refused with how many points, and the export too."""
+    from ppg_flightplan import project
+
+    calls = _recording_network(monkeypatch, answer=lambda z, x, y: None)
+    dem = _half_dem(tmp_path)
+    piano = _plan(decollo=list(SOUTH))
+    route, _ = pl.route_of_block(piano["blocchi"][0], piano)
+    piano["blocchi"][0]["quote"] = None                         # a plan of the planner to compute
+    with pytest.raises(design.StaleHeights, match="senza quota del suolo") as err:
+        project.prepare(piano, dem)
+    assert "estendi il DEM" in str(err.value) and calls == []
+    # Follow the terrain > Project DEM says the same, and leaves the block as it was
+    on_dem = _plan(decollo=list(SOUTH))
+    with pytest.raises(design.GroundUnknown, match=r"punti su \d+") as err:
+        design.apply_terrain(on_dem, dem=dem, use_tiles=False)
+    assert "quote" not in on_dem["blocchi"][0] and "fonteQuote" not in on_dem
+    n, total = err.value.blocks[0][1:]
+    assert 0 < n < total
+
+
+def test_tiles_missing_after_a_takeoff_move_are_refused_not_filled(tmp_path, monkeypatch):
+    """repro2, P2: a plan on the project DEM computed with the tiles answering where the DEM ends; the takeoff moved
+    (still on the DEM) and the network gone: the refresh cannot read the ground of the northern points and the
+    export is refused, never 60 m above the takeoff there."""
+    from ppg_flightplan import project
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    dem = _half_dem(tmp_path)
+    piano = _plan(decollo=list(SOUTH))
+    design.apply_terrain(piano, dem=dem)
+    assert piano["fonteQuote"]["sorgente"] == "dem" and piano["fonteQuote"]["scartoM"] is not None
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: None)
+    tiles.clear_cache()
+    piano["decollo"] = [SOUTH[0] + 0.0005, SOUTH[1]]
+    with pytest.raises(design.StaleHeights, match="senza quota del suolo"):
+        project.prepare(piano, dem)

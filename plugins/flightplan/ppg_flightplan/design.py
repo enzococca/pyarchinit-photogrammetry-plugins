@@ -121,13 +121,15 @@ def terrain_heights(points: list[LatLon], agl: float, ground_takeoff: float,
     """The height of every point so that the drone stays ``agl`` metres from the ground.
 
     The heights of the files are relative to the takeoff point: to the distance from the ground wanted is
-    added how much the terrain rises (or falls) with respect to the takeoff. The limits are kept anyway.
+    added how much the terrain rises (or falls) with respect to the takeoff. The limits are kept anyway. A point
+    whose ground is unknown is a ValueError, never filled with a default.
     """
     out = []
     for ground in grounds:
         if ground is None:
-            out.append(agl)
-            continue
+            # never a guess: the height above the ground written as the height above the takeoff flies into the
+            # ground uphill (apply_terrain refuses such a block before this, with how many points)
+            raise ValueError(t("quota del suolo sconosciuta in un punto", "ground height unknown at a point"))
         h = agl + (ground - ground_takeoff)
         out.append(round(min(CEILING_ABOVE_TAKEOFF, max(MIN_HEIGHT, h)), 1))
     return out
@@ -280,7 +282,7 @@ def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4p
                              "the same where the terrain rises too. Heights from {1:g} to {2:g} m.")
                            .format(system, outcome["minima"], outcome["massima"]))
         except (tiles.TerrainError, OSError) as e:
-            if isinstance(e, HeightsNotMixed):       # the network is not the cause: trying again changes nothing
+            if isinstance(e, (HeightsNotMixed, GroundUnknown)):   # it says itself what to do
                 reasons.append(t("Quote del terreno non disponibili ({0}): il volo resta a quota costante.",
                                  "Terrain heights not available ({0}): the flight stays at a constant "
                                  "height.").format(e))
@@ -477,6 +479,31 @@ class _Ground:
     dem_covers: bool = False            # the DEM answers at every point of the flight: the tiles were not asked
 
 
+class GroundUnknown(tiles.TerrainError):
+    """Points of a block that flies whose ground cannot be read (outside the project DEM, the public tiles not
+    chosen or not answering): the block is not computed, never filled with a default height."""
+
+    def __init__(self, piano: dict, blocks: list[tuple[int, int, int]], with_dem: bool, use_tiles: bool):
+        self.blocks = blocks
+        names = ", ".join(t("«{0}»: {1} punti su {2}", "«{0}»: {1} points of {2}")
+                          .format(piano["blocchi"][i].get("nome") or i + 1, n, total) for i, n, total in blocks)
+        if with_dem and not use_tiles:
+            way = t("estendi il DEM del progetto perché copra il volo, o scegli le tegole pubbliche (rete)",
+                    "extend the project DEM to cover the flight, or choose the public tiles (network)")
+        elif with_dem:
+            way = t("fuori dal DEM le tegole pubbliche non hanno risposto (rete?): riprova con la rete o estendi il DEM",
+                    "outside the DEM the public tiles did not answer (network?): try again with the network or "
+                    "extend the DEM")
+        else:
+            way = t("le tegole pubbliche non hanno risposto (rete?): riprova con la rete o aggiungi un DEM che copra "
+                    "il volo",
+                    "the public tiles did not answer (network?): try again with the network or add a DEM covering "
+                    "the flight")
+        super().__init__(t("{0} senza quota del suolo: il volo non segue il terreno lì, e non si indovina - {1}",
+                           "{0} without the ground height: the flight cannot follow the terrain there, and it is not "
+                           "guessed - {1}").format(names, way))
+
+
 class NoHeightSource(tiles.TerrainError):
     """No project DEM and the public tiles not chosen: the network is never used unasked."""
 
@@ -669,12 +696,28 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
     grounds_seen: list[Optional[float]] = []
     points = 0
     done: list[int] = []
+    # every ground first: a block that flies with a point whose ground is unknown stops everything, before any
+    # block is touched (its height there would be a guess - the planner wrote the height above the ground as the
+    # height above the takeoff, into the ground uphill)
+    measured: list[tuple[int, object, list]] = []
+    unknown: list[tuple[int, int, int]] = []
     for i in to_do:
         b = blocks[i]
         p, _ = pl.route_of_block(b, piano)
         if not p.points:
             continue
         ground = ground_heights(p.points, dem, z, offset, use_tiles)
+        missing = sum(1 for q in ground if q is None)
+        if missing:
+            if pl.active(b):
+                unknown.append((i, missing, len(ground)))
+            # a block switched off keeps what it had: if the takeoff changed its signature says it is stale
+            continue
+        measured.append((i, p, ground))
+    if unknown:
+        raise GroundUnknown(piano, unknown, dem is not None, use_tiles)
+    for i, p, ground in measured:
+        b = blocks[i]
         heights = terrain_heights(p.points, float(b.get("quota", p.height)), ground_takeoff, ground)
         b["quote"] = heights
         b["seguiTerreno"] = True
