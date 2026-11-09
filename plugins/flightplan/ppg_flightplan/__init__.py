@@ -43,6 +43,10 @@ class FlightPlanPlugin(WindowPart, Plugin):
 
     def activate(self, context) -> None:
         self.context = context
+        # the public tiles fetched once stay on disk: a second plan of the same site needs no network
+        from . import tiles
+
+        tiles.set_cache_dir(Path(context.data_dir) / "tiles")
         actions = self._add_actions(context)
         context.add_command("flightplan", self.command,
                             help="drone flight plans: cameras, design, show, terrain, targets, coverage, export, "
@@ -56,6 +60,9 @@ class FlightPlanPlugin(WindowPart, Plugin):
         """The layers of the plan off the view and the QGIS provider out; the program takes away the pane, the
         actions, the rail group, the tree items and the connections (``context.release``)."""
         self._detach_window()
+        from . import tiles
+
+        tiles.set_cache_dir(None)
 
     # ------------------------------------------------------------------ export formats of the program
     @staticmethod

@@ -129,6 +129,21 @@ def test_takeoff_ground_and_coverage_ground(tmp_path):
     assert project.dem_name(ch) == "dem.tif"
 
 
+def test_the_tiles_are_kept_on_disk_in_the_plugin_folder(tmp_path, monkeypatch):
+    """Activated, the plugin keeps the public tiles in its own folder: a second plan of the same site (another
+    session too) needs no network."""
+    from ppg_flightplan import tiles
+    from terrainfixtures import fake_tile
+
+    plugin = _plugin(tmp_path)
+    assert tiles._cache_dir == tmp_path / "plugin" / "tiles"
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
+    assert tiles.height(45.0, 10.0) == pytest.approx(100.0, abs=0.01)
+    assert list((tmp_path / "plugin" / "tiles").rglob("*.png"))
+    plugin.deactivate()
+    assert tiles._cache_dir is None
+
+
 def test_the_plugin_in_the_program(tmp_path):
     from pyarchinit_photogrammetry.plugins import Manager
 
