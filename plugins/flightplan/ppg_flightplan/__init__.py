@@ -518,7 +518,10 @@ class FlightPlanPlugin(WindowPart, Plugin):
             files = project.export_plan(fresh, ns.format, ns.out, crs=crs, ground_takeoff=ground,
                                         dem_file=project.dem_name(chunk) if ground is not None else "",
                                         missions=missions)
-        print(json.dumps({"file": [str(f) for f in files]}, indent=1))
+        out = {"file": [str(f) for f in files]}
+        if getattr(files, "replaced", None):
+            out["sostituiti"] = [str(f) for f in files.replaced]      # an earlier export with the same names
+        print(json.dumps(out, indent=1))
         return 0
 
     def _compare(self, ns, doc, chunk) -> int:

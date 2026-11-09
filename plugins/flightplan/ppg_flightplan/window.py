@@ -1452,6 +1452,15 @@ class WindowPart:
                           t("{0} file scritti", "{0} files written")) + ":\n" + "\n".join(str(f) for f in files)
             if note:
                 text += "\n\n" + note[:1].upper() + note[1:] + "."
+            replaced = getattr(files, "replaced", [])
+            if replaced:
+                text += "\n\n" + plural(len(replaced),
+                                         t("{0} file di un'esportazione precedente con lo stesso nome è stato "
+                                           "sostituito.", "{0} file of an earlier export with the same name was "
+                                           "replaced."),
+                                         t("{0} file di un'esportazione precedente con lo stesso nome sono stati "
+                                           "sostituiti.", "{0} files of an earlier export with the same name were "
+                                           "replaced."))
             self._status_text(plural(len(files), t("Esportato {0} file.", "{0} file exported."),
                                      t("Esportati {0} file.", "{0} files exported.")))
             self._message("info", text)

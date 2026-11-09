@@ -118,6 +118,10 @@ def test_per_leg_files_next_to_the_path(tmp_path):
     one = project.export(ch, id_, "litchi", tmp_path / "out" / "litchi.zip")
     names = zipfile.ZipFile(one[0]).namelist()
     assert len([n for n in names if n.endswith(".csv")]) == len(files) and "LEGGIMI.txt" in names
+    # the user chose one path: the per-leg files of an earlier export with the same names are said, not hidden
+    assert files.replaced == []
+    again = project.export(ch, id_, "kmz", tmp_path / "out" / "altro.kmz")
+    assert sorted(again.replaced) == sorted(files)
 
 
 def test_takeoff_ground_and_coverage_ground(tmp_path):

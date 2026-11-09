@@ -413,8 +413,19 @@ def prepare(piano: dict, dem=None) -> tuple[dict, dict]:
     return piano, outcome
 
 
+class Written(list):
+    """The files written; ``replaced`` the per-leg files next to the chosen path that were already there (an
+    earlier export with the same names) and were replaced: the caller says so."""
+
+    def __init__(self, files=(), replaced=()):
+        super().__init__(files)
+        self.replaced = list(replaced)
+
+
 def _write_many(files: list[tuple[str, bytes]], path: Path, readme: Optional[tuple[str, str]] = None) -> list[Path]:
-    """Files next to ``path`` (one alone: as ``path``), or all in the zip ``path`` when it ends in ``.zip``."""
+    """Files next to ``path`` (one alone: as ``path``), or all in the zip ``path`` when it ends in ``.zip``. The
+    per-leg files that replaced files already there are listed in the result's ``replaced``
+    (:class:`Written`): the user chose only ``path``, the others are said."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".zip":
@@ -429,12 +440,14 @@ def _write_many(files: list[tuple[str, bytes]], path: Path, readme: Optional[tup
     if len(files) == 1:
         path.write_bytes(files[0][1])
         return [path]
-    out = []
+    out, replaced = [], []
     for name, data in files:
         target = path.parent / name
+        if target.exists():
+            replaced.append(target)
         target.write_bytes(data)
         out.append(target)
-    return out
+    return Written(out, replaced)
 
 
 def export_plan(piano: dict, fmt: str, path, *, crs: Optional[str] = None, ground_takeoff: Optional[float] = None,
