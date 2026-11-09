@@ -362,6 +362,18 @@ def test_obtained_grid_shifted_and_smaller(tmp_path, monkeypatch):
     assert c["cells_measured"] == int((~margin & predicted.inside).sum())
     raster = out["_raster"]
     assert (raster["worse"] == (hole & predicted.inside & (predicted.counts >= predicted.low))).all()
+    # the maps agree with the numbers: the cells outside the reconstruction are nodata / transparent, not 0 photos
+    import rasterio
+
+    paths = compare.write(out, tmp_path / "out", "x", crs=CRS)
+    outside = margin & predicted.inside
+    measured = ~margin & predicted.inside
+    with rasterio.open(paths["count"]) as ds:
+        got = ds.read(1)
+    assert (got[outside] == -1).all() and (got[measured] >= 0).all() and (got[hole & measured] == 0).all()
+    with rasterio.open(paths["rgba"]) as ds:
+        alpha = ds.read(4)
+    assert (alpha[outside] == 0).all() and (alpha[hole & measured] > 0).all()
 
 
 # ------------------------------------------------------------------ the window

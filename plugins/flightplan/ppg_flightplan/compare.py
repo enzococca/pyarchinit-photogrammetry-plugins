@@ -337,8 +337,8 @@ def obtained_coverage(chunk, predicted, progress=None):
              "cells_worse": int(worse.sum()),
              "area_worse_m2": round(float(worse.sum()) * float(predicted.cell) ** 2, 1),
              "outside_reconstruction": int((inside & (out < 0)).sum())}
-    raster = {"counts": obtained, "inside": inside, "worse": worse, "transform": predicted.transform,
-              "crs": predicted.crs, "low": low}
+    raster = {"counts": obtained, "inside": inside, "reached": reached, "worse": worse,
+              "transform": predicted.transform, "crs": predicted.crs, "low": low}
     return stats, raster
 
 
@@ -399,7 +399,10 @@ def _write_raster(raster: dict, folder: Path, stem: str) -> dict:
 
     from .coverage import rgba
 
-    counts, inside = raster["counts"], raster["inside"]
+    counts = raster["counts"]
+    # only the cells the field check measured: outside the reconstruction there is no value (nodata, transparent),
+    # as the numbers leave them out, never 0 photos painted as under-covered
+    inside = raster.get("reached", raster["inside"])
     h, w = counts.shape
     base = dict(driver="GTiff", width=w, height=h, crs=raster["crs"], transform=raster["transform"],
                 compress="deflate", BIGTIFF="IF_SAFER")
