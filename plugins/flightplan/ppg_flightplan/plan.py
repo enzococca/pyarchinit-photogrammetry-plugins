@@ -173,6 +173,9 @@ class PlanLeg:
     total: int
     route: Route
     takeoff: Optional[LatLon] = None
+    # waypoints cut at the floor from the general takeoff whose ground is unknown: their height from the leg's own
+    # takeoff cannot be told (:func:`_relative_to_its_takeoff`), and the export refuses the leg
+    floor_unknown: int = 0
 
     def to_json(self) -> dict:
         return {"chiave": self.key, "blocco": self.block_index, "nome": self.file_name, "numero": self.number,
@@ -205,23 +208,32 @@ def takeoff_far(piano: dict) -> Optional[float]:
     return d if d is not None and d > FAR_TAKEOFF_M else None
 
 
-def _relative_to_its_takeoff(p: Route, piano: dict, key: str, takeoff: Optional[LatLon]) -> Route:
-    """The heights of a leg that takes off from a point of its own, brought back to THAT point.
+def _relative_to_its_takeoff(p: Route, piano: dict, key: str, takeoff: Optional[LatLon]) -> tuple[Route, int]:
+    """The heights of a leg that takes off from a point of its own, brought back to THAT point, and how many of its
+    waypoints could not be (see below).
 
     The per-point heights are computed from the general takeoff; the drone measures them from where it
     really takes off. If the leg starts twenty metres higher (the top of the mound) its heights go down by
     twenty, or it would fly twenty metres higher than wanted - and the other way round, lower.
+
+    A height cut at the floor (10 m above the general takeoff, where the ground falls more than the height above
+    it) is not the height above the ground any more: moved by the drop it would fly too high (a leg taking off at
+    the foot of a 200 m slope: 210 m instead of 60). Taking off lower, such a point is computed again from the
+    ground the plan carries (its terrain grid): the height above the ground plus the ground there, counted from
+    this takeoff. Where that ground is unknown the point is counted (the second value) and the export refuses
+    the leg.
     """
     if not p.heights or takeoff is None:
-        return p
+        return p, 0
     general = piano.get("quotaDecollo")
     entry = (piano.get("suoloDecolli") or {}).get(key)
     if general is None or not entry or distance(tuple(entry["punto"]), takeoff) > 2.0:
-        return p                       # ground of the takeoff unknown or moved: better not to touch anything
+        return p, 0                    # ground of the takeoff unknown or moved: better not to touch anything
     if p.points and min(distance(takeoff, q) for q in p.points) > FAR_TAKEOFF_M:
-        return p                       # a takeoff kilometres from the leg is not a takeoff: nothing is moved
+        return p, 0                    # a takeoff kilometres from the leg is not a takeoff: nothing is moved
     shift = float(general) - float(entry["suolo"])
     new = []
+    unknown = 0
     ground = _specials.ground_of_grid(piano.get("terreno"))
     for i, q in enumerate(p.heights):
         s_ = p.stop(i)
@@ -236,8 +248,16 @@ def _relative_to_its_takeoff(p: Route, piano: dict, key: str, takeoff: Optional[
             new.append(q)                # a flight at a fixed height: it holds from any takeoff
             continue
         minimum = _specials.MIN_SPECIAL_HEIGHT if s_ and s_.low else MIN_FLIGHT_HEIGHT
+        if shift > 0.05 and not (s_ and s_.low) and q <= MIN_FLIGHT_HEIGHT + 0.05:
+            # cut at the floor from the general takeoff: from this lower takeoff, from the ground itself
+            z = ground(p.points[i]) if ground else None
+            if z is None:
+                unknown += 1
+            else:
+                new.append(round(min(MAX_FLIGHT_HEIGHT, max(minimum, p.height + z - float(entry["suolo"]))), 1))
+                continue
         new.append(round(min(MAX_FLIGHT_HEIGHT, max(minimum, q + shift)), 1))
-    return replace(p, heights=new)
+    return replace(p, heights=new), unknown
 
 
 def plan_legs(piano: dict, specials: bool = True) -> list[PlanLeg]:
@@ -261,8 +281,8 @@ def plan_legs(piano: dict, specials: bool = True) -> list[PlanLeg]:
             key = f"{i}-{leg.number}"
             d = takeoffs.get(key)
             takeoff = (float(d[0]), float(d[1])) if d else general
-            route = _relative_to_its_takeoff(leg.route, piano, key, takeoff if d else None)
-            out.append(PlanLeg(i, key, file_name, leg.number, leg.total, route, takeoff))
+            route, unknown = _relative_to_its_takeoff(leg.route, piano, key, takeoff if d else None)
+            out.append(PlanLeg(i, key, file_name, leg.number, leg.total, route, takeoff, unknown))
     return out
 
 

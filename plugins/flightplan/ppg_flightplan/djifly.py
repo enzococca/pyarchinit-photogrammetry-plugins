@@ -301,6 +301,8 @@ def not_agreed(busy: list[dict], overwrite) -> list[dict]:
         return []
     if not overwrite:
         return list(busy)
+    if isinstance(overwrite, (str, bytes)):
+        raise TypeError("overwrite: True, False or a collection of container names, not one string")
     agreed = {str(c) for c in overwrite}
     return [s for s in busy if s["contenitore"] not in agreed]
 

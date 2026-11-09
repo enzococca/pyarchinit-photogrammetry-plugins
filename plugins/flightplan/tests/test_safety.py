@@ -147,3 +147,72 @@ def test_the_site_is_the_area_when_no_block_flies():
     assert pl.site_centre(piano) == pytest.approx((45.000667, 10.001333), abs=1e-5)
     piano.pop("areaDisegnata")
     assert pl.site_centre(piano) is None
+
+
+# ------------------------------------------------------------------ review of 0.1.2
+
+def _agl_of_leg(leg, dem, takeoff):
+    """The distance from the ground of every waypoint of ``leg`` flown from ``takeoff`` (heights above it)."""
+    g0 = dem.height(*takeoff)
+    return [h - (dem.height(*q) - g0) for h, q in zip(leg.route.heights, leg.route.points)]
+
+
+@pytest.mark.parametrize("slope", [0.3, 0.55])
+def test_a_leg_taking_off_at_the_foot_flies_at_the_planned_height_where_the_general_one_cut_at_the_floor(slope):
+    """General takeoff on the top, the ground falling 200 m (or 370 m) to the south: from there the low points are
+    cut at the 10 m floor. A leg taking off at the foot must fly them 60 m above the ground, not 10 m + the drop."""
+    dem = SlopeDem(slope)
+    piano = _plan(decollo=list(NORTH))
+    design.apply_terrain(piano, dem=dem)
+    assert min(piano["blocchi"][0]["quote"]) == design.MIN_HEIGHT        # cut at the floor from the top
+    key = pl.plan_legs(piano)[0].key
+    piano["decolli"] = {key: list(SOUTH)}
+    fresh, _ = project.prepare(piano, dem)
+    leg = next(g for g in pl.plan_legs(fresh) if g.key == key)
+    agl = _agl_of_leg(leg, dem, SOUTH)
+    assert min(agl) > 58.5 and max(agl) < 61.5, (min(agl), max(agl))
+
+
+def test_a_floor_point_whose_ground_is_unknown_refuses_the_export(monkeypatch):
+    from ppg_flightplan import specials
+
+    dem = SlopeDem(0.3)
+    piano = _plan(decollo=list(NORTH))
+    design.apply_terrain(piano, dem=dem)
+    key = pl.plan_legs(piano)[0].key
+    piano["decolli"] = {key: list(SOUTH)}
+    fresh, _ = project.prepare(piano, dem)
+    monkeypatch.setattr(specials, "ground_of_grid", lambda g: (lambda p: None))
+    with pytest.raises(design.StaleHeights, match=key):
+        design.require_exportable(fresh)
+
+
+def test_a_special_point_cut_at_the_ceiling_refuses_the_export():
+    """The block stays under the ceiling, but a free special point on the hill beyond the area would need more than
+    500 m above the takeoff: its cruise height, cut at 500 m, is refused like the block's."""
+    dem = SlopeDem(0.6)
+    piano = _plan(decollo=list(SOUTH))
+    piano["blocchi"][0]["speciali"] = [{"id": "s1", "nome": "Cima", "tipo": "foto", "punto": [45.0060, 10.0000],
+                                        "aggancio": False}]
+    design.apply_terrain(piano, dem=dem)
+    assert max(piano["blocchi"][0]["quote"]) < design.CEILING_ABOVE_TAKEOFF
+    with pytest.raises(design.CeilingReached, match="500"):
+        project.prepare(piano, dem)
+
+
+def test_the_reasons_say_the_export_waits_for_the_terrain():
+    """design() on a terrain beyond the ceiling: the block keeps following the terrain without heights, and the export
+    is refused - the reason says so, not "the flight stays at a constant height"."""
+    out = design.design(AREA, "orto", 2.0, follow_terrain=True, takeoff=SOUTH, dem=SlopeDem(2.0))
+    text = " ".join(out["motivi"])
+    assert "quota costante" not in text and "constant height" not in text
+    assert "500" in text
+    assert design.blocks_with_old_heights(out["piano"])                  # the export is refused until it is redone
+
+
+def test_not_agreed_does_not_take_a_string_for_a_list_of_slots():
+    busy = [{"contenitore": "ab"}, {"contenitore": "a"}]
+    from ppg_flightplan import djifly
+
+    with pytest.raises(TypeError):
+        djifly.not_agreed(busy, "a")

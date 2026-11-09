@@ -113,11 +113,13 @@ def test_the_plan_following_the_terrain_gives_a_height_to_every_waypoint(monkeyp
     assert "quote" not in piano["blocchi"][0] and "seguiTerreno" not in piano
 
 
-def test_without_network_the_plan_comes_out_anyway_at_a_constant_height(monkeypatch):
+def test_without_network_the_plan_comes_out_without_heights_and_the_reason_says_the_export_waits(monkeypatch):
+    """0.1.2: the blocks stay "follows the terrain" without heights, and the export is refused until the terrain is
+    computed: the reason says that (it said "the flight stays at a constant height", which was never written)."""
     monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: None)
     r = design.design(AREA, "orto", 3.0, follow_terrain=True)
-    assert "quote" not in r["piano"]["blocchi"][0]
-    assert any("non disponibili" in m for m in r["motivi"])
+    assert "quote" not in r["piano"]["blocchi"][0] and design.blocks_with_old_heights(r["piano"]) == [0]
+    assert any("non calcolate" in m and "si rifiuta" in m for m in r["motivi"])
     assert r["conti"]["totale"]["scatti"] > 0
 
 
@@ -623,8 +625,8 @@ def test_heights_not_mixed_do_not_blame_the_network(tmp_path, monkeypatch):
                               x0=SOUTH[1] - 0.00005, y0=SOUTH[0] + 0.00005, step=0.00001))
     takeoff = (SOUTH[0] + 0.00003, SOUTH[1])
     r = design.design(AREA, "orto", 2.0, takeoff=takeoff, follow_terrain=True, dem=dem)
-    line = next(m for m in r["motivi"] if "non disponibili" in m)
-    assert "quota costante" in line and "quando c'è rete" not in line and "with the network" not in line
+    assert any("non calcolate" in m for m in r["motivi"])
+    assert not any("quando c'è rete" in m or "with the network" in m for m in r["motivi"])
     # without the network the sentence stays
     monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: None)
     tiles.clear_cache()
