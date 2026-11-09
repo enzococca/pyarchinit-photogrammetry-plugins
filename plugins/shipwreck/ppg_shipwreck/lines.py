@@ -191,12 +191,32 @@ def sections_of(chunk, kind: str | None = None) -> list[dict]:
 
 # ------------------------------------------------------------------------------------- water
 def water_of(chunk) -> dict | None:
-    """``{"level": ship z, "level_world", "n", "on"}``; None when no level was given."""
-    water = chunk.meta.get(ship.KEY, {}).get("water")
+    """``{"level": ship z, "level_world", "n", "on"}``; None when no level was given. When the plugin has no level
+    of its own and the program has one for the chunk (*Acqua* of the program, 1.7.7 or later: :func:`chunk_water`),
+    that one with ``"from": "chunk"`` and the correction off: a default, until the user sets the plugin's own."""
     frame = ship.frame_of(chunk)
-    if water is None or frame is None:
+    if frame is None:
+        return None
+    water = chunk.meta.get(ship.KEY, {}).get("water") or chunk_water(chunk)
+    if water is None:
         return None
     return {**water, "level": water["level_world"] - frame.z0}
+
+
+def chunk_water(chunk) -> dict | None:
+    """The program's water level of the chunk (``engine.water.level_of``, a world height) as the plugin keeps a
+    level: ``{"level_world", "n", "on": False, "from": "chunk", "source"}``; None without one or with a program
+    before 1.7.7."""
+    try:
+        from pyarchinit_photogrammetry.engine import water as program_water
+    except ImportError:
+        return None
+    found = program_water.level_of(chunk)
+    if not found or found.get("level") is None:
+        return None
+    n = float(found.get("n") or REFRACTION)
+    return {"level_world": float(found["level"]), "n": n if 1.0 <= n <= 2.0 else REFRACTION, "on": False,
+            "from": "chunk", "source": found.get("source")}
 
 
 def is_on(chunk) -> bool:

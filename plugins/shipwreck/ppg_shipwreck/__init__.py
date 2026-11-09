@@ -19,7 +19,9 @@
 * ``ppg plugin shipwreck frame|stations|sections|water|drawings|timbers|export|status``,
   ``ppg plugin shipwreck clinker detect|strakes|export|import|status`` and
   ``ppg plugin shipwreck relief|propose|trace|keel|solids|export3d|plan`` and
-  ``ppg plugin shipwreck ends|frame-of|chunks|reconstruct``.
+  ``ppg plugin shipwreck ends|frame-of|chunks|reconstruct`` and ``ppg plugin shipwreck classified`` (0.5.0, with the
+  program 1.7.7: a drawing classified by orientation along the keel - frames, seams, strakes - into the catalogue
+  after a check plate; the program's water level of the chunk as the default of the plugin's).
 
 It measures what is there; what it adds (the keel of given dimensions, the strake model of the sections) is a stated
 hypothesis, apart from the measures. It reads the model: the transform, the model and the products of the chunk are
@@ -38,7 +40,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, num, plural, t
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 NEGATIVE_VALUES = ("--start", "--end", "--longitudinals", "--horizontals")  # may begin with a minus: "-0.2;-0.5", "-1.5,2"
 LAYER = "Legni del relitto"
 CLINKER_LAYER = "Fasce"  # the land lines, in the chunk's x, y
@@ -152,7 +154,8 @@ class ShipwreckPlugin(Plugin):
                            tip=t("Il pannello del disegno dello scafo", "The pane of the drawing of the hull"))
         context.add_command("shipwreck", self.command,
                             help="the technical drawing of a hull: frame, stations, sections, water, drawings, "
-                                 "timbers, export, status, clinker, relief ... plan, ends, frame-of, chunks, reconstruct")
+                                 "timbers, export, status, clinker, relief ... plan, ends, frame-of, chunks, reconstruct, "
+                                 "classified")
         context.add_exporter(t("Relitto: catalogo dei legni (CSV)", "Shipwreck: timber catalogue (CSV)"), ".csv", self._export)
         context.add_exporter(t("Relitto: catalogo dei legni (Excel)", "Shipwreck: timber catalogue (Excel)"), ".xlsx", self._export)
         context.add_exporter(t("Relitto: catalogo dei legni (GeoPackage)", "Shipwreck: timber catalogue (GeoPackage)"), ".gpkg",
@@ -337,6 +340,9 @@ class ShipwreckPlugin(Plugin):
             on = t("correzione accesa", "correction on") if water["on"] else t("correzione spenta", "correction off")
             out["water"] = t(f"Livello z {num(water['level'], 3)} m, n {num(water['n'], 2)}, {on}.",
                              f"Level z {num(water['level'], 3)} m, n {num(water['n'], 2)}, {on}.")
+            if water.get("from") == "chunk":
+                out["water"] += " " + t("Livello dell'acqua del chunk (il programma): salvalo qui per tenerlo.",
+                                        "The water level of the chunk (the program's): save it here to keep it.")
         made = chunk.meta.get(ship.KEY, {}).get("drawings")
         if made:
             count = plural(len(made), ("disegno", "disegni"), ("drawing", "drawings"))
@@ -1190,6 +1196,124 @@ class ShipwreckPlugin(Plugin):
                    t("legni non più sciolti", "timbers no longer loose"))
 
     # ------------------------------------------------------------------ 8 the keel, the timbers in 3D, the plan
+    def _do_classified(self) -> None:
+        """A drawing (a layer of free drawings or a file) classified by the program along the keel line: the check
+        plate first, then the frames, seams and planks the user keeps into the catalogue as one step of *Annulla*."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import classified, ship
+
+        classified.need_program()
+        chunk = self._need_chunk()
+        ship.need_frame(chunk)
+        layers = classified_layers(chunk)
+        choices = [(f"layer:{n}", t(f"Layer: {n}", f"Layer: {n}")) for n in layers]
+        choices.append(("file", t("Il file qui sotto", "The file below")))
+        defaults = {**classified.orient_lines.DEFAULTS, **classified.orient_lines.EXTRA_DEFAULTS}
+        title = t("Disegno classificato", "Classified drawing")
+        v = self._ask(title, [
+            Field("source", t("Disegno", "Drawing"), choices[0][0], choices=choices),
+            Field("file", t("File (GeoPackage, GeoJSON, DXF)", "File (GeoPackage, GeoJSON, DXF)"), "", kind="file_open",
+                  filter="GeoPackage, GeoJSON, DXF (*.gpkg *.geojson *.json *.dxf)"),
+            Field("pair_isolation", t("Isolamento delle coppie", "Pair isolation"), defaults["pair_isolation"],
+                  minimum=0.0, maximum=10.0, decimals=2,
+                  tip=t("Ordinate disegnate come linee sciolte e vicine fra loro: 1 (o disegnale come poligoni); "
+                        "0 toglie il controllo",
+                        "Frames drawn as loose lines close together: 1 (or draw them as polygons); 0 turns the check "
+                        "off")),
+            Field("pair_min", t("Coppie: distanza da (m)", "Pairs: distance from (m)"), defaults["pair_min"],
+                  minimum=0.0, maximum=10.0, decimals=3),
+            Field("pair_max", t("Coppie: distanza fino a (m)", "Pairs: distance up to (m)"), defaults["pair_max"],
+                  minimum=0.0, maximum=10.0, decimals=3),
+            Field("min_length", t("Tratto più corto (m)", "Shortest piece (m)"), defaults["min_length"],
+                  minimum=0.0, maximum=10.0, decimals=3)],
+            intro=t("Le linee del disegno, nel sistema della nave, ordinate lungo la chiglia: coppie di traverso = "
+                    "ordinate, linee lungo l'asse = comenti, coppie lungo l'asse = fasce. Prima la tavola di "
+                    "controllo, poi scegli cosa mettere nel catalogo.",
+                    "The lines of the drawing, in the ship frame, sorted along the keel: pairs across = frames, lines "
+                    "along = seams, pairs along = strakes. The check plate first, then choose what goes into the "
+                    "catalogue."))
+        if not v:
+            return
+        if v["source"] == "file":
+            if not str(v.get("file") or "").strip():
+                raise ship.NotReady(t("Scegli il file del disegno.", "Choose the file of the drawing."))
+            source = ("file", str(v["file"]).strip())
+        else:
+            source = ("layer", v["source"].split(":", 1)[1])
+        params = {k: float(v[k]) for k in ("pair_isolation", "pair_min", "pair_max", "min_length")}
+        self.classify_drawing(chunk, source, params)
+
+    def classify_drawing(self, chunk, source, params=None) -> None:
+        """:func:`classified.propose` and its plate in the worker, then :meth:`_classified_ready`."""
+        from . import classified, ship
+
+        def job(_p):
+            prop = classified.propose(chunk, source, params)
+            folder = ship.folder(chunk) / "classified"
+            folder.mkdir(parents=True, exist_ok=True)
+            return prop, classified.plate(chunk, prop, folder / "plate.png")
+
+        self._run(t("Disegno classificato", "Classified drawing"), job,
+                  lambda out: self._guarded(self._classified_ready, chunk, *out))
+
+    def _classified_ready(self, chunk, prop: dict, plate) -> None:
+        from . import classified
+
+        c = classified.counts(prop)
+        if not prop["records"]:
+            self._message("warning", t(f"Nessuna ordinata, comento o fascia nel disegno ({c['skipped']} elementi "
+                                       "di traverso o in altre direzioni).",
+                                       f"No frame, seam or strake in the drawing ({c['skipped']} elements across or "
+                                       "in other directions)."))
+            return
+        kinds = self._check_plate(plate, c)
+        if not kinds:
+            return
+        before = self._snapshot(chunk)
+        records = classified.accept(chunk, prop, kinds=kinds)
+        self._status(plural(len(records), ("legno importato", "legni importati"), ("timber imported", "timbers imported")))
+        self._step(chunk, before, t("disegno classificato", "classified drawing"))
+
+    def _check_plate(self, plate, counts: dict) -> list[str] | None:
+        """The check plate with the counts and a box per kind: the kinds ticked, None when cancelled."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+
+        from . import classified, timbers
+
+        dlg = QDialog(self.context.window)
+        dlg.setWindowTitle(t("Tavola di controllo", "Check plate"))
+        lay = QVBoxLayout(dlg)
+        image = QLabel()
+        pix = QPixmap(str(plate))
+        if not pix.isNull():
+            image.setPixmap(pix.scaled(960, 680, Qt.AspectRatioMode.KeepAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation))
+        lay.addWidget(image)
+        if counts["skipped"]:
+            note = QLabel(t(f"{counts['skipped']} elementi di traverso o in altre direzioni restano fuori.",
+                            f"{counts['skipped']} elements across or in other directions stay out."))
+            note.setWordWrap(True)
+            lay.addWidget(note)
+        boxes = {}
+        for kind in classified.KINDS:
+            box = QCheckBox(f"{timbers.kind_title(kind)}: {counts[kind]}")
+            box.setChecked(counts[kind] > 0)
+            box.setEnabled(counts[kind] > 0)
+            lay.addWidget(box)
+            boxes[kind] = box
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(t("Nel catalogo", "Into the catalogue"))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(t("Annulla", "Cancel"))
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return [k for k, b in boxes.items() if b.isChecked()] or None
+
     def _do_keel_set(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field
 
@@ -1894,6 +2018,8 @@ class ShipwreckPlugin(Plugin):
 
         if args and str(args[0]) == "clinker":
             return self._clinker_command([str(a) for a in args[1:]])
+        if args and str(args[0]) == "classified":
+            return self._classified_command([str(a) for a in args[1:]])
         if args and str(args[0]) in RECONSTRUCTION:
             return self._reconstruction_command([str(a) for a in args])
         parser = argparse.ArgumentParser(prog="ppg plugin shipwreck", description="the technical drawing of a hull from its 3D model")
@@ -1996,6 +2122,79 @@ class ShipwreckPlugin(Plugin):
         doc.save()
         return 0
 
+
+    def _classified_command(self, args: list[str]) -> int:
+        """``classified PROJECT (--layer NAME | --file PATH) [--param k=v ...] [--plate FILE] [--accept [IDS ...]]``:
+        the drawing classified along the keel line, its timbers listed and the plate written; only with ``--accept``
+        are they put into the catalogue (all, or the ids given, of ``--kinds``) and the project saved."""
+        from . import classified, ship
+
+        parser = argparse.ArgumentParser(prog="ppg plugin shipwreck classified",
+                                         description="a drawing classified by orientation along the keel line: pairs "
+                                                     "across = frames, lines along = seams, pairs along = strakes")
+        parser.add_argument("project", help="the .ppg file")
+        parser.add_argument("--chunk", help="the label of the chunk (default: the active one)")
+        source = parser.add_mutually_exclusive_group(required=True)
+        source.add_argument("--layer", help="a layer of free drawings of the chunk")
+        source.add_argument("--file", help="a GeoPackage, GeoJSON or DXF (put in the chunk's system)")
+        parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE",
+                            help="a parameter of the classification (the program's, e.g. pair_max=0.4)")
+        parser.add_argument("--pair-isolation", type=float,
+                            help="pairs of loose lines: the next line at least this many times farther (1.5); frames "
+                                 "drawn as loose lines close together need 1 (or draw them as polygons); 0 = off")
+        parser.add_argument("--plate", help="the check plate, .png or .svg (default: shipwreck/classified/plate.png)")
+        parser.add_argument("--accept", nargs="*", metavar="ID",
+                            help="into the catalogue: the element ids given, or all with no id")
+        parser.add_argument("--kinds", help="with --accept and no id: frame,seam,plank (default: all)")
+        ns = parser.parse_args(args)
+        if not classified.available():
+            print(t(f"Disegno classificato: {classified.NEEDS_PROGRAM[0]}.",
+                    f"Classified drawing: {classified.NEEDS_PROGRAM[1]}."))
+            return 1
+        import pyarchinit_photogrammetry as ppg
+
+        doc = ppg.Document.open(ns.project)
+        chunk = next((c for c in doc.chunks if c.label == ns.chunk), None) if ns.chunk else doc.chunk
+        if chunk is None:
+            print(f"no chunk {ns.chunk!r} in the project")
+            return 1
+        params = {}
+        for item in ns.param:
+            name, sep, value = item.partition("=")
+            if not sep:
+                print(f"--param {item}: NAME=VALUE")
+                return 1
+            params[name.strip()] = value.strip()
+        if ns.pair_isolation is not None:
+            params["pair_isolation"] = ns.pair_isolation
+        kinds = None
+        if ns.kinds:
+            kinds = [k.strip() for k in ns.kinds.split(",") if k.strip()]
+            wrong = [k for k in kinds if k not in classified.KINDS]
+            if wrong:
+                print(f"--kinds: {', '.join(wrong)}? one of {', '.join(classified.KINDS)}")
+                return 1
+        try:
+            prop = classified.propose(chunk, ("file", ns.file) if ns.file else ("layer", ns.layer), params)
+            plate = Path(ns.plate) if ns.plate else ship.folder(chunk) / "classified" / "plate.png"
+            plate.parent.mkdir(parents=True, exist_ok=True)
+            classified.plate(chunk, prop, plate)
+            c = classified.counts(prop)
+            print(t(f"Ordinate {c['frame']}, comenti {c['seam']}, fasce {c['plank']}, altri elementi {c['skipped']}.",
+                    f"Frames {c['frame']}, seams {c['seam']}, strakes {c['plank']}, other elements {c['skipped']}."))
+            for r in prop["records"]:
+                print(f"{r['id']}\t{r['kind']}\t{r['side']}\t{r['name']}\tx {r['x']:.3f}")
+            print(plate)
+            if ns.accept is None:
+                print(t("Niente nel catalogo: --accept per importare.", "Nothing in the catalogue: --accept to import."))
+                return 0
+            records = classified.accept(chunk, prop, ns.accept or None, kinds=kinds)
+        except ship.NotReady as exc:
+            print(exc)
+            return 1
+        doc.save()
+        print(plural(len(records), ("legno importato", "legni importati"), ("timber imported", "timbers imported")))
+        return 0
 
     def _reconstruction_command(self, args: list[str]) -> int:
         """``relief build|export``, ``propose``, ``trace list|accept|reject|names``, ``keel``, ``solids``,
@@ -2257,6 +2456,19 @@ class ShipwreckPlugin(Plugin):
             return 1
         doc.save()
         return 0
+
+
+def classified_layers(chunk) -> list[str]:
+    """The layers of free drawings of ``chunk`` with lines or polygons (the drawings a classification reads)."""
+    try:
+        from pyarchinit_photogrammetry.core import free_drawings
+    except ImportError:
+        return []
+    names: list[str] = []
+    for f in free_drawings.features(chunk):
+        if f["kind"] in ("line", "polygon") and f["layer"] not in names:
+            names.append(f["layer"])
+    return names
 
 
 def clinker_state(chunk) -> str:

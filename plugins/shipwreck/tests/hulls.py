@@ -375,3 +375,35 @@ def framed_truth(strakes: int = 5, frames=FRAMES, keelson: bool = True) -> dict:
     keel = KEELSON_HEIGHT * 2.0 * KEELSON_HALF * (KEELSON_X[1] - KEELSON_X[0]) if keelson else 0.0
     return {"frames": [(float(f), FRAME_ROOM) for f in frames], "volumes": {"frames": volumes, "keelson": float(keel)},
             "strake_widths": lambda x: strake_widths(x, strakes)}
+
+
+# ------------------------------------------------------------------------------- a drawing of the timbers (0.5.0)
+DRAWN_FRAMES = (4.0, 4.5, 5.0, 5.5)  # ship x of the first edge of each frame, 0.08 m sided
+DRAWN_SEAMS = (0.3, -0.3, 1.0, -1.0)  # ship y of the seams, x 3.5 - 6.5
+DRAWN_PLANK = ((3.2, 1.4), (6.8, 1.65))  # a strake on port, x and y from - to
+
+
+def draw_timbers(chunk, frame, layer: str = "Rilievo", loose_frames: bool = False, frames=DRAWN_FRAMES,
+                 sided: float = 0.08) -> None:
+    """A tracing of the timbers in free drawings of ``chunk`` (world x, y through the ship ``frame``): a frame on each
+    side at each of ``frames`` (``sided`` wide: polygons, or two loose lines with ``loose_frames``), the seams of
+    :data:`DRAWN_SEAMS`, the strake :data:`DRAWN_PLANK` and a short line across (not a timber)."""
+    from pyarchinit_photogrammetry.core import free_drawings
+
+    def world(xy):
+        xy = np.asarray(xy, float)
+        return frame.to_world(np.column_stack([xy, np.zeros(len(xy))]))
+
+    for x in frames:
+        for y0, y1 in ((0.1, 0.9), (-0.9, -0.1)):
+            if loose_frames:
+                free_drawings.add(chunk, "line", world([[x, y0], [x, y1]]), layer=layer)
+                free_drawings.add(chunk, "line", world([[x + sided, y0], [x + sided, y1]]), layer=layer)
+            else:
+                free_drawings.add(chunk, "polygon", world([[x, y0], [x + sided, y0], [x + sided, y1], [x, y1]]),
+                                  layer=layer)
+    for y in DRAWN_SEAMS:
+        free_drawings.add(chunk, "line", world([[3.5, y], [6.5, y]]), layer=layer)
+    (x0, y0), (x1, y1) = DRAWN_PLANK
+    free_drawings.add(chunk, "polygon", world([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]), layer=layer)
+    free_drawings.add(chunk, "line", world([[3.0, -1.5], [3.0, -1.2]]), layer=layer)
