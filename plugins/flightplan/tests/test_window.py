@@ -500,7 +500,7 @@ def test_copy_into_djifly(gui, tmp_path, monkeypatch):
     assert len(asked) == 1 and "MISSIONE DELL'UTENTE" in asked[0] and user in asked[0]
     assert (waypoint / user / f"{user}.kmz").read_bytes() != mission
     backups = list((project.folder(ch) / "djifly_backup").rglob("*.kmz"))
-    assert backups and backups[0].read_bytes() == mission
+    assert any(b.read_bytes() == mission for b in backups)      # the legs written before have their copies too
 
 
 def test_a_stale_coverage_leaves_the_view(gui):
@@ -605,3 +605,66 @@ def test_the_project_dem_says_it_asks_the_tiles_where_it_ends():
     tip = p.c_source.itemData(p.c_source.findData("dem"), Qt.ItemDataRole.ToolTipRole)
     assert "tegole pubbliche" in tip and "non arriva" in tip
     assert "rete" in p.c_source.toolTip()
+
+
+# ------------------------------------------------------------------ 0.1.1
+def test_the_parameters_text_says_the_overlaps_used(gui):
+    """Forward set to 75 %: step 3 says 75 % forward once, never the goal's 80 %."""
+    w, plugin, ch, app_, said, _request = gui
+    plugin.pane.s_front.setValue(75)
+    _design(w, plugin, app_)
+    text = plugin.pane.states["params"].text()
+    assert "sovrapposizione 75% avanti e 70% laterale" in text
+    assert text.count("% avanti") == 1 and "80%" not in text
+    assert project.active_plan(ch)["piano"]["blocchi"][0]["avanti"] == 75
+
+
+def test_high_resolution_off_for_new_plans_kept_for_old_ones(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from ppg_flightplan.pane import FlightPlanPane
+
+    pane = FlightPlanPane()
+    assert not pane.k_high.isChecked() and pane.parameters()["high"] is False
+    pane.set_parameters({"camera": "mini4pro", "alta": True, "blocchi": []})      # a plan saved with it on
+    assert pane.k_high.isChecked()
+    pane.set_parameters({"camera": "mini4pro", "blocchi": []})                    # without the key: off, as read
+    assert not pane.k_high.isChecked()
+
+
+@pytest.mark.parametrize("lang", ["it", "en"])
+def test_the_pane_fits_420_px(monkeypatch, lang):
+    """The combos show their whole text and the table every column, the heights too, at 420 px."""
+    from PySide6.QtWidgets import QApplication, QComboBox
+
+    from pyarchinit_photogrammetry.gui import i18n
+
+    app_ = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(i18n, "current", lambda: lang)
+    from ppg_flightplan.pane import FlightPlanPane
+
+    pane = FlightPlanPane()
+    pane.resize(420, 1600)
+    pane.show()
+    pane.set_plan_table({"blocchi": [{"indice": 0, "nome": "A nadirale", "attivo": True, "scatti": 1234,
+                                      "minuti": 45.3, "batterie": 2.6, "gsd": 3.0, "quote": "108.7–121.4",
+                                      "tratte": [{"chiave": "k", "nome": "Piano_1_A_nadirale_tratta_12.kmz",
+                                                  "scatti": 600, "minuti": 22.1, "quote": "108.7–121.4"}]}]})
+    for _ in range(5):
+        app_.processEvents()
+    try:
+        fm = pane.fontMetrics()
+        for c in pane.findChildren(QComboBox):
+            if c is pane.c_plan:
+                continue
+            longest = max(fm.horizontalAdvance(c.itemText(i)) for i in range(c.count()))
+            assert c.width() >= longest + 16, (c.currentText(), c.width(), longest)
+            assert c.mapTo(pane, c.rect().topRight()).x() <= pane.width(), c.currentText()
+        table = pane.t_plan
+        widths = [table.columnWidth(i) for i in range(table.columnCount())]
+        assert sum(widths) <= table.viewport().width() and not table.horizontalScrollBar().isVisible()
+        assert widths[-1] >= fm.horizontalAdvance("108.7–121.4")
+        assert pane.c_direction.itemText(0) in ("Lungo il lato più lungo", "Along the longest side")
+    finally:
+        pane.close()

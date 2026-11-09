@@ -998,9 +998,9 @@ class WindowPart:
                                     margin_m=params["margin"], double_grid=params["double"],
                                     obliques=params["obliques"], custom_camera=own,
                                     takeoff=tuple(old_piano["decollo"]) if old_piano and old_piano.get("decollo")
-                                    else None)
+                                    else None, front=params["front"], side=params["side"],
+                                    speed=params["speed"], direction=params["direction"], height=params["height"])
             piano, reasons = out["piano"], list(out["motivi"])
-            _apply_parameters(piano, params, reasons)
             if old_piano and old_piano.get("decolli"):
                 from . import plan as pl
 
@@ -1681,40 +1681,6 @@ class WindowPart:
 
 
 # ------------------------------------------------------------------ module helpers
-def _apply_parameters(piano: dict, params: dict, reasons: list[str]) -> None:
-    """The pane's parameters beyond the goal on the designed plan: a height typed, overlaps, direction, speed of the
-    nadir grids (the oblique passes keep their own overlaps and speed)."""
-    from . import plan as pl
-
-    cam = pl.plan_camera(piano)
-    for b in piano.get("blocchi") or []:
-        nadir = float(b.get("inclinazione", -90)) <= -89.5
-        if params.get("height") is not None:
-            b["quota"] = round(float(params["height"]), 1)
-        if nadir:
-            b["avanti"], b["lato"] = int(params["front"]), int(params["side"])
-            b["velocita"] = float(params["speed"])
-        if params.get("direction") is not None:
-            base = int(params["direction"]) % 180
-            if "2 nadirale" in str(b.get("nome", "")) or str(b.get("nome", "")).startswith("C obliquo"):
-                b["orientamento"] = (base + 90) % 180
-            else:
-                b["orientamento"] = base
-    if params.get("height") is not None:
-        h = round(float(params["height"]), 1)
-        gsd = cam.gsd_cm(h, bool(piano.get("alta", True)))
-        (piano.get("obiettivo") or {})["gsd"] = round(gsd, 2)
-        reasons.append(t("Quota scelta a mano: {0:g} m sul decollo (GSD {1:.2f} cm/px).",
-                         "Height chosen by hand: {0:g} m above the takeoff (GSD {1:.2f} cm/px).").format(h, gsd))
-    if params.get("direction") is not None:
-        reasons.append(t("Strisciate a {0}° scelti a mano.", "Strips at {0}° chosen by hand.")
-                       .format(int(params["direction"]) % 180))
-    if (params["front"], params["side"]) != (80, 70) or float(params["speed"]) != 5.0:
-        reasons.append(t("Griglie nadirali: sovrapposizione {0}% avanti e {1}% laterale, {2:g} m/s.",
-                         "Nadir grids: overlap {0}% forward and {1}% sideways, {2:g} m/s.")
-                       .format(params["front"], params["side"], params["speed"]))
-
-
 def _design_warning_text(w: dict) -> str:
     text = warning_text(w.get("tipo", ""))
     name = w.get("nome")

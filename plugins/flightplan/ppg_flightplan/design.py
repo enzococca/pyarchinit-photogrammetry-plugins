@@ -165,15 +165,21 @@ def _custom(custom_camera) -> Optional[dict]:
     return custom_camera.to_json() if isinstance(custom_camera, Camera) else dict(custom_camera)
 
 
-def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4pro", high: bool = True,
+def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4pro", high: bool = False,
            battery_minutes: float = 18.0, follow_terrain: bool = False, mode: str = "per_punto",
            takeoff: Optional[LatLon] = None, name: str = "Piano progettato", dem=None, margin_m: float = 0.0,
-           double_grid: bool = False, obliques: Optional[bool] = None, custom_camera=None) -> dict:
+           double_grid: bool = False, obliques: Optional[bool] = None, custom_camera=None,
+           front: Optional[int] = None, side: Optional[int] = None, speed: Optional[float] = None,
+           direction: Optional[int] = None, height: Optional[float] = None) -> dict:
     """The complete plan for that goal, with the reason of every choice.
 
+    ``high`` the camera's high-resolution shot (off by default: it asks a higher flight for the same GSD);
     ``margin_m`` grows the area before the grid; ``double_grid`` adds a second nadir grid crossed at 90
     degrees; ``obliques`` None follows the goal, True/False forces the two crossed oblique passes on or off;
     ``custom_camera`` (a :class:`Camera` or its JSON) is stored in the plan as ``cameraPersonale`` and used.
+    ``front``, ``side`` (percent) and ``speed`` (m/s) of the nadir grids, None the goal's (the oblique passes
+    keep their own); ``direction`` the strips in degrees instead of the longest side; ``height`` above the
+    takeoff instead of the goal's. The reasons say the values the plan really uses.
     """
     if len(area) < 3:
         raise ValueError(t("l'area ha bisogno di almeno tre vertici", "the area needs at least three vertices"))
@@ -183,16 +189,17 @@ def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4p
         camera = str(custom.get("id"))
     cam = list_camera(camera, custom)
     gsd = gsd_for_goal(goal_id, value)
-    height = height_for_gsd(cam, gsd, high)
+    by_hand = height is not None
+    height = float(height) if by_hand else height_for_gsd(cam, gsd, high)
     reasons: list[str] = []
-    if height > MAX_HEIGHT:
+    if not by_hand and height > MAX_HEIGHT:
         reasons.append(t("Con {0:.2f} cm/px servirebbero {1:.0f} m: oltre i {2:.0f} m consentiti, "
                          "quota portata al massimo (GSD reale {3:.2f} cm/px).",
                          "{0:.2f} cm/px would need {1:.0f} m: above the {2:.0f} m allowed, "
                          "height brought to the maximum (real GSD {3:.2f} cm/px).")
                        .format(gsd, height, MAX_HEIGHT, cam.gsd_cm(MAX_HEIGHT, high)))
         height = MAX_HEIGHT
-    if height < MIN_HEIGHT:
+    if not by_hand and height < MIN_HEIGHT:
         reasons.append(t("Quota alzata a {0:.0f} m per sicurezza (GSD reale {1:.2f} cm/px).",
                          "Height raised to {0:.0f} m for safety (real GSD {1:.2f} cm/px).")
                        .format(MIN_HEIGHT, cam.gsd_cm(MIN_HEIGHT, high)))
@@ -205,22 +212,38 @@ def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4p
                          "la stessa copertura del centro.",
                          "Area grown by {0:g} m on every side, so the edges of the drawn area get the same "
                          "coverage as the centre.").format(margin_m))
-    heading = long_edge_heading(area)
-    reasons.insert(0, t("{0} a {1:g} {2}: serve un GSD di {3:.2f} cm/px, cioè {4:g} m con {5} ({6:.2f} cm/px reali).",
-                        "{0} at {1:g} {2}: it needs a GSD of {3:.2f} cm/px, that is {4:g} m with {5} "
-                        "({6:.2f} cm/px real).")
-                   .format(goal_name(o), value, o["unita"], gsd, height, cam.name, real_gsd))
+    heading = long_edge_heading(area) if direction is None else int(direction) % 180
+    if by_hand:
+        reasons.insert(0, t("Quota scelta a mano: {0:g} m sul decollo con {1} (GSD {2:.2f} cm/px).",
+                            "Height chosen by hand: {0:g} m above the takeoff with {1} (GSD {2:.2f} cm/px).")
+                       .format(height, cam.name, real_gsd))
+    else:
+        reasons.insert(0, t("{0} a {1:g} {2}: serve un GSD di {3:.2f} cm/px, cioè {4:g} m con {5} "
+                            "({6:.2f} cm/px reali).",
+                            "{0} at {1:g} {2}: it needs a GSD of {3:.2f} cm/px, that is {4:g} m with {5} "
+                            "({6:.2f} cm/px real).")
+                       .format(goal_name(o), value, o["unita"], gsd, height, cam.name, real_gsd))
 
-    front, side = (80, 70) if not o["obliqui"] else (85, 75)
+    goal_front, goal_side = (80, 70) if not o["obliqui"] else (85, 75)
+    front = goal_front if front is None else int(front)
+    side = goal_side if side is None else int(side)
+    speed = 5.0 if speed is None else float(speed)
     blocks = [{
         "tipo": "griglia", "nome": "A nadirale", "area": [list(p) for p in area], "quota": height,
         "inclinazione": -90, "avanti": front, "lato": side, "orientamento": heading,
-        "velocita": 5.0, "modo": mode, "alta": high, "attivo": True,
+        "velocita": speed, "modo": mode, "alta": high, "attivo": True,
     }]
-    reasons.append(t("Strisciate a {0}°, lungo il lato più lungo dell'area, "
-                     "sovrapposizione {1}% avanti e {2}% laterale.",
-                     "Strips at {0}°, along the longest side of the area, overlap {1}% forward and {2}% sideways.")
-                   .format(heading, front, side))
+    # the one sentence on the strips: the overlaps and the speed the nadir grids really use
+    if direction is None:
+        reasons.append(t("Strisciate a {0}°, lungo il lato più lungo dell'area, sovrapposizione {1}% avanti e "
+                         "{2}% laterale, {3:g} m/s.",
+                         "Strips at {0}°, along the longest side of the area, overlap {1}% forward and "
+                         "{2}% sideways, {3:g} m/s.").format(heading, front, side, speed))
+    else:
+        reasons.append(t("Strisciate a {0}° scelti a mano, sovrapposizione {1}% avanti e {2}% laterale, "
+                         "{3:g} m/s.",
+                         "Strips at {0}° chosen by hand, overlap {1}% forward and {2}% sideways, "
+                         "{3:g} m/s.").format(heading, front, side, speed))
     if double_grid:
         crossed = (heading + 90) % 180
         blocks.append(dict(blocks[0], nome=f"A2 nadirale {crossed}°", orientamento=crossed,

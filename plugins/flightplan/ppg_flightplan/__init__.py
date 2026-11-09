@@ -22,7 +22,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from .texts import t, warning_text
 from .window import WindowPart, copy_legs
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 class CommandError(Exception):
@@ -149,7 +149,11 @@ class FlightPlanPlugin(WindowPart, Plugin):
         p.add_argument("--camera", default="mini4pro", help="a camera of the list (see cameras)")
         p.add_argument("--exif", help="the camera from a photo's EXIF")
         p.add_argument("--manual", help="a camera typed: NAME,WIDTH_MM,HEIGHT_MM,FOCAL_MM,PIXELS")
-        p.add_argument("--low-res", action="store_true", help="the camera's normal resolution, not the high one")
+        res = p.add_mutually_exclusive_group()
+        res.add_argument("--high-res", action="store_true",
+                         help="the camera's high-resolution shot (it flies higher for the same GSD)")
+        res.add_argument("--low-res", action="store_true",
+                         help="the camera's normal resolution: the default, kept for the scripts written for 0.1.0")
         p.add_argument("--battery", type=float, default=18.0, help="minutes of a battery")
         p.add_argument("--mode", choices=("per_punto", "intervallo"), default="per_punto")
         p.add_argument("--margin", type=float, default=0.0, help="metres added around the area")
@@ -429,7 +433,7 @@ class FlightPlanPlugin(WindowPart, Plugin):
         value = ns.value if ns.value is not None else goal["valore"]
         dem = project.chunk_dem(chunk) if ns.terrain and chunk is not None else None
         try:
-            out = design_mod.design(area, ns.goal, value, camera=cam_id or "mini4pro", high=not ns.low_res,
+            out = design_mod.design(area, ns.goal, value, camera=cam_id or "mini4pro", high=bool(ns.high_res),
                                     battery_minutes=ns.battery, follow_terrain=ns.terrain, mode=ns.mode,
                                     takeoff=takeoff, name=ns.name or t("Piano progettato", "Designed plan"), dem=dem,
                                     margin_m=ns.margin, double_grid=ns.double, obliques=ns.obliques,
