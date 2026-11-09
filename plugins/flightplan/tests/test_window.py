@@ -605,3 +605,16 @@ def test_the_project_dem_says_it_asks_the_tiles_where_it_ends():
     tip = p.c_source.itemData(p.c_source.findData("dem"), Qt.ItemDataRole.ToolTipRole)
     assert "tegole pubbliche" in tip and "non arriva" in tip
     assert "rete" in p.c_source.toolTip()
+
+
+# ------------------------------------------------------------------ 0.1.1
+def test_the_parameters_text_says_the_overlaps_used(gui):
+    """Forward set to 75 %: step 3 says 75 % forward once, never the goal's 80 %."""
+    w, plugin, ch, app_, said, _request = gui
+    plugin.pane.s_front.setValue(75)
+    _design(w, plugin, app_)
+    text = plugin.pane.states["params"].text()
+    assert "sovrapposizione 75% avanti e 70% laterale" in text
+    assert text.count("% avanti") == 1 and "80%" not in text
+    assert project.active_plan(ch)["piano"]["blocchi"][0]["avanti"] == 75
+

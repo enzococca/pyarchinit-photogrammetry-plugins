@@ -922,3 +922,25 @@ def test_tiles_missing_after_a_takeoff_move_are_refused_not_filled(tmp_path, mon
     piano["decollo"] = [SOUTH[0] + 0.0005, SOUTH[1]]
     with pytest.raises(design.StaleHeights, match="senza quota del suolo"):
         project.prepare(piano, dem)
+
+
+def test_the_reasons_say_the_overlaps_the_plan_uses_once():
+    """0.1.1: the overlaps given (75 % forward) are the ones of the strips and of the text, said once; without them
+    the goal's own; the shots counted with them."""
+    r = design.design(AREA, "orto", 3.0, front=75, side=70, speed=6.0)
+    nadir = r["piano"]["blocchi"][0]
+    assert (nadir["avanti"], nadir["lato"], nadir["velocita"]) == (75, 70, 6.0)
+    text = " ".join(r["motivi"])
+    assert "75% avanti e 70% laterale" in text and text.count("% avanti") == 1 and "80%" not in text
+    assert r["conti"] == pl.compute(r["piano"])
+    goal3d = design.design(AREA, "modello3d", 3.0)                     # the goal's 85/75, the obliques theirs
+    text = " ".join(goal3d["motivi"])
+    assert "85% avanti e 75% laterale" in text and text.count("% avanti") == 1
+    by_hand = design.design(AREA, "modello3d", 3.0, front=80, side=70, direction=30, height=70)
+    blocks = by_hand["piano"]["blocchi"]
+    assert [b["quota"] for b in blocks] == [70.0] * 3 and blocks[0]["orientamento"] == 30
+    assert blocks[2]["orientamento"] == 120 and (blocks[1]["avanti"], blocks[1]["lato"]) == (85, 75)
+    text = " ".join(by_hand["motivi"])
+    assert "Strisciate a 30° scelti a mano, sovrapposizione 80% avanti e 70% laterale" in text
+    assert "Quota scelta a mano: 70 m" in text and text.count("% avanti") == 1 and by_hand["quota"] == 70.0
+
