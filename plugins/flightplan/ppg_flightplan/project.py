@@ -398,11 +398,13 @@ def read_coverage(chunk, id_: str) -> Optional[cov_mod.Coverage]:
 # ------------------------------------------------------------------ export
 def prepare(piano: dict, dem=None) -> tuple[dict, dict]:
     """A copy of the plan with its terrain heights refreshed (:func:`ppg_flightplan.design.refresh_terrain`) and the
-    outcome; :class:`ppg_flightplan.design.StaleHeights` (with ``reasons``) when heights stay stale."""
+    outcome; :class:`ppg_flightplan.design.StaleHeights` (with ``reasons``) when heights stay stale, or when the
+    ground of a moved takeoff could not be measured again (no network, the takeoff off the DEM): never a file with
+    heights, or descents, counted from the old takeoff."""
     piano = copy.deepcopy(piano)
     outcome = design.refresh_terrain(piano, dem)
     try:
-        design.require_current_heights(piano)
+        design.require_exportable(piano)
     except design.StaleHeights as e:
         e.reasons = [f.get("motivo") for f in outcome.get("falliti") or [] if f.get("motivo")]
         if e.reasons:
@@ -449,7 +451,7 @@ def export_plan(piano: dict, fmt: str, path, *, crs: Optional[str] = None, groun
     if fmt not in FORMATS:
         raise ValueError(t("formato sconosciuto: {0} (sono {1})", "unknown format: {0} (they are {1})")
                          .format(fmt, ", ".join(FORMATS)))
-    design.require_current_heights(piano)
+    design.require_exportable(piano)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     flat = piano.get("quotaDecollo") is None

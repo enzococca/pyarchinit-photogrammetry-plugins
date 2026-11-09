@@ -310,13 +310,16 @@ NODI_MASSIMI = 6000
 
 
 def terrain_grid(piano: dict, dem, z: int, offset: Optional[float], ground_reference: float,
-                 reference: LatLon) -> Optional[dict]:
+                 reference: LatLon, use_tiles: bool = True, sparse_ok: bool = False) -> Optional[dict]:
     """The heights of the ground around the site, to put INSIDE the plan.
 
     The heights of a flight following the terrain are counted from where the drone really takes off. If the
     pilot takes off elsewhere than planned, all the heights must move by how much higher or lower the ground
     is there. With this grid the plan carries the ground with it, and that correction can be made without
     network.
+
+    ``sparse_ok``: a DEM that covers the flight but not the margin around it gives a grid with holes, kept
+    anyway (the margin is not asked to the network).
     """
     points: list[LatLon] = [reference]
     for b in piano.get("blocchi", []):
@@ -349,8 +352,9 @@ def terrain_grid(piano: dict, dem, z: int, offset: Optional[float], ground_refer
         step *= 1.25                        # large areas: a wider mesh, the file stays light
     step_lat, step_lon = step / m_lat, step / m_lon
     nodes = [(south + r * step_lat, west + c * step_lon) for r in range(rows) for c in range(cols)]
-    heights = ground_heights(nodes, dem, z, offset)
-    if sum(1 for q in heights if q is not None) < len(heights) * 0.5:
+    heights = ground_heights(nodes, dem, z, offset, use_tiles)
+    known = sum(1 for q in heights if q is not None)
+    if not known or (known < len(heights) * 0.5 and not sparse_ok):
         return None
     return {"sud": round(south, 7), "ovest": round(west, 7), "passoLat": step_lat, "passoLon": step_lon,
             "righe": rows, "colonne": cols, "passoM": round(step, 1),
@@ -398,15 +402,16 @@ def source_offset(points: list[LatLon], dem, z: int, n: Optional[int] = 12) -> O
     return _overlap(points, dem, z, n)[0]
 
 
-def _overlap(points: list[LatLon], dem, z: int, n: Optional[int] = None) -> tuple[Optional[float], int, int]:
+def _overlap(points: list[LatLon], dem, z: int, n: Optional[int] = None,
+             use_tiles: bool = True) -> tuple[Optional[float], int, int]:
     """The offset between the project DEM and the tiles (the median where both answer), and at how many of
-    the points each of them answers."""
+    the points each of them answers. Without ``use_tiles`` the tiles are never asked (no offset)."""
     step = 1 if n is None else max(1, len(points) // max(n, 1))
     sampled = points[::step]
     offsets = []
     known_dem = known_tiles = 0
     for p, mine in zip(sampled, _dem_heights(sampled, dem)):
-        free = tiles.height(p[0], p[1], z)
+        free = tiles.height(p[0], p[1], z) if use_tiles else None
         known_dem += mine is not None
         known_tiles += free is not None
         if mine is not None and free is not None:
@@ -424,18 +429,25 @@ def _dem_heights(points: list[LatLon], dem) -> list[Optional[float]]:
     return [dem.height(p[0], p[1]) for p in points]
 
 
-def ground_heights(points: list[LatLon], dem, z: int, offset: Optional[float]) -> list[Optional[float]]:
+def ground_heights(points: list[LatLon], dem, z: int, offset: Optional[float],
+                   use_tiles: bool = True) -> list[Optional[float]]:
     """The heights of the terrain under the points: from the project DEM where it reaches, from the public
-    tiles elsewhere (moved by the offset between the two)."""
+    tiles elsewhere (moved by the offset between the two).
+
+    The tiles are asked only with ``use_tiles``, and next to a DEM only when the offset was measured: a tile
+    height without the offset would mix two height references (None there instead)."""
     if dem is None:
-        return tiles.point_heights(points, z)
+        return tiles.point_heights(points, z) if use_tiles else [None] * len(points)
     out: list[Optional[float]] = []
     for p, mine in zip(points, _dem_heights(points, dem)):
         if mine is not None:
             out.append(mine)
             continue
+        if not use_tiles or offset is None:
+            out.append(None)
+            continue
         free = tiles.height(p[0], p[1], z)
-        out.append(None if free is None else free + (offset or 0.0))
+        out.append(None if free is None else free + offset)
     return out
 
 
@@ -462,9 +474,25 @@ class _Ground:
     offset: Optional[float]
     dem: object
     dem_left_out: Optional[str] = None
+    dem_covers: bool = False            # the DEM answers at every point of the flight: the tiles were not asked
 
 
-def _reference_and_ground(piano: dict, z: int, dem) -> _Ground:
+class NoHeightSource(tiles.TerrainError):
+    """No project DEM and the public tiles not chosen: the network is never used unasked."""
+
+    def __init__(self):
+        super().__init__(t("nessun DEM del progetto e tegole pubbliche non scelte: le quote del terreno non si "
+                           "misurano (la rete si usa solo se scegli le tegole)",
+                           "no project DEM and the public tiles not chosen: the terrain heights are not measured "
+                           "(the network is used only when you choose the tiles)"))
+
+
+def tiles_chosen(piano: dict) -> bool:
+    """Whether the user chose the public tiles for this plan (its heights come from them)."""
+    return (piano.get("fonteQuote") or {}).get("sorgente") == "tegole"
+
+
+def _reference_and_ground(piano: dict, z: int, dem, use_tiles: bool = True) -> _Ground:
     """The point the heights refer to (the takeoff, or the first waypoint if there is none), the height of the
     ground there and the offset between the project DEM and the public tiles.
 
@@ -475,6 +503,9 @@ def _reference_and_ground(piano: dict, z: int, dem) -> _Ground:
     whole flight that gap lower). If the DEM answers where the tiles answer too but never at the same point,
     the DEM is left out and the tiles are used for everything (``dem_left_out``); a DEM that answers nowhere
     on the flight is simply not used. Without the tiles (no network) the DEM is used alone, as the planner did.
+
+    The tiles are asked only with ``use_tiles``, and next to a DEM only when the DEM does not answer at every
+    point of the flight: a DEM covering the flight sends nothing to the network.
     """
     blocks = piano.get("blocchi", [])
     reference = pl.plan_takeoff(piano)
@@ -497,6 +528,9 @@ def _reference_and_ground(piano: dict, z: int, dem) -> _Ground:
     offset = None
     ground_takeoff = None
     left_out = None
+    covers = False
+    if dem is None and not use_tiles:
+        raise NoHeightSource()
     if dem is not None:
         probe = [reference]
         for b in blocks:
@@ -504,24 +538,26 @@ def _reference_and_ground(piano: dict, z: int, dem) -> _Ground:
                 p, _ = pl.route_of_block(b, piano)
                 probe += p.points
         probe += [(float(d[0]), float(d[1])) for d in (piano.get("decolli") or {}).values()]
-        offset, known_dem, known_tiles = _overlap(probe, dem, z)
-        if offset is None and known_tiles:
-            if known_dem:
-                info = dem.to_json() if callable(getattr(dem, "to_json", None)) else {}
-                left_out = str(info.get("file") or "DEM")
-            dem = None
+        covers = all(q is not None for q in _dem_heights(probe, dem))
+        if not covers and use_tiles:
+            offset, known_dem, known_tiles = _overlap(probe, dem, z)
+            if offset is None and known_tiles:
+                if known_dem:
+                    info = dem.to_json() if callable(getattr(dem, "to_json", None)) else {}
+                    left_out = str(info.get("file") or "DEM")
+                dem = None
     if dem is not None:
         ground_takeoff = dem.height(reference[0], reference[1])
-        if ground_takeoff is None:
+        if ground_takeoff is None and use_tiles and offset is not None:
             free = tiles.height(reference[0], reference[1], z)
-            ground_takeoff = None if free is None else free + (offset or 0.0)
-    if ground_takeoff is None:
+            ground_takeoff = None if free is None else free + offset
+    elif use_tiles:
         ground_takeoff = tiles.height(reference[0], reference[1], z)
     if ground_takeoff is None and left_out:
         raise HeightsNotMixed(left_out)
     if ground_takeoff is None:
         raise tiles.TerrainError(t("quota del decollo non disponibile", "height of the takeoff not available"))
-    return _Ground(reference, ground_takeoff, offset, dem, left_out)
+    return _Ground(reference, ground_takeoff, offset, dem, left_out, covers)
 
 
 def _height_source(dem, offset: Optional[float]) -> dict:
@@ -535,7 +571,7 @@ def _height_source(dem, offset: Optional[float]) -> dict:
 
 
 def _takeoffs_and_grid(piano: dict, dem, z: int, offset: Optional[float], ground_takeoff: float,
-                       reference: LatLon) -> None:
+                       reference: LatLon, use_tiles: bool = True, sparse_ok: bool = False) -> None:
     """What the plan carries of the terrain: the ground under every takeoff, the grid around the site and the
     height system they are in (``fonteQuote``: the KML's absolute heights and the GeoPackage need it)."""
     piano["quotaDecollo"] = round(ground_takeoff, 1)
@@ -556,13 +592,13 @@ def _takeoffs_and_grid(piano: dict, dem, z: int, offset: Optional[float], ground
     ground_takeoffs = {}
     for key, d in (piano.get("decolli") or {}).items():
         point = (float(d[0]), float(d[1]))
-        q = ground_heights([point], dem, z, offset)[0]
+        q = ground_heights([point], dem, z, offset, use_tiles)[0]
         if q is not None:
             ground_takeoffs[key] = {"punto": [point[0], point[1]], "suolo": round(q, 1)}
     piano["suoloDecolli"] = ground_takeoffs
     # the terrain around the site travels with the plan: it brings the heights back to the real takeoff,
     # and tells the special points where the ground is
-    g = terrain_grid(piano, dem, z, offset, ground_takeoff, reference)
+    g = terrain_grid(piano, dem, z, offset, ground_takeoff, reference, use_tiles, sparse_ok)
     if g is not None:
         piano["terreno"] = g
 
@@ -571,19 +607,20 @@ def _left_out_warning(g: _Ground) -> dict:
     return {"tipo": "scarto_non_misurato", "dem": g.dem_left_out}
 
 
-def measure_ground(piano: dict, z: Optional[int] = None, dem=None) -> dict:
+def measure_ground(piano: dict, z: Optional[int] = None, dem=None, use_tiles: bool = True) -> dict:
     """Measures the terrain around the site WITHOUT making any block follow it: it serves the special points
     that descend, to count the metres from the ground and not to touch it."""
     z = z if z is not None else tiles.zoom_for_detail(piano.get("dettaglioTerreno"))
-    g = _reference_and_ground(piano, z, dem)
-    _takeoffs_and_grid(piano, g.dem, z, g.offset, g.ground_takeoff, g.reference)
+    g = _reference_and_ground(piano, z, dem, use_tiles)
+    _takeoffs_and_grid(piano, g.dem, z, g.offset, g.ground_takeoff, g.reference, use_tiles, g.dem_covers)
     out = {"quotaDecollo": round(g.ground_takeoff, 1), "griglia": piano.get("terreno") is not None}
     if g.dem_left_out:
         out["avvisi"] = [_left_out_warning(g)]
     return out
 
 
-def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = None, dem=None) -> dict:
+def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = None, dem=None,
+                  use_tiles: bool = True) -> dict:
     """Gives every waypoint its height, to stay at the same distance from the ground.
 
     The takeoff point is the reference, because that is what the drone refers its heights to.
@@ -592,11 +629,13 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
     on a grid climbing the mound and not on a ring turning at a fixed height around it. With ``only`` a single
     block is redone (the one just ticked); without it, all those asking for it - and if none asks, all the
     active ones, because then the whole plan wants it.
+
+    With a ``dem`` the public tiles are asked only where the DEM does not reach (and only with ``use_tiles``).
     """
     # the detail chosen for this plan: how finely the heights are read
     z = z if z is not None else tiles.zoom_for_detail(piano.get("dettaglioTerreno"))
     blocks = piano.get("blocchi", [])
-    g = _reference_and_ground(piano, z, dem)
+    g = _reference_and_ground(piano, z, dem, use_tiles)
     reference, ground_takeoff, offset, dem = g.reference, g.ground_takeoff, g.offset, g.dem
     asked = [i for i, b in enumerate(blocks) if pl.active(b) and b.get("seguiTerreno")]
     if only is not None:
@@ -613,7 +652,7 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
         p, _ = pl.route_of_block(b, piano)
         if not p.points:
             continue
-        ground = ground_heights(p.points, dem, z, offset)
+        ground = ground_heights(p.points, dem, z, offset, use_tiles)
         heights = terrain_heights(p.points, float(b.get("quota", p.height)), ground_takeoff, ground)
         b["quote"] = heights
         b[HEIGHTS_SIGNATURE] = heights_signature(b, piano)
@@ -624,7 +663,7 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
     if not every:
         raise ValueError(t("nessun blocco da far seguire al terreno", "no block to make follow the terrain"))
     piano["seguiTerreno"] = any(b.get("seguiTerreno") for b in blocks)
-    _takeoffs_and_grid(piano, dem, z, offset, ground_takeoff, reference)
+    _takeoffs_and_grid(piano, dem, z, offset, ground_takeoff, reference, use_tiles, g.dem_covers)
     warnings = height_warnings(every, grounds_seen, ground_takeoff)
     if g.dem_left_out:
         warnings.insert(0, _left_out_warning(g))
@@ -690,16 +729,27 @@ def adopt_heights(piano: dict) -> list[int]:
 
 
 class StaleHeights(ValueError):
-    """Blocks following the terrain whose heights were computed for another shape of the block: no file is
-    written from them (it would fly the old heights, or one height) until the terrain is computed again."""
+    """Blocks following the terrain whose heights were computed for another shape of the block, or a takeoff
+    moved whose ground could not be measured again: no file is written (it would fly the old heights, one
+    height, or heights and descents counted from the old takeoff) until the terrain is computed again."""
 
-    def __init__(self, piano: dict, blocks: list[int]):
+    def __init__(self, piano: dict, blocks: list[int], takeoff: Optional[str] = None):
         self.blocks = blocks
-        names = ", ".join(f"«{piano['blocchi'][i].get('nome') or i + 1}»" for i in blocks)
-        super().__init__(t("{0}: cambiato dopo il calcolo delle quote sul terreno - ricalcola il terreno prima di "
-                           "esportare",
-                           "{0}: changed after the heights on the terrain were computed - compute the terrain again "
-                           "before exporting").format(names))
+        self.takeoff = takeoff
+        self.reasons: list[str] = []
+        if blocks:
+            names = ", ".join(f"«{piano['blocchi'][i].get('nome') or i + 1}»" for i in blocks)
+            text = t("{0}: cambiato dopo il calcolo delle quote sul terreno - ricalcola il terreno prima di "
+                     "esportare",
+                     "{0}: changed after the heights on the terrain were computed - compute the terrain again "
+                     "before exporting").format(names)
+        else:
+            text = t("{0}: il suolo non è stato rimisurato, e le quote (e le discese dei punti speciali) sarebbero "
+                     "contate dal decollo di prima - ricalcola il terreno prima di esportare",
+                     "{0}: the ground was not measured again, and the heights (and the descents of the special "
+                     "points) would be counted from the takeoff before - compute the terrain again before "
+                     "exporting").format(takeoff)
+        super().__init__(text)
 
 
 def require_current_heights(piano: dict) -> None:
@@ -711,32 +761,50 @@ def require_current_heights(piano: dict) -> None:
         raise StaleHeights(piano, stale)
 
 
-def takeoffs_to_measure(piano: dict) -> bool:
-    """A per-leg takeoff added or moved after the computation: its ground must be measured again. It holds
-    also for a plan saved before the terrain travelled with the plan: it follows the terrain but carries no
-    grid, and the heights could not be brought back to the real takeoff."""
+def takeoff_problem(piano: dict) -> Optional[str]:
+    """Why the ground of the takeoffs must be measured again (a sentence), or None: a takeoff or a per-leg
+    takeoff added or moved after the computation, a special point outside the known terrain, or a plan saved
+    before the terrain travelled with the plan (it follows the terrain but carries no grid, and the heights
+    could not be brought back to the real takeoff)."""
     if not any(b.get("seguiTerreno") and b.get("quote") for b in piano.get("blocchi", [])) \
             and not pl.specials_need_ground(piano):
-        return False
+        return None
     if not piano.get("terreno") or not piano.get("puntoDecollo"):
-        return True
+        return t("il piano non porta il terreno con sé", "the plan does not carry the terrain with it")
     # heights counted from a takeoff left in another region, or the other way round: the takeoff is back in
     # its place and the heights still refer to the first waypoint
     if (pl.takeoff_far(piano) is not None) != bool(piano.get("riferimentoQuote")):
-        return True
+        return t("il decollo è cambiato rispetto al calcolo", "the takeoff changed since the computation")
     if any(_outside_grid(piano["terreno"], sp["punto"]) for b in piano.get("blocchi", [])
            for sp in b.get("speciali") or [] if sp.get("punto")):
-        return True                     # a special point put outside the known terrain
+        return t("un punto speciale è fuori dal terreno misurato",
+                 "a special point is outside the measured terrain")
     known = piano.get("suoloDecolli") or {}
     for key, d in (piano.get("decolli") or {}).items():
         entry = known.get(key)
         if not entry or distance(tuple(entry["punto"]), (float(d[0]), float(d[1]))) > 2.0:
-            return True
+            return t("il decollo della tratta {0} è nuovo o spostato", "the takeoff of the leg {0} is new or "
+                     "moved").format(key)
     general = pl.plan_takeoff(piano)
     old = piano.get("puntoDecollo")
     if general and old and distance(tuple(old), general) > 2.0:
-        return True
-    return False
+        return t("il decollo è stato spostato", "the takeoff was moved")
+    return None
+
+
+def takeoffs_to_measure(piano: dict) -> bool:
+    """Whether the ground of the takeoffs must be measured again (:func:`takeoff_problem`)."""
+    return takeoff_problem(piano) is not None
+
+
+def require_exportable(piano: dict) -> None:
+    """:func:`require_current_heights`, and also :class:`StaleHeights` when the ground of a takeoff is still to
+    measure: called on a refreshed plan before any export, so a refresh that failed (no network, the takeoff off
+    the DEM, a per-leg takeoff moved) never lets through heights counted from the old takeoff."""
+    require_current_heights(piano)
+    problem = takeoff_problem(piano)
+    if problem is not None:
+        raise StaleHeights(piano, [], takeoff=problem)
 
 
 def _outside_grid(g: dict, point) -> bool:
@@ -745,14 +813,41 @@ def _outside_grid(g: dict, point) -> bool:
                 and g["ovest"] <= lon <= g["ovest"] + g["passoLon"] * (g["colonne"] - 1))
 
 
+class DemGone(tiles.TerrainError):
+    """The plan's heights come from the project DEM, and the DEM is not there any more."""
+
+    def __init__(self):
+        super().__init__(t("le quote del piano vengono dal DEM del progetto, che ora non c'è",
+                           "the heights of the plan come from the project DEM, which is not there now"))
+
+
 def refresh_terrain(piano: dict, dem=None) -> dict:
     """Redoes the heights of the blocks that have old ones: called before saving and exporting, so a file that
-    says "follows the terrain" really follows it."""
+    says "follows the terrain" really follows it.
+
+    When the takeoff moved (:func:`takeoffs_to_measure`) EVERY block following the terrain is redone, not only
+    the changed ones: their heights are counted from the ground of the takeoff.
+
+    The heights are measured with the source the plan was computed with (``fonteQuote``): the public tiles stay
+    the tiles even if the chunk now has a DEM, the project DEM stays the DEM (and fails if it is gone, instead of
+    asking the network). A plan without a source (special points only, or a plan of the planner) uses ``dem``,
+    with the tiles where it does not reach.
+    """
+    source = (piano.get("fonteQuote") or {}).get("sorgente")
+    if source == "tegole":
+        dem = None
     old = blocks_with_old_heights(piano)
     redone, failed = [], []
-    if not old and takeoffs_to_measure(piano):
+    following = [i for i, b in enumerate(piano.get("blocchi", [])) if b.get("seguiTerreno")]
+    moved = takeoffs_to_measure(piano)
+    if source == "dem" and dem is None and (old or moved):
+        reason = str(DemGone())
+        todo = sorted(set(old) | (set(following) if moved else set()))
+        return {"rifatti": [], "falliti": [{"blocco": i, "motivo": reason} for i in todo]
+                or [{"blocco": None, "motivo": reason}]}
+    if moved:
         # the reference changed: every block following the terrain is redone
-        old = [i for i, b in enumerate(piano.get("blocchi", [])) if b.get("seguiTerreno")]
+        old = sorted(set(old) | set(following))
         if not old:
             # no block follows the terrain, but the special points want to know it
             try:
@@ -766,7 +861,19 @@ def refresh_terrain(piano: dict, dem=None) -> dict:
             redone.append(i)
         except (tiles.TerrainError, OSError, ValueError) as e:
             failed.append({"blocco": i, "motivo": str(e)})
-    return {"rifatti": redone, "falliti": failed}
+    after = (piano.get("fonteQuote") or {}).get("sorgente")
+    if redone and source and after != source:
+        # the source changed under the redone blocks (the DEM left out): the others are redone with it too, so
+        # one source holds for the whole plan, as the KML and the GeoPackage declare
+        for i in following:
+            if i in redone or i in [f["blocco"] for f in failed]:
+                continue
+            try:
+                apply_terrain(piano, only=i, dem=dem)
+                redone.append(i)
+            except (tiles.TerrainError, OSError, ValueError) as e:
+                failed.append({"blocco": i, "motivo": str(e)})
+    return {"rifatti": sorted(redone), "falliti": failed}
 
 
 def remove_terrain(piano: dict, only: Optional[int] = None) -> dict:
@@ -792,19 +899,23 @@ def _block_high(b: dict, piano: dict) -> bool:
     return bool(b.get("alta", piano.get("alta", False)))
 
 
-def shot_report(piano: dict, dem=None, z: Optional[int] = None) -> list[dict]:
+def shot_report(piano: dict, dem=None, z: Optional[int] = None, use_tiles: Optional[bool] = None) -> list[dict]:
     """Every shot of every active block on the terrain: where it is, its height above the takeoff, the ground
     under it, its distance from the ground (``agl``) and the GSD that distance gives.
 
     The ground comes from the same sources as the terrain following (project DEM, public tiles moved by the
     offset); ``ground``, ``agl`` and ``gsd_cm`` are None where the ground is unknown, all of them when even the
     takeoff's ground is unknown. The GSD is the nadir one (``cam.gsd_cm(agl)``), also for oblique blocks.
+
+    The public tiles are asked only with ``use_tiles``; by default only when the plan's heights come from them
+    (:func:`tiles_chosen`): a report never sends the site to the network by itself.
     """
     z = z if z is not None else tiles.zoom_for_detail(piano.get("dettaglioTerreno"))
+    use_tiles = tiles_chosen(piano) if use_tiles is None else use_tiles
     cam = pl.plan_camera(piano)
     left_out = None
     try:
-        g = _reference_and_ground(piano, z, dem)
+        g = _reference_and_ground(piano, z, dem, use_tiles)
         ground_takeoff, offset, dem, left_out = g.ground_takeoff, g.offset, g.dem, g.dem_left_out
     except (tiles.TerrainError, OSError, ValueError) as e:
         ground_takeoff, offset = None, None
@@ -817,7 +928,7 @@ def shot_report(piano: dict, dem=None, z: Optional[int] = None) -> list[dict]:
         high = _block_high(b, piano)
         shots = rt.shot_points(route)
         latlons = [p for p, _ in shots]
-        grounds = ground_heights(latlons, dem, z, offset) if (ground_takeoff is not None and latlons) \
+        grounds = ground_heights(latlons, dem, z, offset, use_tiles) if (ground_takeoff is not None and latlons) \
             else [None] * len(latlons)
         rows = []
         for (p, h), g in zip(shots, grounds):
@@ -868,7 +979,7 @@ def _strips(b: dict, piano: dict, shots: list[dict]) -> list[list[dict]]:
     return [g for g in groups if g]
 
 
-def design_warnings(piano: dict, dem=None, z: Optional[int] = None) -> list[dict]:
+def design_warnings(piano: dict, dem=None, z: Optional[int] = None, use_tiles: Optional[bool] = None) -> list[dict]:
     """What should be said about the plan before flying it, measured on the terrain.
 
     - ``gsd_oltre``: shots whose GSD is coarser than 1.25 times the block's nominal one (a constant height
@@ -880,10 +991,11 @@ def design_warnings(piano: dict, dem=None, z: Optional[int] = None) -> list[dict
     - ``strisciata_corta``: a grid strip with fewer than three shots;
     - ``oltre_limite_di_serie``: the planner's warning when the heights go above the stock 120 m.
 
-    Without any ground (no DEM, no tiles) only ``strisciata_corta`` can be told.
+    Without any ground (no DEM, no tiles) only ``strisciata_corta`` can be told. The tiles are asked as
+    :func:`shot_report` says: only when the plan's heights come from them, unless ``use_tiles`` says otherwise.
     """
     cam = pl.plan_camera(piano)
-    report = shot_report(piano, dem=dem, z=z)
+    report = shot_report(piano, dem=dem, z=z, use_tiles=use_tiles)
     blocks = piano.get("blocchi", [])
     out: list[dict] = []
     every_h: list[float] = []

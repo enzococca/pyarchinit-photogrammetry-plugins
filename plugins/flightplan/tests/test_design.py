@@ -430,12 +430,14 @@ def test_design_warnings(tmp_path, monkeypatch):
     sliver = design.design(rectangle(20, 30), "orto", 2.0)
     codes = {w["tipo"]: w for w in design.design_warnings(sliver["piano"])}
     assert codes["strisciata_corta"]["scattiMinimi"] < 3
-    # and the plain survey on flat ground says nothing - with a ground to measure
+    # and the plain survey on flat ground says nothing - with a ground to measure (the tiles, chosen)
     monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: fake_tile(100.0))
     tiles.clear_cache()
     flat = design.design(AREA, "orto", 2.0, takeoff=SOUTH)["piano"]
-    assert design.shot_report(flat)[0]["shots"][0]["agl"] == pytest.approx(flat["blocchi"][0]["quota"])
-    assert design.design_warnings(flat) == []
+    assert design.shot_report(flat, use_tiles=True)[0]["shots"][0]["agl"] == pytest.approx(flat["blocchi"][0]["quota"])
+    assert design.design_warnings(flat, use_tiles=True) == []
+    # not chosen, they are not asked: no ground, nothing told about it
+    assert design.shot_report(flat)[0]["shots"][0]["agl"] is None
 
 
 def test_too_close_to_the_ground_is_said(tmp_path):
@@ -534,7 +536,8 @@ def test_a_dem_that_never_meets_the_tiles_is_not_mixed_with_them(tmp_path, monke
     assert "quote" not in piano["blocchi"][0] or set(piano["blocchi"][0]["quote"]) != {65.6}
     assert any("non si mescolano" in m for m in with_dem["motivi"])
     assert piano.get("fonteQuote", {}).get("sorgente") != "dem"
-    codes = {w["tipo"] for w in design.design_warnings(piano, dem=dem)}
+    # the warnings say it when they may ask the tiles (the user chose them); otherwise they never do
+    codes = {w["tipo"] for w in design.design_warnings(piano, dem=dem, use_tiles=True)}
     assert "scarto_non_misurato" in codes
 
 
@@ -615,3 +618,143 @@ def test_heights_not_mixed_do_not_blame_the_network(tmp_path, monkeypatch):
     tiles.clear_cache()
     r = design.design(AREA, "orto", 2.0, follow_terrain=True)
     assert any("quando c'è rete" in m for m in r["motivi"])
+
+
+# ------------------------------------------------------------------ the final review: takeoff, network, source
+
+def _two_blocks(**extra) -> dict:
+    piano = _plan(**extra)
+    second = dict(piano["blocchi"][0], nome="B", orientamento=90)
+    second["area"] = [list(p) for p in AREA]
+    piano["blocchi"].append(second)
+    return piano
+
+
+def test_a_moved_takeoff_redoes_every_block_not_only_the_changed_one(monkeypatch):
+    """The takeoff moved AND one block of two changed: redoing only the changed block wrote the new takeoff for
+    the whole plan, and the other block kept heights counted from the ground of the old one."""
+    import copy
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    piano = _two_blocks(decollo=list(NORTH))
+    design.apply_terrain(piano)
+    old_b = list(piano["blocchi"][1]["quote"])
+    piano["decollo"] = list(SOUTH)                       # moved downhill
+    piano["blocchi"][0]["avanti"] = 75                   # and block A changed
+    expected = copy.deepcopy(piano)
+    design.apply_terrain(expected)                       # what a full computation from the new takeoff gives
+    outcome = design.refresh_terrain(piano)
+    assert outcome["rifatti"] == [0, 1] and outcome["falliti"] == []
+    assert piano["blocchi"][1]["quote"] == expected["blocchi"][1]["quote"] != old_b
+    assert piano["blocchi"][0]["quote"] == expected["blocchi"][0]["quote"]
+    assert design.takeoffs_to_measure(piano) is False
+
+
+def test_a_moved_takeoff_that_cannot_be_measured_refuses_the_export(monkeypatch):
+    """The tiles were there for the computation; then the takeoff moved and the network is gone: the export is
+    refused with the reason, never written with the heights counted from the old takeoff."""
+    from ppg_flightplan import export_dji, project
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    piano = _plan(decollo=list(NORTH))
+    design.apply_terrain(piano)
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: None)
+    tiles.clear_cache()
+    piano["decollo"] = list(SOUTH)
+    with pytest.raises(design.StaleHeights, match="decollo") as err:
+        project.prepare(piano)
+    assert "non disponibile" in str(err.value) and err.value.reasons
+    # and a plan not refreshed is refused by the export itself
+    with pytest.raises(design.StaleHeights):
+        project.export_plan(piano, "kmz", "/nonexistent/never.kmz")
+
+
+def test_a_leg_takeoff_moved_and_not_measured_refuses_the_export(monkeypatch):
+    from ppg_flightplan import project
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    piano = _plan(decollo=list(SOUTH))
+    design.apply_terrain(piano)
+    key = pl.plan_legs(piano)[0].key
+    piano["decolli"] = {key: list(NORTH)}
+    project.prepare(piano)                                # measured: fine
+    monkeypatch.setattr(tiles, "_tile_from_network", lambda z, x, y: None)
+    tiles.clear_cache()
+    # the grid of the plan was made around the flight: a leg takeoff far outside it cannot be read without tiles
+    piano["decolli"] = {key: [45.0100, 10.0000]}
+    with pytest.raises(design.StaleHeights, match=key):
+        project.prepare(piano)
+
+
+def _recording_network(monkeypatch, answer=tile_rising_north) -> list:
+    """Every tile asked to the network, recorded (the conftest blocks sockets, but its fake answers "no data"
+    and the real fetch swallows errors: a request would pass unseen). urlopen is recorded too."""
+    import urllib.request
+
+    calls: list = []
+
+    def tile(z, x, y):
+        calls.append((z, x, y))
+        return answer(z, x, y)
+
+    def urlopen(*a, **k):
+        calls.append(("urlopen", a))
+        raise AssertionError("the network was asked")
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    tiles.clear_cache()
+    return calls
+
+
+def test_designing_without_a_dem_and_without_the_tiles_asks_nothing_of_the_network(monkeypatch):
+    """Design, its warnings and the shot report send the site to nobody unless the tiles were chosen."""
+    calls = _recording_network(monkeypatch)
+    r = design.design(AREA, "orto", 2.0, takeoff=SOUTH)
+    design.design_warnings(r["piano"], None)
+    design.shot_report(r["piano"])
+    assert calls == []
+    # the recorder sees a request: choosing the tiles asks them
+    design.apply_terrain(r["piano"])
+    assert calls and r["piano"]["fonteQuote"]["sorgente"] == "tegole"
+    # and with the tiles chosen the warnings may ask them too
+    calls.clear()
+    tiles.clear_cache()
+    design.design_warnings(r["piano"], None)
+    assert calls
+
+
+def test_a_dem_covering_the_flight_asks_nothing_of_the_network(tmp_path, monkeypatch):
+    """Follow the terrain on the project DEM: the tiles are asked only where the DEM ends; a DEM under the whole
+    flight sends nothing, the plan still carries its grid (with holes in the margin) and no takeoff to measure."""
+    dem, _ = _sloping_dem(tmp_path)
+    calls = _recording_network(monkeypatch)
+    piano = _plan(decollo=list(SOUTH))
+    design.apply_terrain(piano, dem=dem)
+    design.design_warnings(piano, dem)
+    assert calls == []
+    assert piano["fonteQuote"]["sorgente"] == "dem" and piano["terreno"]
+    assert design.takeoffs_to_measure(piano) is False
+    assert len(set(piano["blocchi"][0]["quote"])) > 3
+
+
+def test_the_refresh_keeps_the_source_of_the_plan(tmp_path, monkeypatch):
+    """A plan computed on the tiles is refreshed on the tiles even if the chunk now has a DEM; a plan computed on
+    the project DEM is not refreshed on the tiles when the DEM is gone: it fails and says why."""
+    from ppg_flightplan import project
+
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    dem, _ = _sloping_dem(tmp_path)
+    on_tiles = _plan(decollo=list(SOUTH))
+    design.apply_terrain(on_tiles)
+    on_tiles["blocchi"][0]["avanti"] = 75
+    outcome = design.refresh_terrain(on_tiles, dem)
+    assert outcome["rifatti"] == [0] and on_tiles["fonteQuote"]["sorgente"] == "tegole"
+    on_dem = _plan(decollo=list(SOUTH))
+    design.apply_terrain(on_dem, dem=dem)
+    on_dem["blocchi"][0]["avanti"] = 75
+    calls = _recording_network(monkeypatch)
+    outcome = design.refresh_terrain(on_dem, None)
+    assert outcome["rifatti"] == [] and "DEM" in outcome["falliti"][0]["motivo"] and calls == []
+    with pytest.raises(design.StaleHeights):
+        project.prepare(on_dem)
