@@ -46,7 +46,7 @@ class FlightPlanPlugin(WindowPart, Plugin):
         actions = self._add_actions(context)
         context.add_command("flightplan", self.command,
                             help="drone flight plans: cameras, design, show, terrain, targets, coverage, export, "
-                                 "djifly, add, list, remove, use")
+                                 "djifly, compare, add, list, remove, use")
         for title, suffix, fmt in self.exporters():
             context.add_exporter(title, suffix, self._exporter(fmt))
         if context.window is not None:
@@ -174,6 +174,10 @@ class FlightPlanPlugin(WindowPart, Plugin):
         p.add_argument("--zip", help="a zip of ready folders to drag instead")
         p.add_argument("--missions", required=True, help="the placeholder missions (folders), comma separated")
         p.add_argument("--overwrite", action="store_true", help="replace missions of the user too (a copy is kept)")
+        p = sub.add_parser("compare", help="after the flight: the plan against the photos of the chunk")
+        p.add_argument("--plan-id", "--id", dest="id", help="the plan of the project (default: the active one)")
+        p.add_argument("--max-distance", type=float, help="metres to pair a shot and a photo (default: half the "
+                                                         "step between the shots of the leg)")
         sub.add_parser("add", parents=[common], help="the plan of --plan FILE into the project")
         sub.add_parser("list", help="the plans of the chunk")
         p = sub.add_parser("remove", help="a plan out of the chunk")
@@ -204,10 +208,10 @@ class FlightPlanPlugin(WindowPart, Plugin):
 
     def command(self, *args) -> int:
         """``ppg plugin flightplan WHAT [PROJECT.ppg] [--chunk LABEL] [--plan FILE] [--id ID] ...``, WHAT one of
-        ``cameras``, ``design``, ``show``, ``terrain``, ``targets``, ``coverage``, ``export``, ``djifly``, ``add``,
-        ``list``, ``remove``, ``use``; values printed as JSON. 0 when done, 1 with a message."""
+        ``cameras``, ``design``, ``show``, ``terrain``, ``targets``, ``coverage``, ``export``, ``djifly``, ``compare``,
+        ``add``, ``list``, ``remove``, ``use``; values printed as JSON. 0 when done, 1 with a message."""
         from . import design as design_mod
-        from . import coverage, djifly, targets, tiles
+        from . import compare, coverage, djifly, targets, tiles
         from .camera import CameraUnknown
 
         args, project_path, label = self._project_args(args)
@@ -215,7 +219,8 @@ class FlightPlanPlugin(WindowPart, Plugin):
         try:
             doc, chunk = self._open(project_path, label)
             return self._run(ns, doc, chunk)
-        except (CommandError, design_mod.StaleHeights, coverage.CoverageError, targets.TargetError, CameraUnknown,
+        except (CommandError, design_mod.StaleHeights, coverage.CoverageError, compare.CompareError,
+                targets.TargetError, CameraUnknown,
                 djifly.DjiFlyError, tiles.TerrainError, KeyError, ValueError, OSError) as e:
             text = e.args[0] if isinstance(e, KeyError) and e.args else e
             print(f"{t('errore', 'error')}: {text}")
@@ -279,6 +284,8 @@ class FlightPlanPlugin(WindowPart, Plugin):
                 project.purge_removed(chunk)        # saved, and no undo in the command line: the files go
             print(json.dumps({"rimosso" if what == "remove" else "attivo": ns.plan_id}))
             return 0
+        if what == "compare":
+            return self._compare(ns, doc, chunk)
         if what == "add":
             if chunk is None or not ns.plan:
                 raise CommandError("ppg plugin flightplan add PROJECT.ppg --plan FILE")
@@ -505,6 +512,22 @@ class FlightPlanPlugin(WindowPart, Plugin):
                                         dem_file=project.dem_name(chunk) if ground is not None else "",
                                         missions=missions)
         print(json.dumps({"file": [str(f) for f in files]}, indent=1))
+        return 0
+
+    def _compare(self, ns, doc, chunk) -> int:
+        from . import compare, project
+
+        if chunk is None:
+            raise CommandError("give the project: ppg plugin flightplan compare PROJECT.ppg [--plan-id ID]")
+        e = project.entry(chunk, ns.id) if ns.id else project.active_plan(chunk)
+        if e is None:
+            raise CommandError(f"no plan {ns.id!r}: see ppg plugin flightplan list" if ns.id else
+                               "the chunk has no flight plan: ppg plugin flightplan design PROJECT ...")
+        if ns.max_distance is not None and not ns.max_distance > 0:
+            raise CommandError("--max-distance: a positive number of metres")
+        rec = compare.compare_for(chunk, e["id"], ns.max_distance, self._progress())
+        self._save(doc)
+        print(json.dumps(dict(rec, id=e["id"], riassunto=compare.summary_line(rec)), indent=1, ensure_ascii=False))
         return 0
 
     def _djifly(self, ns, doc, chunk, piano, id_) -> int:

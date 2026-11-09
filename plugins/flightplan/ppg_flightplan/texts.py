@@ -106,7 +106,8 @@ LAYER_SHOTS = "Piano di volo: scatti"
 LAYER_TAKEOFF = "Piano di volo: decollo"
 LAYER_TARGETS = "Piano di volo: target"
 LAYER_LOW = "Piano di volo: copertura bassa"
-LAYERS = (LAYER_AREA, LAYER_STRIPS, LAYER_SHOTS, LAYER_TAKEOFF, LAYER_TARGETS, LAYER_LOW)
+LAYER_MISSING = "Piano di volo: scatti mancanti"
+LAYERS = (LAYER_AREA, LAYER_STRIPS, LAYER_SHOTS, LAYER_TAKEOFF, LAYER_TARGETS, LAYER_LOW, LAYER_MISSING)
 
 # The steps of the pane, in order: key, (Italian, English).
 STEPS: tuple[tuple[str, tuple[str, str]], ...] = (

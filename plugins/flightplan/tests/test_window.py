@@ -100,7 +100,7 @@ def test_pane_and_rail_in_the_window(gui):
     plugin.show_pane()
     assert not dock.isHidden()
     groups = [g for g in plugin.context.contributions.rail_groups if g.key == "flightplan"]
-    assert len(groups) == 1 and groups[0].title == "Piani di volo" and len(groups[0].actions) == 6
+    assert len(groups) == 1 and groups[0].title == "Piani di volo" and len(groups[0].actions) == 7
     assert [a.title for a in groups[0].actions][:3] == ["Pannello Piani di volo", "Disegna l'area del volo",
                                                         "Progetta il volo..."]
     assert plugin._qgis_entries in w.qgis_providers

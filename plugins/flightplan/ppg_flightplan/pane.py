@@ -73,6 +73,8 @@ class FlightPlanPane(QWidget):
     qgis_requested = Signal()
     plan_selected = Signal(str)
     plan_removed = Signal(str)
+    compare_requested = Signal(float)        # the maximum distance to pair a shot and a photo, metres (0: automatic)
+    obtained_shown = Signal()                # the coverage obtained on the 2D view
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -323,9 +325,28 @@ class FlightPlanPane(QWidget):
         self.buttons += [self.b_export, self.b_sheet, self.b_sheet_html]
         step("export", [self.c_format, self.b_export, self.b_djifly, self.b_sheet, self.b_sheet_html, self.b_qgis])
 
-        # 9 after the flight: the comparison fills it
+        # 9 after the flight: the plan against the photos of the chunk
         self.after_box = QWidget()
         self.after_layout = _flow(self.after_box)
+        self.s_max_distance = _spin(0, 500, 0, 1, 0.5, " m")
+        self.s_max_distance.setSpecialValueText(t("automatica", "automatic"))
+        self.s_max_distance.setToolTip(t("Quanto lontana dallo scatto previsto può essere la foto che lo fa: "
+                                         "automatica = metà del passo tra gli scatti della tratta",
+                                         "How far from the planned shot the photo that takes it may be: automatic = "
+                                         "half the step between the shots of the leg"))
+        self.b_compare = QPushButton(t("Confronta", "Compare"))
+        self.b_compare.setToolTip(t("Gli scatti previsti contro le foto del chunk (le loro posizioni) e, con le foto "
+                                    "allineate, la copertura ottenuta contro quella prevista",
+                                    "The planned shots against the photos of the chunk (their positions) and, with "
+                                    "the photos aligned, the coverage obtained against the one predicted"))
+        self.b_compare.clicked.connect(
+            lambda _=False: self.compare_requested.emit(float(self.s_max_distance.value())))
+        self.b_show_obtained = button(t("Mostra la copertura ottenuta", "Show the coverage obtained"),
+                                      self.obtained_shown)
+        self.buttons += [self.b_compare]
+        for w in (_labelled(t("Distanza massima", "Maximum distance"), self.s_max_distance), self.b_compare,
+                  self.b_show_obtained):
+            self.after_layout.addWidget(w)
         step("after", [], self.after_box)
         lay.addStretch(1)
 
@@ -529,19 +550,21 @@ class FlightPlanPane(QWidget):
         """``state``: a line per step key (``area``, ``camera``... see :data:`ppg_flightplan.texts.STEPS`), the
         empty ones say nothing yet; ``summary`` the table of the plan; ``warnings`` the plan's warnings in
         words. ``state["target_warning"]``, when given, is shown in red under the targets (the order of the
-        columns uncertain)."""
+        columns uncertain); ``state["obtained"]`` true shows the button of the coverage obtained."""
         for key, label in self.states.items():
             label.setText(str(state.get(key) or ""))
         self.set_plan_table(summary)
         self.l_warnings.setText("\n".join(f"• {w}" for w in warnings))
         self.l_warnings.setVisible(bool(warnings))
+        self.b_show_obtained.setVisible(bool(state.get("obtained")))   # only with a coverage obtained to show
         strong = state.get("target_warning") or ""
         self.l_target_warning.setText(strong)
         self.l_target_warning.setVisible(bool(strong))
         has_plan = summary is not None
         for w in (self.b_takeoff, self.b_leg_takeoff, self.b_terrain, self.b_terrain_off, self.b_coverage,
                   self.b_show_coverage, self.b_csv, self.b_markers, self.b_targets_off, self.b_export, self.b_djifly,
-                  self.b_sheet, self.b_sheet_html, self.b_qgis, self.b_remove_plan):
+                  self.b_sheet, self.b_sheet_html, self.b_qgis, self.b_remove_plan, self.b_compare,
+                  self.b_show_obtained):
             w.setProperty("needs_plan", True)
         self._has_plan = has_plan
         self._apply_enabled()

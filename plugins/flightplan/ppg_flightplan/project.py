@@ -514,7 +514,12 @@ def export(chunk, id_: str, fmt: str, path, progress: Optional[Callable] = None,
     be. A plan without terrain following gets the DEM's height at the takeoff and the DEM's file name."""
     from .legmap import orthophoto_background
 
+    from .compare import comparison_record, for_sheet
+
     e = _require(chunk, id_)
+    # the comparison of this plan with these photos, taken before the terrain refresh may change the plan's stamp
+    current = comparison_record(chunk, id_)
+    comparison = for_sheet(current) if current is not None else None
     if progress is not None:
         progress(0.05, t("Quote del terreno", "Terrain heights"))
     dem = chunk_dem(chunk)
@@ -532,7 +537,6 @@ def export(chunk, id_: str, fmt: str, path, progress: Optional[Callable] = None,
         crs = str(chunk.crs) if crs_mod.epsg_code(chunk.crs) is not None else None
     ground = takeoff_ground(chunk, piano) if piano.get("quotaDecollo") is None else None
     rec = coverage_record(chunk, id_)
-    comparison = (peek(chunk).get("comparison") or {}).get(id_)
     if progress is not None:
         progress(0.3, t("Scrittura", "Writing"))
     background = orthophoto_background(chunk) if fmt in ("djifly-zip", "sheet-xlsx", "sheet-html", "maps-zip") \
@@ -583,7 +587,8 @@ def _gpkg_styles() -> tuple:
 
 def qgis_entries(chunk) -> tuple[list[dict], list[dict]]:
     """For the program's QGIS project: the coverage of every plan (RGBA, current only) and the layers of the active
-    plan from its GeoPackage."""
+    plan from its GeoPackage; for the active plan compared with its flight, the coverage obtained and the missing
+    shots."""
     rasters, vectors = [], []
     if chunk is None:
         return rasters, vectors
@@ -595,6 +600,17 @@ def qgis_entries(chunk) -> tuple[list[dict], list[dict]]:
                             "path": str(Path(chunk.data_dir) / rec["files"]["rgba"]), "opacity": 0.7,
                             "hidden": e["id"] != active})
     if active:
+        from .compare import MISSING_TABLE, comparison_record
+
+        done = comparison_record(chunk, active)
+        files = (done or {}).get("files") or {}
+        if files.get("rgba"):
+            rasters.append({"name": t("Piano di volo: copertura ottenuta", "Flight plan: coverage obtained"),
+                            "path": str(Path(chunk.data_dir) / files["rgba"]), "opacity": 0.7, "hidden": True})
+        if files.get("gpkg") and done.get("missing"):
+            vectors.append({"name": t("Piano di volo: scatti mancanti", "Flight plan: missing shots"),
+                            "path": str(Path(chunk.data_dir) / files["gpkg"]), "table": MISSING_TABLE,
+                            "geometry": "POINT", "color": "#d32f2f"})
         gp = plan_gpkg(chunk, active)
         if gp is not None:
             for table, geometry, colour, label in _gpkg_styles():

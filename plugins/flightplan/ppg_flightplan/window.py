@@ -19,8 +19,8 @@ import json
 from functools import partial
 from pathlib import Path
 
-from .texts import (LAYER_AREA, LAYER_LOW, LAYER_SHOTS, LAYER_STRIPS, LAYER_TAKEOFF, LAYER_TARGETS, LAYERS, NAME,
-                    format_name, num, plural, t, warning_text)
+from .texts import (LAYER_AREA, LAYER_LOW, LAYER_MISSING, LAYER_SHOTS, LAYER_STRIPS, LAYER_TAKEOFF, LAYER_TARGETS,
+                    LAYERS, NAME, format_name, num, plural, t, warning_text)
 
 MAX_SHOTS_DRAWN = 3000          # above this the shots layer shows every n-th one (said in the status)
 NO_NETWORK = ("Le tegole pubbliche delle quote arrivano dalla rete: senza connessione (o fuori dalla zona coperta) "
@@ -100,6 +100,9 @@ class WindowPart:
             context.add_action(t("Copia in DJI Fly...", "Copy into DJI Fly..."), self.copy_djifly,
                                tip=t("Le tratte nelle missioni fittizie di DJI Fly", "The legs into DJI Fly's "
                                      "placeholder missions")),
+            context.add_action(t("Confronta con il volo", "Compare with the flight"), self.compare_flight,
+                               tip=t("Gli scatti previsti contro le foto del volo nel chunk",
+                                     "The planned shots against the photos of the flight in the chunk")),
         ]
         return actions
 
@@ -135,6 +138,8 @@ class WindowPart:
         p.qgis_requested.connect(self.open_in_qgis)
         p.plan_selected.connect(self.use_plan)
         p.plan_removed.connect(self.remove_plan)
+        p.compare_requested.connect(self.compare_flight)
+        p.obtained_shown.connect(self.show_obtained)
         context.on_refresh(self.refresh_pane)
         context.on_raster_loaded(self.draw_layers)
         if hasattr(context, "add_tree_items"):
@@ -353,6 +358,9 @@ class WindowPart:
         rec = project.coverage_record(chunk, e["id"]) if e is not None else None
         if rec is not None and Path(shown).resolve() == (Path(chunk.data_dir) / rec["files"]["rgba"]).resolve():
             return False
+        obtained = self._obtained_path(chunk, e) if e is not None else None
+        if obtained is not None and Path(shown).resolve() == obtained.resolve():
+            return False
         self._hide_coverage(chunk)
         self._status_text(t("La copertura mostrata era di un piano cambiato o tolto: rifalla con Calcola.",
                             "The coverage shown belonged to a plan changed or removed: make it again with "
@@ -541,9 +549,41 @@ class WindowPart:
         note = terrain_note(piano)
         st["export"] = t("Il piano «{0}» è pronto da esportare.", "The plan '{0}' is ready to export.") \
             .format(e["name"]) + (" " + note[:1].upper() + note[1:] + "." if note else "")
-        st["after"] = t("Il confronto con le foto del volo arriva con il passo «Dopo il volo».",
-                        "The comparison with the photos of the flight comes with the step 'After the flight'.")
+        st["after"], st["obtained"] = self._after_state(chunk, e)
         return st
+
+    def _after_state(self, chunk, e) -> tuple[str, bool]:
+        """The line of the step "Dopo il volo" and whether a coverage obtained can be shown."""
+        from . import compare, project
+
+        if chunk is None:
+            return "", False
+        rec = compare.comparison_record(chunk, e["id"])
+        if rec is not None:
+            return compare.summary_line(rec), self._obtained_path(chunk, e) is not None
+        stored = (project.peek(chunk).get("comparison") or {}).get(e["id"])
+        if not [c for c in chunk.cameras if getattr(c, "enabled", True)]:
+            return t("Dopo il volo: aggiungi al chunk le foto del volo (File > Aggiungi foto), poi Confronta.",
+                     "After the flight: add the photos of the flight to the chunk (File > Add photos), then "
+                     "Compare."), False
+        if stored:
+            return t("Da rifare: il piano o le foto sono cambiati dopo il confronto.",
+                     "To do again: the plan or the photos changed after the comparison."), False
+        aligned = bool(getattr(chunk, "aligned_cameras", None))
+        return (t("Pronto: Confronta mette gli scatti previsti contro le foto del chunk",
+                  "Ready: Compare puts the planned shots against the photos of the chunk")
+                + (t(" e la copertura ottenuta contro quella prevista.",
+                     " and the coverage obtained against the one predicted.") if aligned else
+                   t("; allinea le foto per confrontare anche la copertura.",
+                     "; align the photos to compare the coverage too."))), False
+
+    def _obtained_path(self, chunk, e):
+        """The colours of the coverage obtained by the current comparison of the plan ``e``, or None."""
+        from . import compare
+
+        rec = compare.comparison_record(chunk, e["id"])
+        f = (rec or {}).get("files", {}).get("rgba")
+        return Path(chunk.data_dir) / f if f else None
 
     def _terrain_state(self, chunk, piano: dict) -> str:
         dem_note = ""
@@ -677,6 +717,14 @@ class WindowPart:
             label = str(q.get("nome", "")) + (t(" (stimato)", " (estimated)") if estimated else "")
             view.add_point(x, y, "#9e9e9e" if estimated else "#8e24aa", label, layer=LAYER_TARGETS,
                            attrs={"nome": q.get("nome"), "codice": q.get("codice"), "stimato": estimated})
+        from . import compare
+
+        rec = compare.comparison_record(chunk, e["id"])
+        if rec is not None and rec.get("missing"):
+            for (x, y), m in zip(compare.missing_xy(chunk, rec).tolist(), rec["missing"]):
+                view.add_point(x, y, "#d32f2f", "", layer=LAYER_MISSING,
+                               attrs={"tratta": m["leg"], "file_tratta": m["tratta"], "scatto": m["n"],
+                                      "quota_decollo_m": m["quota_m"]})
         for poly in self._low_polygons(chunk, e["id"]):
             view.add_polygon([list(c) for c in poly.exterior.coords][:-1], "", "#d32f2f", 90, layer=LAYER_LOW,
                              attrs={"area_m2": round(poly.area, 1)})
@@ -1225,6 +1273,45 @@ class WindowPart:
                 view.clear_raster()
             self._frame_plan(chunk)
 
+    # ------------------------------------------------------------------ after the flight
+    def compare_flight(self, max_distance: float | None = None) -> None:
+        self._guarded(self._compare_flight, max_distance)
+
+    def _compare_flight(self, max_distance) -> None:
+        from . import compare, project
+
+        chunk, e = self._need_plan()
+        if not [c for c in chunk.cameras if getattr(c, "enabled", True)]:
+            raise ValueError(t("Il chunk non ha foto: aggiungi le foto del volo (File > Aggiungi foto), poi "
+                               "Confronta.", "The chunk has no photos: add the photos of the flight (File > Add "
+                               "photos), then Compare."))
+        if max_distance is None and self.pane is not None:
+            max_distance = float(self.pane.s_max_distance.value())
+        max_distance = float(max_distance) if max_distance else None
+        id_ = e["id"]
+
+        def job(progress):
+            return compare.compare_for(chunk, id_, max_distance, progress)
+
+        def done(rec):
+            self.context.mark_modified()        # the record is in the meta: saved with the project (and undone)
+            if project.entry(chunk, id_) is not None:
+                self._status_text(compare.summary_line(rec))
+
+        self._task(t("Confronto con il volo", "Comparison with the flight"), job, done, chunk=chunk, plan_id=id_)
+
+    def show_obtained(self) -> None:
+        self._guarded(self._show_obtained)
+
+    def _show_obtained(self) -> None:
+        chunk, e = self._need_plan()
+        path = self._obtained_path(chunk, e)
+        if path is None:
+            raise ValueError(t("La copertura ottenuta non c'è: allinea le foto e premi Confronta.",
+                               "The coverage obtained is not there: align the photos and press Compare."))
+        self._coverage_shown = True
+        self.context.show_raster("ortho", path=path)
+
     # ------------------------------------------------------------------ targets
     def targets_from_csv(self) -> None:
         self._guarded(self._targets_from_csv)
@@ -1509,11 +1596,21 @@ class WindowPart:
                     "actions": [(t("Rendi attivo", "Make active"), partial(self._tree_use, chunk, p["id"])),
                                 (t("Rimuovi", "Remove"), partial(self._tree_remove, chunk, p["id"]))]}
             rec = project.coverage_record(chunk, p["id"])
+            kids = []
             if rec is not None:
-                item["children"] = [{"label": t("Copertura prevista", "Predicted coverage"), "icon": "relief",
-                                     "tooltip": t("Doppio clic: la copertura sulla vista 2D",
-                                                  "Double click: the coverage on the 2D view"),
-                                     "activate": partial(self._tree_coverage, chunk, p["id"])}]
+                kids.append({"label": t("Copertura prevista", "Predicted coverage"), "icon": "relief",
+                             "tooltip": t("Doppio clic: la copertura sulla vista 2D",
+                                          "Double click: the coverage on the 2D view"),
+                             "activate": partial(self._tree_coverage, chunk, p["id"])})
+            from . import compare
+
+            done = compare.comparison_record(chunk, p["id"])
+            if done is not None:
+                kids.append({"label": t("Confronto con il volo", "Comparison with the flight"), "icon": _icon(),
+                             "tooltip": compare.summary_line(done),
+                             "activate": partial(self._tree_comparison, chunk, p["id"])})
+            if kids:
+                item["children"] = kids
             children.append(item)
         return [{"label": t(*NAME), "icon": _icon(), "children": children, "expanded": True}]
 
@@ -1527,6 +1624,17 @@ class WindowPart:
         def show():
             self._use_plan(id_, chunk)
             self._show_coverage(True)
+        self._guarded(show)
+
+    def _tree_comparison(self, chunk, id_: str) -> None:
+        def show():
+            from . import project
+
+            self._use_plan(id_, chunk)
+            e = project.entry(chunk, id_)
+            if e is not None and self._obtained_path(chunk, e) is not None:
+                self._show_obtained()
+            self.show_pane()
         self._guarded(show)
 
     def _qgis_entries(self):
@@ -1643,3 +1751,4 @@ def _gpkg_area(path: Path) -> list:
                 out.append((float(lat), float(lon)))
             return out
     raise ValueError(t("{0}: nessun poligono nel GeoPackage", "{0}: no polygon in the GeoPackage").format(path.name))
+
