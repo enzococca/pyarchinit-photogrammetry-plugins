@@ -497,3 +497,24 @@ def test_the_legs_counted_again_after_the_refresh_are_said(dji_device, test_plan
     with pytest.raises(DjiFlyError, match="quote del terreno rifatte"):
         copy_legs(None, test_plan, waypoint, [u1], dji_device["backup"])
     assert (waypoint / u1 / f"{u1}.kmz").read_bytes() == before
+
+
+def test_only_the_slots_agreed_on_are_overwritten(dji_device):
+    """The question listed the slots and the user agreed to overwrite those that held a mission then. A slot that
+    became a mission of the user after the question (time of check, time of use) is not in that list: it stops the
+    copy (0.1.2; before, ``overwrite=True`` let it be replaced)."""
+    waypoint, u1, backup = dji_device["waypoint"], dji_device["uuid1"], dji_device["backup"]
+    mine = _mission(7, "DJI Fly", 1_698_000_000_000)
+    _add_slot(waypoint, UUID3, mine)
+    before = (waypoint / u1 / f"{u1}.kmz").read_bytes()
+    # agreed on u1 only (a placeholder when it was listed): UUID3 holds a mission now and stops everything
+    with pytest.raises(djifly.SlotsInUse) as err:
+        djifly.copy(waypoint, [("a.kmz", b"x" * 10), ("b.kmz", b"y" * 10)], [u1, UUID3], backup_dir=backup,
+                    overwrite={u1})
+    assert [s["contenitore"] for s in err.value.slots] == [UUID3]
+    assert (waypoint / u1 / f"{u1}.kmz").read_bytes() == before
+    assert (waypoint / UUID3 / f"{UUID3}.kmz").read_bytes() == mine
+    # agreed on UUID3: written, the mission kept
+    outcomes = djifly.copy(waypoint, [("a.kmz", b"x" * 10), ("b.kmz", b"y" * 10)], [u1, UUID3],
+                           backup_dir=backup, overwrite={UUID3})
+    assert outcomes[1]["stato"] == djifly.SLOT_MISSION and Path(outcomes[1]["copia"]).read_bytes() == mine
