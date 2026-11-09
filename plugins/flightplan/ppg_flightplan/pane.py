@@ -35,6 +35,23 @@ def _labelled(text: str, widget: QWidget) -> QWidget:
     return box
 
 
+# The columns of the plan's table: (short header, full name for its tooltip), each as (Italian, English).
+TABLE_COLUMNS = (
+    (("Blocco / tratta", "Block / leg"), ("Blocco o tratta: spunta = il blocco vola",
+                                          "Block or leg: ticked = the block flies")),
+    (("Scatti", "Shots"), ("Scatti", "Shots")),
+    (("Min", "Min"), ("Minuti di volo", "Minutes of flight")),
+    (("Batt.", "Batt."), ("Batterie", "Batteries")),
+    (("GSD cm", "GSD cm"), ("GSD in cm/px", "GSD in cm/px")),
+    (("Quote m", "Heights m"), ("Quote sul decollo in metri", "Heights above the takeoff in metres")),
+)
+
+
+def _fit_combo(combo: QComboBox) -> None:
+    """The combo as wide as its longest item: the rows of the steps wrap (FlowLayout) instead of cutting it."""
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+
+
 def _spin(lo: float, hi: float, value: float, decimals: int = 0, step: float = 1.0, suffix: str = ""):
     s = QDoubleSpinBox() if decimals else QSpinBox()
     s.setRange(lo, hi) if decimals else s.setRange(int(lo), int(hi))
@@ -131,8 +148,7 @@ class FlightPlanPane(QWidget):
                 flow = _flow(box)
                 for w in widgets:
                     if isinstance(w, QComboBox):
-                        w.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-                        w.setMinimumContentsLength(12)
+                        _fit_combo(w)
                     flow.addWidget(w)
                 lay.addWidget(box)
             if extra is not None:
@@ -229,15 +245,24 @@ class FlightPlanPane(QWidget):
                         _labelled(t("Velocità", "Speed"), self.s_speed), self.c_mode, self.b_design])
 
         # 4 the plan: blocks and legs
-        self.t_plan = QTableWidget(0, 6)
-        self.t_plan.setHorizontalHeaderLabels([t("Blocco / tratta", "Block / leg"), t("Scatti", "Shots"),
-                                               t("Minuti", "Minutes"), t("Batterie", "Batteries"), "GSD cm",
-                                               t("Quote m", "Heights m")])
+        # short headers (the full names in their tooltips) and the names of blocks and legs elided in the middle:
+        # every column, the heights too, fits a dock about 420 px wide without a horizontal scroll bar
+        self.t_plan = QTableWidget(0, len(TABLE_COLUMNS))
+        for col, (short, full) in enumerate(TABLE_COLUMNS):
+            head = QTableWidgetItem(t(*short))
+            head.setToolTip(t(*full))
+            self.t_plan.setHorizontalHeaderItem(col, head)
         self.t_plan.verticalHeader().setVisible(False)
         self.t_plan.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.t_plan.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.t_plan.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.t_plan.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.t_plan.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.t_plan.setWordWrap(False)
+        self.t_plan.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        header = self.t_plan.horizontalHeader()
+        header.setMinimumSectionSize(28)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.t_plan.setMinimumHeight(120)
         self.t_plan.itemChanged.connect(self._item_changed)
         self.b_takeoff = QPushButton(t("Decollo sulla vista", "Takeoff on the view"))
@@ -511,8 +536,8 @@ class FlightPlanPane(QWidget):
                               | Qt.ItemFlag.ItemIsUserCheckable)
                 name.setCheckState(Qt.CheckState.Checked if b["attivo"] else Qt.CheckState.Unchecked)
                 name.setData(KEY_ROLE, ("block", int(b["indice"])))
-                name.setToolTip(t("Spunta: il blocco vola e va nei file", "Ticked: the block flies and goes into the "
-                                  "files"))
+                name.setToolTip(b["nome"] + "\n" + t("Spunta: il blocco vola e va nei file",
+                                                     "Ticked: the block flies and goes into the files"))
                 font = name.font()
                 font.setBold(True)
                 name.setFont(font)
@@ -524,6 +549,7 @@ class FlightPlanPane(QWidget):
                     row = self.t_plan.rowCount()
                     self.t_plan.insertRow(row)
                     item = QTableWidgetItem("    " + leg["nome"])
+                    item.setToolTip(leg["nome"])
                     item.setData(KEY_ROLE, ("leg", leg["chiave"]))
                     self.t_plan.setItem(row, 0, item)
                     for col, value in ((1, leg.get("scatti")), (2, leg.get("minuti")), (5, leg.get("quote"))):

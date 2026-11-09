@@ -618,3 +618,39 @@ def test_the_parameters_text_says_the_overlaps_used(gui):
     assert text.count("% avanti") == 1 and "80%" not in text
     assert project.active_plan(ch)["piano"]["blocchi"][0]["avanti"] == 75
 
+
+@pytest.mark.parametrize("lang", ["it", "en"])
+def test_the_pane_fits_420_px(monkeypatch, lang):
+    """The combos show their whole text and the table every column, the heights too, at 420 px."""
+    from PySide6.QtWidgets import QApplication, QComboBox
+
+    from pyarchinit_photogrammetry.gui import i18n
+
+    app_ = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(i18n, "current", lambda: lang)
+    from ppg_flightplan.pane import FlightPlanPane
+
+    pane = FlightPlanPane()
+    pane.resize(420, 1600)
+    pane.show()
+    pane.set_plan_table({"blocchi": [{"indice": 0, "nome": "A nadirale", "attivo": True, "scatti": 1234,
+                                      "minuti": 45.3, "batterie": 2.6, "gsd": 3.0, "quote": "108.7–121.4",
+                                      "tratte": [{"chiave": "k", "nome": "Piano_1_A_nadirale_tratta_12.kmz",
+                                                  "scatti": 600, "minuti": 22.1, "quote": "108.7–121.4"}]}]})
+    for _ in range(5):
+        app_.processEvents()
+    try:
+        fm = pane.fontMetrics()
+        for c in pane.findChildren(QComboBox):
+            if c is pane.c_plan:
+                continue
+            longest = max(fm.horizontalAdvance(c.itemText(i)) for i in range(c.count()))
+            assert c.width() >= longest + 16, (c.currentText(), c.width(), longest)
+            assert c.mapTo(pane, c.rect().topRight()).x() <= pane.width(), c.currentText()
+        table = pane.t_plan
+        widths = [table.columnWidth(i) for i in range(table.columnCount())]
+        assert sum(widths) <= table.viewport().width() and not table.horizontalScrollBar().isVisible()
+        assert widths[-1] >= fm.horizontalAdvance("108.7–121.4")
+        assert pane.c_direction.itemText(0) in ("Lungo il lato più lungo", "Along the longest side")
+    finally:
+        pane.close()
