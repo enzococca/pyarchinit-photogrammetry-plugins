@@ -332,7 +332,32 @@ class WindowPart:
         self.pane.set_state(self._states(chunk, e), self._summary(e), self._warning_texts(chunk, e))
         if self._status:
             self.pane.set_status(self._status)
-        self.draw_layers()
+        if not self._drop_stale_coverage(chunk, e):  # (it draws the layers itself, on the raster it shows)
+            self.draw_layers()
+
+    def _drop_stale_coverage(self, chunk, e) -> bool:
+        """The coverage raster on the 2D view is no longer the active plan's current one (the plan changed, another
+        plan is active, the plan was removed or undone): back to the orthophoto (or the DEM, or a frame), said in
+        the status line - the map the user plans on must be the plan's. True when the view was changed."""
+        from . import project
+
+        view = self._view()
+        shown = getattr(view, "path", None) if view is not None else None
+        if chunk is None or not shown:
+            return False
+        base = project.folder(chunk).resolve()
+        try:
+            Path(shown).resolve().relative_to(base)
+        except (ValueError, OSError):
+            return False                                   # not a raster of the plugin
+        rec = project.coverage_record(chunk, e["id"]) if e is not None else None
+        if rec is not None and Path(shown).resolve() == (Path(chunk.data_dir) / rec["files"]["rgba"]).resolve():
+            return False
+        self._hide_coverage(chunk)
+        self._status_text(t("La copertura mostrata era di un piano cambiato o tolto: rifalla con Calcola.",
+                            "The coverage shown belonged to a plan changed or removed: make it again with "
+                            "Compute."))
+        return True
 
     def _purge_on_open(self) -> None:
         """M3: a project just opened (its meta is the project as saved, and no undo can reach before it): the
@@ -350,6 +375,8 @@ class WindowPart:
             return
         for chunk in getattr(doc, "chunks", []):
             try:
+                if project.folder(chunk).is_dir():
+                    project.restore_files(chunk)       # stray folders aside first, so they go at once
                 project.purge_removed(chunk)
             except OSError:
                 pass
@@ -391,7 +418,12 @@ class WindowPart:
                                       "minuti": round(r.minutes(), 1),
                                       "quote": heights(round(min(q), 1), round(max(q), 1))})
             blocks.append(row)
-        out = {"blocchi": blocks, "totale": counts["totale"], "decolloLontanoM": counts.get("decolloLontanoM")}
+        codes: list[str] = []
+        for c in counts["blocchi"]:
+            if c.get("attivo"):
+                codes += [w for w in c.get("avvisi") or [] if w not in codes]
+        out = {"blocchi": blocks, "totale": counts["totale"], "decolloLontanoM": counts.get("decolloLontanoM"),
+               "codici": codes}
         self._summaries = {k: v for k, v in self._summaries.items() if k[0] != e["id"]}
         self._summaries[key] = out
         return out
@@ -399,16 +431,10 @@ class WindowPart:
     def _warning_texts(self, chunk, e) -> list[str]:
         if e is None:
             return []
-        from . import plan as pl
         from .export_formats import terrain_note
 
         summary = self._summary(e) or {}
-        texts: list[str] = []
-        codes = []
-        for c in pl.compute(e["piano"])["blocchi"]:
-            if c.get("attivo"):
-                codes += [w for w in c.get("avvisi") or [] if w not in codes]
-        texts += [warning_text(c) for c in codes]
+        texts: list[str] = [warning_text(c) for c in summary.get("codici") or []]
         texts += [w for w in self._warnings.get((e["id"], e["stamp"]), []) if w not in texts]
         far = summary.get("decolloLontanoM")
         if far:
@@ -520,17 +546,12 @@ class WindowPart:
         return st
 
     def _terrain_state(self, chunk, piano: dict) -> str:
-        from . import project
-
         dem_note = ""
         if chunk is not None and getattr(chunk, "dem_path", None) and Path(chunk.dem_path).is_file():
-            dem = project.chunk_dem(chunk)
-            if dem is None:
+            if not self._dem_georeferenced(chunk):
                 dem_note = t("Il DEM del progetto non dice dove si trova (nessuna georeferenza): si usano le tegole "
                              "pubbliche.", "The project DEM does not say where it is (no georeference): the public "
                              "tiles are used.")
-            else:
-                dem.close()
         else:
             dem_note = t("Il chunk non ha un DEM: le quote vengono dalle tegole pubbliche (serve la rete).",
                          "The chunk has no DEM: the heights come from the public tiles (the network is needed).")
@@ -549,6 +570,22 @@ class WindowPart:
                                 "export.")
             return f"{text} {dem_note}".strip()
         return (t("Una quota per blocco.", "One height per block.") + " " + dem_note).strip()
+
+    def _dem_georeferenced(self, chunk) -> bool:
+        """Whether the chunk's DEM says where it is, read once per file (name, size, time) and not at every
+        refresh."""
+        from . import project
+
+        path = Path(chunk.dem_path)
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime)
+        cache = getattr(self, "_dem_checked", None)
+        if cache is None or cache[0] != key:
+            dem = project.chunk_dem(chunk)
+            if dem is not None:
+                dem.close()
+            self._dem_checked = cache = (key, dem is not None)
+        return cache[1]
 
     @staticmethod
     def _area_size(area) -> str:
@@ -627,7 +664,7 @@ class WindowPart:
             for (x, y), (_p, h, name) in zip(xy.tolist(), shown):
                 view.add_point(x, y, "#fb8c00", "", layer=LAYER_SHOTS,
                                attrs={"tratta": name, "quota_decollo_m": round(float(h), 1)})
-        if step > 1:
+        if step > 1 and not self._status.startswith(f"{len(shots)} "):
             self._status_text(t("{0} scatti: sulla vista uno ogni {1}.", "{0} shots: on the view one every {1}.")
                               .format(len(shots), step))
         for label, point in pl.plan_takeoffs(piano):
@@ -850,22 +887,27 @@ class WindowPart:
     def _camera_by_hand(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field
 
+        from .camera import camera as list_camera
         from .camera import manual_camera
 
+        cid, own = self._pane_camera()
+        base = own or list_camera(cid)
         got = self._ask(t("Camera a mano", "Camera by hand"),
                         [Field("name", t("Nome", "Name"), "", kind="text"),
                          Field("width", t("Larghezza del sensore (mm, lato lungo)", "Sensor width (mm, long side)"),
-                               13.2, minimum=0.1, maximum=100, decimals=2),
-                         Field("height", t("Altezza del sensore (mm)", "Sensor height (mm)"), 8.8, minimum=0.1,
-                               maximum=100, decimals=2),
-                         Field("focal", t("Focale (mm)", "Focal length (mm)"), 8.8, minimum=0.1, maximum=500,
-                               decimals=2),
-                         Field("pixels", t("Pixel sul lato lungo", "Pixels on the long side"), 5472, minimum=100,
-                               maximum=100000, decimals=0),
+                               base.width_mm, minimum=0.1, maximum=100, decimals=3),
+                         Field("height", t("Altezza del sensore (mm)", "Sensor height (mm)"), base.height_mm,
+                               minimum=0.1, maximum=100, decimals=3),
+                         Field("focal", t("Focale (mm)", "Focal length (mm)"), base.focal_mm, minimum=0.1,
+                               maximum=500, decimals=3),
+                         Field("pixels", t("Pixel sul lato lungo", "Pixels on the long side"), base.pixels,
+                               minimum=100, maximum=100000, decimals=0),
                          Field("interval", t("Intervallo minimo fra scatti (s)", "Shortest interval between shots (s)"),
-                               2.0, minimum=0.5, maximum=60, decimals=1)],
-                        intro=t("I valori del foglio tecnico della camera: nessun valore viene inventato.",
-                                "The values of the camera's spec sheet: no value is invented."))
+                               base.min_interval, minimum=0.5, maximum=60, decimals=1)],
+                        intro=t("I campi partono dai valori di «{0}», la camera scelta nella lista: scrivi quelli "
+                                "del foglio tecnico della tua camera. Nessun valore viene inventato.",
+                                "The fields start from the values of '{0}', the camera chosen in the list: type "
+                                "those of your camera's spec sheet. No value is invented.").format(base.name))
         if not got:
             return
         name = str(got["name"]).strip() or t("Camera a mano", "Camera by hand")
@@ -910,6 +952,21 @@ class WindowPart:
                                     else None)
             piano, reasons = out["piano"], list(out["motivi"])
             _apply_parameters(piano, params, reasons)
+            if old_piano and old_piano.get("decolli"):
+                from . import plan as pl
+
+                keys = {leg.key for leg in pl.plan_legs(piano)}
+                kept = {k: v for k, v in old_piano["decolli"].items() if k in keys}
+                if kept:
+                    piano["decolli"] = kept
+                lost = len(old_piano["decolli"]) - len(kept)
+                if lost:
+                    reasons.append(plural(lost, t("{0} decollo di una tratta non c'è più (le tratte sono cambiate): "
+                                                  "rimettilo.", "{0} takeoff of a leg is gone (the legs changed): "
+                                                  "place it again."),
+                                          t("{0} decolli di tratte non ci sono più (le tratte sono cambiate): "
+                                            "rimettili.", "{0} takeoffs of legs are gone (the legs changed): place "
+                                            "them again.")))
             piano["areaDisegnata"] = [list(q) for q in area]
             if crs:
                 piano["crs"] = crs
@@ -999,11 +1056,14 @@ class WindowPart:
         e = project.entry(chunk, id_)
         if e is None:
             return
-        project.remove_plan(chunk, id_)
-        self._shown_plan = None
+        try:
+            project.remove_plan(chunk, id_)
+        finally:
+            # the meta changes before the files move: marked also when moving them failed (a file open elsewhere)
+            self._shown_plan = None
+            self._changed()
         self._status_text(t("Piano «{0}» rimosso (Modifica > Annulla lo rimette).",
                             "Plan '{0}' removed (Edit > Undo puts it back).").format(e["name"]))
-        self._changed()
 
     def toggle_block(self, index: int, on: bool) -> None:
         self._guarded(self._toggle_block, index, on)
@@ -1154,6 +1214,10 @@ class WindowPart:
             self._coverage_shown = True
             self.context.show_raster("ortho", path=Path(chunk.data_dir) / rec["files"]["rgba"])
             return
+        self._hide_coverage(chunk)
+
+    def _hide_coverage(self, chunk) -> None:
+        """Back from the coverage to the chunk's orthophoto (or DEM), else an empty frame around the plan."""
         self._coverage_shown = False
         if not self.context.show_raster(None):
             view = self._view()
@@ -1355,10 +1419,14 @@ class WindowPart:
             lines = "\n".join(f"{s['contenitore']} ({s.get('nomeDji') or '-'}): {_slot_text(s['stato'])}"
                               for s in chosen)
             if not overwrite:
+                over = any(s["stato"] not in djifly.SAFE_SLOTS for s in chosen)
                 k = self._choice(t("Le {0} tratte vanno in queste missioni:\n{1}", "The {0} legs go into these "
-                                   "missions:\n{1}").format(n, lines), [t("Copia", "Copy")])
+                                   "missions:\n{1}").format(n, lines),
+                                 [t("Sovrascrivi (una copia resta)", "Overwrite (a copy is kept)") if over
+                                  else t("Copia", "Copy")], kind="warning" if over else "question")
                 if k is None:
                     return
+                overwrite = over               # the user saw the missions of their own in the list and said yes
         backup = project.folder(chunk) / "djifly_backup"
         id_ = e["id"]
         piano = copy.deepcopy(e["piano"])

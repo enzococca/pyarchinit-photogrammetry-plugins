@@ -159,12 +159,19 @@ def test_area_drawn_designs_a_plan(gui):
     p.b_takeoff.click()
     assert request.kind == "point" and len(view.features(LAYER_TAKEOFF)) == 1
     assert project.active_plan(ch)["piano"]["decollo"]
+    # the takeoff of a leg: the leg chosen in the table
+    leg_row = next(r for r in range(p.t_plan.rowCount()) if p.t_plan.item(r, 0).data(256)[0] == "leg")
+    p.t_plan.selectRow(leg_row)
+    p.b_leg_takeoff.click()
+    leg_key = p.t_plan.item(leg_row, 0).data(256)[1]
+    assert project.active_plan(ch)["piano"]["decolli"][leg_key]
     # design again on the same area: the same plan, changed
     p.s_front.setValue(70)
     p.b_design.click()
     _wait(w, app_)
     assert len(project.plans(ch)) == 1 and project.active_plan(ch)["piano"]["blocchi"][0]["avanti"] == 70
     assert project.active_plan(ch)["piano"]["decollo"]           # kept
+    assert leg_key in project.active_plan(ch)["piano"]["decolli"]  # its leg is still there: kept too
     # a new area: a new plan
     request.xy = synth.rectangle_xy(150, 100, cx=synth.X0 + 400)
     _design(w, plugin, app_)
@@ -322,9 +329,19 @@ def test_tree_and_targets(gui, tmp_path, monkeypatch):
     assert len(piano["target"]["punti"]) == 2
     assert len(w.ortho_view.features("Piano di volo: target")) == 2
     assert "2 target" in plugin.pane.states["targets"].text()
-    codes = piano["target"].get("avvisi") or []
-    if "ordine_incerto" in codes:
-        assert plugin.pane.l_target_warning.isVisibleTo(plugin.pane) and said
+    # no header, degrees, both columns valid latitudes (about 41.5 and 9.0): the plan's own place decides the order
+    assert "ordine_incerto" not in (piano["target"].get("avvisi") or [])
+    assert not plugin.pane.l_target_warning.isVisibleTo(plugin.pane)
+    # without an active block the plan has no place to compare with: the order is a guess, said
+    p = plugin.pane
+    p.t_plan.item(0, 0).setCheckState(p.t_plan.item(0, 0).checkState().__class__.Unchecked)
+    app_.processEvents()
+    plugin.pane.b_csv.click()
+    codes = project.active_plan(ch)["piano"]["target"].get("avvisi") or []
+    assert "ordine_incerto" in codes
+    assert plugin.pane.l_target_warning.isVisibleTo(plugin.pane)
+    assert plugin.pane.l_target_warning.text().startswith("Ordine delle colonne incerto")
+    assert any("Ordine delle colonne incerto" in m for m in said)
     plugin.pane.b_targets_off.click()
     assert "target" not in project.active_plan(ch)["piano"]
 
@@ -472,16 +489,106 @@ def test_copy_into_djifly(gui, tmp_path, monkeypatch):
     given = project.active_plan(ch)["piano"]["djiFly"]
     assert sorted(v["cartella"] for v in given.values()) == sorted(empty)
     # only the mission of the user left: the question, then the copy over it with a copy of it kept
-    for s in empty:
-        import shutil
+    # one slot fewer than the legs among the safe ones (whatever their number): the user's mission is needed,
+    # one question says it and asks to overwrite, and the copy goes over it with a copy of it kept
+    import shutil
 
-        shutil.rmtree(waypoint / s)
+    shutil.rmtree(waypoint / empty[-1])
     asked.clear()
-    assert n == 1                                                  # the small area flies in one leg
     plugin.pane.b_djifly.click()
     _wait(w, app_)
-    _wait(w, app_)
-    assert len(asked) == 2 and "MISSIONE DELL'UTENTE" in asked[0]  # the slots, then the overwrite asked
+    assert len(asked) == 1 and "MISSIONE DELL'UTENTE" in asked[0] and user in asked[0]
     assert (waypoint / user / f"{user}.kmz").read_bytes() != mission
     backups = list((project.folder(ch) / "djifly_backup").rglob("*.kmz"))
     assert backups and backups[0].read_bytes() == mission
+
+
+def test_a_stale_coverage_leaves_the_view(gui):
+    """I1: the coverage raster shown goes away when the plan changes, when another plan becomes active and when the
+    plan is removed: the orthophoto (here the DEM) comes back and the status says why."""
+    w, plugin, ch, app_, said, request = gui
+    view = w.ortho_view
+    _design(w, plugin, app_)
+    p = plugin.pane
+
+    def shown_coverage():
+        rec = project.coverage_record(ch, project.active_plan(ch)["id"])
+        assert rec is not None and str(view.path) == str(ch.data_dir / rec["files"]["rgba"])
+
+    p.b_coverage.click()
+    _wait(w, app_)
+    shown_coverage()
+    # 1 the plan changed (a block off)
+    p.t_plan.item(0, 0).setCheckState(p.t_plan.item(0, 0).checkState().__class__.Unchecked)
+    app_.processEvents()
+    assert str(view.path) == str(ch.dem_path) and "piano cambiato" in p.l_status.text()
+    p.t_plan.item(0, 0).setCheckState(p.t_plan.item(0, 0).checkState().__class__.Checked)
+    app_.processEvents()
+    # 2 another plan active
+    p.b_coverage.click()
+    _wait(w, app_)
+    shown_coverage()
+    first = project.active_plan(ch)["id"]
+    request.xy = synth.rectangle_xy(150, 100, cx=synth.X0 + 400)
+    _design(w, plugin, app_)
+    assert project.active_plan(ch)["id"] != first and str(view.path) == str(ch.dem_path)
+    p.c_plan.setCurrentIndex(p.c_plan.findData(first))
+    p.b_show_coverage.click()
+    app_.processEvents()
+    shown_coverage()
+    second = next(q["id"] for q in project.plans(ch) if q["id"] != first)
+    p.c_plan.setCurrentIndex(p.c_plan.findData(second))
+    app_.processEvents()
+    assert project.active_plan(ch)["id"] == second and str(view.path) == str(ch.dem_path)
+    # 3 the plan removed
+    p.c_plan.setCurrentIndex(p.c_plan.findData(first))
+    p.b_show_coverage.click()
+    app_.processEvents()
+    shown_coverage()
+    p.b_remove_plan.click()
+    app_.processEvents()
+    assert project.entry(ch, first) is None and str(view.path) == str(ch.dem_path)
+
+
+def test_export_from_the_pane_failing_after_the_refresh_marks_modified(gui, tmp_path, monkeypatch):
+    """m6: M1 through the pane: the terrain heights redone by the export, the file not writable: the project is
+    marked modified all the same, and the error said."""
+    w, plugin, ch, app_, said, _request = gui
+    _design(w, plugin, app_)
+    plugin.pane.c_source.setCurrentIndex(plugin.pane.c_source.findData("dem"))
+    plugin.pane.b_terrain.click()
+    _wait(w, app_)
+    e = project.active_plan(ch)
+    import copy
+
+    piano = copy.deepcopy(e["piano"])
+    piano["blocchi"][0]["lato"] = 60                              # its heights now stale: the export redoes them
+    project.update_plan(ch, e["id"], piano)
+    before = project.entry(ch, e["id"])["stamp"]
+    blocker = tmp_path / "not_a_folder"
+    blocker.write_text("x")
+    monkeypatch.setattr(plugin, "_save_path", lambda *a: str(blocker / "volo.plan"))
+    w.setWindowModified(False)
+    plugin.export("plan")
+    _wait(w, app_)
+    assert project.entry(ch, e["id"])["stamp"] != before and w.isWindowModified()
+    assert said and not (blocker / "volo.plan").exists()
+
+
+def test_manual_camera_starts_from_the_list(gui, monkeypatch):
+    """m3: the typed camera's fields start from the camera chosen in the list, never from invented values."""
+    from pyarchinit_photogrammetry.gui.dialogs import ParamDialog
+
+    w, plugin, ch, app_, said, _request = gui
+    seen = {}
+
+    def ask(cls, parent, title, fields, intro=""):
+        seen.update({f.name: f.default for f in fields})
+        seen["intro"] = intro
+        return {k: v for k, v in seen.items() if k != "intro"} | {"name": "Mia"}
+
+    monkeypatch.setattr(ParamDialog, "ask", classmethod(ask))
+    plugin.pane.set_camera("mavic3e")
+    plugin.camera_by_hand()
+    assert (seen["width"], seen["height"], seen["focal"], seen["pixels"]) == (17.3, 13.0, 12.29, 5280)
+    assert "Mavic 3E" in seen["intro"] and plugin.pane.camera_id().startswith("manual-")
