@@ -172,6 +172,8 @@ def test_area_drawn_designs_a_plan(gui):
     assert len(project.plans(ch)) == 1 and project.active_plan(ch)["piano"]["blocchi"][0]["avanti"] == 70
     assert project.active_plan(ch)["piano"]["decollo"]           # kept
     assert leg_key in project.active_plan(ch)["piano"]["decolli"]  # its leg is still there: kept too
+    # but its waypoints changed with the overlap: the kept takeoff is named, to be checked (0.1.2)
+    assert "Le tratte sono cambiate" in p.states["params"].text() and leg_key in p.states["params"].text()
     # a new area: a new plan
     request.xy = synth.rectangle_xy(150, 100, cx=synth.X0 + 400)
     _design(w, plugin, app_)
@@ -332,10 +334,17 @@ def test_tree_and_targets(gui, tmp_path, monkeypatch):
     # no header, degrees, both columns valid latitudes (about 41.5 and 9.0): the plan's own place decides the order
     assert "ordine_incerto" not in (piano["target"].get("avvisi") or [])
     assert not plugin.pane.l_target_warning.isVisibleTo(plugin.pane)
-    # without an active block the plan has no place to compare with: the order is a guess, said
+    # without an active block the plan's area still says where the site is (0.1.2): the order is not a guess
     p = plugin.pane
     p.t_plan.item(0, 0).setCheckState(p.t_plan.item(0, 0).checkState().__class__.Unchecked)
     app_.processEvents()
+    plugin.pane.b_csv.click()
+    assert "ordine_incerto" not in (project.active_plan(ch)["piano"]["target"].get("avvisi") or [])
+    assert not plugin.pane.l_target_warning.isVisibleTo(plugin.pane)
+    # with no place at all to compare with, the order is a guess, said
+    from ppg_flightplan import plan as pl
+
+    monkeypatch.setattr(pl, "site_centre", lambda piano: None)
     plugin.pane.b_csv.click()
     codes = project.active_plan(ch)["piano"]["target"].get("avvisi") or []
     assert "ordine_incerto" in codes

@@ -173,6 +173,9 @@ class PlanLeg:
     total: int
     route: Route
     takeoff: Optional[LatLon] = None
+    # waypoints cut at the floor from the general takeoff whose ground is unknown: their height from the leg's own
+    # takeoff cannot be told (:func:`_relative_to_its_takeoff`), and the export refuses the leg
+    floor_unknown: int = 0
 
     def to_json(self) -> dict:
         return {"chiave": self.key, "blocco": self.block_index, "nome": self.file_name, "numero": self.number,
@@ -205,23 +208,32 @@ def takeoff_far(piano: dict) -> Optional[float]:
     return d if d is not None and d > FAR_TAKEOFF_M else None
 
 
-def _relative_to_its_takeoff(p: Route, piano: dict, key: str, takeoff: Optional[LatLon]) -> Route:
-    """The heights of a leg that takes off from a point of its own, brought back to THAT point.
+def _relative_to_its_takeoff(p: Route, piano: dict, key: str, takeoff: Optional[LatLon]) -> tuple[Route, int]:
+    """The heights of a leg that takes off from a point of its own, brought back to THAT point, and how many of its
+    waypoints could not be (see below).
 
     The per-point heights are computed from the general takeoff; the drone measures them from where it
     really takes off. If the leg starts twenty metres higher (the top of the mound) its heights go down by
     twenty, or it would fly twenty metres higher than wanted - and the other way round, lower.
+
+    A height cut at the floor (10 m above the general takeoff, where the ground falls more than the height above
+    it) is not the height above the ground any more: moved by the drop it would fly too high (a leg taking off at
+    the foot of a 200 m slope: 210 m instead of 60). Taking off lower, such a point is computed again from the
+    ground the plan carries (its terrain grid): the height above the ground plus the ground there, counted from
+    this takeoff. Where that ground is unknown the point is counted (the second value) and the export refuses
+    the leg.
     """
     if not p.heights or takeoff is None:
-        return p
+        return p, 0
     general = piano.get("quotaDecollo")
     entry = (piano.get("suoloDecolli") or {}).get(key)
     if general is None or not entry or distance(tuple(entry["punto"]), takeoff) > 2.0:
-        return p                       # ground of the takeoff unknown or moved: better not to touch anything
+        return p, 0                    # ground of the takeoff unknown or moved: better not to touch anything
     if p.points and min(distance(takeoff, q) for q in p.points) > FAR_TAKEOFF_M:
-        return p                       # a takeoff kilometres from the leg is not a takeoff: nothing is moved
+        return p, 0                    # a takeoff kilometres from the leg is not a takeoff: nothing is moved
     shift = float(general) - float(entry["suolo"])
     new = []
+    unknown = 0
     ground = _specials.ground_of_grid(piano.get("terreno"))
     for i, q in enumerate(p.heights):
         s_ = p.stop(i)
@@ -236,8 +248,16 @@ def _relative_to_its_takeoff(p: Route, piano: dict, key: str, takeoff: Optional[
             new.append(q)                # a flight at a fixed height: it holds from any takeoff
             continue
         minimum = _specials.MIN_SPECIAL_HEIGHT if s_ and s_.low else MIN_FLIGHT_HEIGHT
+        if shift > 0.05 and not (s_ and s_.low) and q <= MIN_FLIGHT_HEIGHT + 0.05:
+            # cut at the floor from the general takeoff: from this lower takeoff, from the ground itself
+            z = ground(p.points[i]) if ground else None
+            if z is None:
+                unknown += 1
+            else:
+                new.append(round(min(MAX_FLIGHT_HEIGHT, max(minimum, p.height + z - float(entry["suolo"]))), 1))
+                continue
         new.append(round(min(MAX_FLIGHT_HEIGHT, max(minimum, q + shift)), 1))
-    return replace(p, heights=new)
+    return replace(p, heights=new), unknown
 
 
 def plan_legs(piano: dict, specials: bool = True) -> list[PlanLeg]:
@@ -261,8 +281,8 @@ def plan_legs(piano: dict, specials: bool = True) -> list[PlanLeg]:
             key = f"{i}-{leg.number}"
             d = takeoffs.get(key)
             takeoff = (float(d[0]), float(d[1])) if d else general
-            route = _relative_to_its_takeoff(leg.route, piano, key, takeoff if d else None)
-            out.append(PlanLeg(i, key, file_name, leg.number, leg.total, route, takeoff))
+            route, unknown = _relative_to_its_takeoff(leg.route, piano, key, takeoff if d else None)
+            out.append(PlanLeg(i, key, file_name, leg.number, leg.total, route, takeoff, unknown))
     return out
 
 
@@ -276,3 +296,60 @@ def plan_takeoffs(piano: dict) -> list[tuple[str, LatLon]]:
         if leg.takeoff and leg.takeoff != general:
             out.append((f"Decollo {leg.file_name}", leg.takeoff))
     return out
+
+
+def far_leg_takeoffs(piano: dict) -> list[tuple[str, str, float]]:
+    """The legs whose own takeoff (``decolli``) is farther than :data:`FAR_TAKEOFF_M` from every point of the leg:
+    (key, file name, metres). Such a takeoff is not taken as one for the heights (:func:`_relative_to_its_takeoff`),
+    so the export refuses it (:class:`ppg_flightplan.design.FarLegTakeoff`) instead of counting the heights from
+    another takeoff than the one set."""
+    own = piano.get("decolli") or {}
+    if not own:
+        return []
+    out = []
+    for leg in plan_legs(piano):
+        d = own.get(leg.key)
+        if not d or not leg.route.points:
+            continue
+        point = (float(d[0]), float(d[1]))
+        metres = min(distance(point, q) for q in leg.route.points)
+        if metres > FAR_TAKEOFF_M:
+            out.append((leg.key, leg.file_name, round(metres)))
+    return out
+
+
+# A leg whose first or last waypoint moved more than this, or whose waypoints are not as many, changed.
+LEG_MOVED_M = 2.0
+
+
+def moved_leg_takeoffs(old: dict, new: dict) -> list[str]:
+    """The keys of the per-leg takeoffs of ``new`` (kept from ``old`` by key after a new design) whose leg is not the
+    one it was: the keys are positional (block - number of the leg), so a kept takeoff may now belong to a leg in
+    another place. The caller asks to check them."""
+    own = new.get("decolli") or {}
+    if not own:
+        return []
+    before = {leg.key: leg.route.points for leg in plan_legs(old)}
+    out = []
+    for leg in plan_legs(new):
+        if leg.key not in own:
+            continue
+        was, now = before.get(leg.key), leg.route.points
+        if not was or len(was) != len(now) or not now or distance(was[0], now[0]) > LEG_MOVED_M \
+                or distance(was[-1], now[-1]) > LEG_MOVED_M:
+            out.append(leg.key)
+    return out
+
+
+def site_centre(piano: dict) -> Optional[LatLon]:
+    """Where the plan is: the centre of the waypoints of the active blocks, else of the areas of all its blocks (all
+    switched off), else of the area drawn; None for an empty plan. Reading targets, the order of two columns of
+    degrees is chosen by the side nearer to it."""
+    points = [q for b in active_blocks(piano) for q in route_of_block(b, piano)[0].points]
+    if not points:
+        points = [(float(p[0]), float(p[1])) for b in piano.get("blocchi", []) for p in b.get("area") or []]
+        points += [(float(c[0]), float(c[1])) for b in piano.get("blocchi", []) if b.get("centro")
+                   for c in [b["centro"]]]
+    if not points:
+        points = [(float(p[0]), float(p[1])) for p in piano.get("areaDisegnata") or []]
+    return centroid(points) if points else None

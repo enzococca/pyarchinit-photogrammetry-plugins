@@ -281,7 +281,7 @@ def slot_states(folder: Path, containers: list[str], own=None) -> list[dict]:
 
 class SlotsInUse(DjiFlyError):
     """Some chosen slots hold a mission of the user: nothing was written. ``slots`` says which (the entries of
-    :func:`slot_states`); the copy goes on only with ``overwrite=True``, after the user confirmed."""
+    :func:`slot_states`); the copy goes on only with ``overwrite`` naming them (or True), after the user confirmed."""
 
     def __init__(self, slots: list[dict]):
         self.slots = slots
@@ -291,6 +291,20 @@ class SlotsInUse(DjiFlyError):
                            "the DJI Fly missions {0} are neither placeholders nor legs of this plan: I left them "
                            "alone. If they really are to be replaced, confirm the overwrite (a copy is kept anyway).")
                          .format(names))
+
+
+def not_agreed(busy: list[dict], overwrite) -> list[dict]:
+    """The slots of ``busy`` (missions of the user) that may not be overwritten: all with ``overwrite`` False, none
+    with True, else those whose container is not in ``overwrite`` (the containers the user saw listed as missions
+    and agreed to overwrite: a slot that became a mission after the question is not among them)."""
+    if overwrite is True:
+        return []
+    if not overwrite:
+        return list(busy)
+    if isinstance(overwrite, (str, bytes)):
+        raise TypeError("overwrite: True, False or a collection of container names, not one string")
+    agreed = {str(c) for c in overwrite}
+    return [s for s in busy if s["contenitore"] not in agreed]
 
 
 class WriteFailed(DjiFlyError):
@@ -344,7 +358,7 @@ def _keep(backup: Path, container: str, data: bytes, suffix: str, stamp: str) ->
 def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
          previews: Optional[list[Optional[bytes]]] = None,
          created: Optional[list[Optional[float]]] = None, *, backup_dir=None,
-         overwrite: bool = False, own=None) -> list[dict]:
+         overwrite=False, own=None) -> list[dict]:
     """Writes ``container/container.kmz`` for every leg, in order, and if there are previews also
     ``map_preview/container/container.jpg``, the image the library of DJI Fly shows for the mission. The
     containers must already be there: they are the placeholder missions saved by DJI Fly.
@@ -352,8 +366,9 @@ def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
     Nothing is ever lost: before a file is replaced it is copied into ``backup_dir`` (``<container>-<date>.kmz``
     and ``.jpg``; required, outside the waypoint folder), and the outcome says where (``copia``). A slot that
     holds a mission of the user (neither a placeholder nor a leg written from here) stops the whole copy before
-    anything is written (:class:`SlotsInUse`), unless ``overwrite`` is True; with ``own`` (the containers this
-    plan wrote before) a leg written from here for another plan stops it too."""
+    anything is written (:class:`SlotsInUse`), unless ``overwrite`` is True or names its container (a collection of
+    the containers the user agreed to overwrite: :func:`not_agreed`); with ``own`` (the containers this plan wrote
+    before) a leg written from here for another plan stops it too."""
     _check(legs, containers)
     folder = Path(folder)
     if is_local_copy(folder):
@@ -367,8 +382,9 @@ def copy(folder: Path, legs: list[tuple[str, bytes]], containers: list[str],
     backup = _backup_folder(backup_dir, folder)
     states = slot_states(folder, containers[:len(legs)], own)
     busy = [s for s in states if s["stato"] not in SAFE_SLOTS]
-    if busy and not overwrite:
-        raise SlotsInUse(busy)
+    refused = not_agreed(busy, overwrite)
+    if refused:
+        raise SlotsInUse(refused)
     stamp = _stamp()
     outcomes = []
     for (name, data), container, state in zip(legs, containers, states):
@@ -631,10 +647,11 @@ def _sizes_of(answer) -> Optional[dict]:
 
 def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str],
              created: Optional[list[Optional[float]]] = None, *, backup_dir=None,
-             overwrite: bool = False, own=None) -> list[dict]:
+             overwrite=False, own=None) -> list[dict]:
     """Copies onto the folders of the Windows MTP device (``mtp://<device>/<storage>``), as :func:`copy` does:
     the KMZ of every chosen slot is first brought to the computer, into ``backup_dir`` (``<container>-<date>.kmz``),
-    and read there - so a mission of the user stops the copy (:class:`SlotsInUse`, unless ``overwrite``) and the
+    and read there - so a mission of the user stops the copy (:class:`SlotsInUse`, unless ``overwrite`` allows it,
+    :func:`not_agreed`) and the
     placeholder's creation time goes into the new KMZ (the name in DJI Fly stays the one matched with the leg)."""
     _check(legs, containers)
     device, storage = _device_of(path)
@@ -671,8 +688,9 @@ def copy_mtp(path: str, legs: list[tuple[str, bytes]], containers: list[str],
             states.append(_for_this_plan({"contenitore": c, **slot_state(data)}, c, own))
             kept.append(_keep(backup, c, data, "kmz", stamp) if data is not None else None)
         busy = [st for st in states if st["stato"] not in SAFE_SLOTS]
-        if busy and not overwrite:
-            raise SlotsInUse(busy)
+        refused = not_agreed(busy, overwrite)
+        if refused:
+            raise SlotsInUse(refused)
         outgoing = Path(tmp) / "verso-il-dispositivo"
         outgoing.mkdir()
         pairs = []

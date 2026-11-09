@@ -444,6 +444,14 @@ class WindowPart:
         summary = self._summary(e) or {}
         texts: list[str] = [warning_text(c) for c in summary.get("codici") or []]
         texts += [w for w in self._warnings.get((e["id"], e["stamp"]), []) if w not in texts]
+        from . import plan as pl
+
+        for key, name, metres in pl.far_leg_takeoffs(e["piano"]):
+            texts.append(t("Il decollo della tratta {0} ({1}) è a {2:.1f} km dalla sua tratta: oltre i 2 km non è un "
+                           "decollo, e l'esportazione si rifiuta finché non lo sposti vicino alla tratta o lo togli",
+                           "The takeoff of the leg {0} ({1}) is {2:.1f} km from its leg: beyond 2 km it is not a "
+                           "takeoff, and the export is refused until it is moved next to the leg or removed")
+                         .format(key, name, metres / 1000))
         far = summary.get("decolloLontanoM")
         if far:
             texts.append(t("Il decollo è a {0} m dall'area: oltre i 2 km le quote non si riferiscono a lui",
@@ -1008,6 +1016,13 @@ class WindowPart:
                 kept = {k: v for k, v in old_piano["decolli"].items() if k in keys}
                 if kept:
                     piano["decolli"] = kept
+                moved = pl.moved_leg_takeoffs(old_piano, piano)
+                if moved:
+                    reasons.append(t("Le tratte sono cambiate: i decolli tenuti delle tratte {0} ora possono "
+                                     "trovarsi accanto a un'altra parte del volo - controllali (o rimettili).",
+                                     "The legs changed: the kept takeoffs of the legs {0} may now be next to another "
+                                     "part of the flight - check them (or place them again).")
+                                   .format(", ".join(moved)))
                 lost = len(old_piano["decolli"]) - len(kept)
                 if lost:
                     reasons.append(plural(lost, t("{0} decollo di una tratta non c'è più (le tratte sono cambiate): "
@@ -1331,7 +1346,6 @@ class WindowPart:
 
         from . import plan as pl
         from . import targets
-        from .geometry import centroid
 
         chunk, e = self._need_plan()
         path = self._open_path(t("I target GNSS (CSV)", "The GNSS targets (CSV)"), "CSV, TXT (*.csv *.txt)")
@@ -1348,9 +1362,8 @@ class WindowPart:
         text = str(got.get("epsg") or "").strip().upper().replace("EPSG:", "")
         epsg = int(text) if text else None
         piano = copy.deepcopy(e["piano"])
-        points = [q for b in pl.active_blocks(piano) for q in pl.route_of_block(b, piano)[0].points]
-        read = targets.read_targets_csv(Path(path).read_text(encoding="utf-8-sig"),
-                                        near=centroid(points) if points else None, epsg=epsg)
+        read = targets.read_targets_csv(Path(path).read_text(encoding="utf-8-sig"), near=pl.site_centre(piano),
+                                        epsg=epsg)
         self._put_targets(chunk, e, piano, read)
 
     def targets_from_markers(self) -> None:
@@ -1504,7 +1517,7 @@ class WindowPart:
     def copy_djifly(self) -> None:
         self._guarded(self._copy_djifly)
 
-    def _copy_djifly(self, folder=None, overwrite: bool = False) -> None:
+    def _copy_djifly(self, folder=None, overwrite=False) -> None:
         from . import djifly
         from . import plan as pl
         from . import project
@@ -1550,7 +1563,9 @@ class WindowPart:
                                   else t("Copia", "Copy")], kind="warning" if over else "question")
                 if k is None:
                     return
-                overwrite = over               # the user saw the missions of their own in the list and said yes
+                # the user saw the missions of their own in the list and said yes: those, and only those (a slot that
+                # becomes a mission after the question still stops the copy)
+                overwrite = frozenset(s["contenitore"] for s in chosen if s["stato"] not in djifly.SAFE_SLOTS)
         backup = project.folder(chunk) / "djifly_backup"
         id_ = e["id"]
         piano = copy.deepcopy(e["piano"])
@@ -1584,7 +1599,10 @@ class WindowPart:
             k = self._choice(str(busy.error), [t("Sovrascrivi (una copia resta)", "Overwrite (a copy is kept)")],
                              kind="warning")
             if k is not None:
-                self.context.call_in_gui(self._guarded, self._copy_djifly, folder, True)
+                agreed = frozenset(s["contenitore"] for s in busy.error.slots)   # the missions the question named
+                if isinstance(overwrite, frozenset):
+                    agreed |= overwrite
+                self.context.call_in_gui(self._guarded, self._copy_djifly, folder, agreed)
 
         self._run_djifly(job, done, run_again_if_busy, chunk, id_)
 
@@ -1701,7 +1719,7 @@ def own_slots(piano: dict) -> set:
     return {str(v.get("cartella")) for v in (piano.get("djiFly") or {}).values() if v.get("cartella")}
 
 
-def copy_legs(chunk, fresh: dict, folder, containers: list[str], backup, overwrite: bool = False) -> list[dict]:
+def copy_legs(chunk, fresh: dict, folder, containers: list[str], backup, overwrite=False) -> list[dict]:
     """The legs of ``fresh`` (already refreshed) into the DJI Fly slots ``containers`` of ``folder`` (a waypoint
     folder or an MTP path), with the previews on the chunk's orthophoto, the backups in ``backup``; the plan's
     ``djiFly`` entries updated; the outcomes of the copy."""

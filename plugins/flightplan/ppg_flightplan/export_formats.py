@@ -235,12 +235,13 @@ def leg_file(p: Route, fmt: str, takeoff: Optional[LatLon] = None, name: str = "
 
 def files_per_leg(piano: dict, fmt: str) -> list[tuple[str, bytes]]:
     """One file per leg of every active block, in the order of flight, in the format asked."""
-    from .design import require_current_heights
+    from .design import require_current_heights, require_safe_heights
     from .plan import plan_legs
 
     if fmt not in FORMATS:
         raise ValueError(f"formato sconosciuto: {fmt}")
     require_current_heights(piano)      # never the old heights, nor one height, of a block that changed
+    require_safe_heights(piano)         # nor heights cut at the ceiling, nor a leg takeoff kilometres away
     extension = FORMATS[fmt][0]
     return [(f"{leg.file_name}.{extension}", leg_file(leg.route, fmt, leg.takeoff, leg.file_name))
             for leg in plan_legs(piano, specials=False)]     # the actions of the special points do not fit here

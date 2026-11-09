@@ -305,15 +305,16 @@ def design(area: list[LatLon], goal_id: str, value: float, camera: str = "mini4p
                              "the same where the terrain rises too. Heights from {1:g} to {2:g} m.")
                            .format(system, outcome["minima"], outcome["massima"]))
         except (tiles.TerrainError, OSError) as e:
-            if isinstance(e, (HeightsNotMixed, GroundUnknown)):   # it says itself what to do
-                reasons.append(t("Quote del terreno non disponibili ({0}): il volo resta a quota costante.",
-                                 "Terrain heights not available ({0}): the flight stays at a constant "
-                                 "height.").format(e))
-            else:
-                reasons.append(t("Quote del terreno non disponibili ({0}): il volo resta a quota costante. "
-                                 "Si può riprovare quando c'è rete.",
-                                 "Terrain heights not available ({0}): the flight stays at a constant height. "
-                                 "It can be tried again with the network.").format(e))
+            # the blocks keep following the terrain without heights (blocks_with_old_heights): no file is written
+            # until the terrain is computed again, or the terrain following is removed - never a constant height
+            reasons.append(t("Quote del terreno non calcolate ({0}). I blocchi restano «segue il terreno» senza "
+                             "quote: l'esportazione si rifiuta finché il terreno non si ricalcola, o finché non "
+                             "togli il volo sul terreno.",
+                             "Terrain heights not computed ({0}). The blocks stay \"follows the terrain\" without "
+                             "heights: the export is refused until the terrain is computed again, or the terrain "
+                             "following is removed.").format(e))
+            if not isinstance(e, (HeightsNotMixed, GroundUnknown, CeilingReached, NoHeightSource)):
+                reasons.append(t("Si può riprovare quando c'è rete.", "It can be tried again with the network."))
     counts = pl.compute(piano)
     tot = counts["totale"]
     reasons.append(t("Vengono {0} scatti in {1:.0f} minuti, {2:.1f} batterie e {3:.1f} km di volo.",
@@ -525,6 +526,35 @@ class GroundUnknown(tiles.TerrainError):
         super().__init__(t("{0} senza quota del suolo: il volo non segue il terreno lì, e non si indovina - {1}",
                            "{0} without the ground height: the flight cannot follow the terrain there, and it is not "
                            "guessed - {1}").format(names, way))
+
+
+class CeilingReached(tiles.TerrainError):
+    """Points of a block that flies, or of a leg from its own takeoff, that would need the technical ceiling
+    (:data:`CEILING_ABOVE_TAKEOFF`, 500 m) or more above the takeoff: the ground rises that much from where the drone
+    takes off. Cut at the ceiling the drone would fly closer to the ground than planned - on a steep slope into it - so
+    the block is not computed and no file is written. ``blocks``: (block index, points, of how many, highest height
+    needed); ``legs``: (leg key, file name, points, highest height after the takeoff of the leg)."""
+
+    def __init__(self, piano: dict, blocks: list = (), legs: list = ()):
+        self.blocks, self.legs = list(blocks), list(legs)
+        names = [t("«{0}»: {1} punti su {2}, fino a {3:.0f} m", "«{0}»: {1} points of {2}, up to {3:.0f} m")
+                 .format(piano["blocchi"][i].get("nome") or i + 1, n, total, top) for i, n, total, top in self.blocks]
+        names += [t("la tratta {0} ({1}): {2} punti, fino a {3:.0f} m",
+                    "the leg {0} ({1}): {2} points, up to {3:.0f} m")
+                  .format(key, name, n, top) for key, name, n, top in self.legs]
+        way = []
+        if self.blocks:
+            way.append(t("sposta il decollo del piano più in alto (le quote dei blocchi si contano da lì)",
+                         "move the takeoff of the plan higher (the heights of the blocks are counted from there)"))
+        if self.legs:
+            way.append(t("sposta più in alto il decollo di quella tratta, o toglilo",
+                         "move the takeoff of that leg higher, or remove it"))
+        way.append(t("abbassa la quota dal suolo o dividi l'area", "lower the height above the ground or split the area"))
+        super().__init__(t("{0} sul decollo: oltre il tetto tecnico di {1:.0f} m il drone si ferma lì e volerebbe più "
+                           "vicino al suolo del previsto - {2}",
+                           "{0} above the takeoff: beyond the technical ceiling of {1:.0f} m the drone stops there and "
+                           "would fly closer to the ground than planned - {2}")
+                         .format("; ".join(names), CEILING_ABOVE_TAKEOFF, "; ".join(way)))
 
 
 class NoHeightSource(tiles.TerrainError):
@@ -739,6 +769,17 @@ def apply_terrain(piano: dict, z: Optional[int] = None, only: Optional[int] = No
         measured.append((i, p, ground))
     if unknown:
         raise GroundUnknown(piano, unknown, dem is not None, use_tiles)
+    # a point that would need the technical ceiling (or more) above the takeoff: cut there the drone flies closer to
+    # the ground than planned (0.1.1 cut it and only warned) - the block is refused, before any block is touched
+    over: list[tuple[int, int, int, float]] = []
+    for i, p, ground in measured:
+        agl = float(blocks[i].get("quota", p.height))
+        needed = [agl + (q - ground_takeoff) for q in ground]
+        high = [h for h in needed if round(h, 1) >= CEILING_ABOVE_TAKEOFF]
+        if high and pl.active(blocks[i]):
+            over.append((i, len(high), len(needed), max(high)))
+    if over:
+        raise CeilingReached(piano, over)
     for i, p, ground in measured:
         b = blocks[i]
         heights = terrain_heights(p.points, float(b.get("quota", p.height)), ground_takeoff, ground)
@@ -903,11 +944,75 @@ def takeoffs_to_measure(piano: dict) -> bool:
     return takeoff_problem(piano) is not None
 
 
+class FarLegTakeoff(StaleHeights):
+    """A takeoff set for a leg farther than :data:`~ppg_flightplan.plan.FAR_TAKEOFF_M` (2 km) from its leg: it is not
+    taken as the leg's takeoff (left there by another plan, or the leg moved), so the leg's heights would be counted
+    from another takeoff than the one the user set. No file is written until it is moved next to its leg or removed.
+    ``legs``: (leg key, file name, metres)."""
+
+    def __init__(self, piano: dict, legs: list):
+        self.legs = list(legs)
+        names = ", ".join(t("{0} ({1}, a {2:.1f} km)", "{0} ({1}, {2:.1f} km away)").format(k, n, m / 1000)
+                          for k, n, m in self.legs)
+        super().__init__(piano, [], text=t(
+            "Decollo della tratta oltre {0:g} km dalla sua tratta: {1} - le quote non si contano da lì e il drone "
+            "partirebbe da un altro punto: sposta il decollo vicino alla tratta o toglilo",
+            "Takeoff of a leg more than {0:g} km from its leg: {1} - the heights are not counted from there and the "
+            "drone would take off from another point: move the takeoff next to the leg or remove it")
+            .format(pl.FAR_TAKEOFF_M / 1000, names))
+
+
+def require_safe_heights(piano: dict) -> None:
+    """What a drone would fly wrong whatever the terrain computation: a takeoff of a leg kilometres from its leg
+    (:class:`FarLegTakeoff`); heights at the technical ceiling (:class:`CeilingReached`) - a block following the
+    terrain cut there (a plan computed by 0.1.1 or earlier), any leg following the terrain with points there (its
+    special points included, or a leg whose own takeoff is so much lower that its heights pass it); and a leg taking
+    off lower than the plan with points held at the floor whose ground is unknown (:class:`StaleHeights`: their height
+    from the leg's takeoff cannot be told). Called by :func:`require_exportable` and by the writers of the files that
+    fly."""
+    far = pl.far_leg_takeoffs(piano)
+    if far:
+        raise FarLegTakeoff(piano, far)
+    blocks = piano.get("blocchi", [])
+    over_blocks, over_legs = [], []
+    for i, b in enumerate(blocks):
+        q = b.get("quote") or []
+        high = [h for h in q if float(h) >= CEILING_ABOVE_TAKEOFF - 0.05]
+        if b.get("seguiTerreno") and pl.active(b) and high:
+            over_blocks.append((i, len(high), len(q), max(float(h) for h in high)))
+    named = {i for i, *_ in over_blocks}
+    floor_unknown = []
+    for leg in pl.plan_legs(piano):
+        r = leg.route
+        if leg.floor_unknown:
+            floor_unknown.append((leg.key, leg.file_name, leg.floor_unknown))
+        # every leg following the terrain, the special points in it too (their cruise is cut at the ceiling as well)
+        if leg.block_index in named or not r.heights or r.flat_heights:
+            continue
+        high = [h for h in r.heights if float(h) >= CEILING_ABOVE_TAKEOFF - 0.05]
+        if high:
+            over_legs.append((leg.key, leg.file_name, len(high), max(float(h) for h in high)))
+    if over_blocks or over_legs:
+        raise CeilingReached(piano, over_blocks, over_legs)
+    if floor_unknown:
+        names = ", ".join(t("{0} ({1}, {2} punti)", "{0} ({1}, {2} points)").format(*x) for x in floor_unknown)
+        raise StaleHeights(piano, [], text=t(
+            "Tratte che decollano più in basso del decollo del piano con punti tenuti a {0:g} m dal decollo del piano "
+            "dove il suolo non è noto: {1} - dal loro decollo la quota dal suolo non si sa; ricalcola il terreno con "
+            "una sorgente che copra quei punti, o sposta il decollo della tratta",
+            "Legs taking off lower than the takeoff of the plan with points held at {0:g} m above it where the ground "
+            "is unknown: {1} - from their takeoff the height above the ground cannot be told; compute the terrain "
+            "again with a source covering those points, or move the takeoff of the leg")
+            .format(MIN_HEIGHT, names))
+
+
 def require_exportable(piano: dict) -> None:
     """:func:`require_current_heights`, and also :class:`StaleHeights` when the ground of a takeoff is still to
     measure: called on a refreshed plan before any export, so a refresh that failed (no network, the takeoff off
-    the DEM, a per-leg takeoff moved) never lets through heights counted from the old takeoff."""
+    the DEM, a per-leg takeoff moved) never lets through heights counted from the old takeoff; and
+    :func:`require_safe_heights` before that (a far leg takeoff is said as such, not as a takeoff to measure)."""
     require_current_heights(piano)
+    require_safe_heights(piano)
     problem = takeoff_problem(piano)
     if problem is not None:
         raise StaleHeights(piano, [], takeoff=problem)
