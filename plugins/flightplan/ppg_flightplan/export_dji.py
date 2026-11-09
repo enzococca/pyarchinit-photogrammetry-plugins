@@ -234,8 +234,12 @@ def _placemarks(p: Route, cam: Camera, template: bool = False) -> str:
                    f"            {lon:.8f},{lat:.8f}\n          </coordinates>\n        </Point>\n"
                    f"        <wpml:index>{i}</wpml:index>\n")
         if template and cam.enterprise:
+            # the height of THIS point (relative to the takeoff, as the template's heightMode says): Pilot 2 and
+            # FlightHub 2 rebuild the route from the template, and one height per block there would fly a plan
+            # following the terrain at one height. Only the Enterprise template has it: the DJI Fly KMZ of the
+            # Mini 4 Pro, the one proven in the field, stays as it was.
             out.append(f"        <wpml:ellipsoidHeight>{num(p.height_at(i))}</wpml:ellipsoidHeight>\n"
-                       f"        <wpml:height>{num(p.height)}</wpml:height>\n"
+                       f"        <wpml:height>{num(p.height_at(i))}</wpml:height>\n"
                        "        <wpml:useGlobalHeight>0</wpml:useGlobalHeight>\n"
                        "        <wpml:useGlobalSpeed>0</wpml:useGlobalSpeed>\n"
                        "        <wpml:useGlobalHeadingParam>0</wpml:useGlobalHeadingParam>\n"

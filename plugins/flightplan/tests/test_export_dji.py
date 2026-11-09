@@ -331,3 +331,39 @@ def test_a_flat_plan_gets_its_takeoff_height_from_the_caller():
     data = {d.get("name"): d for d in inside.iter() if local(d) == "Data"}
     assert values(data[dji.DATA_TAKEOFF_HEIGHT], "value") == ["312.5"]
     assert dji.read_kml("x", gis.plan_kml(piano, ground_takeoff=312.5), MINI4).routes[0].height == 110
+
+
+def _sloping_legs(monkeypatch, cam_id: str):
+    monkeypatch.setattr(tiles, "_tile_from_network", tile_rising_north)
+    piano = {"nome": "rilievo", "camera": cam_id, "alta": False, "minutiBatteria": 18, "decollo": [44.9970, 10.0],
+             "blocchi": [{"tipo": "griglia", "nome": "A", "area": [list(p) for p in AREA], "quota": 60,
+                          "inclinazione": -90, "avanti": 80, "lato": 70, "orientamento": 0,
+                          "velocita": 5, "modo": "per_punto", "seguiTerreno": True}]}
+    design.apply_terrain(piano)
+    return pl.plan_legs(piano)
+
+
+def test_the_enterprise_template_carries_the_heights_of_the_waylines(monkeypatch):
+    """Pilot 2 and FlightHub 2 rebuild a route from template.kml: on a plan following the terrain it must carry
+    the same height per point as waylines.wpml, not one height for the block."""
+    leg = _sloping_legs(monkeypatch, "mavic3e")[0]
+    data = dji.kmz(leg.route, camera("mavic3e"))
+    flown = values(waylines(data), "executeHeight")
+    assert len(set(flown)) > 3                                   # it really follows the slope
+    assert values(template(data), "height") == flown == values(template(data), "executeHeight")
+    assert values(template(data), "ellipsoidHeight") == flown
+
+
+# The DJI Fly KMZ of the Mini 4 Pro is the file proven on the real drone: its two files, byte for byte, as they were
+# before the Enterprise template got its heights per point (leg 1 of a plan following a slope).
+MINI4_GOLDEN = ("81c47c97966407b24235f3634d7749b258956d6f78295bf656eaecd147479c4e",
+                "663f966e5c5d2e770b87620375fab5fcbf48570ffabf36271d797ef89047d107")
+
+
+def test_the_dji_fly_kmz_of_the_mini_4_pro_is_unchanged(monkeypatch):
+    import hashlib
+
+    leg = _sloping_legs(monkeypatch, "mini4pro")[0]
+    z = zipfile.ZipFile(io.BytesIO(dji.kmz(leg.route, camera("mini4pro"), now_ms=1_700_000_000_000)))
+    got = tuple(hashlib.sha256(z.read(n)).hexdigest() for n in ("wpmz/template.kml", "wpmz/waylines.wpml"))
+    assert got == MINI4_GOLDEN
