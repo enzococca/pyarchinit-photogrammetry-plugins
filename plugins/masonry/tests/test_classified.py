@@ -120,7 +120,7 @@ def test_nothing_written_before_accept(face, tmp_path):
     with pytest.raises(walls.NotReady, match="altra faccia"):
         classified.accept(ch, eid, other)
     ch.meta["drawings"]["frames"][eid]["lines"] = []
-    with pytest.raises(walls.NotReady, match="solo i contorni delle USM"):
+    with pytest.raises(walls.NotReady, match="solo i contorni delle sue unità"):
         classified.propose(ch, eid)
     assert _wkts(ch, eid) == []
 
@@ -341,3 +341,22 @@ def test_the_check_plate_dialog(window, tmp_path):
     press(ok=False)
     assert plugin._check_plate(plate, prop, 0, 12) is None
     assert _wkts(ch, entry["id"]) == []
+
+
+def test_a_bare_accept_is_still_an_error_for_usm(face, capsys):
+    # --accept takes no value for classified; for usm it needs one (as before 0.1.3): never every proposal by mistake
+    import pyarchinit_photogrammetry as ppg
+    from ppg_masonry import MasonryPlugin
+
+    doc, ch, w, entry = face
+    p = str(doc.path)
+    plugin = MasonryPlugin()
+    with pytest.raises(SystemExit) as exc:
+        plugin.command("usm", p, "Muro", "--accept")
+    assert exc.value.code == 2 and "usm --accept" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exc:
+        plugin.command("classified", p, "Muro", "--accept", "1,3")
+    assert exc.value.code == 2 and "takes no value" in capsys.readouterr().err
+    assert _wkts(ppg.Document.open(p).chunk, entry["id"]) == []  # nothing saved by either
+    assert plugin.command("classified", p, "Muro", "--accept", "all") == 0
+    assert len(_wkts(ppg.Document.open(p).chunk, entry["id"])) == 30

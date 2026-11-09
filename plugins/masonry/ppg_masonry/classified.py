@@ -90,23 +90,6 @@ def split_params(params: dict | None) -> tuple[dict, dict]:
 
 # ---------------------------------------------------------------- reading the drawing
 
-def _unit_rings(chunk, eid: str) -> list[np.ndarray]:
-    from shapely import wkt
-
-    from pyarchinit_photogrammetry.engine.elevation import frame_drawings
-
-    out = []
-    for rec in frame_drawings(chunk, eid).get("units") or []:
-        try:
-            geom = wkt.loads(rec["wkt"])
-        except Exception:  # noqa: BLE001 - a broken record is left out, as the program does
-            continue
-        for pg in getattr(geom, "geoms", [geom]):
-            if pg.geom_type == "Polygon" and not pg.is_empty:
-                out += [np.asarray(r.coords, float)[:, :2] for r in [pg.exterior, *pg.interiors]]
-    return out
-
-
 def read_lines(chunk, eid: str, source=None, units: bool = False) -> tuple[list[np.ndarray], str]:
     """The lines of the drawing and a text naming it: ``source`` None = the lines drawn on the face's elevation
     (without the outlines of its units unless ``units``), a path = a GeoPackage, GeoJSON or DXF in the face's
@@ -114,14 +97,7 @@ def read_lines(chunk, eid: str, source=None, units: bool = False) -> tuple[list[
     need_program()
     try:
         if source is None or str(source) == "":
-            lines = orient_lines.lines_from_elevation(chunk, eid)
-            if not units:
-                rings = _unit_rings(chunk, eid)
-                lines = [ln for ln in lines if not any(r.shape == ln.shape and np.array_equal(r, ln) for r in rings)]
-                if not lines:
-                    raise NotReady(t("Sulla faccia non c'è nessuna linea disegnata (solo i contorni delle USM).",
-                                     "No line is drawn on the face (only the outlines of the USM)."))
-            return lines, "face"
+            return orient_lines.lines_from_elevation(chunk, eid, units=units), "face"
         path = Path(source)
         return orient_lines.lines_from_file(path), f"file:{path.name}"
     except orient_lines.OrientLinesError as exc:

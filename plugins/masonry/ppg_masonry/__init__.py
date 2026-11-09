@@ -33,11 +33,14 @@ from .texts import NAME, kind_title, metres, num, t
 
 __version__ = "0.1.3"
 NEGATIVE_VALUES = ("--line", "--side", "--circle", "--heights", "--stations", "--sections", "--slice", "--polygon")
+BARE_ACCEPT = ""  # --accept given without a value (classified: add the stones; usm: an error)
 
 
 class _StonesStep:
     """The stones a classified drawing added to a face (or put in place of its stones) as an entry of the window's
-    *Modifica > Annulla*: the stones of the face before and after (the program's undo takes no snapshot of them)."""
+    *Modifica > Annulla*: the stones of the face before and after (the program's undo takes no snapshot of them). The
+    whole list is put back, as the program's own snapshots do: a stone edited by hand between the import and *Annulla*
+    goes back with it."""
 
     meta_keys = ()  # it changes the program's drawings, no data of a plugin
 
@@ -841,6 +844,9 @@ class MasonryPlugin(Plugin):
             self._set_face_stones(chunk, eid, after)
             window = self.context.window
             history = getattr(window, "history", None) if window is not None else None
+            # inside a script (the console's .py files) the script is one entry of Annulla, taken by the program from
+            # its own snapshot, which holds no stones: an action of this plugin run from a script cannot be undone
+            # there, so no entry of its own is pushed in the middle of the script's
             if history is not None and not getattr(window, "_script_running", False) and \
                     chunk is getattr(window, "chunk", None):
                 history.push(t("Murature: pietre da un disegno classificato",
@@ -903,9 +909,10 @@ class MasonryPlugin(Plugin):
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         lay.addWidget(buttons)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return box.isChecked()
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        replace = box.isChecked()
+        dlg.deleteLater()  # not kept under the main window with its pixmap until the window closes
+        return replace if accepted else None
 
     # ------------------------------------------------------------------ USM
     def _choose_relations(self, proposals: list[dict]) -> list[dict] | None:
@@ -1222,9 +1229,10 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--elevations", action="store_true", help="remove: the program's elevations too")
         parser.add_argument("--region", help="stones: the wall's area on the face, WKT POLYGON in (u v)")
         parser.add_argument("--export", help="stones: a folder for the face's drawings, measures and tables")
-        parser.add_argument("--accept", nargs="?", const="all",
-                            help="usm: the proposals to accept, 'all' or their numbers (1,3); classified: add the "
-                                 "stones proposed to the face (without it nothing is saved)")
+        parser.add_argument("--accept", nargs="?", const=BARE_ACCEPT,
+                            help="usm: the proposals to accept, 'all' or their numbers (1,3), a value is required; "
+                                 "classified: add the stones proposed to the face, no value (without it nothing is "
+                                 "saved)")
         parser.add_argument("--file", help="classified: a GeoPackage, GeoJSON or DXF in the face's (u, v) instead of "
                                            "the lines drawn on the face")
         parser.add_argument("--with-units", action="store_true", help="classified: the outlines of the face's USM "
@@ -1252,6 +1260,10 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--thickness", type=float, help="ifc: the wall's thickness when one face is surveyed")
         parser.add_argument("--json", action="store_true", help="list: as JSON")
         ns = parser.parse_args(joined_values([str(a) for a in args]))
+        if ns.what == "usm" and ns.accept == BARE_ACCEPT:  # as before 0.1.3: never every proposal by a bare flag
+            parser.error("usm --accept: give 'all' or the numbers of the proposals to accept (1,3)")
+        if ns.what == "classified" and ns.accept not in (None, BARE_ACCEPT, "all"):
+            parser.error(f"classified --accept takes no value (it adds every stone proposed), not {ns.accept!r}")
         import pyarchinit_photogrammetry as ppg
         from pyarchinit_photogrammetry.core.progress import print_progress
 
