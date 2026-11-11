@@ -304,7 +304,7 @@
     },
     {
       "name": "shipwreck",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "title": "Shipwreck",
       "description": "The technical drawing of an excavated hull from its 3D model: ship frame, sections, body plan, timber catalogue, clinker strakes, the relief of the hull with timbers proposed to trace, every timber a 3D object (OBJ, GLB, IFC), the plan of the wreck, and a reconstruction of what is lost (mirror, strakes, frames, faired hull, several chunks) stated as a hypothesis",
       "i18n": {
@@ -319,8 +319,8 @@
       "api": 1,
       "min_app": "1.7.1",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/shipwreck-v0.4.0/ppg_shipwreck-0.4.0-py3-none-any.whl",
-      "sha256": "73c08c77af3501f195939dff63c9e4d91ea403cbccdffca903c000fdd2475744"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/shipwreck-v0.5.0/ppg_shipwreck-0.5.0-py3-none-any.whl",
+      "sha256": "2af1a1830e791b7dcf4d57fabae16410e36e6c852d72308050cf2ea505771e1d"
     },
     {
       "name": "spirula",
