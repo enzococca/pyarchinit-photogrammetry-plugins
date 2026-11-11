@@ -191,12 +191,56 @@ def sections_of(chunk, kind: str | None = None) -> list[dict]:
 
 # ------------------------------------------------------------------------------------- water
 def water_of(chunk) -> dict | None:
-    """``{"level": ship z, "level_world", "n", "on"}``; None when no level was given."""
-    water = chunk.meta.get(ship.KEY, {}).get("water")
+    """``{"level": ship z, "level_world", "n", "on"}``; None when no level was given. When the plugin has no level
+    of its own and the program has one for the chunk (*Acqua* of the program, 1.7.7 or later: :func:`chunk_water`),
+    that one with ``"from": "chunk"`` and the correction off: a default, until the user sets the plugin's own."""
     frame = ship.frame_of(chunk)
-    if water is None or frame is None:
+    if frame is None:
+        return None
+    water = chunk.meta.get(ship.KEY, {}).get("water") or chunk_water(chunk)
+    if water is None:
         return None
     return {**water, "level": water["level_world"] - frame.z0}
+
+
+def chunk_water(chunk) -> dict | None:
+    """The program's water level of the chunk (``engine.water.level_of``, a world height) as the plugin keeps a
+    level: ``{"level_world", "n", "on": False, "from": "chunk", "source"}``; None without one or with a program
+    before 1.7.7."""
+    try:
+        from pyarchinit_photogrammetry.engine import water as program_water
+    except ImportError:
+        return None
+    try:  # only a default: a level the program cannot read is no level here
+        found = program_water.level_of(chunk)
+        if not found or found.get("level") is None:
+            return None
+        level, n = float(found["level"]), float(found.get("n") or REFRACTION)
+    except Exception:
+        return None
+    if not np.isfinite(level) or not np.isfinite(n):
+        return None
+    return {"level_world": level, "n": n if 1.0 <= n <= 2.0 else REFRACTION, "on": False,
+            "from": "chunk", "source": found.get("source")}
+
+
+def cloud_corrected(chunk) -> bool:
+    """True when the active dense cloud of ``chunk`` is a version the program already corrected for the refraction
+    (*Livello dell'acqua e rifrazione* of the program, 1.7.7 or later: ``meta["dense"]["refraction"]``). A model built
+    from it has the bottom at its true depth: correcting its sections here too would correct it twice."""
+    return bool((chunk.meta.get("dense") or {}).get("refraction"))
+
+
+def double_correction_text() -> str:
+    """What :func:`cloud_corrected` means for the correction of the plugin, in the language of the interface."""
+    return t("La nuvola densa attiva di questo chunk è già corretta per la rifrazione dal programma (Strumenti > Livello "
+             "dell'acqua e rifrazione). Se il modello è stato costruito da quella nuvola, correggere anche qui le quote "
+             "sotto il livello le correggerebbe due volte: il fondo finirebbe più in basso del vero. Accendi la "
+             "correzione solo se il modello viene da una nuvola non corretta.",
+             "The active dense cloud of this chunk is already corrected for the refraction by the program (Tools > "
+             "Water level and refraction). If the model was built from that cloud, correcting the heights under the "
+             "level here as well would correct them twice: the bottom would end below its true depth. Switch the "
+             "correction on only if the model comes from an uncorrected cloud.")
 
 
 def is_on(chunk) -> bool:

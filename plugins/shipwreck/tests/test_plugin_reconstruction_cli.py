@@ -23,9 +23,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _plugin_folder(root: Path) -> Path:
     folder = root / "plugins"
-    dist = folder / "shipwreck" / "ppg_shipwreck-0.4.0.dist-info"
+    dist = folder / "shipwreck" / "ppg_shipwreck-0.5.0.dist-info"
     dist.mkdir(parents=True)
-    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: ppg-shipwreck\nVersion: 0.4.0\n")
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: ppg-shipwreck\nVersion: 0.5.0\n")
     (dist / "entry_points.txt").write_text("[pyarchinit_photogrammetry.plugins]\nshipwreck = ppg_shipwreck:ShipwreckPlugin\n")
     return folder
 
@@ -135,9 +135,9 @@ def test_a_cancelled_build_is_flagged_and_an_edit_makes_the_solids_stale(tmp_pat
 def test_version_and_index_entry():
     import ppg_shipwreck
 
-    assert ppg_shipwreck.__version__ == "0.4.0"
+    assert ppg_shipwreck.__version__ == "0.5.0"
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert project["version"] == "0.4.0"
+    assert project["version"] == "0.5.0"
     entry = json.loads((ROOT / "entry.json").read_text())
     assert entry["min_app"] == "1.7.1"
     for text in (entry["description"], entry["i18n"]["it"]["description"]):

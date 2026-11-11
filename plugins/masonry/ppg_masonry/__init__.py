@@ -12,8 +12,10 @@ faces.
 * stone by stone: the measures of the stones drawn on a face (the program's stone tool), the courses, the mortar share
   and the type the measures suggest; the USM drawn on a face, the relationships their geometry proposes (accepted by
   the user) and their saving in PyArchInit with the face's drawings as media;
+* courses, joints and stones from the lines drawn on a face, classified by orientation by the program 1.7.7
+  (:mod:`.classified`): added to the face's stones after a check plate, no stone twice;
 * the *Murature* pane (on the right), the walls in the workspace tree,
-  ``ppg plugin masonry face|shape|stones|usm|plate|export|ifc|list|remove``; a plate at scale, the DXF,
+  ``ppg plugin masonry face|shape|stones|classified|usm|plate|export|ifc|list|remove``; a plate at scale, the DXF,
   the IFC wall, the face in QGIS.
 
 The program's elevations and drawings keep their formats; the plugin writes only under ``<chunk data>/masonry/``.
@@ -29,8 +31,32 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, kind_title, metres, num, t
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 NEGATIVE_VALUES = ("--line", "--side", "--circle", "--heights", "--stations", "--sections", "--slice", "--polygon")
+BARE_ACCEPT = ""  # --accept given without a value (classified: add the stones; usm: an error)
+
+
+class _StonesStep:
+    """The stones a classified drawing added to a face (or put in place of its stones) as an entry of the window's
+    *Modifica > Annulla*: the stones of the face before and after (the program's undo takes no snapshot of them). The
+    whole list is put back, as the program's own snapshots do: a stone edited by hand between the import and *Annulla*
+    goes back with it."""
+
+    meta_keys = ()  # it changes the program's drawings, no data of a plugin
+
+    def __init__(self, plugin, chunk, wid: str, eid: str, before: list[str], after: list[str]):
+        self.plugin, self.chunk, self.wid, self.eid = plugin, chunk, wid, eid
+        self.before, self.after = list(before), list(after)
+
+    def _put(self, wkts: list[str]) -> None:
+        self.plugin._set_face_stones(self.chunk, self.eid, wkts)
+        self.plugin._changed(self.wid, self.eid)
+
+    def undo(self) -> None:
+        self._put(self.before)
+
+    def redo(self) -> None:
+        self._put(self.after)
 
 
 class MasonryPlugin(Plugin):
@@ -52,7 +78,8 @@ class MasonryPlugin(Plugin):
         context.add_action(t("Murature...", "Masonry..."), self.show_pane,
                            tip=t("Il pannello delle murature", "The masonry pane"))
         context.add_command("masonry", self.command,
-                            help="walls by their faces: face, shape, stones, usm, plate, export, ifc, list, remove")
+                            help="walls by their faces: face, shape, stones, classified, usm, plate, export, ifc, "
+                                 "list, remove")
         context.add_exporter(t("Muro (IFC)", "Wall (IFC)"), ".ifc", self._export_ifc)
         context.add_exporter(t("Tavola della faccia (PDF)", "Plate of the face (PDF)"), ".pdf", self._export_plate)
         if context.window is not None:
@@ -728,6 +755,165 @@ class MasonryPlugin(Plugin):
         self._message("information", t(f"{len(paths)} file della faccia «{entry['name']}» in {folder}.",
                                        f"{len(paths)} files of the face «{entry['name']}» in {folder}."))
 
+    # ------------------------------------------------------------------ a drawing classified by orientation
+    def _do_classified(self) -> None:
+        """The lines drawn on the face (or a file in its ``(u, v)``) classified by the program along the face's
+        horizontal: beds, joints, courses and stones; the check plate first, then the stones the user keeps added to
+        those of the face as one step of *Annulla*."""
+        from pyarchinit_photogrammetry.gui.dialogs import Field
+
+        from . import classified, walls
+
+        classified.need_program()
+        chunk = self._need_chunk()
+        rec, entry = self._face()
+        self._store()
+        defaults = {**classified.orient_lines.DEFAULTS, **classified.orient_lines.EXTRA_DEFAULTS,
+                    **classified.PLUGIN_DEFAULTS}
+        v = self._ask(t("Corsi e giunti da un disegno classificato", "Courses and joints from a classified drawing"), [
+            Field("source", t("Disegno", "Drawing"), "face",
+                  choices=[("face", t("Le linee disegnate sulla faccia", "The lines drawn on the face")),
+                           ("file", t("Il file qui sotto (in u, v della faccia)",
+                                      "The file below (in the face's u, v)"))]),
+            Field("file", t("File (GeoPackage, GeoJSON, DXF)", "File (GeoPackage, GeoJSON, DXF)"), "", kind="file_open",
+                  filter="GeoPackage, GeoJSON, DXF (*.gpkg *.geojson *.json *.dxf)"),
+            Field("units", t("Anche i contorni delle USM della faccia", "The outlines of the face's USM too"),
+                  bool(defaults["units"])),
+            Field("joint_cover", t("Un giunto divide il filare se ne copre (quota dell'altezza)",
+                                   "A joint splits the course when it covers (share of its height)"),
+                  defaults["joint_cover"], minimum=0.05, maximum=1.0, decimals=2),
+            Field("min_stone", t("Pietra più piccola (m)", "Smallest stone (m)"), defaults["min_stone"],
+                  minimum=0.005, maximum=5.0, decimals=3),
+            Field("pair_isolation", t("Isolamento delle coppie", "Pair isolation"), defaults["pair_isolation"],
+                  minimum=0.0, maximum=10.0, decimals=2,
+                  tip=t("Letti a distanze regolari non sono coppie (1,5); 0 toglie il controllo",
+                        "Beds at regular distances are not pairs (1.5); 0 turns the check off")),
+            Field("min_length", t("Tratto più corto (m)", "Shortest piece (m)"), defaults["min_length"],
+                  minimum=0.0, maximum=10.0, decimals=3)],
+            intro=t("Le linee della faccia ordinate lungo la sua orizzontale: linee lungo l'asse = letti, coppie lungo "
+                    "l'asse = filari di spessore noto, linee di traverso = giunti. Le pietre sono le celle fra due "
+                    "letti divise dai giunti. Prima la tavola di controllo, poi le pietre si aggiungono a quelle "
+                    "della faccia (le doppie saltate).",
+                    "The lines of the face sorted along its horizontal: lines along = beds, pairs along = courses of "
+                    "known thickness, lines across = joints. The stones are the cells between two beds split by the "
+                    "joints. The check plate first, then the stones are added to those of the face (duplicates "
+                    "skipped)."))
+        if not v:
+            return
+        source = None
+        if v["source"] == "file":
+            if not str(v.get("file") or "").strip():
+                raise walls.NotReady(t("Scegli il file del disegno.", "Choose the file of the drawing."))
+            source = str(v["file"]).strip()
+        params = {k: float(v[k]) for k in ("joint_cover", "min_stone", "pair_isolation", "min_length")}
+        params["units"] = bool(v.get("units"))
+        self.classify_face(chunk, rec["id"], entry["id"], source, params)
+
+    def classify_face(self, chunk, wid: str, eid: str, source=None, params=None) -> None:
+        """:func:`classified.propose` and its plate in the worker, then :meth:`_classified_ready`."""
+        from . import classified, walls
+
+        def job(_p):
+            prop = classified.propose(chunk, eid, source, params)
+            folder = walls.face_folder(chunk, wid, eid) / "classificato"
+            return prop, classified.plate(chunk, eid, prop, folder / "tavola_controllo.png")
+
+        self._run(t("Disegno classificato", "Classified drawing"), job,
+                  lambda out: self._guarded(self._classified_ready, chunk, wid, eid, *out))
+
+    def _classified_ready(self, chunk, wid: str, eid: str, prop: dict, plate) -> None:
+        from . import classified
+
+        if not prop["stones"]:
+            self._message("warning", t("Nessuna pietra dal disegno: servono almeno due letti (linee lungo "
+                                       "l'orizzontale della faccia) uno sopra l'altro.",
+                                       "No stone from the drawing: at least two beds (lines along the face's "
+                                       "horizontal) one above the other are needed.") + "\n\n"
+                          + classified.summary_text(prop))
+            return
+        self._store()
+        _wkts, skipped = classified.merged(chunk, eid, prop)
+        replace = self._check_plate(plate, prop, len(skipped), len(classified.stored(chunk, eid)))
+        if replace is None:
+            return
+        before = classified.stored(chunk, eid)
+        added = classified.accept(chunk, eid, prop, replace=replace)
+        after = classified.stored(chunk, eid)
+        text = classified.accepted_text(added, len(prop["already"]))
+        if after != before:
+            self._set_face_stones(chunk, eid, after)
+            window = self.context.window
+            history = getattr(window, "history", None) if window is not None else None
+            # inside a script (the console's .py files) the script is one entry of Annulla, taken by the program from
+            # its own snapshot, which holds no stones: an action of this plugin run from a script cannot be undone
+            # there, so no entry of its own is pushed in the middle of the script's
+            if history is not None and not getattr(window, "_script_running", False) and \
+                    chunk is getattr(window, "chunk", None):
+                history.push(t("Murature: pietre da un disegno classificato",
+                               "Masonry: stones from a classified drawing"),
+                             _StonesStep(self, chunk, wid, eid, before, after), document=False)
+            self._changed(wid, eid)
+        status = getattr(self.context.window, "statusBar", None)
+        if status is not None:
+            status().showMessage(text, 15000)
+        if prop["already"]:
+            self._message("information", text)
+
+    def _set_face_stones(self, chunk, eid: str, wkts: list[str]) -> None:
+        """The stones of the face set to ``wkts``: through the window when it is the chunk shown (it keeps the stones
+        of the elevation it shows and draws them), else in the project."""
+        from . import classified
+
+        window = self.context.window if self.context else None
+        put = getattr(window, "set_stones", None) if window is not None else None
+        if put is not None and chunk is getattr(window, "chunk", None):
+            from shapely import wkt
+
+            put(eid, [wkt.loads(x) for x in wkts], None)
+        else:
+            classified.put(chunk, eid, wkts)
+
+    def _check_plate(self, plate, prop: dict, duplicates: int, present: int) -> bool | None:
+        """The check plate with the courses and stones proposed: None when cancelled, else whether the stones of the
+        face are replaced (a box, off) instead of added to."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+
+        from . import classified
+
+        dlg = QDialog(self.context.window)
+        dlg.setWindowTitle(t("Tavola di controllo", "Check plate"))
+        lay = QVBoxLayout(dlg)
+        image = QLabel()
+        pix = QPixmap(str(plate))
+        if not pix.isNull():
+            image.setPixmap(pix.scaled(960, 680, Qt.AspectRatioMode.KeepAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation))
+        lay.addWidget(image)
+        note = QLabel(classified.summary_text(prop))
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        if duplicates:
+            dup = QLabel(t(f"{duplicates} pietre proposte sono già sulla faccia: saranno saltate.",
+                           f"{duplicates} stones proposed are already on the face: they will be skipped."))
+            dup.setWordWrap(True)
+            lay.addWidget(dup)
+        box = QCheckBox(t(f"Sostituisci le {present} pietre della faccia", f"Replace the {present} stones of the face"))
+        box.setChecked(False)
+        box.setEnabled(present > 0)
+        lay.addWidget(box)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(t("Aggiungi le pietre", "Add the stones"))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(t("Annulla", "Cancel"))
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        replace = box.isChecked()
+        dlg.deleteLater()  # not kept under the main window with its pixmap until the window closes
+        return replace if accepted else None
+
     # ------------------------------------------------------------------ USM
     def _choose_relations(self, proposals: list[dict]) -> list[dict] | None:
         from .pane import RelationsDialog
@@ -970,12 +1156,46 @@ class MasonryPlugin(Plugin):
         return [{"label": t(*NAME), "icon": "plugin", "children": kids}]
 
     # ------------------------------------------------------------------ the command line
+    @staticmethod
+    def _classified_command(chunk, ns) -> bool:
+        """``ppg plugin masonry classified``: the drawing of the face classified, the courses and stones printed and
+        the plate written; with ``--accept`` the stones added to the face. Returns whether the project changed."""
+        from . import classified, walls
+
+        classified.need_program()
+        rec = walls.need(chunk, ns.wall or "")
+        _w, e = walls.need_face(chunk, rec["id"], ns.face)
+        try:
+            params = parse_params(ns.param)
+        except ValueError as exc:
+            raise walls.NotReady(str(exc)) from None
+        for key, value in (("joint_cover", ns.joint_cover), ("min_stone", ns.min_stone),
+                           ("pair_isolation", ns.pair_isolation)):
+            if value is not None:
+                params[key] = value
+        if ns.with_units:
+            params["units"] = True
+        prop = classified.propose(chunk, e["id"], ns.file, params)
+        print(f"{rec['name']}: {e['name']} ({e['id']})")
+        print(classified.summary_text(prop))
+        if ns.plate:
+            path = classified.plate(chunk, e["id"], prop, ns.plate)
+            print(t(f"Tavola di controllo: {path}", f"Check plate: {path}"))
+        if ns.accept is None:
+            print(t("Niente salvato: --accept aggiunge le pietre alla faccia.",
+                    "Nothing saved: --accept adds the stones to the face."))
+            return False
+        before = classified.stored(chunk, e["id"])
+        added = classified.accept(chunk, e["id"], prop, replace=ns.replace)
+        print(classified.accepted_text(added, len(prop["already"])))
+        return classified.stored(chunk, e["id"]) != before
+
     def command(self, *args) -> int:
         from . import faces, shape, walls
 
         parser = argparse.ArgumentParser(prog="ppg plugin masonry", description="walls by their faces")
-        parser.add_argument("what", choices=["face", "shape", "stones", "usm", "plate", "export", "ifc", "list",
-                                             "remove"])
+        parser.add_argument("what", choices=["face", "shape", "stones", "classified", "usm", "plate", "export", "ifc",
+                                             "list", "remove"])
         parser.add_argument("project", help="the .ppg file")
         parser.add_argument("wall", nargs="?", help="the id or the name of a wall (face: made when missing)")
         parser.add_argument("face", nargs="?", help="shape, remove: the id or the name of a face (elevation)")
@@ -1009,7 +1229,25 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--elevations", action="store_true", help="remove: the program's elevations too")
         parser.add_argument("--region", help="stones: the wall's area on the face, WKT POLYGON in (u v)")
         parser.add_argument("--export", help="stones: a folder for the face's drawings, measures and tables")
-        parser.add_argument("--accept", help="usm: the proposals to accept, 'all' or their numbers (1,3)")
+        parser.add_argument("--accept", nargs="?", const=BARE_ACCEPT,
+                            help="usm: the proposals to accept, 'all' or their numbers (1,3), a value is required; "
+                                 "classified: add the stones proposed to the face, no value (without it nothing is "
+                                 "saved)")
+        parser.add_argument("--file", help="classified: a GeoPackage, GeoJSON or DXF in the face's (u, v) instead of "
+                                           "the lines drawn on the face")
+        parser.add_argument("--with-units", action="store_true", help="classified: the outlines of the face's USM "
+                                                                      "read as lines too")
+        parser.add_argument("--joint-cover", type=float, help="classified: a joint splits a course when it covers "
+                                                              "this share of its height (default 0.5)")
+        parser.add_argument("--min-stone", type=float, help="classified: cells narrower or lower than this (m) are "
+                                                            "not stones (default 0.05)")
+        parser.add_argument("--pair-isolation", type=float, help="classified: the pair isolation of the "
+                                                                 "classification (default 1.5; 0 = off)")
+        parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE",
+                            help="classified: a parameter of the classification (orient_lines), repeatable")
+        parser.add_argument("--plate", help="classified: the check plate, a PNG or SVG file")
+        parser.add_argument("--replace", action="store_true", help="classified --accept: the stones proposed in "
+                                                                   "place of those of the face")
         parser.add_argument("--write", action="store_true", help="usm: write the accepted ones in PyArchInit")
         parser.add_argument("--config", help="usm --write: PyArchInit's config.cfg (default: PYARCHINIT_HOME's)")
         parser.add_argument("--db", help="usm --write: an SQLite path or an SQLAlchemy URL instead of the config")
@@ -1022,6 +1260,10 @@ class MasonryPlugin(Plugin):
         parser.add_argument("--thickness", type=float, help="ifc: the wall's thickness when one face is surveyed")
         parser.add_argument("--json", action="store_true", help="list: as JSON")
         ns = parser.parse_args(joined_values([str(a) for a in args]))
+        if ns.what == "usm" and ns.accept == BARE_ACCEPT:  # as before 0.1.3: never every proposal by a bare flag
+            parser.error("usm --accept: give 'all' or the numbers of the proposals to accept (1,3)")
+        if ns.what == "classified" and ns.accept not in (None, BARE_ACCEPT, "all"):
+            parser.error(f"classified --accept takes no value (it adds every stone proposed), not {ns.accept!r}")
         import pyarchinit_photogrammetry as ppg
         from pyarchinit_photogrammetry.core.progress import print_progress
 
@@ -1130,6 +1372,8 @@ class MasonryPlugin(Plugin):
                     for key, path in stones.export_face(chunk, rec["id"], e["id"], ns.export).items():
                         print(f"{key}: {path}")
                 changed = True
+            elif ns.what == "classified":
+                changed = self._classified_command(chunk, ns)
             elif ns.what == "usm":
                 from . import usm
 
@@ -1201,6 +1445,21 @@ class MasonryPlugin(Plugin):
         if changed:
             doc.save()
         return 0
+
+
+def parse_params(items: list[str]) -> dict:
+    """``KEY=VALUE`` of the command line: numbers, ``true``/``false`` as booleans."""
+    out = {}
+    for item in items or []:
+        key, sep, value = str(item).partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"--param {item!r}: KEY=VALUE")
+        value = value.strip()
+        if value.lower() in ("true", "false"):
+            out[key.strip()] = value.lower() == "true"
+        else:
+            out[key.strip()] = float(value.replace(",", "."))
+    return out
 
 
 def parse_numbers(text: str) -> list[float]:

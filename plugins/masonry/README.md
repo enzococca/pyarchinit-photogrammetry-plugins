@@ -23,6 +23,14 @@ walls, buildings and stone towers recorded by their faces.
   the courses (each stone joined to its neighbour on the right sharing at least half its height: sloping courses stay
   courses; mean height, count, thickness, slope); tables in CSV and Excel, a GeoPackage, the measures added to the
   program's export of the face. Stones smaller than four pixels of the face are left out and named.
+* **Courses and joints from a classified drawing** (0.1.3, with the program 1.7.7 or later; the button is hidden on
+  an older program): the lines drawn on the face (or a GeoPackage, GeoJSON or DXF in its `(u, v)`) are classified by
+  the program along the face's horizontal - lines along it are the **beds**, a pair of lines along it (also a band
+  traced as a polygon) a **course** of known thickness, lines across it the **joints**. A course lies between a bed
+  and the bed directly above it; its stones are the cells split by the joints that cover at least half of its height.
+  A check plate shows the courses and the stones proposed; only then are the stones added to those of the face (or put
+  in their place), skipping those that overlap a stone already there by more than half - taking the same drawing
+  again adds nothing. One step of *Annulla*. The outlines of the face's USM are left out unless asked.
 * **Type suggested**, never a verdict: *coursed* when at least 70 % of the stones sit in courses of 3 or more stones
   sloping less than 2°; *regular* when the courses' thickness varies little (median absolute deviation / median < 20 %);
   *squared* when the stones' median rectangularity is over 0.8, *elongated* when their median elongation is 2 or more.
@@ -48,6 +56,6 @@ SAM 2.1): `proof/make_proof.py`.
 The measures say how a wall stands; they are not a verdict on it. The plugin writes only under
 `<chunk data>/masonry/`; the program's elevations keep their format.
 
-Command line: `ppg plugin masonry face|shape|stones|usm|plate|export|ifc|list|remove`.
+Command line: `ppg plugin masonry face|shape|stones|classified|usm|plate|export|ifc|list|remove`.
 
 License: GPL-2.0-or-later.

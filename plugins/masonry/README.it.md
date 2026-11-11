@@ -23,6 +23,15 @@ muri, edifici e torri in pietra rilevati per facce.
   dell'altezza: anche i filari inclinati restano filari; quota media, numero, spessore, pendenza); tabelle CSV ed
   Excel, GeoPackage, misure aggiunte all'esportazione della faccia. Le pietre più piccole di quattro pixel della
   faccia sono lasciate fuori e nominate.
+* **Corsi e giunti da un disegno classificato** (0.1.3, col programma 1.7.7 o successivo; con un programma più vecchio
+  il pulsante è nascosto): le linee disegnate sulla faccia (o un GeoPackage, GeoJSON o DXF nelle sue `(u, v)`) sono
+  classificate dal programma lungo l'orizzontale della faccia - le linee lungo l'asse sono i **letti**, una coppia di
+  linee lungo l'asse (anche una fascia tracciata come poligono) un **filare** di spessore noto, le linee di traverso i
+  **giunti**. Un filare sta fra un letto e il letto subito sopra; le sue pietre sono le celle divise dai giunti che ne
+  coprono almeno metà dell'altezza. Una tavola di controllo mostra filari e pietre proposte; solo dopo le pietre si
+  aggiungono a quelle della faccia (o le sostituiscono), saltando quelle che si sovrappongono per più di metà a una
+  pietra già presente - ripetere lo stesso disegno non aggiunge nulla. Un passo di *Annulla*. I contorni delle USM
+  della faccia restano fuori, salvo richiesta.
 * **Tipo suggerito**, mai un verdetto: *a filari* se almeno il 70 % delle pietre sta in filari di 3 o più pietre
   inclinati meno di 2°; *regolare* se lo spessore dei filari varia poco (deviazione mediana assoluta / mediana < 20 %);
   *a conci squadrati* se la rettangolarità mediana è sopra 0,8, *allungati* se l'allungamento mediano è 2 o più.
@@ -47,6 +56,6 @@ trovate da SAM 2.1): `proof/make_proof.py`.
 
 Le misure dicono come sta un muro, non lo giudicano. Il plugin scrive solo in `<dati del chunk>/masonry/`.
 
-Riga di comando: `ppg plugin masonry face|shape|stones|usm|plate|export|ifc|list|remove`.
+Riga di comando: `ppg plugin masonry face|shape|stones|classified|usm|plate|export|ifc|list|remove`.
 
 Licenza: GPL-2.0-or-later.

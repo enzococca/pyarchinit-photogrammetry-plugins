@@ -264,3 +264,48 @@ def cone_tower(r0: float = 3.4, r1: float = 2.6, height: float = 6.0, base=None)
     n = 41
     v = v[:-n]
     return v, np.where(faces >= len(v), faces - len(v), faces)
+
+
+# ------------------------------------------------------------------ a drawing of beds and joints on a face
+DRAWN_COURSES, DRAWN_PITCH, DRAWN_JOINTS, DRAWN_LENGTH = 6, 0.25, 0.55, 2.75
+
+
+def _noisy(rng, pts, sigma=0.003, steps=6):
+    """A line through ``pts`` with ``steps`` vertices per piece, each moved by ``sigma`` (drawn by hand)."""
+    pts = np.asarray(pts, float)
+    out = []
+    for a, b in zip(pts[:-1], pts[1:]):
+        for k in range(steps):
+            out.append(a + (b - a) * k / steps)
+    out.append(pts[-1])
+    return np.asarray(out) + rng.normal(0, sigma, (len(out), 2))
+
+
+def bed_and_joint_lines(v_base: float, u_base: float = 0.0, seed: int = 2, ends: bool = True):
+    """An ashlar wall drawn by its lines in a face's ``(u, v)``: ``DRAWN_COURSES`` + 1 bed lines ``DRAWN_PITCH``
+    apart from ``v_base``, ``DRAWN_LENGTH`` long from ``u_base``; four joints in each course every ``DRAWN_JOINTS``,
+    staggered by half a stone from one course to the next (five stones per course: 30 stones); the two ends of the
+    wall as vertical lines through all the courses (``ends``); 3 mm of noise."""
+    rng = np.random.default_rng(seed)
+    top = DRAWN_COURSES * DRAWN_PITCH
+    lines = [_noisy(rng, [(u_base, v_base + DRAWN_PITCH * i), (u_base + DRAWN_LENGTH, v_base + DRAWN_PITCH * i)],
+                    steps=20) for i in range(DRAWN_COURSES + 1)]
+    for c in range(DRAWN_COURSES):
+        start = DRAWN_JOINTS if c % 2 == 0 else DRAWN_JOINTS / 2
+        for j in range(4):
+            u = u_base + start + DRAWN_JOINTS * j
+            lines.append(_noisy(rng, [(u, v_base + DRAWN_PITCH * c), (u, v_base + DRAWN_PITCH * (c + 1))], steps=3))
+    if ends:
+        for u in (u_base, u_base + DRAWN_LENGTH):
+            lines.append(_noisy(rng, [(u, v_base), (u, v_base + top)], steps=12))
+    return lines
+
+
+def put_lines(ch, eid: str, lines, kind: str = "soft"):
+    """``lines`` (``(n, 2)`` arrays in the face's ``(u, v)``) drawn on the elevation ``eid`` as the window keeps
+    them."""
+    from pyarchinit_photogrammetry.archaeo import breaklines
+
+    frames = ch.meta.setdefault("drawings", {}).setdefault("frames", {})
+    data = frames.setdefault(eid, {})
+    data["lines"] = [breaklines.new_record(kind, [(float(x), float(y)) for x, y in ln]) for ln in lines]

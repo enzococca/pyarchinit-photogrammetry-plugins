@@ -44,6 +44,11 @@ STONE_ACTIONS = (
     ("measure_stones", ("Misura le pietre", "Measure the stones"),
      "Misure di ogni pietra, filari, quota di malta e il tipo che le misure suggeriscono",
      "Measures of each stone, courses, mortar share and the type the measures suggest"),
+    ("classified", ("Corsi e giunti da un disegno classificato...", "Courses and joints from a classified drawing..."),
+     "Le linee disegnate sulla faccia ordinate lungo la sua orizzontale (il programma 1.7.7): letti, giunti, filari e "
+     "pietre; prima la tavola di controllo, poi le pietre si aggiungono a quelle della faccia",
+     "The lines drawn on the face sorted along its horizontal (the program 1.7.7): beds, joints, courses and stones; "
+     "the check plate first, then the stones are added to those of the face"),
     ("wall_area", ("Area del muro...", "Wall area..."),
      "Disegna sulla faccia l'area del muro per la quota di malta (altrimenti i limiti della faccia)",
      "Draw on the face the wall's area for the mortar share (else the face's bounds)"),
@@ -122,6 +127,10 @@ class MasonryPane(QWidget):
         lay.addWidget(self._flow([(n, txt, "", "") for n, txt in FACE_ACTIONS]))
         lay.addWidget(QLabel(f"<b>{t('Pietre e filari', 'Stones and courses')}</b>"))
         lay.addWidget(self._flow(STONE_ACTIONS))
+        from . import classified
+
+        if not classified.available():  # the program 1.7.7 or later classifies drawings
+            self.buttons["classified"].setVisible(False)
         self.stones_table = QTableWidget(0, len(STONE_COLUMNS))
         self.stones_table.setHorizontalHeaderLabels([t(*c) for c in STONE_COLUMNS])
         self.stones_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)

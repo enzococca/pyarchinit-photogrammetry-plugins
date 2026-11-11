@@ -77,6 +77,11 @@ STEPS = (("frame", ("1. Sistema della nave", "1. Ship frame"),
             "The timber selected traced again on the relief: same id and name"),
            ("trace_add", ("Aggiungi...", "Add..."), "Un legno disegnato a mano sul rilievo",
             "A timber traced by hand on the relief"),
+           ("classified", ("Importa un disegno classificato...", "Import a classified drawing..."),
+            "Un disegno (layer o file) ordinato dal programma lungo la chiglia: ordinate, comenti e fasce nel catalogo "
+            "dopo la tavola di controllo",
+            "A drawing (layer or file) sorted by the program along the keel: frames, seams and strakes into the "
+            "catalogue after the check plate"),
            ("trace_names", ("Nomi da tabella...", "Names from a table..."),
             "nome, x: le ordinate prendono i nomi del cantiere", "name, x: the frames take the field's names"),
            ("trace_loose", ("Sciolto", "Loose"),
@@ -159,6 +164,10 @@ class ShipwreckPane(QWidget):
             self.states[key] = state
             if key == "timbers":  # the catalogue's table under its step
                 lay.addWidget(self.table)
+        from . import classified
+
+        if not classified.available():  # the program 1.7.7 or later classifies drawings
+            self.buttons["classified"].setVisible(False)
         lay.addStretch(1)
 
     def set_states(self, states: dict) -> None:
