@@ -184,7 +184,7 @@
     },
     {
       "name": "masonry",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "title": "Masonry",
       "description": "Walls, buildings and stone towers recorded by their faces: elevations on planes, cylinders and tower sides; lean, bulge, sections and tower axis measured on the model; stones, courses and mortar with the type the measures suggest; USM relationships proposed for you to check; plates at scale, DXF, IFC wall, PyArchInit",
       "i18n": {
@@ -199,8 +199,8 @@
       "api": 1,
       "min_app": "1.7.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/masonry-v0.1.2/ppg_masonry-0.1.2-py3-none-any.whl",
-      "sha256": "cd11ade3ab647166471276a56f8ec22652d30933df4f81e8336b4e149639ebf4"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/masonry-v0.1.3/ppg_masonry-0.1.3-py3-none-any.whl",
+      "sha256": "4745aa5716caba619d1b238ee0f7d0b94b28ae0a31d317153b73cdba36086ebe"
     },
     {
       "name": "mesh-tools",
