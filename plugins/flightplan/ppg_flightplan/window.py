@@ -172,6 +172,13 @@ class WindowPart:
     def _window(self):
         return self.context.window if self.context is not None else None
 
+    def _shown_elevation(self) -> str | None:
+        """The id of the elevation or section the 2D view shows (its coordinates are (u, v), not those of the plan),
+        None on the plan: ``context.shown_elevation()`` since program 1.10.0, the window's ``drawings_frame`` before."""
+        if self.context is not None and hasattr(self.context, "shown_elevation"):
+            return self.context.shown_elevation()
+        return getattr(self._window(), "drawings_frame", None)
+
     def _chunk(self):
         window = self._window()
         chunk = getattr(window, "chunk", None) if window is not None else None
@@ -663,10 +670,9 @@ class WindowPart:
             return
         for name in LAYERS:
             view.remove_layer(name)
-        window = self._window()
         chunk = self._chunk()
         if self.pane is None or chunk is None or view.tr is None or not project.has_crs(chunk) \
-                or getattr(window, "drawings_frame", None) is not None:
+                or self._shown_elevation() is not None:
             return
         batch = view.batch() if hasattr(view, "batch") else None
         if batch is not None:

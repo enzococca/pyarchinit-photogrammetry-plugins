@@ -677,3 +677,28 @@ def test_the_pane_fits_420_px(monkeypatch, lang):
         assert pane.c_direction.itemText(0) in ("Lungo il lato più lungo", "Along the longest side")
     finally:
         pane.close()
+
+
+def test_no_plan_layers_on_an_elevation(gui):
+    """On an elevation or a section (``context.shown_elevation()`` since program 1.10.0, the window's
+    ``drawings_frame`` before) the view is in (u, v): the plan's layers are not drawn there."""
+    from types import SimpleNamespace
+
+    w, plugin, ch, app_, said, _request = gui
+    _design(w, plugin, app_)
+    view = w.ortho_view
+    assert view.features(LAYER_STRIPS)
+    plugin.context.shown_elevation = lambda: "e1"  # the context of a 1.10 window showing an elevation
+    plugin.draw_layers()
+    assert not view.features(LAYER_STRIPS) and not view.features(LAYER_AREA)
+    del plugin.context.shown_elevation
+    plugin.draw_layers()
+    assert view.features(LAYER_STRIPS)
+    real = plugin.context
+    try:  # an older program: no shown_elevation, the window's attribute read
+        plugin.context = SimpleNamespace(window=SimpleNamespace(drawings_frame="e1"))
+        assert plugin._shown_elevation() == "e1"
+        plugin.context.window.drawings_frame = None
+        assert plugin._shown_elevation() is None
+    finally:
+        plugin.context = real
