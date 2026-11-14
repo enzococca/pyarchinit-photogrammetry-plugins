@@ -16,8 +16,8 @@ Il plugin non giudica al posto tuo. I termini vengono dai glossari delle norme e
 e di urgenza della EN 16096 sono tue, il plugin mostra solo un *suggerimento* con la regola che lo dà; quello che
 trovano i rilevatori automatici è una *proposta* finché non la accetti.
 
-Questa pagina descrive la versione 0.1.0 del plugin, che **richiede pyarchinit-photogrammetry 1.7.1** (i disegni
-legati ai prospetti). Il README e il codice sono nel [repository dei
+Questa pagina descrive la versione 0.2.0 del plugin, che **richiede pyarchinit-photogrammetry 1.7.1** (i disegni
+legati ai prospetti); il degrado nel sito web di un rilievo richiede la 1.10.0. Il README e il codice sono nel [repository dei
 plugin](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/conservation).
 
 ## In breve
@@ -408,6 +408,42 @@ Cosa dà, in `<dati del chunk>/conservation/<id del prospetto>/compare_<campagna
 
 Un confronto è fatto di file, mai di record: rifallo quando le campagne cambiano.
 
+## Nel sito web di un rilievo (0.2.0)
+
+Con pyarchinit-photogrammetry 1.10.0 o successivo il sito web di un rilievo (*File > Esporta > Sito web*, il pannello
+*Pubblica sul web*, `ppg web build`) porta la mappatura del degrado di ogni chunk con campagne. Come in tutte le uscite
+del plugin, vanno fuori solo gli elementi accettati e con un termine.
+
+- Il livello **Degrado** sulla pianta: le aree di degrado di ogni campagna, con i colori della legenda del progetto,
+  una spunta per termine nell'elenco dei livelli (con i nomi dei due glossari); al clic il codice, il termine in
+  italiano e in inglese, la famiglia, l'area, l'intensità, il prospetto, la campagna e la sua data. Un'area è disegnata
+  sul prospetto, nelle sue (u, v); sulla pianta va dove sta il prospetto, come il programma disegna la traccia di un
+  prospetto: su una faccia distesa (un pavimento, un piano di calpestio, una faccia inclinata) l'area stessa, sul piano
+  del prospetto; su una faccia verticale o un cilindro (un muro, una torre circolare) il tratto di muro che copre, una
+  linea lungo la traccia della faccia all'altezza media dell'area.
+- La scheda **Degrado: riepilogo**: per campagna, ogni termine mappato - degrado, lesioni e interventi - con il numero
+  di elementi, l'estensione (m² delle aree, m delle lesioni e degli interventi lineari) e, per le aree di degrado, la
+  quota della faccia.
+- La scheda **Campagne di conservazione**: ogni campagna con prospetto, data, metodo, numero di elementi, quota della
+  faccia con degrado, lesione più aperta, le classi EN 16096 di condizione e di urgenza col loro motivo, la classe di
+  raccomandazione della data, note. Il rilevatore e il meteo non sono pubblicati.
+
+Il programma porta le coordinate nel sistema del sito come fa con i suoi disegni: nel sistema locale (quello di
+default) sono traslate sull'origine del sito, anche le quote, e non viene scritto alcun sistema di riferimento; ogni
+testo è ripulito (nessun percorso del computer). Un prospetto fatto prima che il chunk fosse georeferenziato di nuovo
+resta fuori dal livello (le sue coordinate sono quelle vecchie); le sue campagne restano nelle schede. Con un programma
+più vecchio il plugin funziona come prima e non aggiunge nulla al sito.
+
+**Sui disegni dei prospetti.** Con un programma il cui aggancio del sito dice il sistema del sito
+(`context.site_hook` 2), le aree di degrado vanno sul disegno del loro prospetto nella scheda *Sezioni e prospetti* del
+sito, nei suoi (u, v) come sono state mappate, con una spunta per termine e gli attributi al clic come in pianta; il
+clic dà anche la quota minima e massima dell'area nelle quote del sito (abbassate della base del sito nel sistema
+locale, come i disegni del prospetto fatti dal programma) quando il prospetto tiene le quote vere. Solo le campagne di
+un prospetto che il sito non pubblica restano in pianta, disegnate come sopra. Il termine, la sua famiglia, il tipo di
+un elemento e l'intensità sono dati nelle due lingue: la pagina li mostra nella sua e cambia con lei (il riepilogo ha
+una sola colonna *Termine* invece di quella italiana e quella inglese). Con la prima forma dell'aggancio il livello
+resta in pianta, nella lingua dell'interfaccia.
+
 ## Riga di comando
 
 ```
@@ -439,5 +475,5 @@ prospetto, da WKT (testo o file) o da una tabella di un GeoPackage.
 - Le **classi EN 16096** sono tue; le soglie del suggerimento sono valori predefiniti del plugin, non della norma.
 - **Confronto**: il plugin verifica l'allineamento, non allinea. Due campagne disegnate da due persone differiscono
   anche per come sono state disegnate: leggi aree guadagnate e perse con le tavole affiancate.
-- Non fatto nella 0.1.0: analisi strutturale e monitoraggio delle lesioni, riconoscimento dei materiali, volumi di
+- Non fatto nella 0.2.0: analisi strutturale e monitoraggio delle lesioni, riconoscimento dei materiali, volumi di
   perdita in 3D, mappe di umidità e termiche, datazione dei danni, costi.

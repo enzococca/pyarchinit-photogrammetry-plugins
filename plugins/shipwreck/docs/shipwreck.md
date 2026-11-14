@@ -294,3 +294,30 @@ ppg plugin shipwreck export3d PROJECT.ppg --out FILE.obj|.glb|.ifc --reconstruct
 ppg plugin shipwreck plan PROJECT.ppg --reconstruction [--out FOLDER]
 ppg plugin shipwreck drawings PROJECT.ppg --reconstruction [--out FOLDER]   # body plan and profile with the faired hull
 ```
+
+## On the web site of a survey (0.6.0)
+
+With pyarchinit-photogrammetry 1.10.0 or later, the web site of a survey (*File > Export > Web site*, the pane
+*Pubblica sul web*, `ppg web build`) carries the catalogue of every chunk that has one:
+
+- the layer **Timbers of the wreck** on the plan: every timber with its outline as it was drawn or traced (a line, a
+  polygon or a point), coloured by its kind with the colours of the plugin's layer, a tick per kind in the list of
+  layers; a click shows the name, kind, side, station, status (measured or reconstructed, and how), out of place and
+  length or width;
+- the tab **Timber catalogue**: a card per timber with all its attributes and the measures of the catalogue - x along
+  the keel, y across it, length, width, the lowest and highest heights over the model (and corrected for the water
+  when the correction is on), notes and warnings.
+
+The program moves the outlines into the frame of the site, as it does with its own drawings: in the local frame
+(the default) they are shifted to the site's origin and no reference system is written. The measures are in the ship
+frame, which tells nothing of the place; the heights are counted from the start of the keel line, also when the ship
+frame has a datum of its own, so that an absolute height never goes on the site. Every text is cleaned by the
+program (no path of the computer). A chunk whose system changed after the ship frame was set gives the tab without
+the layer and the measures: its outlines are in the old coordinates. With an older program the plugin works as
+before and adds nothing to the site.
+
+With a program whose site hook tells the frame of the site (`context.site_hook` 2) the heights of the catalogue are
+those of the site - the heights of its plan, its DEM and its sections: in the local frame the true heights less the
+base of the site, a whole metre the program chooses and never publishes - instead of being counted from the keel
+line, so that a timber reads at the same height as the model under it; the kind, the side, the status and "out of
+place" are given in both languages and the page shows them in its own (the legend matches either).

@@ -16,6 +16,9 @@
 * the products in the workspace tree, the timbers and the land lines in layers of the raster view on the plan, the
   proposals, the traced timbers and the reconstruction (hatched) in layers of the relief while it is shown;
 * *File > Esporta > Relitto: catalogo dei legni*;
+* the catalogue on the web site of a survey (0.6.0, program 1.10.0): a layer of the timbers on the plan and a tab of
+  the catalogue, the heights in those of the site and the words in both languages where the program's hook tells the
+  frame of the site (:mod:`.site`);
 * ``ppg plugin shipwreck frame|stations|sections|water|drawings|timbers|export|status``,
   ``ppg plugin shipwreck clinker detect|strakes|export|import|status`` and
   ``ppg plugin shipwreck relief|propose|trace|keel|solids|export3d|plan`` and
@@ -40,7 +43,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, num, plural, t
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 NEGATIVE_VALUES = ("--start", "--end", "--longitudinals", "--horizontals")  # may begin with a minus: "-0.2;-0.5", "-1.5,2"
 LAYER = "Legni del relitto"
 CLINKER_LAYER = "Fasce"  # the land lines, in the chunk's x, y
@@ -160,6 +163,15 @@ class ShipwreckPlugin(Plugin):
         context.add_exporter(t("Relitto: catalogo dei legni (Excel)", "Shipwreck: timber catalogue (Excel)"), ".xlsx", self._export)
         context.add_exporter(t("Relitto: catalogo dei legni (GeoPackage)", "Shipwreck: timber catalogue (GeoPackage)"), ".gpkg",
                              self._export)
+        hook = getattr(context, "site_hook", 1) if hasattr(context, "add_site_contributions") else 0
+        if hook >= 2:  # the frame of the site told: the heights in those of the site, the words in both languages
+            from .site import contributions_with_site
+
+            context.add_site_contributions(contributions_with_site, with_site=True)
+        elif hook == 1:  # program 1.10.0 with the first form of the hook: the catalogue on the web site of a survey
+            from .site import contributions
+
+            context.add_site_contributions(contributions)
         if context.window is not None:
             from .pane import ShipwreckPane
 
