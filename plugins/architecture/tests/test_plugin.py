@@ -587,11 +587,13 @@ def test_the_gui_draws_on_elevations(tmp_path, fake, monkeypatch):
         shown = []
         monkeypatch.setattr(plugin.context, "show_raster",
                             lambda kind=None, chunk=None, path=None: shown.append(path) or True)
+        on = []  # what the view showed when the user was asked to draw (the window's own elevation, since 1.10.0)
         monkeypatch.setattr(plugin.context, "request_line",
-                            lambda done, hint="": done(np.array([[0.2, CORNICE_AT[2] + 2.1],
-                                                                 [3.6, CORNICE_AT[2] + 2.1]])))
+                            lambda done, hint="": on.append(getattr(w, "drawings_frame", None)) or
+                            done(np.array([[0.2, CORNICE_AT[2] + 2.1], [3.6, CORNICE_AT[2] + 2.1]])))
         monkeypatch.setattr(plugin.context, "request_point",
-                            lambda done, hint="": done(np.array([[0.0, ARCH_AT[2] + 0.9]])))
+                            lambda done, hint="": on.append(getattr(w, "drawings_frame", None)) or
+                            done(np.array([[0.0, ARCH_AT[2] + 0.9]])))
         answers = {"Percorso della modanatura": {"how": "elevation", "view": "Prospetto sud"},
                    "Arco / volta": {"section": "Sezione arco", "pick": "click"}}
         seen = []
@@ -619,7 +621,10 @@ def test_the_gui_draws_on_elevations(tmp_path, fake, monkeypatch):
         plugin._do_column()
         assert asked and asked[0][-1] is None  # show_raster(None): the chunk's orthophoto or DEM
         kinds = {e["name"]: e for e in elements.elements(ch)}
-        assert [p.name for p in shown[:2]] == ["elevation.tif", "elevation.tif"]
+        if hasattr(Context, "shown_elevation"):  # program 1.10.0: shown as elevations, their drawings kept with them
+            assert on == ["Prospetto sud", "Sezione arco"] and shown == [None]
+        else:  # before: their orthophotos as rasters of the plan
+            assert [p.name for p in shown[:2]] == ["elevation.tif", "elevation.tif"]
         m = kinds["Modanatura 1"]
         assert abs(m["params"]["section_area"] - abs(engine.polygon_area(truth["plug"]))) < 1e-4
         assert kinds["Arco 1"]["params"]["type"] == "pointed"
