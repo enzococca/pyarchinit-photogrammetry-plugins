@@ -131,7 +131,10 @@ def test_units_on_an_elevation_go_through_the_api_and_need_the_elevation(plugin,
     gets them written into the elevation's drawings as before."""
     import pyarchinit_photogrammetry as ppg
     from pyarchinit_photogrammetry.engine.elevation import remove_elevation
+    from pyarchinit_photogrammetry.plugins.api import Context
 
+    if not hasattr(Context, "shown_elevation"):
+        pytest.skip("the program keeps the drawings of an elevation with it since 1.10.0")
     monkeypatch.setenv("PHOTOCAD_API_KEY", fakecad.KEY)
     monkeypatch.setattr(client, "_urlopen", fakecad.FakePhotoCAD(credits=9))
     doc, ch = fakecad.project(tmp_path / "p", square=[fakecad.SQUARE, fakecad.SQUARE2])

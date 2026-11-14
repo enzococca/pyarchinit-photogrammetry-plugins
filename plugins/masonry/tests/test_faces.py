@@ -111,6 +111,8 @@ def test_the_stones_of_a_face_go_with_its_elevation(tmp_path, monkeypatch):
     that keeps the drawings of a removed elevation is told nothing."""
     from ppg_masonry import classified
 
+    if not walls.drops_drawings():
+        pytest.skip("the program removes the drawings of an elevation with it since 1.10.0")
     doc, ch = S.project(tmp_path, S.wall())
     w = walls.new_wall(ch, "Muro")
     a = faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [3, 0], resolution=0.05)
