@@ -16,8 +16,8 @@ The plugin never judges for you. Terms come from the standards' glossaries and a
 urgency classes of EN 16096 are yours, the plugin only shows a *suggestion* with the rule that gives it; what the
 detectors find is a *proposal* until you accept it.
 
-This page describes version 0.1.0 of the plugin, which **requires pyarchinit-photogrammetry 1.7.1** (drawings kept
-with the elevations). The README and the code are in the [plugin
+This page describes version 0.2.0 of the plugin, which **requires pyarchinit-photogrammetry 1.7.1** (drawings kept
+with the elevations); its decay on the web site of a survey needs 1.10.0. The README and the code are in the [plugin
 repository](https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/conservation).
 
 ## In short
@@ -399,6 +399,33 @@ What it gives, in `<chunk data>/conservation/<elevation id>/compare_<campaign A>
 
 A comparison is files, never records: run it again whenever the campaigns change.
 
+## On the web site of a survey (0.2.0)
+
+With pyarchinit-photogrammetry 1.10.0 or later, the web site of a survey (*File > Export > Web site*, the pane
+*Pubblica sul web*, `ppg web build`) carries the decay mapping of every chunk with campaigns. As every output of the
+plugin, only the accepted features with a term go out.
+
+- The layer **Decay** on the plan: the areas of decay of every campaign, coloured with the project's legend, a tick
+  per term in the list of layers (named in both glossaries); a click shows the code, the term in Italian and in
+  English, the family, the area, the intensity, the elevation, the campaign and its date. An area is drawn on the
+  elevation, in its (u, v); on the plan it goes where the elevation lies, as the program draws the trace of an
+  elevation: on a face that lies down (a floor, a pavement, a sloping face) the area itself, on the plane of the
+  elevation; on an upright face or a cylinder (a wall, a round tower) the stretch of the wall it covers, a line along
+  the trace of the face at the middle height of the area.
+- The tab **Decay: summary**: per campaign, every term mapped - decay, cracks and treatments - with the number of
+  features, the extent (m² of the areas, m of the cracks and of the linear treatments) and, for the areas of decay,
+  the share of the face.
+- The tab **Conservation campaigns**: every campaign with its elevation, date, method, number of features, share of
+  the face with decay, widest crack, the EN 16096 condition and urgency classes and their reason, the recommendation
+  class of the date, notes. The surveyor and the weather are not published.
+
+The program moves the coordinates into the frame of the site as it does with its own drawings: in the local frame
+(the default) they are shifted to the site's origin, the heights too, and no reference system is written; every text
+is cleaned (no path of the computer). An elevation made before the chunk was georeferenced again is left out of the
+layer (its coordinates are the old ones); its campaigns stay in the tabs. The decay is not drawn on the elevations of
+the site's *Sections and elevations* tab: the program offers plugins no layer there yet. With an older program the
+plugin works as before and adds nothing to the site.
+
 ## Command line
 
 ```
@@ -430,5 +457,5 @@ elevation, from WKT (text or a file) or a GeoPackage table.
 - The **EN 16096 classes** are yours; the suggestion's thresholds are the plugin's defaults, not the standard's.
 - **Comparison**: the plugin checks the alignment, it does not align. Two campaigns drawn by two people differ also by
   how they drew: read gained and lost areas with the plates side by side.
-- Not done in 0.1.0: structural analysis and crack monitoring, material identification, volumes of loss in 3D,
+- Not done in 0.2.0: structural analysis and crack monitoring, material identification, volumes of loss in 3D,
   moisture and thermal mapping, dating of damages, costs.

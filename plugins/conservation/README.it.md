@@ -27,6 +27,14 @@ la mappatura del degrado sui prospetti del programma.
   (*Allinea chunk*): il plugin lo verifica (marker sulle due facce entro 1 cm, altrimenti uno spostamento delle
   ortofoto per correlazione di fase sotto 2 px) e altrimenti rifiuta, senza scrivere niente.
 
+* **Sito web** (0.2.0, programma 1.10.0 o successivo): quando il programma costruisce il sito web di un rilievo
+  (*File > Esporta > Sito web*, `ppg web build`), il livello *Degrado* sulla pianta (le aree di degrado con i colori
+  della legenda del progetto, una spunta per termine; su un muro il tratto che ciascuna copre lungo la traccia della
+  faccia, su un pavimento l'area stessa) e le schede *Degrado: riepilogo* (per campagna e termine: elementi,
+  estensione, quota della faccia) e *Campagne di conservazione* (data, metodo, quota della faccia con degrado, lesione
+  più aperta, classi EN 16096; il rilevatore non è pubblicato). Il programma li porta nel sistema del sito (locale di
+  default) e ripulisce ogni testo. Niente con un programma più vecchio.
+
 La guida: [Conservazione](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/conservation/) (il sorgente
 è in `docs/` qui finché non passa nella documentazione del programma; la tabella della legenda la genera
 `scripts/legend_table.py`). `proof/run_proof.py` fa girare i rilevatori, una campagna, gli esiti e l'IFC su un
