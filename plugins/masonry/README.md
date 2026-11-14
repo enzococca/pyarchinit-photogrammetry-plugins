@@ -56,6 +56,10 @@ SAM 2.1): `proof/make_proof.py`.
 The measures say how a wall stands; they are not a verdict on it. The plugin writes only under
 `<chunk data>/masonry/`; the program's elevations keep their format.
 
+Removing a wall or a face can remove the elevations of its faces too: with program 1.10.0 the drawings kept with those
+elevations (the stones of the face, its units, spot heights and points) go with them, and the question says how many
+beforehand (`remove --elevations` says it after).
+
 Command line: `ppg plugin masonry face|shape|stones|classified|usm|plate|export|ifc|list|remove`.
 
 License: GPL-2.0-or-later.

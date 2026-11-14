@@ -247,6 +247,42 @@ def drawings_of(chunk, eid: str) -> dict:
             "points": len(data.get("points") or []), "stones": len(stones)}
 
 
+def drops_drawings() -> bool:
+    """Whether the program removes the drawings kept with an elevation (its stones, units, spot heights, points,
+    lines) together with the elevation (1.10.0); before, they stayed in the project, unseen."""
+    try:
+        from pyarchinit_photogrammetry.engine.elevation_drawings import take_frame  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def drawings_lost_text(chunk, eids, removed: bool = False) -> str:
+    """The sentence that tells which drawings go with the elevations ``eids`` when they are removed (the stones of a
+    face are kept with its elevation) - ``removed``: said of elevations being removed, not as a question; empty when
+    they hold none or the program keeps them (before 1.10.0)."""
+    if not drops_drawings():
+        return ""
+    from .texts import plural
+
+    total = {"stones": 0, "units": 0, "quote": 0, "points": 0}
+    for eid in eids:
+        n = drawings_of(chunk, eid)
+        for k in total:
+            total[k] += n.get(k, 0)
+    words = {"stones": (("pietra", "pietre"), ("stone", "stones")), "units": (("US", "US"), ("unit", "units")),
+             "quote": (("quota", "quote"), ("spot height", "spot heights")),
+             "points": (("punto", "punti"), ("point", "points"))}
+    parts = [plural(n, *words[k]) for k, n in total.items() if n]
+    if not parts:
+        return ""
+    if removed:
+        return t(f" I disegni fatti sui prospetti rimossi sono andati via con loro: {', '.join(parts)}.",
+                 f" The drawings made on the elevations removed went with them: {', '.join(parts)}.")
+    return t(f" Se rimuovi i prospetti, i disegni fatti su di loro vanno via con loro: {', '.join(parts)}.",
+             f" If you remove the elevations, the drawings made on them go with them: {', '.join(parts)}.")
+
+
 def face_info(chunk, eid: str) -> dict:
     """What the pane lists of a face: its name, surface (plane or cylinder), width and height (metres, from its
     bounds), resolution, size in pixels, whether ``v`` is the height, the drawings it holds."""

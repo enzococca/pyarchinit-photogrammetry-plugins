@@ -31,7 +31,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, kind_title, metres, num, t
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 NEGATIVE_VALUES = ("--line", "--side", "--circle", "--heights", "--stations", "--sections", "--slice", "--polygon")
 BARE_ACCEPT = ""  # --accept given without a value (classified: add the stones; usm: an error)
 
@@ -311,11 +311,13 @@ class MasonryPlugin(Plugin):
 
         chunk = self._need_chunk()
         rec = self._wall()
+        self._store()  # what the window holds of the face shown into the project: counted, and removed with it
         answer = dialogs.choice(self.context.window, "question", self.title,
                                 t(f"Rimuovere il muro «{rec['name']}» e i file del plugin? I prospetti delle sue facce "
                                   "restano nel progetto, se non chiedi di toglierli.",
                                   f"Remove the wall «{rec['name']}» and the plugin's files? The elevations of its "
-                                  "faces stay in the project unless you ask to remove them."),
+                                  "faces stay in the project unless you ask to remove them.")
+                                + walls.drawings_lost_text(chunk, rec["faces"]),
                                 [t("Rimuovi il muro", "Remove the wall"), t("Rimuovi anche i prospetti",
                                                                             "Remove the elevations too")])
         if answer is None:
@@ -669,10 +671,12 @@ class MasonryPlugin(Plugin):
 
         chunk = self._need_chunk()
         rec, entry = self._face()
+        self._store()  # what the window holds of the face shown into the project: counted, and removed with it
         answer = dialogs.choice(self.context.window, "question", self.title,
                                 t(f"Togliere la faccia «{entry['name']}» dal muro? Il prospetto resta nel progetto, se "
                                   "non chiedi di toglierlo.", f"Take the face «{entry['name']}» out of the wall? The "
-                                  "elevation stays in the project unless you ask to remove it."),
+                                  "elevation stays in the project unless you ask to remove it.")
+                                + walls.drawings_lost_text(chunk, [entry["id"]]),
                                 [t("Togli la faccia", "Take the face out"), t("Rimuovi anche il prospetto",
                                                                               "Remove the elevation too")])
         if answer is None:
@@ -1431,9 +1435,13 @@ class MasonryPlugin(Plugin):
                 rec = walls.need(chunk, ns.wall or "")
                 if ns.face:
                     _w, e = walls.need_face(chunk, rec["id"], ns.face)
+                    lost = walls.drawings_lost_text(chunk, [e["id"]], True) if ns.elevations else ""
                     walls.remove_face(chunk, rec["id"], e["id"], elevation_too=ns.elevations)
                 else:
+                    lost = walls.drawings_lost_text(chunk, rec["faces"], True) if ns.elevations else ""
                     walls.remove_wall(chunk, rec["id"], elevations_too=ns.elevations)
+                if lost:
+                    print(lost.strip())
                 changed = True
         except walls.NotReady as exc:
             print(exc)

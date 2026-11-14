@@ -105,6 +105,33 @@ def test_faces_taken_out_and_elevations_removed(tmp_path):
     assert not walls.wall_folder(ch, w["id"]).exists()
 
 
+def test_the_stones_of_a_face_go_with_its_elevation(tmp_path, monkeypatch):
+    """The stones of a face are kept with its elevation: removing the elevation with the face drops them (program
+    1.10.0), and the question says so beforehand with how many; a face kept leaves them where they are; a program
+    that keeps the drawings of a removed elevation is told nothing."""
+    from ppg_masonry import classified
+
+    doc, ch = S.project(tmp_path, S.wall())
+    w = walls.new_wall(ch, "Muro")
+    a = faces.plane_face(ch, w["id"], S.WORLD[:2], S.WORLD[:2] + [3, 0], resolution=0.05)
+    b = faces.plane_face(ch, w["id"], S.WORLD[:2] + [3, 0], S.WORLD[:2] + [6, 0], resolution=0.05)
+    box = "POLYGON ((0 0, 0.3 0, 0.3 0.2, 0 0.2, 0 0))"
+    classified.put(ch, a["id"], [box, box])
+    classified.put(ch, b["id"], [box])
+    assert walls.drawings_of(ch, a["id"])["stones"] == 2
+    text = walls.drawings_lost_text(ch, [a["id"], b["id"]])
+    assert "3 pietre" in text and "rimuovi" in text.lower()
+    assert "3 pietre" in walls.drawings_lost_text(ch, [a["id"], b["id"]], removed=True)
+    assert walls.drawings_lost_text(ch, ["nessuno"]) == ""
+    assert walls.remove_face(ch, w["id"], b["id"])  # the face out, its elevation kept: its stones stay
+    assert classified.stored(ch, b["id"]) == [box]
+    assert walls.remove_face(ch, w["id"], a["id"], elevation_too=True)
+    assert classified.stored(ch, a["id"]) == [] and walls.drawings_of(ch, a["id"])["stones"] == 0
+    assert classified.stored(ch, b["id"]) == [box]  # another elevation's stones untouched
+    monkeypatch.setattr(walls, "drops_drawings", lambda: False)  # a program before 1.10.0
+    assert walls.drawings_lost_text(ch, [b["id"]]) == ""
+
+
 def test_an_elevation_of_the_program_becomes_a_face_as_it_is(tmp_path):
     """A prospect the program made itself (the Elevation button, ``ppg elevation``) is adopted as a face: nothing is
     rebuilt, its entry is read like those of the faces the plugin makes; one wall at a time; sections and elevations

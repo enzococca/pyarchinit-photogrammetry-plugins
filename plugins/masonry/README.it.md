@@ -56,6 +56,10 @@ trovate da SAM 2.1): `proof/make_proof.py`.
 
 Le misure dicono come sta un muro, non lo giudicano. Il plugin scrive solo in `<dati del chunk>/masonry/`.
 
+Rimuovendo un muro o una faccia si possono rimuovere anche i prospetti delle facce: con il programma 1.10.0 i disegni
+tenuti con quei prospetti (le pietre della faccia, le sue US, quote e punti) vanno via con loro, e la domanda dice prima
+quanti sono (`remove --elevations` lo dice dopo).
+
 Riga di comando: `ppg plugin masonry face|shape|stones|classified|usm|plate|export|ifc|list|remove`.
 
 Licenza: GPL-2.0-or-later.
