@@ -300,3 +300,24 @@ ppg plugin shipwreck export3d PROGETTO.ppg --out FILE.obj|.glb|.ifc --reconstruc
 ppg plugin shipwreck plan PROGETTO.ppg --reconstruction [--out CARTELLA]
 ppg plugin shipwreck drawings PROGETTO.ppg --reconstruction [--out CARTELLA]   # piano e profilo con la carenatura
 ```
+
+## Nel sito web di un rilievo (0.6.0)
+
+Con pyarchinit-photogrammetry 1.10.0 o successivo il sito web di un rilievo (*File > Esporta > Sito web*, il pannello
+*Pubblica sul web*, `ppg web build`) porta il catalogo di ogni chunk che ne ha uno:
+
+- il livello **Legni del relitto** sulla pianta: ogni legno col suo contorno come è stato disegnato o ricalcato (una
+  linea, un poligono o un punto), colorato per tipo con i colori del livello del plugin, una spunta per tipo
+  nell'elenco dei livelli; al clic nome, tipo, lato, stazione, stato (misurato o ricostruito, e come), fuori posto e
+  lunghezza o larghezza;
+- la scheda **Catalogo dei legni**: una cartolina per legno con tutti gli attributi e le misure del catalogo - x lungo
+  la chiglia, y di traverso, lunghezza, larghezza, quota minima e massima sul modello (e corrette dall'acqua quando la
+  correzione è attiva), note e avvisi.
+
+Il programma porta i contorni nel sistema del sito, come fa con i suoi disegni: nel sistema locale (quello di default)
+sono traslati sull'origine del sito e non viene scritto alcun sistema di riferimento. Le misure sono nel sistema della
+nave, che non dice nulla del luogo; le quote partono dall'inizio della linea di chiglia, anche quando il sistema della
+nave ha un suo riferimento delle quote, così che nessuna quota assoluta finisca sul sito. Ogni testo è ripulito dal
+programma (nessun percorso del computer). Un chunk il cui sistema è cambiato dopo aver impostato il sistema della nave
+dà la scheda senza livello e senza misure: i suoi contorni sono nelle coordinate vecchie. Con un programma più vecchio
+il plugin funziona come prima e non aggiunge nulla al sito.

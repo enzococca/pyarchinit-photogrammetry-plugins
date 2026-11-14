@@ -135,9 +135,9 @@ def test_a_cancelled_build_is_flagged_and_an_edit_makes_the_solids_stale(tmp_pat
 def test_version_and_index_entry():
     import ppg_shipwreck
 
-    assert ppg_shipwreck.__version__ == "0.5.0"
+    assert ppg_shipwreck.__version__ == "0.6.0"
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert project["version"] == "0.5.0"
+    assert project["version"] == "0.6.0"
     entry = json.loads((ROOT / "entry.json").read_text())
     assert entry["min_app"] == "1.7.1"
     for text in (entry["description"], entry["i18n"]["it"]["description"]):
