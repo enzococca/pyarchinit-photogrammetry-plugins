@@ -93,13 +93,17 @@ def test_a_frame_of_another_system_and_an_empty_catalogue(tmp_path):
     assert wsite.contributions(ch) == []
 
 
-def test_the_catalogue_on_a_site(tmp_path):
+def test_the_catalogue_on_a_site_with_the_first_form_of_the_hook(tmp_path, monkeypatch):
+    """A program whose hook does not tell the frame of the site (``site_hook`` absent): words in the interface's
+    language, heights from the start of the keel line."""
     site_plugins = pytest.importorskip("pyarchinit_photogrammetry.io.site_plugins",
                                        reason="the web site of a survey: program 1.10.0")
+    monkeypatch.setattr(site_plugins, "_providers", [])  # only the plugin of the test: none left by others
     from pyarchinit_photogrammetry.plugins.api import Context
 
     from ppg_shipwreck import ShipwreckPlugin
 
+    monkeypatch.delattr(Context, "site_hook", raising=False)
     doc, ch, _frame = _catalogue(tmp_path / "progetto")
     plugin = ShipwreckPlugin()
     context = Context("shipwreck", tmp_path / "plugin")
@@ -137,6 +141,73 @@ def test_the_catalogue_on_a_site(tmp_path):
         assert not any(p in text for p in private), f.name
         assert "EPSG" not in text and "/Users/" not in text and "\\Users\\" not in text
         assert all(abs(float(n)) < 1000 for n in re.findall(r"-?\d+\.\d+", text)), f.name
+
+
+def _site(shift):
+    site_plugins = pytest.importorskip("pyarchinit_photogrammetry.io.site_plugins")
+    if not hasattr(site_plugins, "Site"):
+        pytest.skip("the frame of the site: the second form of the program's hook")
+    from pyarchinit_photogrammetry.io.site import _Shift
+
+    return site_plugins.Site(_Shift(*shift), "local")
+
+
+def test_with_the_frame_the_heights_of_the_site_and_both_languages(tmp_path):
+    """Told the frame of the site, the heights are those of the site (the world's less its base), whatever the datum
+    of the ship frame; the words in both languages, the legend matching them."""
+    _d, ch, frame = _catalogue(tmp_path / "a")
+    _d2, ch2, frame2 = _catalogue(tmp_path / "b", z0=0.0)
+    on = _site((1000.0, 2000.0, 3.0))
+    layer, table = wsite.contributions_with_site(ch, on)
+    rows = {r["id"]: r for r in table["rows"]}
+    world = {r["id"]: r for r in timbers.measure(ch)}
+    assert rows["T2"]["z_max"] == pytest.approx(world["T2"]["z_max"] + frame.z0 - 3.0, abs=1e-3)
+    rows2 = {r["id"]: r for r in wsite.contributions_with_site(ch2, on)[1]["rows"]}
+    for key in ("z_min", "z_max"):
+        assert rows2["T2"][key] == pytest.approx(rows["T2"][key], abs=1e-3)  # the datum changes nothing
+    assert rows["T1"]["kind"] == {"it": "chiglia", "en": "keel"} and rows["T2"]["side"] == {"it": "babordo",
+                                                                                            "en": "port"}
+    assert rows["T4"]["loose"] == {"it": "sì", "en": "yes"} and set(rows["T5"]["status"]) == {"it", "en"}
+    assert [i["value"] for i in layer["legend"]["items"]][:2] == ["chiglia", "ordinata"]
+    assert layer["features"][0]["properties"]["kind"] == {"it": "chiglia", "en": "keel"}
+
+
+def test_the_catalogue_on_a_site_in_its_heights(tmp_path, monkeypatch):
+    site_plugins = pytest.importorskip("pyarchinit_photogrammetry.io.site_plugins",
+                                       reason="the web site of a survey: program 1.10.0")
+    monkeypatch.setattr(site_plugins, "_providers", [])  # only the plugin of the test: none left by others
+    from pyarchinit_photogrammetry.plugins.api import Context
+
+    from ppg_shipwreck import ShipwreckPlugin
+
+    if getattr(Context, "site_hook", 1) < 2:
+        pytest.skip("the frame of the site: the second form of the program's hook")
+    doc, ch, frame = _catalogue(tmp_path / "progetto")
+    plugin = ShipwreckPlugin()
+    context = Context("shipwreck", tmp_path / "plugin")
+    plugin.activate(context)
+    try:
+        assert isinstance(site_plugins.providers()[-1][1], site_plugins._TakesSite)
+        path = doc.export_site(tmp_path / "sito", products=["model"], model_faces=4000)
+    finally:
+        context.release()
+    site = path.parent
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    chunk = manifest["chunks"][0]
+    listed = {p["id"]: p for p in chunk["plugins"]}
+    layer = next(x for x in chunk["layers"] if x["id"] == "plugin:shipwreck:timbers")
+    assert [(g["name"], g["count"]) for g in layer["groups"]][:2] == [("chiglia", 1), ("ordinata", 2)]
+    table = json.loads((site / listed["catalogue"]["url"]).read_text(encoding="utf-8"))
+    rows = {r["id"]: r for r in table["rows"]}
+    assert rows["T1"]["kind"] == {"it": "chiglia", "en": "keel"}
+    # the heights less one whole metre, the base of the heights of the site: the shift of the outlines, in z
+    world = {r["id"]: r for r in timbers.measure(ch)}
+    measured = [k for k in rows if rows[k].get("z_max") is not None]
+    assert measured
+    dz = {round(world[k]["z_max"] + frame.z0 - rows[k]["z_max"], 3) for k in measured}
+    assert len(dz) == 1 and float(next(iter(dz))).is_integer()
+    for f in (site / "data/plugins/shipwreck").iterdir():
+        assert all(abs(float(n)) < 1000 for n in re.findall(r"-?\d+\.\d+", f.read_text(encoding="utf-8"))), f.name
 
 
 def test_a_program_without_the_web_site(tmp_path, monkeypatch):

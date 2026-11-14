@@ -321,3 +321,9 @@ nave ha un suo riferimento delle quote, così che nessuna quota assoluta finisca
 programma (nessun percorso del computer). Un chunk il cui sistema è cambiato dopo aver impostato il sistema della nave
 dà la scheda senza livello e senza misure: i suoi contorni sono nelle coordinate vecchie. Con un programma più vecchio
 il plugin funziona come prima e non aggiunge nulla al sito.
+
+Con un programma il cui aggancio del sito dice il sistema del sito (`context.site_hook` 2) le quote del catalogo sono
+quelle del sito - le quote della sua pianta, del suo DEM e delle sue sezioni: nel sistema locale le quote vere meno la
+base del sito, un metro intero che il programma sceglie e non pubblica mai - invece di partire dalla linea di chiglia,
+così che un legno si legga alla stessa quota del modello sotto di lui; il tipo, il lato, lo stato e "fuori posto" sono
+dati nelle due lingue e la pagina li mostra nella sua (la legenda riconosce l'una e l'altra).

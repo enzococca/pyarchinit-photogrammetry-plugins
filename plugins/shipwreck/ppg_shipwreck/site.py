@@ -12,7 +12,12 @@ The program moves the outlines into the frame of the site (shifted in the local 
 measures are in the ship frame, which tells nothing of the place: ``x`` along the keel from its start, ``y`` across
 it, the heights from the start of the keel line (also when the ship frame has a datum of its own: an absolute height
 never goes out). A chunk without a catalogue gives nothing; a ship frame set before the chunk's system changed gives
-the catalogue without its layer and its measures (the outlines are in the old coordinates)."""
+the catalogue without its layer and its measures (the outlines are in the old coordinates).
+
+With a program whose hook tells the frame of the site (``context.site_hook`` 2, :func:`contributions_with_site`), the
+heights of the catalogue are those of the site (``site.height``: the heights of its plan, its DEM and its sections,
+taken down by the base of the site in the local frame), and the kind, the side, the status and "out of place" are
+given in both languages: the page shows those of its own."""
 from __future__ import annotations
 
 import logging
@@ -55,9 +60,9 @@ def _stale(chunk) -> bool:
     return d is not None and d.get("crs", chunk.crs) != chunk.crs
 
 
-def _measures(chunk) -> dict:
-    """``{id: row of timbers.measure}``, the heights from the start of the keel line; {} without a ship frame (or
-    one in another system)."""
+def _measures(chunk, site=None) -> dict:
+    """``{id: row of timbers.measure}``, the heights from the start of the keel line - in the heights of the site
+    with ``site`` (its frame, :func:`contributions_with_site`); {} without a ship frame (or one in another system)."""
     frame = ship.frame_of(chunk)
     if frame is None or _stale(chunk):
         return {}
@@ -68,8 +73,8 @@ def _measures(chunk) -> dict:
     lift = frame.z0 - frame.start[2]  # 0 with the default datum: the heights stay those of the catalogue
     for row in rows:
         for key in ("z_min", "z_max", "z_min_water", "z_max_water"):
-            if row.get(key) is not None:
-                row[key] = row[key] + lift
+            if row.get(key) is not None:  # ship z is the world's height less z0
+                row[key] = site.height(row[key] + frame.z0) if site is not None else row[key] + lift
     return {r["id"]: r for r in rows}
 
 
@@ -79,11 +84,24 @@ def _value(value):
     return "" if value is None else value
 
 
-def _attributes(record: dict, row: dict | None) -> dict:
-    out = {"name": record.get("name") or record["id"], "kind": timbers.kind_title(record["kind"]),
-           "side": timbers.side_title(record["side"]), "station": record.get("station") or "",
-           "status": timbers.status_title(timbers.status_of(record)),
-           "loose": t("sì", "yes") if record.get("loose") else "", "notes": record.get("notes") or ""}
+def _both(table: dict, code) -> dict:
+    """A word of the plugin's tables in both languages."""
+    it, en = table.get(code, (code, code))
+    return {"it": it, "en": en}
+
+
+def _attributes(record: dict, row: dict | None, both: bool = False) -> dict:
+    if both:
+        words = {"kind": _both(timbers.KIND_TITLES, record["kind"]), "side": _both(timbers.SIDE_TITLES, record["side"]),
+                 "status": _both(timbers.STATUS, timbers.status_of(record)),
+                 "loose": {"it": "sì", "en": "yes"} if record.get("loose") else ""}
+    else:
+        words = {"kind": timbers.kind_title(record["kind"]), "side": timbers.side_title(record["side"]),
+                 "status": timbers.status_title(timbers.status_of(record)),
+                 "loose": t("sì", "yes") if record.get("loose") else ""}
+    out = {"name": record.get("name") or record["id"], "kind": words["kind"], "side": words["side"],
+           "station": record.get("station") or "", "status": words["status"], "loose": words["loose"],
+           "notes": record.get("notes") or ""}
     for key in ("x", "y", "length", "width", "z_min", "z_max", "z_min_water", "z_max_water", "warning"):
         out[key] = _value((row or {}).get(key))
     return {k: v for k, v in out.items() if v != ""}
@@ -105,10 +123,21 @@ def _geometry(geom: dict) -> dict | None:
 def contributions(chunk) -> list[dict]:
     """What the plugin adds to the web site for ``chunk`` (see the module): the layer ``timbers`` and the tab
     ``catalogue``; [] without a catalogue."""
+    return _contributions(chunk, None)
+
+
+def contributions_with_site(chunk, site) -> list[dict]:
+    """The same for a program that tells the frame of the site (``context.site_hook`` 2): the heights in those of the
+    site, the words in both languages."""
+    return _contributions(chunk, site)
+
+
+def _contributions(chunk, site) -> list[dict]:
     records = timbers.timbers_of(chunk)
     if not records:
         return []
-    rows = _measures(chunk)
+    both = site is not None
+    rows = _measures(chunk, site)
     out = []
     if not _stale(chunk):
         features, kinds = [], []
@@ -116,7 +145,7 @@ def contributions(chunk) -> list[dict]:
             g = _geometry(r.get("geometry") or {})
             if g is None:
                 continue
-            props = _attributes(r, rows.get(r["id"]))
+            props = _attributes(r, rows.get(r["id"]), both)
             features.append({"type": "Feature", "geometry": g,
                              "properties": {k: v for k, v in props.items()
                                             if any(k == f[0] and f[2] for f in FIELDS)}})
@@ -126,7 +155,7 @@ def contributions(chunk) -> list[dict]:
             from . import KIND_COLOURS
 
             order = [k for k in timbers.KINDS if k in kinds] + [k for k in kinds if k not in timbers.KINDS]
-            legend = [{"value": timbers.kind_title(k),
+            legend = [{"value": timbers.KIND_TITLES.get(k, (k, k))[0] if both else timbers.kind_title(k),
                        "title": dict(zip(("it", "en"), timbers.KIND_TITLES.get(k, (k, k)))),
                        "colour": KIND_COLOURS.get(k, OTHER_COLOUR)} for k in order]
             out.append({"kind": "layer", "id": LAYER_ID, "title": TITLES[LAYER_ID], "features": features,
@@ -135,7 +164,7 @@ def contributions(chunk) -> list[dict]:
     else:
         LOG.info("shipwreck: the ship frame of %s is in another system than the chunk: no layer on the site",
                  chunk.label)
-    table = [{"id": r["id"], **_attributes(r, rows.get(r["id"]))} for r in records]
+    table = [{"id": r["id"], **_attributes(r, rows.get(r["id"]), both)} for r in records]
     present = {k for row in table for k in row}
     columns = [{"key": "id", "title": {"it": "N.", "en": "No."}}] + \
         [{"key": key, "title": title} for key, title, _ in FIELDS if key in present]
@@ -143,4 +172,4 @@ def contributions(chunk) -> list[dict]:
     return out
 
 
-__all__ = ["contributions", "LAYER_ID", "TABLE_ID"]
+__all__ = ["contributions", "contributions_with_site", "LAYER_ID", "TABLE_ID"]
