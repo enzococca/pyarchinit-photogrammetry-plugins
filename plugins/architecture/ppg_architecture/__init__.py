@@ -29,7 +29,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, arch_title, kind_title, metres, num, t
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 NEGATIVE_VALUES = ("--window", "--pick", "--out-side", "--points", "--radii", "--at")
 
 
@@ -152,6 +152,19 @@ class ArchitecturePlugin(Plugin):
         lo, hi = v[:, :2].min(axis=0), v[:, :2].max(axis=0)
         self.context.show_frame((lo[0], lo[1], hi[0], hi[1]), max(hi - lo) / 1500.0, t(*NAME))
 
+    def _show_elevation(self, chunk, eid: str) -> bool:
+        """The elevation or section ``eid`` (id or name) in the 2D view to trace on. Since program 1.10.0 as the window
+        shows it (``window.show_elevation``): what the user draws there meanwhile is kept with the elevation, in its
+        (u, v), and the drawings of the plan are not laid over it; before, its orthophoto as a raster of the plan."""
+        from . import elements
+
+        window = self.context.window
+        if window is not None and hasattr(self.context, "shown_elevation") and hasattr(window, "show_elevation"):
+            entry = elements.elevation_entry(chunk, eid)
+            window.show_elevation(entry)
+            return self.context.shown_elevation() == entry["id"]
+        return self.context.show_raster("ortho", path=elements.elevation_raster(chunk, eid))
+
     # ------------------------------------------------------------------ the pane
     def refresh_pane(self) -> None:
         if self.pane is None:
@@ -273,7 +286,7 @@ class ArchitecturePlugin(Plugin):
                 return
             if val["how"] == "elevation":
                 eid = val["view"]
-                if not self.context.show_raster("ortho", path=elements.elevation_raster(chunk, eid)):
+                if not self._show_elevation(chunk, eid):
                     raise elements.NotReady(t("Il prospetto non si può mostrare.", "The elevation cannot be shown."))
                 self.context.request_line(
                     lambda uv: self._guarded(self._moulding_dialog, elements.from_elevation(chunk, eid, uv), True),
@@ -376,7 +389,7 @@ class ArchitecturePlugin(Plugin):
             return
         if val["section"]:
             if val.get("pick") == "click":
-                if not self.context.show_raster("ortho", path=elements.elevation_raster(chunk, val["section"])):
+                if not self._show_elevation(chunk, val["section"]):
                     raise elements.NotReady(t("La sezione non si può mostrare.", "The section cannot be shown."))
                 self.context.request_point(
                     lambda uv: self._guarded(self._arch_dialog, chunk, val["section"], None,

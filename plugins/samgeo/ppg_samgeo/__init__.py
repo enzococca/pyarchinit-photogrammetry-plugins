@@ -26,9 +26,24 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import model_text, number, plural, t
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 TEXT_THRESHOLD = 0.25  # how sure Grounding DINO must be that a phrase names a box
 
+
+
+def plan_shown(context) -> bool:
+    """The plan in the 2D view before units in the coordinates of the chunk are added: while the window shows an
+    elevation or a section (``context.shown_elevation()`` since program 1.10.0, the window's ``drawings_frame``
+    before) ``context.add_units`` would put them into its drawings, in its (u, v); the chunk's orthophoto or DEM is
+    shown again first. False when there is neither (the view stays as it was)."""
+    window = getattr(context, "window", None)
+    if window is None:
+        return True
+    if hasattr(context, "shown_elevation"):
+        shown = context.shown_elevation()
+    else:
+        shown = getattr(window, "drawings_frame", None)
+    return shown is None or bool(context.show_raster(None))
 
 class SamgeoPlugin(Plugin):
     version = __version__
@@ -475,6 +490,12 @@ class SamgeoPlugin(Plugin):
                 raise ValueError("One identity is required per proposal")
             attrs = [{**old, **new} for old, new in zip(attrs, attributes)]
         kinds = ", ".join(sorted({a.get("tipo") or tipo for a in attrs}))
+        if not plan_shown(self.context):
+            self._message("warning", t("Le proposte sono nelle coordinate della pianta: mostra prima l'ortofoto o il "
+                                       "DEM (ora la vista mostra un prospetto o una sezione).",
+                                       "The proposals are in the coordinates of the plan: show the orthophoto or the "
+                                       "DEM first (the view shows an elevation or a section now)."))
+            return 0
         made = self.context.add_units(geoms, tipo=tipo, attributes=attrs, chunk=chunk)
         run["units"] = int(run.get("units") or 0) + made
         run["units_made"] = sorted(set(run.get("units_made") or []) | {int(a.get("n") or 0) for _g, a in rows})

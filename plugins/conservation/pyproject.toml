@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-conservation"
-version = "0.2.0"
+version = "0.2.1"
 description = """\
 pyarchinit-photogrammetry plugin: decay mapping on elevations - the ICOMOS-ISCS glossary as the codes, UNI 11182 as \
 their Italian face, local masonry terms and EN 15898 interventions; campaigns of a face with the EN 16096 classes \

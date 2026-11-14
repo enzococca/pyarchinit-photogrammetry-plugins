@@ -24,7 +24,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import LAYER_PREFIX, layer_name, t
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 POLYGON_COLOUR = "#e040fb"
 LINE_COLOUR = "#ff4081"
@@ -142,7 +142,7 @@ class PhotoCADPlugin(Plugin):
         from . import keys, project
 
         w = self._window()
-        frame = getattr(w, "drawings_frame", None)
+        frame = self._shown()
         chunk = self._chunk()
         self.pane.set_state(
             key_text=self._key_status(keys),
@@ -197,6 +197,13 @@ class PhotoCADPlugin(Plugin):
     # ------------------------------------------------------------------ helpers
     def _window(self):
         return self.context.window if self.context is not None else None
+
+    def _shown(self) -> str | None:
+        """The id of the elevation or section the 2D view shows, None on the plan: the program's
+        ``context.shown_elevation()`` since 1.10.0, the window's ``drawings_frame`` before."""
+        if self.context is not None and hasattr(self.context, "shown_elevation"):
+            return self.context.shown_elevation()
+        return getattr(self._window(), "drawings_frame", None)
 
     def _view(self):
         w = self._window()
@@ -274,7 +281,7 @@ class PhotoCADPlugin(Plugin):
         if w is None or chunk is None:
             return
         if kind == "elevation":
-            eid = getattr(w, "drawings_frame", None)
+            eid = self._shown()
             if eid is None:
                 self._say(t("Mostra prima un prospetto o una sezione nella vista 2D (dall'area di lavoro).",
                             "Show an elevation or a section in the 2D view first (from the workspace)."), "warning")
@@ -292,7 +299,7 @@ class PhotoCADPlugin(Plugin):
             return
         view = self._view()
         on_it = view is not None and view.tr is not None and (
-            (kind == "elevation") or (getattr(w, "drawings_frame", None) is None and view.kind in ("ortho", "dem")))
+            (kind == "elevation") or (self._shown() is None and view.kind in ("ortho", "dem")))
         areas = [("all", t("Tutto il raster", "The whole raster"))]
         if on_it:
             areas.append(("visible", t("La parte visibile nella vista", "The part visible in the view")))
@@ -493,7 +500,7 @@ class PhotoCADPlugin(Plugin):
         self._hidden = hidden
         if chunk is None or view.tr is None:
             return
-        frame = getattr(w, "drawings_frame", None)
+        frame = self._shown()
         with view.batch():
             for rec in project.records(chunk):
                 if rec.get("frame") != frame or not rec.get("visible", True):
@@ -531,7 +538,7 @@ class PhotoCADPlugin(Plugin):
             self._say(t("Per fare le US serve pyarchinit-photogrammetry 1.5.0 o successivo.",
                         "Making units needs pyarchinit-photogrammetry 1.5.0 or later."), "warning")
             return
-        frame = getattr(w, "drawings_frame", None)
+        frame = self._shown()
         here = [r for r in project.records(chunk) if r.get("frame") == frame]
         selected = []
         for layer, _i, attrs in (view.selected_features() if view is not None else []):
@@ -589,8 +596,9 @@ class PhotoCADPlugin(Plugin):
     def make_units(self, chunk, rec: dict, tipo: str = "US", start: int | None = None,
                    source: str | None = None) -> tuple[int, int]:
         """The closed outlines of a conversion into units without the window (command line): on the plan through
-        ``context.add_units``; on an elevation into its drawings (``chunk.meta["drawings"]["frames"][id]``).
-        ``(made, skipped)``."""
+        ``context.add_units``; on an elevation into its drawings (``chunk.meta["drawings"]["frames"][id]``): through
+        ``context.add_units(elevation=)`` since program 1.10.0 (``ValueError`` when the chunk no longer has that
+        elevation), written there directly before. ``(made, skipped)``."""
         from . import project
 
         polygons, attrs, skipped = project.unit_polygons(project.unit_features(chunk, rec, source), tipo, start)
@@ -598,6 +606,13 @@ class PhotoCADPlugin(Plugin):
             return 0, skipped
         if rec.get("frame") is None:
             return self.context.add_units(polygons, tipo=tipo, attributes=attrs, chunk=chunk), skipped
+        if hasattr(self.context, "shown_elevation"):  # program 1.10.0: the units kept with the elevation, by the API
+            if not any(e.get("id") == rec["frame"] for e in self.context.elevations(chunk)):
+                raise ValueError(t("Il prospetto «{0}» di questa conversione non è più nel chunk.",
+                                   "The elevation '{0}' of this conversion is no longer in the chunk.").format(
+                    rec["frame"]))
+            return self.context.add_units(polygons, tipo=tipo, attributes=attrs, chunk=chunk,
+                                          elevation=rec["frame"]), skipped
         from pyarchinit_photogrammetry.archaeo.stratigraphy import units_from_polygons
 
         doc = chunk.document
@@ -913,7 +928,11 @@ class PhotoCADPlugin(Plugin):
             if rec is None:
                 print(t("Nessuna conversione «{0}».", "No conversion '{0}'.").format(ns.id))
                 return 1
-            made, skipped = self.make_units(chunk, rec, ns.tipo, ns.start or None, ns.source)
+            try:
+                made, skipped = self.make_units(chunk, rec, ns.tipo, ns.start or None, ns.source)
+            except ValueError as exc:  # the elevation of the conversion removed from the chunk
+                print(exc)
+                return 1
             doc.save()
             print(t("{0} unità aggiunte ({1}); {2} linee aperte (non chiuse) saltate.",
                     "{0} units added ({1}); {2} open lines (not closed) skipped.").format(made, ns.tipo, skipped))

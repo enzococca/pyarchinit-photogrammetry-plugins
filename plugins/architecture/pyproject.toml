@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppg-architecture"
-version = "0.2.0"
+version = "0.2.1"
 description = """\
 pyarchinit-photogrammetry plugin: parametric architectural elements from the photogrammetric model - columns by \
 revolution, mouldings swept along a path, arches and barrel vaults from a section, doors and windows - as STEP \

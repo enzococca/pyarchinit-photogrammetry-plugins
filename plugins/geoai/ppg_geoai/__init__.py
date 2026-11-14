@@ -12,7 +12,22 @@ from .texts import t
 
 from . import dataset, results
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
+
+
+def plan_shown(context) -> bool:
+    """The plan in the 2D view before units in the coordinates of the chunk are added: while the window shows an
+    elevation or a section (``context.shown_elevation()`` since program 1.10.0, the window's ``drawings_frame``
+    before) ``context.add_units`` would put them into its drawings, in its (u, v); the chunk's orthophoto or DEM is
+    shown again first. False when there is neither (the view stays as it was)."""
+    window = getattr(context, "window", None)
+    if window is None:
+        return True
+    if hasattr(context, "shown_elevation"):
+        shown = context.shown_elevation()
+    else:
+        shown = getattr(window, "drawings_frame", None)
+    return shown is None or bool(context.show_raster(None))
 
 
 def input_config(path, fallback=None):
@@ -126,6 +141,14 @@ class GeoaiPlugin(Plugin):
                 for u in (chunk.meta.get("drawings") or {}).get("units", [])
                 if (u.get("attributes") or {}).get("geoai_run") == run["id"]}
         pairs = [(g, a) for g, a in zip(geoms, attrs) if a["geoai_proposal"] not in made]
+        if pairs and not plan_shown(self.context):
+            from pyarchinit_photogrammetry.gui.dialogs import message
+
+            message(self.context.window, "warning", "GeoAI", t(
+                "Le proposte sono nelle coordinate della pianta: mostra prima l'ortofoto o il DEM (ora la vista "
+                "mostra un prospetto o una sezione).", "The proposals are in the coordinates of the plan: show the "
+                "orthophoto or the DEM first (the view shows an elevation or a section now)."))
+            return
         if pairs:
             self.context.add_units([g for g, a in pairs], attributes=[a for g, a in pairs], chunk=chunk)
 

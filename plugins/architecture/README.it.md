@@ -7,7 +7,8 @@ elementi architettonici parametrici ricavati dal modello fotogrammetrico, per un
   solido è una spline per K nodi adattata al profilo misurato, o il profilo come misurato. Base, fusto e capitello
   possono essere elementi separati sullo stesso asse.
 * **Modanatura, cornice, cornice marcapiano**: si traccia il percorso sulla pianta, su un prospetto o una sezione del
-  progetto, o fra due marker; la sezione si taglia dal modello con il piano normale al percorso e si chiude contro il
+  progetto, o fra due marker (con il programma 1.10.0 il prospetto si mostra come lo mostra il programma, con i suoi
+  disegni, non sotto i disegni della pianta); la sezione si taglia dal modello con il piano normale al percorso e si chiude contro il
   muro; il solido è la sezione portata lungo il percorso con gli angoli a quartabuono (un'estrusione se il percorso è
   dritto).
 * **Arco e volta a botte**: su una sezione del progetto (il punto nell'apertura si clicca su di essa) o su un piano

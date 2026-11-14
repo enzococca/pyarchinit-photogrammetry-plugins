@@ -43,7 +43,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, num, plural, t
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 NEGATIVE_VALUES = ("--start", "--end", "--longitudinals", "--horizontals")  # may begin with a minus: "-0.2;-0.5", "-1.5,2"
 LAYER = "Legni del relitto"
 CLINKER_LAYER = "Fasce"  # the land lines, in the chunk's x, y
@@ -882,6 +882,15 @@ class ShipwreckPlugin(Plugin):
             raise ship.NotReady(t("Costruisci prima il rilievo dello scafo.", "Build the relief of the hull first."))
         return e
 
+    def _shown_elevation(self) -> str | None:
+        """The id of the elevation the 2D view shows, None on the plan: ``context.shown_elevation()`` since program
+        1.10.0, the window's ``drawings_frame`` before."""
+        if self.context is None:
+            return None
+        if hasattr(self.context, "shown_elevation"):
+            return self.context.shown_elevation()
+        return getattr(self.context.window, "drawings_frame", None)
+
     def _relief_shown(self, chunk) -> bool:
         from . import relief
 
@@ -889,7 +898,7 @@ class ShipwreckPlugin(Plugin):
         e = relief.entry(chunk) if chunk is not None else None
         view = getattr(window, "ortho_view", None)
         return (e is not None and view is not None and view.tr is not None
-                and getattr(window, "drawings_frame", None) == e["id"])
+                and self._shown_elevation() == e["id"])
 
     def _leave_relief(self, chunk) -> None:
         """The plan in the view when the relief is shown: the drawings made on it stored first (a new relief carries
@@ -1855,7 +1864,7 @@ class ShipwreckPlugin(Plugin):
     def _need_view(self, chunk) -> None:
         """Something to draw on: the orthophoto or the DEM, else an empty frame around the model."""
         view = getattr(self.context.window, "ortho_view", None)
-        on_plan = getattr(self.context.window, "drawings_frame", None) is None  # an elevation has (u, v), not x, y
+        on_plan = self._shown_elevation() is None  # an elevation has (u, v), not x, y
         if view is not None and view.tr is not None and on_plan:
             return
         if self.context.show_raster(None):
@@ -1880,7 +1889,7 @@ class ShipwreckPlugin(Plugin):
             view.remove_layer(name)
         if chunk is None or view.tr is None:
             return
-        shown = getattr(self.context.window, "drawings_frame", None)
+        shown = self._shown_elevation()
         relief_shown = shown is not None and self._relief_shown(chunk)
         if not relief_shown and self.overlay is not None:
             self.overlay.remove()  # a relief removed without another raster shown

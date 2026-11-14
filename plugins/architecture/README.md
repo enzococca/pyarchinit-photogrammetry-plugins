@@ -7,7 +7,8 @@ parametric architectural elements made from the photogrammetric model, for an HB
   model, the solid is a spline through K knots fitted to the measured profile, or the profile as measured. Base, shaft
   and capital can be separate elements on the same axis.
 * **Moulding, cornice, string course**: trace the path on the plan, on an elevation or a section of the project, or
-  between two markers; the section is cut from the model by the plane normal to the path and closed against the wall;
+  between two markers (with program 1.10.0 the elevation is shown as the program shows it, with its own drawings, and
+  not under the drawings of the plan); the section is cut from the model by the plane normal to the path and closed against the wall;
   the solid is the section swept along the path with mitred corners (an extrusion when the path is straight).
 * **Arch and barrel vault**: on a section of the project (the point inside the opening clicked on it) or a vertical
   plane through two points; the intrados is fitted as a circle (semicircular or segmental), a pointed arch, an ellipse,

@@ -14,6 +14,10 @@ a **PostgreSQL/PostGIS** database or a **SpatiaLite** file.
 | `ppg_sezioni` | traces of the sections: name, length, drawing; they belong to the project, not to a chunk: one set of rows per project | line |
 | `ppg_pietre` | stones drawn with SAM on the orthomosaic: group, area (stones drawn on the elevation of a wall are in the coordinates of the elevation, not of the map: they are left out and the summary says so) | polygon |
 | `ppg_marker` | markers and control points: height, reference, error, control or check | point |
+
+Units, spot heights and stones drawn on an elevation or a section are kept by the program with that elevation, in its
+coordinates (metres along it and up), not in those of the map: they are left out of the tables above, and the summary
+says how many (since 0.1.3; program 1.10.0 also moves there those drawn on elevations before 1.7.0).
 | `ppg_raster` | DEM and orthomosaic: footprint, file, resolution and size of what is archived (of the copy, when it is reduced), CRS, table of the copy | polygon |
 
 Every row carries `progetto` (the file name of the project), `chunk`, `sito` and `archiviato`,
@@ -69,7 +73,9 @@ le sue righe, mai quelle di un altro progetto, nemmeno con lo stesso nome di fil
 progetto (*Salva con nome*) e' un altro progetto. Archiviando solo alcuni prodotti si sostituiscono
 solo le loro righe (la sola ortofoto lascia la riga del DEM). Le sezioni sono del progetto e si
 scrivono una volta sola; le pietre disegnate sul prospetto di un muro (coordinate del prospetto, non
-della mappa) restano fuori e il riepilogo lo dice; `risoluzione` e' quella della copia archiviata.
+della mappa) restano fuori e il riepilogo lo dice; così le US, le quote e le pietre disegnate su un prospetto o una
+sezione, che il programma tiene con il loro prospetto (dalla 0.1.3 il riepilogo dice quanti sono; il programma 1.10.0
+vi porta anche quelli disegnati sui prospetti prima della 1.7.0); `risoluzione` e' quella della copia archiviata.
 Le righe scritte dalla versione 0.1.0 vengono riconosciute come quelle del progetto con lo stesso
 nome di file, a meno che i loro raster stiano nella cartella di un altro progetto. PostgreSQL con
 psycopg2 o, dove manca (l'applicazione Windows ARM64), con psycopg 3.

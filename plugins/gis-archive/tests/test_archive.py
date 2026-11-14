@@ -473,3 +473,33 @@ def test_the_exporter_runs_in_the_background(tmp_path):
         app.document = previous
     assert not errors, errors
     assert (tmp_path / "esportato.gpkg").exists() and doc.meta["gis_archive"]["id"]
+
+
+def test_drawings_kept_with_elevations_stay_out(tmp_path):
+    """The drawings kept with an elevation or a section (``chunk.meta["drawings"]["frames"]``, in its (u, v)) are not
+    written into the map tables; the summary says how many, of the tables asked for. A project of 1.6 opened by the
+    program 1.10.0 has its stones on an elevation moved there: they are said the same way."""
+    from shapely.geometry import box
+
+    from ppg_gis_archive import summary
+    from pyarchinit_photogrammetry.io import gpkg
+
+    doc = _project(tmp_path)
+    ch = doc.chunk
+    uv = box(0.5, 0.2, 0.8, 0.5).wkt
+    ch.meta["drawings"]["frames"] = {
+        "ab12cd34": {"units": [{"wkt": uv, "us": "7", "tipo": "USM", "attributes": {}}],
+                     "quote": [{"u": 0.6, "v": 0.3, "x": X0, "y": Y0, "quota_q": 101.0}],
+                     "stones": {"ab12cd34": [uv, uv]}}}
+    out = tmp_path / "frames.gpkg"
+    report = arc.archive(doc, str(out), what=["us", "quote", "pietre"])
+    assert len(gpkg.read_table(out, "ppg_us")) == 1 and len(gpkg.read_table(out, "ppg_quote")) == 2
+    assert len(gpkg.read_table(out, "ppg_pietre")) == 2  # the map's stones only
+    note = next(w for w in report["warnings"] if "prospetti" in w)
+    assert note.startswith("4 disegni") and "US 1" in note and "quote 1" in note and "pietre 2" in note
+    assert "4 disegni" in summary(report)
+    out2 = tmp_path / "us.gpkg"
+    report = arc.archive(doc, str(out2), what=["us"])
+    assert next(w for w in report["warnings"] if "prospetti" in w).startswith("1 disegno fatto")
+    report = arc.archive(doc, str(tmp_path / "marker.gpkg"), what=["marker"])
+    assert not [w for w in report["warnings"] if "prospetti" in w]
