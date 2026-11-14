@@ -422,9 +422,18 @@ plugin, only the accepted features with a term go out.
 The program moves the coordinates into the frame of the site as it does with its own drawings: in the local frame
 (the default) they are shifted to the site's origin, the heights too, and no reference system is written; every text
 is cleaned (no path of the computer). An elevation made before the chunk was georeferenced again is left out of the
-layer (its coordinates are the old ones); its campaigns stay in the tabs. The decay is not drawn on the elevations of
-the site's *Sections and elevations* tab: the program offers plugins no layer there yet. With an older program the
-plugin works as before and adds nothing to the site.
+layer (its coordinates are the old ones); its campaigns stay in the tabs. With an older program the plugin works as
+before and adds nothing to the site.
+
+**On the drawings of the elevations.** With a program whose site hook tells the frame of the site
+(`context.site_hook` 2), the areas of decay go on the drawing of their elevation in the site's *Sezioni e prospetti*
+tab, in its (u, v) as they were mapped, with a tick per term and the attributes on a click as on the plan; a click
+also gives the lowest and the highest height of the area in the heights of the site (taken down by the base of the
+site in the local frame, as the program's own drawings of the elevation) when the elevation keeps the true heights.
+Only the campaigns of an elevation the site does not publish stay on the plan, drawn as above. The term, its family,
+the kind of a feature and the intensity are given in both languages: the page shows them in its own and switches with
+it (the summary has one column *Term* instead of the Italian and the English ones). With the first form of the hook
+the layer stays on the plan, in the interface's language.
 
 ## Command line
 

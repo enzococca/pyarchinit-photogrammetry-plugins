@@ -116,13 +116,16 @@ def test_an_elevation_of_another_system_and_a_chunk_without_campaigns(tmp_path):
     assert wsite.contributions(ch) == []
 
 
-def test_the_decay_on_a_site(tmp_path):
+def test_the_decay_on_the_plan_of_a_site_with_the_first_form_of_the_hook(tmp_path, monkeypatch):
+    """A program whose hook does not tell the frame of the site (``site_hook`` absent): the areas on the plan."""
     site_plugins = pytest.importorskip("pyarchinit_photogrammetry.io.site_plugins",
                                        reason="the web site of a survey: program 1.10.0")
+    monkeypatch.setattr(site_plugins, "_providers", [])  # only the plugin of the test: none left by others
     from pyarchinit_photogrammetry.plugins.api import Context
 
     from ppg_conservation import ConservationPlugin
 
+    monkeypatch.delattr(Context, "site_hook", raising=False)
     doc, ch, entry, _c = _campaign(tmp_path / "progetto")
     plugin = ConservationPlugin()
     context = Context("conservation", tmp_path / "plugin")
@@ -158,6 +161,83 @@ def test_the_decay_on_a_site(tmp_path):
     raw = np.array(trace(entry, bounds_of(ch, entry))["coordinates"])
     assert np.allclose(raw[0] - np.array(traces[0]["geometry"]["coordinates"][0]), shift[0][:2], atol=2e-3)
     # nothing in the files of the plugin tells the place, the computer or the surveyor
+    private = [str(Path.home()), str(tmp_path), str(Path(doc.path).parent), SURVEYOR]
+    for f in (site / "data/plugins/conservation").iterdir():
+        text = f.read_text(encoding="utf-8")
+        assert not any(p in text for p in private), f.name
+        assert "EPSG" not in text and "/Users/" not in text
+        assert all(abs(float(n)) < 1000 for n in re.findall(r"-?\d+\.\d+", text)), f.name
+
+
+def _site(shift=(0.0, 0.0, 0.0), elevations=()):
+    site_plugins = pytest.importorskip("pyarchinit_photogrammetry.io.site_plugins")
+    if not hasattr(site_plugins, "Site"):
+        pytest.skip("the frame of the site: the second form of the program's hook")
+    from pyarchinit_photogrammetry.io.site import _Shift
+
+    return site_plugins.Site(_Shift(*shift), "local", elevations=elevations)
+
+
+def test_with_the_frame_the_areas_go_on_their_elevation(tmp_path):
+    _doc, ch, entry, c = _campaign(tmp_path)
+    on = _site((10.0, 20.0, 100.0), [{"elevation": entry["id"], "section": "1", "name": "Prospetto sud",
+                                      "kind": "elevation", "heights": True}])
+    layer, summary, _campaigns = wsite.contributions_with_site(ch, on)
+    assert layer["elevation"] == entry["id"] and layer["id"] == "decay" and len(layer["features"]) == 3
+    crust = next(f for f in layer["features"] if f["properties"]["code"] == "ISCS.CRUST.BLACK_CRUST")
+    u0, v0, u1, v1 = S.BLACK_CRUST
+    ring = np.asarray(crust["geometry"]["coordinates"][0])
+    assert ring[:, 0].min() == pytest.approx(u0) and ring[:, 1].max() == pytest.approx(v1)  # (u, v): the site moves v
+    p = crust["properties"]
+    assert (p["z_min"], p["z_max"]) == (pytest.approx(v0 - 100.0), pytest.approx(v1 - 100.0))  # heights of the site
+    assert p["term"]["it"] and p["term"]["en"] and p["intensity"] == {"it": "alta", "en": "high"}
+    assert set(p["family"]) == {"it", "en"} and "term_it" not in p
+    assert set(layer["fields"]) >= {"term", "z_min", "z_max"}
+    rows = {(r["code"]): r for r in summary["rows"]}
+    assert rows["ISCS.CRACK"]["kind"] == {"it": "lesione", "en": "crack"}
+    assert [col["key"] for col in summary["columns"]][:6] == ["elevation", "campaign", "date", "kind", "code", "term"]
+    # an elevation the site does not publish: its areas on the plan, as before, the words in both languages
+    plan, *_ = wsite.contributions_with_site(ch, _site())
+    assert "elevation" not in plan and len(plan["features"]) == 3
+    assert {f["geometry"]["type"] for f in plan["features"]} == {"LineString"}
+    assert "z_min" not in plan["features"][0]["properties"] and "term" in plan["features"][0]["properties"]
+
+
+def test_the_decay_on_the_elevation_of_a_site(tmp_path, monkeypatch):
+    site_plugins = pytest.importorskip("pyarchinit_photogrammetry.io.site_plugins",
+                                       reason="the web site of a survey: program 1.10.0")
+    monkeypatch.setattr(site_plugins, "_providers", [])  # only the plugin of the test: none left by others
+    from pyarchinit_photogrammetry.plugins.api import Context
+
+    from ppg_conservation import ConservationPlugin
+
+    if getattr(Context, "site_hook", 1) < 2:
+        pytest.skip("the frame of the site: the second form of the program's hook")
+    doc, ch, entry, _c = _campaign(tmp_path / "progetto")
+    plugin = ConservationPlugin()
+    context = Context("conservation", tmp_path / "plugin")
+    plugin.activate(context)
+    try:
+        path = doc.export_site(tmp_path / "sito", products=["model", "sections"], model_faces=4000)
+    finally:
+        context.release()
+    site = path.parent
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    chunk = manifest["chunks"][0]
+    assert not any("conservation" in n for n in manifest["build"]["notes"])
+    assert not any(x["id"].startswith("plugin:conservation") for x in chunk["layers"])  # not on the plan
+    (sec,) = chunk["sections"]
+    (layer,) = sec["layers"]
+    assert layer["id"] == "plugin:conservation:decay" and layer["count"] == 3 and layer["group_by"] == "code"
+    feats = json.loads((site / layer["url"]).read_text(encoding="utf-8"))["features"]
+    crust = next(f for f in feats if f["properties"]["code"] == "ISCS.CRUST.BLACK_CRUST")
+    u0, v0, u1, v1 = S.BLACK_CRUST
+    ring = np.asarray(crust["geometry"]["coordinates"][0])
+    assert ring[:, 0].min() == pytest.approx(u0, abs=1e-4)
+    dz = v1 - ring[:, 1].max()  # the base of the heights of the site: a whole metre, as the drawings of the section
+    assert dz == pytest.approx(round(dz), abs=1e-3) and 0 <= ring[:, 1].min() < 50
+    assert crust["properties"]["z_max"] == pytest.approx(ring[:, 1].max(), abs=1e-3)
+    assert crust["properties"]["term"]["en"] and crust["properties"]["intensity"] == {"it": "alta", "en": "high"}
     private = [str(Path.home()), str(tmp_path), str(Path(doc.path).parent), SURVEYOR]
     for f in (site / "data/plugins/conservation").iterdir():
         text = f.read_text(encoding="utf-8")

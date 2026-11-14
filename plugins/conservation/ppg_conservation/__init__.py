@@ -13,8 +13,9 @@
   tables in the plan's QGIS project (``window.qgis_providers``), the plate among the exports (*Tavola della campagna
   (PDF)*); PyArchInit only on *Salva in PyArchInit* (:mod:`.pyarchinit`);
 * ``ppg plugin conservation list|campaign|map|detect|plate|export|pyarchinit|legend`` (:mod:`.cli`);
-* the decay mapping on the web site of a survey (0.2.0, program 1.10.0): a layer of the areas of decay on the plan and
-  the tabs of the summary and of the campaigns (:mod:`.site`).
+* the decay mapping on the web site of a survey (0.2.0, program 1.10.0): the areas of decay on the drawings of their
+  elevations (on the plan with the first form of the program's hook) and the tabs of the summary and of the campaigns,
+  the words in both languages (:mod:`.site`).
 
 The plugin writes only ``chunk.meta["conservation"]``, the files under ``<chunk data>/conservation/<eid>/`` (or the
 folder the user chooses) and, on *Salva in PyArchInit*, the media, documents and US forms of PyArchInit.
@@ -90,7 +91,12 @@ class ConservationPlugin(Plugin):
         context.add_exporter(t("Tavola della campagna (PDF)", "Plate of the campaign (PDF)"), ".pdf",
                              self._export_plate)
         context.add_exporter(t("Conservazione (IFC 4.3)", "Conservation (IFC 4.3)"), ".ifc", self._export_ifc)
-        if hasattr(context, "add_site_contributions"):  # program 1.10.0: the decay mapping on the web site
+        hook = getattr(context, "site_hook", 1) if hasattr(context, "add_site_contributions") else 0
+        if hook >= 2:  # the frame of the site told: the areas on the drawings of the elevations, two languages
+            from .site import contributions_with_site
+
+            context.add_site_contributions(contributions_with_site, with_site=True)
+        elif hook == 1:  # program 1.10.0 with the first form of the hook: the decay mapping on the plan
             from .site import contributions
 
             context.add_site_contributions(contributions)

@@ -431,9 +431,18 @@ del plugin, vanno fuori solo gli elementi accettati e con un termine.
 Il programma porta le coordinate nel sistema del sito come fa con i suoi disegni: nel sistema locale (quello di
 default) sono traslate sull'origine del sito, anche le quote, e non viene scritto alcun sistema di riferimento; ogni
 testo è ripulito (nessun percorso del computer). Un prospetto fatto prima che il chunk fosse georeferenziato di nuovo
-resta fuori dal livello (le sue coordinate sono quelle vecchie); le sue campagne restano nelle schede. Il degrado non
-è disegnato sui prospetti della scheda *Sezioni e prospetti* del sito: il programma non offre ancora ai plugin un
-livello lì. Con un programma più vecchio il plugin funziona come prima e non aggiunge nulla al sito.
+resta fuori dal livello (le sue coordinate sono quelle vecchie); le sue campagne restano nelle schede. Con un programma
+più vecchio il plugin funziona come prima e non aggiunge nulla al sito.
+
+**Sui disegni dei prospetti.** Con un programma il cui aggancio del sito dice il sistema del sito
+(`context.site_hook` 2), le aree di degrado vanno sul disegno del loro prospetto nella scheda *Sezioni e prospetti* del
+sito, nei suoi (u, v) come sono state mappate, con una spunta per termine e gli attributi al clic come in pianta; il
+clic dà anche la quota minima e massima dell'area nelle quote del sito (abbassate della base del sito nel sistema
+locale, come i disegni del prospetto fatti dal programma) quando il prospetto tiene le quote vere. Solo le campagne di
+un prospetto che il sito non pubblica restano in pianta, disegnate come sopra. Il termine, la sua famiglia, il tipo di
+un elemento e l'intensità sono dati nelle due lingue: la pagina li mostra nella sua e cambia con lei (il riepilogo ha
+una sola colonna *Termine* invece di quella italiana e quella inglese). Con la prima forma dell'aggancio il livello
+resta in pianta, nella lingua dell'interfaccia.
 
 ## Riga di comando
 

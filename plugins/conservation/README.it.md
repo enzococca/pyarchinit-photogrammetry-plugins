@@ -33,7 +33,9 @@ la mappatura del degrado sui prospetti del programma.
   faccia, su un pavimento l'area stessa) e le schede *Degrado: riepilogo* (per campagna e termine: elementi,
   estensione, quota della faccia) e *Campagne di conservazione* (data, metodo, quota della faccia con degrado, lesione
   più aperta, classi EN 16096; il rilevatore non è pubblicato). Il programma li porta nel sistema del sito (locale di
-  default) e ripulisce ogni testo. Niente con un programma più vecchio.
+  default) e ripulisce ogni testo. Dove l'aggancio del sito del programma dice il sistema del sito (`site_hook` 2) le
+  aree vanno sui disegni dei loro prospetti, nei loro (u, v), con le quote in quelle del sito, e le parole nelle due
+  lingue. Niente con un programma più vecchio.
 
 La guida: [Conservazione](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/conservation/) (il sorgente
 è in `docs/` qui finché non passa nella documentazione del programma; la tabella della legenda la genera
