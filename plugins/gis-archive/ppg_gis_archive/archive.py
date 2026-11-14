@@ -284,6 +284,21 @@ def _elevation_images(chunk) -> set:
     return names - maps
 
 
+def _elevation_drawings(chunk, what) -> dict:
+    """``{"us"|"quote"|"pietre": how many}`` of the drawings kept with the elevations and sections of ``chunk``
+    (``chunk.meta["drawings"]["frames"]``, where the program keeps them since 1.7.0 and moves those of older projects
+    when it opens them, 1.10.0) for the tables in ``what``; only those it has."""
+    frames = (chunk.meta.get("drawings") or {}).get("frames") or {}
+    out = {"us": 0, "quote": 0, "pietre": 0}
+    for data in frames.values():
+        if not isinstance(data, dict):
+            continue
+        out["us"] += len(data.get("units") or [])
+        out["quote"] += len(data.get("quote") or [])
+        out["pietre"] += sum(len(v or []) for v in (data.get("stones") or {}).values())
+    return {k: v for k, v in out.items() if v and k in what}
+
+
 def collect(doc, chunk, what=EVERYTHING, interval: float | None = None, progress=None, key: Key | None = None,
             notes: list | None = None) -> tuple[list, list]:
     """The tables (:class:`Layer`) and the rasters (``{"kind", "path"}``) of ``chunk``; ``key``:
@@ -351,6 +366,20 @@ def collect(doc, chunk, what=EVERYTHING, interval: float | None = None, progress
                            f"{n} stones drawn on the elevation of a wall ({', '.join(sorted(left))}) not archived: "
                            "they are in the coordinates of the elevation (metres along the wall and up), not of the map"))
         layers.append(layer)
+    on_elevations = _elevation_drawings(chunk, what)
+    if on_elevations:
+        n = sum(on_elevations.values())
+        it = {"us": "US", "quote": "quote", "pietre": "pietre"}
+        en = {"us": "units", "quote": "spot heights", "pietre": "stones"}
+        o = "o" if n == 1 else "i"
+        notes.append(t(f"{n} disegn{o} fatt{o} sui prospetti o sulle sezioni ("
+                       + ", ".join(f"{it[k]} {v}" for k, v in on_elevations.items())
+                       + f") non archiviat{o}: sono tenuti con il loro prospetto, nelle sue coordinate (metri lungo il "
+                       "prospetto e in altezza), non della mappa",
+                       f"{n} drawing{'' if n == 1 else 's'} made on elevations or sections ("
+                       + ", ".join(f"{en[k]} {v}" for k, v in on_elevations.items())
+                       + ") not archived: they are kept with their elevation, in its coordinates (metres along it and "
+                       "up), not of the map"))
     if "sezioni" in what:
         # the sections belong to the project, not to a chunk: one set of rows per project
         layer = Layer("sezioni", "LINESTRING", {**COMMON, "nome": "TEXT", "lunghezza": "REAL", "disegno": "TEXT"},

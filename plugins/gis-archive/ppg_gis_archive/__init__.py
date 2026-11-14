@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pyarchinit_photogrammetry.plugins import Plugin
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 
 def t(it: str, en: str) -> str:
