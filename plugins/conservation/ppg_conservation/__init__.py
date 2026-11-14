@@ -31,7 +31,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, num, t
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .layers import LAYERS  # noqa: E402 - the plugin's layers
 from .vocabulary import UNNAMED  # noqa: E402 - the working term of a proposal not named yet
@@ -246,7 +246,7 @@ class ConservationPlugin(Plugin):
         """The elevation the view shows, None on the plan."""
         from .layers import shown_eid
 
-        return shown_eid(self.context.window if self.context else None)
+        return shown_eid(self.context.window if self.context else None, self.context)
 
     def _need_campaign(self) -> tuple:
         from . import records

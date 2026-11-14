@@ -812,3 +812,20 @@ def test_english_texts(monkeypatch):
         assert assess.class_text("uc", 3, "en") == "UC 3 - Urgent and immediate"
     finally:
         i18n.set_current(None)
+
+
+def test_the_elevation_shown_from_the_context_or_the_window():
+    """``context.shown_elevation()`` (program 1.10.0) when there is one, the window's ``drawings_frame`` before; the
+    raster shown must still be that elevation's."""
+    from types import SimpleNamespace
+
+    from ppg_conservation.layers import shown_eid
+
+    window = SimpleNamespace(drawings_frame="old", _raster_version=("elevation", "e1"))
+    new = SimpleNamespace(shown_elevation=lambda: "e1")
+    assert shown_eid(window, new) == "e1"
+    assert shown_eid(window, SimpleNamespace()) is None  # an older program: drawings_frame "old" is not the raster
+    window.drawings_frame = "e1"
+    assert shown_eid(window, SimpleNamespace()) == "e1" and shown_eid(window) == "e1"
+    assert shown_eid(window, SimpleNamespace(shown_elevation=lambda: None)) is None
+    assert shown_eid(None, new) is None

@@ -25,11 +25,15 @@ def hatch_style(hatch: str):
     return None
 
 
-def shown_eid(window) -> str | None:
-    """The elevation the window's view shows, None on the plan (or without a window)."""
+def shown_eid(window, context=None) -> str | None:
+    """The elevation the window's view shows, None on the plan (or without a window): ``context.shown_elevation()``
+    when the program has it (1.10.0), the window's ``drawings_frame`` before."""
     if window is None:
         return None
-    eid = getattr(window, "drawings_frame", None)
+    if context is not None and hasattr(context, "shown_elevation"):
+        eid = context.shown_elevation()
+    else:
+        eid = getattr(window, "drawings_frame", None)
     version = getattr(window, "_raster_version", None)
     if eid is None or (version is not None and version != ("elevation", eid)):
         return None
