@@ -144,7 +144,7 @@
     },
     {
       "name": "gis-archive",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "title": "GIS archive",
       "description": "Spot heights, contour lines, units, sections, stones, markers, DEM and orthomosaic of a project into a GeoPackage, PostgreSQL/PostGIS or SpatiaLite database",
       "i18n": {
@@ -159,8 +159,8 @@
       "api": 1,
       "min_app": "1.1.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/gis-archive-v0.1.2/ppg_gis_archive-0.1.2-py3-none-any.whl",
-      "sha256": "2397383f43cd3ee5e8839611e444e950429bccb900eeb94316c2e263962aa69f"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/gis-archive-v0.1.3/ppg_gis_archive-0.1.3-py3-none-any.whl",
+      "sha256": "880b9aad014300f3bae615232ea2b9fcffcd7aa9c7ddaae166f2308c8c6beb95"
     },
     {
       "name": "landscape",
