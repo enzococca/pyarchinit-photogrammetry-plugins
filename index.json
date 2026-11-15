@@ -224,7 +224,7 @@
     },
     {
       "name": "photocad",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "title": "PhotoCAD",
       "description": "The orthophoto, the DEM (as a hillshade) or an elevation vectorised by PhotoCAD (photocad.ai, an external paid service: one credit a conversion, confirmed before each upload): the drawing comes back georeferenced as DXF, GeoPackage and SVG, as a layer of the 2D view, and its outlines can become US/USM. API key in the system keychain",
       "i18n": {
@@ -239,8 +239,8 @@
       "api": 1,
       "min_app": "1.7.1",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/photocad-v0.1.2/ppg_photocad-0.1.2-py3-none-any.whl",
-      "sha256": "a77d338fc89e52e96cf35a2521617ec76dc41186796a6e3a06e44b2890a38012"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/photocad-v0.1.3/ppg_photocad-0.1.3-py3-none-any.whl",
+      "sha256": "cd2ea578f7c3b6c7ba811230a281b1fbfb7d9975e4309c25c1accd086ed44fb4"
     },
     {
       "name": "powerlines",
