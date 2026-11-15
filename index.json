@@ -84,7 +84,7 @@
     },
     {
       "name": "geoai",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "title": "GeoAI",
       "description": "Learn segmentation from reviewed unit drawings with RGB and optional DEM, multispectral or thermal bands; validate on a separate area and apply models as proposals to review, export or turn into units",
       "i18n": {
@@ -99,8 +99,8 @@
       "api": 1,
       "min_app": "1.5.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geoai-v0.2.1/ppg_geoai-0.2.1-py3-none-any.whl",
-      "sha256": "47677120ef8e956429d463911ccc5b47ef1ae615de51478e5eabf71e31637cc9"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/geoai-v0.2.2/ppg_geoai-0.2.2-py3-none-any.whl",
+      "sha256": "5c2fa54c8e1c679f3e19a6718f8739f501afe995b0e608dfaa84041fa26fe672"
     },
     {
       "name": "geoarchaeology",
