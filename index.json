@@ -264,7 +264,7 @@
     },
     {
       "name": "samgeo",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "title": "Samgeo",
       "description": "What you write found in the orthomosaic with Grounding DINO + SAM 2.1 or optional SAM 3 (requires Meta-approved Hugging Face access): proposals to check on the view, then stratigraphic units, classes of the dense cloud, a GeoPackage or a mask",
       "i18n": {
@@ -279,8 +279,8 @@
       "api": 1,
       "min_app": "1.5.1",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/samgeo-v0.4.1/ppg_samgeo-0.4.1-py3-none-any.whl",
-      "sha256": "27fa46d10b62cb57e051abdb0d80ac6a62905559a0dfa624e845988ca757a96a"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/samgeo-v0.4.2/ppg_samgeo-0.4.2-py3-none-any.whl",
+      "sha256": "c5c770954c0ced6035e306c64259ca9d49cde398e2d7c601b633a5c7c4a551d3"
     },
     {
       "name": "sentinel2",
