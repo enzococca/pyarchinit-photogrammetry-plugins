@@ -144,3 +144,34 @@ def test_vertex_colours_are_written_linear():
     lin = scene.linear_colours(rgba)
     assert lin.dtype == np.uint8 and lin[:, 3].tolist() == [200, 255]  # alpha is not a colour
     assert lin[0, :3].tolist() == [0, 55, 255] and lin[1, :3].tolist() == [1, 128, 13]
+
+
+def test_the_proxy_of_a_unit_drawn_on_an_elevation(tmp_path):
+    """A unit drawn on an elevation (program 1.10.0: kept with it, in its (u, v)) starts its proxy on the plane of
+    the elevation, as wide as its polygon; a unit of the plan as before; a unit not drawn stays without a place."""
+    from types import SimpleNamespace
+
+    from pyarchinit_photogrammetry.archaeo.stratigraphy import units_from_polygons
+
+    ed = pytest.importorskip("pyarchinit_photogrammetry.engine.elevation_drawings")
+    chunk = project(tmp_path).chunk
+    x0, y0, z0 = ORIGIN
+    # a vertical plane along x through (x0, y0 + 1): u along x, v up
+    chunk.meta["elevations"] = [{"id": "e1", "label": "Sezione", "crs": chunk.crs, "orthophoto": "elevations/e1/o.tif",
+                                 "relief": "elevations/e1/r.tif",
+                                 "frame": {"kind": "plane", "origin": [x0, y0 + 1.0, z0], "u_axis": [1.0, 0.0, 0.0],
+                                           "v_axis": [0.0, 0.0, 1.0]}}]
+    square = [(1.0, 0.2), (1.6, 0.2), (1.6, 0.5), (1.0, 0.5)]
+    units = units_from_polygons([square], "US", {"us": "77", "area": "1"}, sito="Scavo")
+    assert ed.add_units(chunk, "e1", units) == 1
+    unit = SimpleNamespace(us="77", tipo="US", area="1")
+    entry, row = scene.elevation_unit(chunk, unit)
+    assert entry["id"] == "e1" and row["us"] == "77"
+    shift = [x0, y0, z0]
+    start = scene.proxy_start(chunk, unit, shift)
+    assert start["size"] == pytest.approx(0.6, abs=1e-3)
+    assert start["location"][1] == pytest.approx(1.0, abs=1e-3)  # on the plane
+    assert 1.0 <= start["location"][0] <= 1.6 and 0.2 <= start["location"][2] <= 0.5
+    assert scene.proxy_start(chunk, SimpleNamespace(us="78", tipo="US", area="1"), shift) == {}
+    chunk.meta["elevations"][0]["crs"] = "EPSG:32632"  # left in another system: not placed
+    assert scene.proxy_start(chunk, unit, shift) == {}

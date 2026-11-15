@@ -249,7 +249,16 @@ def drawings_of(chunk, eid: str) -> dict:
 
 def drops_drawings() -> bool:
     """Whether the program removes the drawings kept with an elevation (its stones, units, spot heights, points,
-    lines) together with the elevation (1.10.0); before, they stayed in the project, unseen."""
+    lines) together with the elevation (1.10.0); before, they stayed in the project, unseen. The program says it
+    since 1.10.1 (``Context.FEATURES``); 1.10.0 is told by the function that does it."""
+    try:
+        from pyarchinit_photogrammetry.plugins.api import Context
+
+        features = getattr(Context, "FEATURES", None)
+        if features is not None:
+            return "elevation-removal-takes-drawings" in features
+    except ImportError:
+        pass
     try:
         from pyarchinit_photogrammetry.engine.elevation_drawings import take_frame  # noqa: F401
     except ImportError:

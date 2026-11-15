@@ -404,14 +404,61 @@ def drawn_unit(chunk, unit):
     return None
 
 
+def elevation_unit(chunk, unit):
+    """``unit`` (of the matrix) drawn on an elevation or a section of the chunk (program 1.10.0: those drawings are
+    kept with the elevation, in its ``(u, v)``): ``(entry of the elevation, its record)``, or None - also with an
+    older program, and for an elevation left in another system than the chunk's."""
+    try:
+        from pyarchinit_photogrammetry.engine import elevation_drawings as ed
+        from pyarchinit_photogrammetry.engine.elevation import same_crs
+    except ImportError:
+        return None
+
+    def same(a, b):
+        return str(a or "").strip().lower() == str(b or "").strip().lower()
+
+    for entry in ed.entries(chunk):
+        if not same_crs(entry.get("crs") or chunk.crs, chunk.crs):
+            continue
+        try:
+            rows = ed.drawings(chunk, entry["id"])["units"]
+        except Exception:  # noqa: BLE001 - drawings that do not read hold no unit to place
+            continue
+        for r in rows:
+            if same(r.get("us"), unit.us) and same(r.get("tipo") or "US", unit.tipo) and (
+                    not r.get("area") or not unit.area or same(r.get("area"), unit.area)):
+                return entry, r
+    return None
+
+
+def _proxy_start_on_elevation(chunk, unit, shift) -> dict:
+    """As :func:`proxy_start` for a unit drawn on an elevation: a box as wide as its polygon, centred on the surface
+    of the elevation in the middle of it (on its plane where the relief has no value)."""
+    found = elevation_unit(chunk, unit)
+    if found is None or found[1]["geometry"].is_empty:
+        return {}
+    from pyarchinit_photogrammetry.engine import elevation_drawings as ed
+
+    entry, row = found
+    u0, v0, u1, v1 = row["geometry"].bounds
+    size = max(0.1, float(max(u1 - u0, v1 - v0)))
+    centre = row["geometry"].representative_point()
+    uv = np.array([[centre.x, centre.y]])
+    depth = ed.surface_depths(chunk, entry, uv)
+    xyz = ed.world_of_uv(entry, uv, np.where(np.isfinite(depth), depth, 0.0))[0]
+    location = xyz - np.asarray(shift, float)
+    return {"location": [round(float(v), 4) for v in location], "size": round(size, 4)}
+
+
 def proxy_start(chunk, unit, shift) -> dict:
     """Where EMtools starts the proxy of ``unit`` (``create_proxy_for_unit``): a box as wide as the
     polygon of the unit drawn in the chunk, in the middle of it, its top on the DEM, in the coordinates
-    of Blender (the world less ``shift``); ``{}`` when the unit is not drawn (EMtools puts it at the 3D
+    of Blender (the world less ``shift``); for a unit drawn on an elevation or a section (program 1.10.0), the box
+    centred on the surface of the elevation; ``{}`` when the unit is not drawn (EMtools puts it at the 3D
     cursor)."""
     poly = drawn_unit(chunk, unit)
     if poly is None or poly.geometry.is_empty:
-        return {}
+        return _proxy_start_on_elevation(chunk, unit, shift)
     x0, y0, x1, y1 = poly.geometry.bounds
     size = max(0.1, float(max(x1 - x0, y1 - y0)))
     centre = poly.geometry.representative_point()
@@ -430,5 +477,5 @@ def proxy_start(chunk, unit, shift) -> dict:
 
 
 __all__ = ["Folders", "MANIFEST", "find_project_root", "project_folders", "export_project", "read_manifest",
-           "drawn_unit", "proxy_start",
+           "drawn_unit", "elevation_unit", "proxy_start",
            "write_proxy_glb", "write_survey_glb", "to_gltf", "from_gltf", "safe_name", "epsg_of"]

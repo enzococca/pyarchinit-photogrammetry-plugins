@@ -12,7 +12,7 @@ from .texts import t
 
 from . import dataset, results
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 def plan_shown(context) -> bool:
@@ -21,13 +21,22 @@ def plan_shown(context) -> bool:
     before) ``context.add_units`` would put them into its drawings, in its (u, v); the chunk's orthophoto or DEM is
     shown again first. False when there is neither (the view stays as it was)."""
     window = getattr(context, "window", None)
-    if window is None:
+    if window is None or plan_units(context):  # program 1.10.1: the units go to the plan, the view stays
         return True
     if hasattr(context, "shown_elevation"):
         shown = context.shown_elevation()
     else:
         shown = getattr(window, "drawings_frame", None)
     return shown is None or bool(context.show_raster(None))
+
+
+def plan_units(context) -> dict:
+    """What ``context.add_units`` takes to put the units on the plan whatever the window shows (program 1.10.1:
+    ``elevation=Context.PLAN``); nothing with an older program, where :func:`plan_shown` shows the plan first."""
+    supports = getattr(context, "supports", None)
+    if supports is not None and supports("plan-units-while-elevation"):
+        return {"elevation": context.PLAN}
+    return {}
 
 
 def input_config(path, fallback=None):
@@ -150,7 +159,7 @@ class GeoaiPlugin(Plugin):
                 "orthophoto or the DEM first (the view shows an elevation or a section now)."))
             return
         if pairs:
-            self.context.add_units([g for g, a in pairs], attributes=[a for g, a in pairs], chunk=chunk)
+            self.context.add_units([g for g, a in pairs], attributes=[a for g, a in pairs], chunk=chunk, **plan_units(self.context))
 
     def command(self, *args):
         from .client import run as job

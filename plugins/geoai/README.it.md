@@ -41,7 +41,7 @@ versioni installate di PyTorch e GeoAI. Non servono i pesi SAM 3 né il relativo
 7. Controlla le proposte con Seleziona/Canc. **US** converte quelle selezionate o tutte quelle
    rimaste se non c'è selezione; le conversioni già presenti non sono duplicate e Annulla permette
    di ripeterle. Le US sono nelle coordinate della pianta: se la vista mostra un prospetto o una sezione, prima si
-   mostrano di nuovo l'ortofoto o il DEM (dalla 0.2.1). **GeoPackage...** esporta le proposte corrette. Il raster mantiene la classificazione
+   mostrano di nuovo l'ortofoto o il DEM (dalla 0.2.1; con il programma 1.10.1 le US vanno alla pianta e la vista resta dov'è, dalla 0.2.2). **GeoPackage...** esporta le proposte corrette. Il raster mantiene la classificazione
    originale del modello anche quando elimini proposte vettoriali.
 
 La cartella `.ppgseg` contiene `model.json`, `weights.pt` e `history.json`: trasferiscila intera.

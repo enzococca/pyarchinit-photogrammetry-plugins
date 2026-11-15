@@ -26,7 +26,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 from . import environment
 from .texts import model_text, number, plural, t
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 TEXT_THRESHOLD = 0.25  # how sure Grounding DINO must be that a phrase names a box
 
 
@@ -37,13 +37,22 @@ def plan_shown(context) -> bool:
     before) ``context.add_units`` would put them into its drawings, in its (u, v); the chunk's orthophoto or DEM is
     shown again first. False when there is neither (the view stays as it was)."""
     window = getattr(context, "window", None)
-    if window is None:
+    if window is None or plan_units(context):  # program 1.10.1: the units go to the plan, the view stays
         return True
     if hasattr(context, "shown_elevation"):
         shown = context.shown_elevation()
     else:
         shown = getattr(window, "drawings_frame", None)
     return shown is None or bool(context.show_raster(None))
+
+
+def plan_units(context) -> dict:
+    """What ``context.add_units`` takes to put the units on the plan whatever the window shows (program 1.10.1:
+    ``elevation=Context.PLAN``); nothing with an older program, where :func:`plan_shown` shows the plan first."""
+    supports = getattr(context, "supports", None)
+    if supports is not None and supports("plan-units-while-elevation"):
+        return {"elevation": context.PLAN}
+    return {}
 
 class SamgeoPlugin(Plugin):
     version = __version__
@@ -496,7 +505,7 @@ class SamgeoPlugin(Plugin):
                                        "The proposals are in the coordinates of the plan: show the orthophoto or the "
                                        "DEM first (the view shows an elevation or a section now)."))
             return 0
-        made = self.context.add_units(geoms, tipo=tipo, attributes=attrs, chunk=chunk)
+        made = self.context.add_units(geoms, tipo=tipo, attributes=attrs, chunk=chunk, **plan_units(self.context))
         run["units"] = int(run.get("units") or 0) + made
         run["units_made"] = sorted(set(run.get("units_made") or []) | {int(a.get("n") or 0) for _g, a in rows})
         if len(run["units_made"]) >= int(run.get("count") or 0):  # all of them are units: the layer goes out of the way
@@ -768,7 +777,7 @@ class SamgeoPlugin(Plugin):
         if ns.units and run["count"]:
             geoms, attrs = runs.unit_rows(run, runs.features(chunk, run))
             if hasattr(self.context, "add_units"):
-                made = self.context.add_units(geoms, attributes=attrs, chunk=chunk)
+                made = self.context.add_units(geoms, attributes=attrs, chunk=chunk, **plan_units(self.context))
                 run["units"] = made
             else:
                 print("--units needs pyarchinit-photogrammetry 1.5.0 or later")

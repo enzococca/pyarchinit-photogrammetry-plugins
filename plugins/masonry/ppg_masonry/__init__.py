@@ -31,7 +31,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import NAME, kind_title, metres, num, t
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 NEGATIVE_VALUES = ("--line", "--side", "--circle", "--heights", "--stations", "--sections", "--slice", "--polygon")
 BARE_ACCEPT = ""  # --accept given without a value (classified: add the stones; usm: an error)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ppg_geoai import plan_shown
+from ppg_geoai import plan_shown, plan_units
 
 
 class _Context:
@@ -32,3 +32,13 @@ def test_the_plan_is_shown_before_units_of_the_plan():
         c = _Context("e1", raster=False, new=new)
         assert not plan_shown(c) and c.window.drawings_frame == "e1"
     assert plan_shown(SimpleNamespace(window=None))  # the command line
+
+
+def test_with_program_1_10_1_the_units_go_to_the_plan_and_the_view_stays():
+    asked = []
+    window = SimpleNamespace(drawings_frame="e1")
+    c = SimpleNamespace(window=window, PLAN="", supports=lambda f: f == "plan-units-while-elevation",
+                        shown_elevation=lambda: "e1", show_raster=lambda kind: asked.append(kind) or True)
+    assert plan_units(c) == {"elevation": ""}
+    assert plan_shown(c) and asked == [] and window.drawings_frame == "e1"
+    assert plan_units(SimpleNamespace(window=window)) == {}  # an older program

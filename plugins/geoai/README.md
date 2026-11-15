@@ -41,7 +41,7 @@ CPU is suitable for small trials. CUDA and Metal support depend on the installed
 7. Review the cyan proposals. The application's Select/Delete removes proposals from the GeoPackage.
    **US** converts selected proposals, or all remaining ones if none are selected. Existing conversions
    are detected from the actual unit drawings, so Undo works. The units are in the coordinates of the plan: while
-   the view shows an elevation or a section, the orthophoto or the DEM is shown again first (since 0.2.1). **GeoPackage...** exports the reviewed
+   the view shows an elevation or a section, the orthophoto or the DEM is shown again first (since 0.2.1; with program 1.10.1 the units go to the plan and the view stays where it is, since 0.2.2). **GeoPackage...** exports the reviewed
    proposals. The class raster remains the original model output when proposals are deleted.
 
 The model folder contains `model.json`, `weights.pt` and `history.json`. Keep the directory together

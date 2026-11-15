@@ -33,7 +33,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import plural, t
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 META = "blender_em"  # chunk.meta: the em.json linked and the EM project of the chunk
 LIVE_MS = 2000  # how often the live update looks at the chunk
 
