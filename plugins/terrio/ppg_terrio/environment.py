@@ -9,7 +9,7 @@ into ``<plugin data>/lib`` and puts that folder on ``sys.path``; :func:`load` im
 of the two: the terrio of the environment or the one of the plugin folder (a terrio downloaded to
 update the one the application carries wins over it).
 
-The plugin works with terrio from 0.3.2 up to the 0.6 releases; the steps added in 0.2.0 of the
+The plugin works with terrio from 0.3.2 up to the 0.9 releases; the steps added in 0.2.0 of the
 plugin (cleaning, colours from rasters, heights, Planetary Computer) need terrio 0.5
 (:data:`FEATURES_SINCE`) and say so when an older one is installed (:class:`TerrioTooOld`). From
 0.6 terrio may fall back to a rougher coordinate transformation when a grid is missing: the plugin
@@ -29,8 +29,8 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
-TERRIO_VERSION = "0.6.1"  # the version the plugin is written and tested with
-OLDEST, NEWEST = (0, 3, 2), (0, 7)  # accepted: from 0.3.2 up to (not including) 0.7
+TERRIO_VERSION = "0.9.0"  # the version the plugin is written and tested with, the one install() downloads
+OLDEST, NEWEST = (0, 3, 2), (0, 10)  # accepted: from 0.3.2 up to (not including) 0.10
 FEATURES_SINCE = (0, 5)  # LOF, DBSCAN, colorization, heights through geoid grids, Planetary Computer signing
 PYPI = "https://pypi.org/pypi/terrio/{version}/json"
 USER_AGENT = "pyarchinit-photogrammetry plugin terrio"
@@ -85,13 +85,25 @@ def _text(it: str, en: str) -> str:
     return t(it, en)
 
 
+def dotted(version: tuple) -> str:
+    """``(0, 10)`` as ``0.10``."""
+    return ".".join(str(v) for v in version)
+
+
+def requirement(minimum: tuple = FEATURES_SINCE) -> str:
+    """What pip is asked for: at least ``minimum``, below :data:`NEWEST` (``terrio>=0.5,<0.10``, the
+    line of ``pyproject.toml``)."""
+    return f"terrio>={dotted(minimum)},<{dotted(NEWEST)}"
+
+
 def _import(minimum: tuple | None = None, feature: str = ""):
     import terrio
 
     version = getattr(terrio, "__version__", "0")
     if not (OLDEST <= _key(version) < NEWEST):
-        raise TerrioMissing(f"terrio {version} is installed, this plugin needs terrio {TERRIO_VERSION} "
-                            f"(0.3.2 up to the 0.6 releases): pip install 'terrio>=0.5,<0.7'")
+        raise TerrioMissing(f"terrio {version} is installed, this plugin works with terrio from {dotted(OLDEST)} "
+                            f"up to (not including) {dotted(NEWEST)} and is written for {TERRIO_VERSION}: "
+                            f"pip install '{requirement()}'")
     if minimum is not None and _key(version) < tuple(minimum):
         from .texts import needs_newer
 

@@ -56,7 +56,7 @@ ppg plugin terrio export scavo.ppg ortofoto.pmtiles
   pip install "ppg-terrio @ git+https://github.com/enzococca/pyarchinit-photogrammetry-plugins#subdirectory=plugins/terrio"
   ```
 
-Il plugin è scritto per terrio 0.6.1 e pip installa `terrio>=0.5,<0.7`. Un terrio più vecchio (0.3.2 e le
+Il plugin è scritto per terrio 0.9.0 e pip installa `terrio>=0.5,<0.10`. Un terrio più vecchio (0.3.2 e le
 versioni 0.4, come quello che può trovarsi nella cartella del plugin dell'applicazione) fa ancora
 l'importazione, la classificazione del terreno, i raster di riferimento e le esportazioni; la pulizia, i colori
 e i valori, le quote e il Planetary Computer richiedono la 0.5 e lo dicono - la finestra propone di scaricarla.

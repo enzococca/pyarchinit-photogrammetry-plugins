@@ -5,6 +5,7 @@ tiles of the orthomosaic, a reference raster kept as a version, the plugin in th
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -268,13 +269,32 @@ def test_command(tmp_path, capsys):
 
 
 def test_version_gate():
-    """terrio from 0.3.2 up to the 0.6 releases is accepted, older and newer ones refused; the
-    steps of 0.2.0 need 0.5."""
+    """terrio from 0.3.2 up to the 0.9 releases is accepted, older and newer ones refused; the
+    steps of 0.2.0 need 0.5; pip is asked for the same range the plugin accepts."""
     inside = lambda v: environment.OLDEST <= environment._key(v) < environment.NEWEST  # noqa: E731
-    assert inside("0.3.2") and inside("0.4.0") and inside("0.5.0") and inside("0.6.1") and inside("0.6.9")
-    assert not inside("0.3.1") and not inside("0.7.0") and not inside("1.0.0")
+    assert inside("0.3.2") and inside("0.4.0") and inside("0.5.0") and inside("0.6.1") and inside("0.7.0")
+    assert inside("0.8.0") and inside("0.9.0") and inside("0.9.12")
+    assert not inside("0.3.1") and not inside("0.10.0") and not inside("1.0.0")
     assert environment._key("0.4.2") < environment.FEATURES_SINCE <= environment._key("0.5.0")
-    assert environment._key(environment.TERRIO_VERSION) >= environment.OLDEST
+    assert inside(environment.TERRIO_VERSION) and environment._key(environment.TERRIO_VERSION) >= environment.FEATURES_SINCE
+    assert environment.requirement() == "terrio>=0.5,<0.10"
+    project = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'dependencies = ["{environment.requirement()}"]' in project
+    for readme in ("README.md", "README.it.md"):
+        text = (Path(__file__).resolve().parents[1] / readme).read_text(encoding="utf-8")
+        assert f"terrio {environment.TERRIO_VERSION}" in text and f"`{environment.requirement()}`" in text
+
+
+def test_a_terrio_outside_the_range_says_which_one_to_install(monkeypatch):
+    """A terrio newer (or older) than the plugin accepts is refused with the range and the pip line."""
+    for version in ("0.10.0", "0.3.1"):
+        monkeypatch.setattr(terrio, "__version__", version)
+        with pytest.raises(environment.TerrioMissing) as exc:
+            environment.load()
+        message = str(exc.value)
+        assert f"terrio {version} is installed" in message and "from 0.3.2 up to (not including) 0.10" in message
+        assert environment.TERRIO_VERSION in message and "pip install 'terrio>=0.5,<0.10'" in message
+        assert not isinstance(exc.value, environment.TerrioTooOld)
 
 
 def test_import_from_a_zip(tmp_path):

@@ -14,7 +14,7 @@ requires-python = ">=3.10"
 # application, which has no pip, downloads it from PyPI into the plugin folder (Installa terrio)
 # the steps of 0.2.0 (cleaning, colours, heights, Planetary Computer) need terrio 0.5; an older terrio in the
 # plugin folder still runs the others and the window offers to update it
-dependencies = ["terrio>=0.5,<0.7"]
+dependencies = ["terrio>=0.5,<0.10"]
 
 [project.urls]
 Homepage = "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/terrio"
