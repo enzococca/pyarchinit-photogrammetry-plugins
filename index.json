@@ -4,7 +4,7 @@
   "plugins": [
     {
       "name": "architecture",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "title": "Architectural elements",
       "description": "Columns by revolution, mouldings swept along a path, arches and barrel vaults from a section, doors and windows (splayed or not, flat or arched), made from the photogrammetric model as STEP (CadQuery, in an environment of its own) and parametric IFC solids, the measured profile kept and the fit always given: how far the model is from the solid",
       "i18n": {
@@ -19,8 +19,8 @@
       "api": 1,
       "min_app": "1.3.4",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/architecture-v0.2.0/ppg_architecture-0.2.0-py3-none-any.whl",
-      "sha256": "d567a560171cb075ee2aca47308dc5c44ceb12d548bf86cee5c61df24f3e0c6d"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/architecture-v0.2.1/ppg_architecture-0.2.1-py3-none-any.whl",
+      "sha256": "1b6110944f1c74d6a4fde76f86f339f250dd80c5e11a37522ed93cdce5653ff6"
     },
     {
       "name": "blender-em",
