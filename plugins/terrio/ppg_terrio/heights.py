@@ -208,24 +208,27 @@ def vertical_shift(crs: str, xs, ys, source: str, target: str, network: bool = T
     folders = list(folders) + [Path(s).parent for s in (source, target) if is_grid_file(s)]
     what = t("Le quote", "The heights")
     z0 = np.zeros(len(xs))
-    refused = None
+    refused, said = None, []  # what terrio warned of while it moved the heights: for the refusal, if there is one
     with grid_access(network, keep, folders, cache, environment_paths) as terrio:
         lon, lat = transforms.transform_points(terrio, xs, ys, crs, geo["2d"], what=what)[:2]
         try:  # never a ballpark that leaves the heights as they are (terrio 0.6: only_best)
             z1 = transforms.transform_points(terrio, lon, lat, _crs3d(source, geo), _crs3d(target, geo), zs=z0,
-                                             what=what)[2]
+                                             what=what, said=said)[2]
         except transforms.TransformUnavailable as exc:
             z1, refused = np.full(len(xs), np.nan), exc
     dz = np.asarray(z1, np.float64) - z0
     missing = ~np.isfinite(dz) | (dz == 0.0)  # and with an older terrio: a height no grid moved
     if missing.any():
+        reason, rest = (refused.reason, []) if refused is not None else transforms.words(said)
+        transforms.again(rest)
         where = t("in {0} punti su {1}", "at {0} points of {1}").format(int(missing.sum()), len(dz))
         raise HeightsUnavailable(t(
             "Nessun modello ha spostato le quote da {0} a {1} ({2}): la griglia del geoide manca - attiva la rete "
             "per scaricarla dal CDN di PROJ, o mettila in una cartella delle griglie - oppure non copre il rilievo.",
             "No model moved the heights from {0} to {1} ({2}): the grid of the geoid is missing - allow the network "
             "to download it from the PROJ CDN, or put it in a folder of grids - or it does not cover the survey.")
-            .format(label(source), label(target), where)) from refused
+            .format(label(source), label(target), where) + (f" terrio: {reason}" if reason else "")) from refused
+    transforms.again(said)
     return dz
 
 

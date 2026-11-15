@@ -15,10 +15,18 @@ point instead.
 
 The errors are :class:`TransformUnavailable`, which says what to do: allow the network (the grids
 come from the PROJ CDN) or put the grid in a folder terrio searches.
+
+Why a grid was not used terrio says in warnings (from 0.9: which grid, and that it is outside the
+folders of grids, named by a path, too large, not downloaded), its error being often no more than
+"cannot transform". The warnings issued during a call that may refuse a grid are recorded
+(:func:`listen`): what they say of the grid goes into the refusal (:func:`words`), every other one is
+issued again as it was (:func:`again`). Nothing is remembered from one call to the next: terrio
+says it again every time it refuses.
 """
 from __future__ import annotations
 
 import inspect
+import warnings
 
 import numpy as np
 
@@ -28,11 +36,17 @@ from .texts import t
 # which ignores the datum shift (tens to hundreds of metres); different grids of the same shift
 # (a Helmert transformation against a grid) stay well within it
 PYPROJ_TOLERANCE_M = 5.0
+REASON_LENGTH = 300  # characters of terrio's own words kept in a message, at most
 
 
 class TransformUnavailable(RuntimeError):
     """The best transformation between two systems cannot be used here: its grid is missing or
-    unreadable (terrio would take a rougher one, possibly a ballpark)."""
+    unreadable (terrio would take a rougher one, possibly a ballpark). ``reason``: what terrio said
+    of it in its warnings (which grid, and why it was not read), "" when it said nothing."""
+
+    def __init__(self, message: str, reason: str = ""):
+        super().__init__(message)
+        self.reason = reason
 
 
 def has_only_best(terrio) -> bool:
@@ -43,7 +57,60 @@ def has_only_best(terrio) -> bool:
         return tuple(int(v) for v in str(terrio.__version__).split(".")[:2] if v.isdigit()) >= (0, 6)
 
 
-def _refusal(src: str, dst: str, what: str, error) -> TransformUnavailable:
+def listen(call):
+    """``call()`` with the warnings issued meanwhile recorded instead of shown: its result (``None``
+    when it failed), its error (``None`` when it went well) and the warnings, for :func:`words` and
+    :func:`again`. The window is the call and no more: the recording is of the whole process, so a
+    warning of another thread in that time is recorded with terrio's (and issued again, or - when
+    it is a ``UserWarning`` and a grid was refused - quoted beside terrio's)."""
+    with warnings.catch_warnings(record=True) as heard:
+        warnings.simplefilter("always")
+        try:
+            return call(), None, list(heard)
+        except Exception as exc:
+            return None, exc, list(heard)
+
+
+def again(said) -> None:
+    """Issue the recorded warnings ``said`` again, each with its own category, file and line: what
+    another part of the program would have seen is not swallowed."""
+    for w in said:
+        warnings.warn_explicit(w.message, w.category, w.filename, w.lineno, source=w.source)
+
+
+def words(said, but: str = "") -> tuple[str, list]:
+    """What terrio said in the recorded warnings ``said``, as one line of :data:`REASON_LENGTH`
+    characters at most: the text of each ``UserWarning`` (terrio's are) once, one after the other,
+    without what ``but`` - the text of the error - says already. And the warnings that are not in
+    the line (of another category, or left without room), for :func:`again`."""
+    line, told, rest = "", set(), []
+    for w in said:
+        text = " ".join(str(w.message).split())
+        if not text or not issubclass(w.category, UserWarning):
+            rest.append(w)
+        elif text in told or text in but:
+            continue
+        elif not line:
+            line = text if len(text) <= REASON_LENGTH else text[:REASON_LENGTH - 3] + "..."
+            told.add(text)
+        elif len(line) + 2 + len(text) <= REASON_LENGTH:
+            line += "; " + text
+            told.add(text)
+        else:
+            rest.append(w)
+    return line, rest
+
+
+def _pass_on(heard, said) -> None:
+    """The warnings of a call that went well: to whoever asked for them (the list ``said``), else
+    issued again."""
+    if said is None:
+        again(heard)
+    else:
+        said.extend(heard)
+
+
+def _refusal(src: str, dst: str, what: str, error, reason: str = "") -> TransformUnavailable:
     return TransformUnavailable(t(
         "{0}: la trasformazione migliore da {1} a {2} non si può usare (la sua griglia manca o non si legge) e terrio "
         "ne userebbe una più approssimativa, anche di decine di metri. Attiva la rete per scaricare la griglia dal "
@@ -51,7 +118,8 @@ def _refusal(src: str, dst: str, what: str, error) -> TransformUnavailable:
         "{0}: the best transformation from {1} to {2} cannot be used (its grid is missing or unreadable) and terrio "
         "would take a rougher one, even tens of metres off. Allow the network to download the grid from the PROJ "
         "CDN, or put it in a folder of grids. ({3})").format(what or t("Trasformazione", "Transformation"),
-                                                             src, dst, error))
+                                                             src, dst, f"{error}; {reason}" if reason else error),
+        reason)
 
 
 def _refused(error, warping: bool = False) -> bool:
@@ -60,6 +128,26 @@ def _refused(error, warping: bool = False) -> bool:
     text = str(error)
     keys = ("ONLY_BEST", "ALLOW_BALLPARK", "missing grid") + (("failed to transform",) if warping else ())
     return any(k in text for k in keys)
+
+
+def _strict(call, src: str, dst: str, what: str, warping: bool = False, said=None):
+    """The result of ``call()`` - terrio asked for the best operation - or its refusal as a
+    :class:`TransformUnavailable` with terrio's own words about the grid. A refusal is an error
+    that says so (:func:`_refused`) or one that came with a warning about a grid: terrio 0.9 says
+    "cannot transform" of a point whose grid it did not read, and why in the warning. Any other
+    error is terrio's own, raised as it is, and so is always a refusal for memory (terrio 0.9's
+    ``ResourceLimitError``). The warnings no message uses are issued again (given to ``said``, a
+    list, when the call went well and the caller asked for them)."""
+    out, error, heard = listen(call)
+    if error is None:
+        _pass_on(heard, said)
+        return out
+    reason, rest = words(heard, but=str(error))
+    if not isinstance(error, MemoryError) and (_refused(error, warping) or "grid" in reason):
+        again(rest)
+        raise _refusal(src, dst, what, error, reason) from error
+    again(heard)
+    raise error
 
 
 def _pyproj(xs, ys, src: str, dst: str, zs=None):
@@ -88,9 +176,10 @@ def _metres_apart(a, b, crs: str) -> float:
     return float(np.hypot(a[0] - b[0], a[1] - b[1]) * factor)
 
 
-def check_against_pyproj(xs, ys, out, src: str, dst: str, what: str = "") -> None:
+def check_against_pyproj(xs, ys, out, src: str, dst: str, what: str = "", said=()) -> None:
     """The first finite point of ``out`` (the x, y terrio gave for ``xs``, ``ys``) within
-    :data:`PYPROJ_TOLERANCE_M` of the program's PROJ; else :class:`TransformUnavailable`."""
+    :data:`PYPROJ_TOLERANCE_M` of the program's PROJ; else :class:`TransformUnavailable`, with what
+    terrio warned of meanwhile (``said``, recorded by :func:`listen`)."""
     xs, ys = np.asarray(xs, np.float64).ravel(), np.asarray(ys, np.float64).ravel()
     ox, oy = np.asarray(out[0], np.float64).ravel(), np.asarray(out[1], np.float64).ravel()
     finite = np.nonzero(np.isfinite(xs) & np.isfinite(ys) & np.isfinite(ox) & np.isfinite(oy))[0]
@@ -105,23 +194,27 @@ def check_against_pyproj(xs, ys, out, src: str, dst: str, what: str = "") -> Non
         return
     apart = _metres_apart((ox[i], oy[i]), (px, py), dst)
     if apart > PYPROJ_TOLERANCE_M:
+        reason, rest = words(said)
+        again(rest)
         raise _refusal(src, dst, what, t("{0} m dalla trasformazione di PROJ", "{0} m from PROJ's transformation")
-                       .format(f"{apart:.1f}"))
+                       .format(f"{apart:.1f}"), reason)
 
 
-def transform_points(terrio, xs, ys, src: str, dst: str, zs=None, what: str = ""):
+def transform_points(terrio, xs, ys, src: str, dst: str, zs=None, what: str = "", said=None):
     """``terrio.transform_points(xs, ys, src, dst, zs)`` by the best operation: ``only_best`` with
-    terrio 0.6 and later, the check against pyproj before; :class:`TransformUnavailable` else."""
+    terrio 0.6 and later, the check against pyproj before; :class:`TransformUnavailable` else, with
+    terrio's own words about the grid. ``said``: a list that takes the warnings of a transformation
+    that went well, for a caller that may still refuse its result (they are issued again else)."""
     kw = {} if zs is None else {"zs": zs}
     if has_only_best(terrio):
-        try:
-            return terrio.transform_points(xs, ys, src, dst, only_best=True, **kw)
-        except Exception as exc:
-            if _refused(exc):
-                raise _refusal(src, dst, what, exc) from exc
-            raise
-    out = terrio.transform_points(xs, ys, src, dst, **kw)
-    check_against_pyproj(xs, ys, out, src, dst, what)
+        return _strict(lambda: terrio.transform_points(xs, ys, src, dst, only_best=True, **kw), src, dst, what,
+                       said=said)
+    out, error, heard = listen(lambda: terrio.transform_points(xs, ys, src, dst, **kw))
+    if error is not None:
+        again(heard)
+        raise error
+    check_against_pyproj(xs, ys, out, src, dst, what, said=heard)
+    _pass_on(heard, said)
     return out
 
 
@@ -145,12 +238,8 @@ def warp(terrio, source, *, t_srs: str, te=None, src_crs: str | None = None, wha
         options["ONLY_BEST"] = "YES"
         if te is not None and src_crs:
             check_best(terrio, te, t_srs, src_crs, what)  # the clear message, before terrio's own
-        try:
-            return terrio.warp(source, t_srs=t_srs, to=options, **kw)
-        except Exception as exc:
-            if _refused(exc, warping=True):
-                raise _refusal(src_crs or str(source), t_srs, what, exc) from exc
-            raise
+        return _strict(lambda: terrio.warp(source, t_srs=t_srs, to=options, **kw), src_crs or str(source), t_srs,
+                       what, warping=True)
     if te is not None and src_crs:
         check_best(terrio, te, t_srs, src_crs, what)
     return terrio.warp(source, t_srs=t_srs, **kw)

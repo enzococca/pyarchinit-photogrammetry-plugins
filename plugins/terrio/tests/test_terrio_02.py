@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import struct
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -15,7 +16,7 @@ terrio = pytest.importorskip("terrio")
 if tuple(int(v) for v in terrio.__version__.split(".")[:2]) < (0, 5):
     pytest.skip("the steps of 0.2.0 need terrio 0.5", allow_module_level=True)
 
-from ppg_terrio import cleaning, cloudfile, colour, environment, heights, rasters  # noqa: E402
+from ppg_terrio import cleaning, cloudfile, colour, environment, heights, rasters, transforms  # noqa: E402
 
 from test_terrio import CRS, ORIGIN, SIZE, _project  # noqa: E402
 
@@ -207,6 +208,63 @@ def test_heights_never_copied_silently(tmp_path):
     local = doc.add_chunk("locale")
     with pytest.raises(RuntimeError):
         heights.vertical_shift(local.crs, [0.0], [0.0], "ellipsoid", "EPSG:3855", **opts)
+
+
+def _no_shift(tmp_path):
+    """A shift from the ellipsoid to EGM96 at the origin of the survey, whose grid is nowhere, asked twice: the two
+    refusals and what was warned of meanwhile (but for the objects the interpreter clears when it comes to them)."""
+    refusals = []
+    with warnings.catch_warnings(record=True) as let_out:
+        warnings.simplefilter("always")
+        for _ in range(2):
+            with pytest.raises(heights.HeightsUnavailable) as exc:
+                heights.vertical_shift(CRS, [ORIGIN[0]], [ORIGIN[1]], "ellipsoid", "EPSG:5773", network=False,
+                                       cache=tmp_path / "cache", environment_paths=False)
+            refusals.append(exc.value)
+    return refusals, [str(w.message) for w in let_out if not issubclass(w.category, ResourceWarning)]
+
+
+def test_a_refusal_of_heights_says_what_terrio_said_of_the_grid(tmp_path, monkeypatch):
+    """What terrio says in a warning of a grid it did not read goes into the refusal of the heights, after the
+    plugin's own sentence, the same every time; when terrio says nothing more than its error (a grid that is not
+    there) the message is the one of always. Nothing is shown twice, nothing is swallowed."""
+    refusals, let_out = _no_shift(tmp_path)
+    plain = str(refusals[0])
+    assert plain.endswith("non copre il rilievo.") and str(refusals[1]) == plain and not let_out
+    assert isinstance(refusals[0].__cause__, transforms.TransformUnavailable)
+    real = terrio.transform_points
+    too_large = "grid file is not read: larger than 2147483648 bytes (/griglie/geoide.gtx)"  # terrio 0.9's words
+
+    def refusing(xs, ys, src_crs, dst_crs, zs=None, only_best=False):
+        if zs is None:
+            return real(xs, ys, src_crs, dst_crs)
+        warnings.warn(too_large, stacklevel=1)
+        raise ValueError("coordinate reference system: cannot transform (39.5, 36, 0)")
+
+    monkeypatch.setattr(terrio, "transform_points", refusing)
+    refusals, let_out = _no_shift(tmp_path)
+    assert str(refusals[0]) == f"{plain} terrio: {too_large}" and str(refusals[1]) == str(refusals[0])
+    assert isinstance(refusals[0].__cause__, transforms.TransformUnavailable) and not let_out
+
+    def older(xs, ys, src_crs, dst_crs, zs=None):  # no only_best: the heights come back as they are, with a warning
+        return real(xs, ys, src_crs, dst_crs) if zs is None else real(xs, ys, src_crs, dst_crs, zs=zs)
+
+    monkeypatch.setattr(terrio, "transform_points", older)
+    refusals, let_out = _no_shift(tmp_path)
+    assert str(refusals[0]).startswith(f"{plain} terrio: geoid model did not apply (its grid is missing")
+    assert str(refusals[1]) == str(refusals[0]) and refusals[0].__cause__ is None and not let_out
+
+    def warning(xs, ys, src_crs, dst_crs, zs=None, only_best=False):  # the heights moved: its warning is for others
+        if zs is None:
+            return real(xs, ys, src_crs, dst_crs)
+        warnings.warn("grid read from the network", stacklevel=1)
+        return xs, ys, np.asarray(zs, np.float64) - 30.0
+
+    monkeypatch.setattr(terrio, "transform_points", warning)
+    with pytest.warns(UserWarning, match="grid read from the network"):
+        shift = heights.vertical_shift(CRS, [ORIGIN[0]], [ORIGIN[1]], "ellipsoid", "EPSG:5773", network=False,
+                                       cache=tmp_path / "cache", environment_paths=False)
+    assert shift[0] == -30.0
 
 
 def test_reference_raster_with_its_heights_moved(tmp_path):
