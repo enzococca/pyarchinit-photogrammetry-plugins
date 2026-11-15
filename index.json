@@ -44,7 +44,7 @@
     },
     {
       "name": "conservation",
-      "version": "0.1.0",
+      "version": "0.2.1",
       "title": "Conservation",
       "description": "Decay mapping on the program's elevations: ICOMOS-ISCS terms with UNI 11182 as their Italian face, local masonry terms and EN 15898 interventions; campaigns of a face with EN 16096 classes chosen by the surveyor; areas, cracks and treatments with their extent, photos and units; plates, tables, GeoPackages, QGIS styles, PyArchInit, IFC 4.3",
       "i18n": {
@@ -59,8 +59,8 @@
       "api": 1,
       "min_app": "1.7.1",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/conservation-v0.1.0/ppg_conservation-0.1.0-py3-none-any.whl",
-      "sha256": "f18cdd728d8bde912f359a59e5bb5aa728a8449bcaf69a83ac2615bdce9b4b6e"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/conservation-v0.2.1/ppg_conservation-0.2.1-py3-none-any.whl",
+      "sha256": "0b6969ac0d741bea2a8a2a419bbfa55e2e505bb82bc117ee23c8c3e8f7c48a40"
     },
     {
       "name": "flightplan",
