@@ -149,6 +149,45 @@ def test_values_as_a_dimension_kept_and_exported(tmp_path):
         cloudfile.dimension_name("classification")
 
 
+def _small_raster(tmp_path):
+    """A raster of 50 x 50 cells of 0.5 m, all 7, in the system of the synthetic survey: its file, its bounds."""
+    path = tmp_path / "piccolo.tif"
+    terrio.Raster.from_array(np.full((3, 50, 50), 7, np.uint8), (1000.0, 0.5, 0.0, 2050.0, 0.0, -0.5),
+                             crs=CRS).write(str(path))
+    return path, (1000.0, 2025.0, 1025.0, 2050.0)
+
+
+def test_a_tile_that_reaches_the_raster_by_less_than_a_cell_is_left_out_by_its_geometry(tmp_path, monkeypatch):
+    """The window of a tile overlaps the edge of the raster by a hair: terrio refuses such a window as empty (in
+    words that never held "outside"); the points of that tile are beyond the raster, they get no value, and the
+    tiles that cover the raster are read."""
+    from types import SimpleNamespace
+
+    path, (left, bottom, right, top) = _small_raster(tmp_path)
+    monkeypatch.setattr(colour, "TILE", 20)  # tiles of 10 m, windows padded by 1 m (two cells)
+    origin = left - 11 + 1e-7  # the padded window of the first tile ends 1e-7 m inside the raster
+    world = np.array([[origin, 2030.0, 0.0], [1010.0, 2030.0, 0.0], [1020.0, 2040.0, 0.0]])
+    out = colour.sample(SimpleNamespace(crs=CRS, data_dir=tmp_path), str(path), (1, 2, 3), world)
+    assert np.isnan(out[0]).all() and (out[1:] == 7).all(), out
+
+
+@pytest.mark.parametrize("text", ["point outside the velocity grid", "no pixel of the raster could be read"])
+def test_an_error_while_reading_a_tile_stops_the_step_whatever_its_words(tmp_path, monkeypatch, text):
+    """Only the geometry leaves a tile out: an error of terrio while a tile inside the raster is read stops the step
+    and is said, even when its text holds "outside" or "no pixel" (it was taken for a tile outside the raster, and
+    its points silently got no value)."""
+    from types import SimpleNamespace
+
+    path, _ = _small_raster(tmp_path)
+
+    def refuses(*a, **k):
+        raise terrio.errors.InvalidDataError(text)
+
+    monkeypatch.setattr(terrio, "translate", refuses)
+    with pytest.raises(terrio.errors.InvalidDataError, match=text):
+        colour.sample(SimpleNamespace(crs=CRS, data_dir=tmp_path), str(path), (1, 2, 3), np.array([[1010.0, 2030.0, 0.0]]))
+
+
 def _geoid_grid(folder, name="egm08_25.gtx", base=20.0):
     """A small GTX geoid around the synthetic survey: N = base + 0.4 per row + 0.1 per column of
     0.25 degrees; returns the undulation at the origin of the survey."""

@@ -147,24 +147,22 @@ def sample(chunk, path, bands, world: np.ndarray, resampling: str = "bilinear", 
         x0, y0 = origin + key * size
         pad = 2 * res
         x0, y0, x1, y1 = x0 - pad, y0 - pad, x0 + size + pad, y0 + size + pad
-        try:
-            if same:
-                sb = src.bounds
-                if x1 <= sb[0] or x0 >= sb[2] or y1 <= sb[1] or y0 >= sb[3]:
-                    continue
-                window = terrio.translate(str(path), projwin=(max(x0, sb[0]), min(y1, sb[3]), min(x1, sb[2]),
-                                                              max(y0, sb[1])), bands=wanted)
-            else:
-                # floats with a nodata of their own: the cells the source does not reach are told apart
-                window = transforms.warp(terrio, str(path), t_srs=chunk.crs, te=(x0, y0, x1, y1), src_crs=src.crs,
-                                         what=_feature(), tr=(res, res), resampling=resampling, ot="Float32",
-                                         dstnodata=OUTSIDE)
-                if window.count != len(wanted):
-                    window = terrio.translate(window, bands=wanted)
-        except Exception as exc:  # a window outside the raster: no value there
-            if "outside" in str(exc).lower() or "no pixel" in str(exc).lower():
+        if same:
+            sb = src.bounds
+            left, right, bottom, top = max(x0, sb[0]), min(x1, sb[2]), max(y0, sb[1]), min(y1, sb[3])
+            if right - left < abs(src.res[0]) or top - bottom < abs(src.res[1]):
+                # outside the raster, or reaching it by less than a cell (a window terrio refuses as empty): the
+                # points of the tile, two cells inside the window, are beyond the raster and get no value
                 continue
-            raise
+            window = terrio.translate(str(path), projwin=(left, top, right, bottom), bands=wanted)
+        else:
+            # floats with a nodata of their own: the cells the source does not reach are told apart (a window
+            # outside the raster is all of them); any error of terrio stops the step
+            window = transforms.warp(terrio, str(path), t_srs=chunk.crs, te=(x0, y0, x1, y1), src_crs=src.crs,
+                                     what=_feature(), tr=(res, res), resampling=resampling, ot="Float32",
+                                     dstnodata=OUTSIDE)
+            if window.count != len(wanted):
+                window = terrio.translate(window, bands=wanted)
         pts = world[idx]
         arrays = {"x": pts[:, 0], "y": pts[:, 1], "z": pts[:, 2]} | {n: np.full(len(idx), np.nan) for n in names}
         cloud = terrio.PointCloud.from_dict(arrays)
