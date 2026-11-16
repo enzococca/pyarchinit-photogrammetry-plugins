@@ -80,6 +80,8 @@ def _same_crs(a: str, b: str) -> bool:
         from pyarchinit_photogrammetry.core.crs import to_pyproj
 
         return to_pyproj(a) == to_pyproj(b)
+    except MemoryError:  # not a system that cannot be read
+        raise
     except Exception:
         return False
 

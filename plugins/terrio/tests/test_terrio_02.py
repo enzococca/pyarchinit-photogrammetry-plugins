@@ -188,6 +188,54 @@ def test_an_error_while_reading_a_tile_stops_the_step_whatever_its_words(tmp_pat
         colour.sample(SimpleNamespace(crs=CRS, data_dir=tmp_path), str(path), (1, 2, 3), np.array([[1010.0, 2030.0, 0.0]]))
 
 
+def _memory():
+    """What terrio raises when a limit of memory is passed: its ResourceLimitError (0.7 and later, a MemoryError),
+    a MemoryError before."""
+    limit = getattr(terrio.errors, "ResourceLimitError", MemoryError)
+    return limit("the raster needs 12 GiB, over the limit of 4 GiB")
+
+
+def test_a_refusal_for_memory_is_never_taken_for_a_file_that_cannot_be_read(tmp_path, monkeypatch):
+    """The three places that pass over a file they cannot read (the bands of the reflectance, the system of a
+    reference raster, the comparison of two systems) let a refusal for memory through: it is said as what it is,
+    not taken for "not readable" (no bands, no system, not the same system)."""
+    from types import SimpleNamespace
+
+    import pyarchinit_photogrammetry.core.crs as crs_mod
+    import rasterio
+    from pyarchinit_photogrammetry.core import versions
+
+    from ppg_terrio import clouds
+
+    refusal = _memory()
+
+    def refuses(*a, **k):
+        raise refusal
+
+    chunk = SimpleNamespace(orthomosaic_path=None, dem_path=None, data_dir=tmp_path,
+                            meta={"multispectral": {"reflectance": "riflettanza.tif"}})
+    monkeypatch.setattr(versions, "versions", lambda chunk, kind: [])
+    monkeypatch.setattr(rasterio, "open", refuses)
+    with pytest.raises(MemoryError, match="over the limit"):
+        colour.chunk_rasters(chunk)
+    with pytest.raises(MemoryError, match="over the limit"):
+        rasters._source_crs(SimpleNamespace(open_raster=refuses), tmp_path / "riferimento.tif")
+    monkeypatch.setattr(crs_mod, "to_pyproj", refuses)
+    with pytest.raises(MemoryError, match="over the limit"):
+        clouds._same_crs("EPSG:32633", "EPSG:6708")
+    # what is not a refusal for memory is passed over as before
+    broken = OSError("not a raster")
+
+    def unreadable(*a, **k):
+        raise broken
+
+    monkeypatch.setattr(rasterio, "open", unreadable)
+    monkeypatch.setattr(crs_mod, "to_pyproj", unreadable)
+    assert colour.chunk_rasters(chunk) == []
+    assert rasters._source_crs(SimpleNamespace(open_raster=unreadable), tmp_path / "riferimento.tif") is None
+    assert clouds._same_crs("EPSG:32633", "EPSG:6708") is False
+
+
 def _geoid_grid(folder, name="egm08_25.gtx", base=20.0):
     """A small GTX geoid around the synthetic survey: N = base + 0.4 per row + 0.1 per column of
     0.25 degrees; returns the undulation at the origin of the survey."""

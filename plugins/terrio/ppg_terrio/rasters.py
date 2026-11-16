@@ -80,6 +80,8 @@ def _source_crs(terrio, source) -> str | None:
     """The system of a raster terrio can open (its header only), None when it cannot say."""
     try:
         crs = terrio.open_raster(str(source), lazy=True).crs
+    except MemoryError:  # terrio's ResourceLimitError: said as what it is
+        raise
     except Exception:  # a catalogue mosaic or a source terrio opens only to warp it
         return None
     return str(crs) if crs else None

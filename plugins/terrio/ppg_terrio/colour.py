@@ -76,6 +76,8 @@ def chunk_rasters(chunk) -> list[dict]:
 
             with rasterio.open(path) as s:
                 names = [s.descriptions[i] or f"b{i + 1}" for i in range(s.count)]
+        except MemoryError:  # a refusal for memory is not a file that cannot be read
+            raise
         except Exception:  # not readable: left out
             names = []
         for i, band in enumerate(names):
