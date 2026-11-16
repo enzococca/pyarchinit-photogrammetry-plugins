@@ -45,10 +45,21 @@ ppg plugin terrio export scavo.ppg nuvola.ept               # a folder with ept.
 ppg plugin terrio export scavo.ppg ortofoto.pmtiles
 ```
 
+## What is new in 0.3.0
+
+A transformation or a change of heights that terrio refuses now says why in terrio's own words: which grid,
+and whether it is absent, outside the folders of grids, named by a path or too large. With terrio 0.9 the
+heights of a cloud that crosses the edge of a geoid grid are converted for the points the grid covers; the
+points left out there, and those an import cannot reproject into the system of the chunk, are counted in the
+log, in the message and in the parameters of the product, never written at infinity.
+*Installa terrio* now updates an older terrio of the plugin folder: when that terrio is in use, the new one is
+put in its place at the next start of the program, and the window says to close and reopen it.
+
 ## Installing
 
 * In the program: *Strumenti > Plugin...*, `terrio`, *Installa / aggiorna*, *Riavvia ora*; then
-  *Plugin > terrio > Installa terrio* once (about 30 MB from PyPI); the same action updates an older terrio.
+  *Plugin > terrio > Installa terrio* once (about 30 MB from PyPI); the same action updates an older terrio
+  (close and reopen the program when it says so).
 * With pip, in the Python environment of the program (terrio comes with it):
 
   ```bash
@@ -59,7 +70,8 @@ The plugin is written for terrio 0.9.0 and pip installs `terrio>=0.5,<0.10`. An 
 the 0.4 releases, as the plugin folder of the application may hold) still runs the import, the ground
 classification, the reference rasters and the exports; the cleaning, the colours and values, the heights and
 the Planetary Computer need 0.5 and say so - the window offers to download it. terrio is young and its API
-may still change before 1.0.
+may still change before 1.0. terrio's licence expression is `MIT AND MPL-2.0` up to the 0.6 releases and
+`MIT AND MPL-2.0 AND Apache-2.0` from 0.7.0.
 
 ## Notes
 

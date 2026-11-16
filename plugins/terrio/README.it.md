@@ -46,10 +46,21 @@ ppg plugin terrio export scavo.ppg nuvola.laz               # con le dimensioni 
 ppg plugin terrio export scavo.ppg ortofoto.pmtiles
 ```
 
+## Novità della 0.3.0
+
+Una trasformazione o un cambio di quote che terrio rifiuta ora dice perché con le parole di terrio: quale
+griglia, e se manca, è fuori dalle cartelle delle griglie, è indicata con un percorso o è troppo grande. Con
+terrio 0.9 le quote di una nuvola che attraversa il bordo di una griglia del geoide sono convertite per i punti
+che la griglia copre; i punti lasciati fuori lì, e quelli che un'importazione non riesce a riproiettare nel
+sistema del chunk, sono contati nel log, nel messaggio e nei parametri del prodotto, mai scritti all'infinito. *Installa terrio* ora aggiorna un terrio più vecchio della cartella del plugin: quando
+quel terrio è in uso, il nuovo prende il suo posto al prossimo avvio del programma, e la finestra dice di
+chiuderlo e riaprirlo.
+
 ## Installazione
 
 * Nel programma: *Strumenti > Plugin...*, `terrio`, *Installa / aggiorna*, *Riavvia ora*; poi *Plugin >
-  terrio > Installa terrio* una volta (circa 30 MB da PyPI).
+  terrio > Installa terrio* una volta (circa 30 MB da PyPI); la stessa azione aggiorna un terrio più vecchio
+  (chiudi e riapri il programma quando lo dice).
 * Con pip, nell'ambiente Python del programma (terrio arriva con lui):
 
   ```bash
@@ -60,7 +71,8 @@ Il plugin è scritto per terrio 0.9.0 e pip installa `terrio>=0.5,<0.10`. Un ter
 versioni 0.4, come quello che può trovarsi nella cartella del plugin dell'applicazione) fa ancora
 l'importazione, la classificazione del terreno, i raster di riferimento e le esportazioni; la pulizia, i colori
 e i valori, le quote e il Planetary Computer richiedono la 0.5 e lo dicono - la finestra propone di scaricarla.
-terrio è giovane e le sue funzioni possono ancora cambiare prima della 1.0.
+terrio è giovane e le sue funzioni possono ancora cambiare prima della 1.0. L'espressione di licenza di terrio
+è `MIT AND MPL-2.0` fino alle versioni 0.6 e `MIT AND MPL-2.0 AND Apache-2.0` dalla 0.7.0.
 
 ## Note
 
