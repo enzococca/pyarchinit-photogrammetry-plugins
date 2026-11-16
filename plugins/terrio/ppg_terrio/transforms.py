@@ -22,6 +22,12 @@ folders of grids, named by a path, too large, not downloaded), its error being o
 (:func:`listen`): what they say of the grid goes into the refusal (:func:`words`), every other one is
 issued again as it was (:func:`again`). Nothing is remembered from one call to the next: terrio
 says it again every time it refuses.
+
+From terrio 0.9 ``errcheck=False`` gives the points that cannot be moved back at infinity instead of
+refusing them all (:func:`has_errcheck`). :func:`transform_points` asks for it only with ``partial``,
+for a caller that leaves those points out and counts them (a cloud across the edge of a grid): any
+other one needs an answer for every point and keeps the refusal. No point moved is no result: the
+refusal of always, then.
 """
 from __future__ import annotations
 
@@ -55,6 +61,21 @@ def has_only_best(terrio) -> bool:
         return "only_best" in inspect.signature(terrio.transform_points).parameters
     except (TypeError, ValueError):  # a compiled function without a signature
         return tuple(int(v) for v in str(terrio.__version__).split(".")[:2] if v.isdigit()) >= (0, 6)
+
+
+def has_errcheck(terrio) -> bool:
+    """terrio offers ``errcheck`` (0.9 and later): with ``errcheck=False`` the points that cannot be
+    moved come back at infinity. Told by the keyword alone: a signature that cannot be read is one
+    without it (the points are then refused all together, as before)."""
+    try:
+        return "errcheck" in inspect.signature(terrio.transform_points).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def finite(out) -> np.ndarray:
+    """Which points of ``out`` (the arrays of coordinates terrio gave) have numbers in every one."""
+    return np.logical_and.reduce([np.isfinite(np.asarray(v, np.float64)).ravel() for v in out])
 
 
 def listen(call):
@@ -130,15 +151,14 @@ def _refused(error, warping: bool = False) -> bool:
     return any(k in text for k in keys)
 
 
-def _strict(call, src: str, dst: str, what: str, warping: bool = False, said=None):
-    """The result of ``call()`` - terrio asked for the best operation - or its refusal as a
-    :class:`TransformUnavailable` with terrio's own words about the grid. A refusal is an error
+def _settle(out, error, heard, src: str, dst: str, what: str, warping: bool = False, said=None):
+    """What :func:`listen` heard of a call of terrio asked for the best operation: its result, or its
+    refusal as a :class:`TransformUnavailable` with terrio's own words about the grid. A refusal is an error
     that says so (:func:`_refused`) or one that came with a warning about a grid: terrio 0.9 says
     "cannot transform" of a point whose grid it did not read, and why in the warning. Any other
     error is terrio's own, raised as it is, and so is always a refusal for memory (terrio 0.9's
     ``ResourceLimitError``). The warnings no message uses are issued again (given to ``said``, a
     list, when the call went well and the caller asked for them)."""
-    out, error, heard = listen(call)
     if error is None:
         _pass_on(heard, said)
         return out
@@ -148,6 +168,11 @@ def _strict(call, src: str, dst: str, what: str, warping: bool = False, said=Non
         raise _refusal(src, dst, what, error, reason) from error
     again(heard)
     raise error
+
+
+def _strict(call, src: str, dst: str, what: str, warping: bool = False, said=None):
+    """The result of ``call()`` - terrio asked for the best operation - or its refusal (:func:`_settle`)."""
+    return _settle(*listen(call), src, dst, what, warping, said)
 
 
 def _pyproj(xs, ys, src: str, dst: str, zs=None):
@@ -200,15 +225,33 @@ def check_against_pyproj(xs, ys, out, src: str, dst: str, what: str = "", said=(
                        .format(f"{apart:.1f}"), reason)
 
 
-def transform_points(terrio, xs, ys, src: str, dst: str, zs=None, what: str = "", said=None):
+def transform_points(terrio, xs, ys, src: str, dst: str, zs=None, what: str = "", said=None, partial: bool = False):
     """``terrio.transform_points(xs, ys, src, dst, zs)`` by the best operation: ``only_best`` with
     terrio 0.6 and later, the check against pyproj before; :class:`TransformUnavailable` else, with
     terrio's own words about the grid. ``said``: a list that takes the warnings of a transformation
-    that went well, for a caller that may still refuse its result (they are issued again else)."""
+    that went well, for a caller that may still refuse its result (they are issued again else).
+
+    One point that cannot be moved (outside a grid, outside what a projection takes) refuses them
+    all. ``partial``, with a terrio that has ``errcheck``: such points come back at infinity in every
+    coordinate (:func:`finite` tells them) and the others moved, for a caller that leaves them out
+    and says how many; when no point at all was moved, the refusal of always. With a terrio without
+    the keyword ``partial`` changes nothing."""
     kw = {} if zs is None else {"zs": zs}
     if has_only_best(terrio):
-        return _strict(lambda: terrio.transform_points(xs, ys, src, dst, only_best=True, **kw), src, dst, what,
-                       said=said)
+        def strict():
+            return terrio.transform_points(xs, ys, src, dst, only_best=True, **kw)
+
+        if not (partial and has_errcheck(terrio)):
+            return _strict(strict, src, dst, what, said=said)
+        out, error, heard = listen(lambda: terrio.transform_points(xs, ys, src, dst, only_best=True, errcheck=False,
+                                                                   **kw))
+        if error is None:
+            moved = finite(out)
+            if moved.size and not moved.any():  # no result: terrio asked as always says why, in its error
+                told = {(w.category, str(w.message)) for w in heard}
+                out, error, more = listen(strict)
+                heard += [w for w in more if (w.category, str(w.message)) not in told]
+        return _settle(out, error, heard, src, dst, what, said=said)
     out, error, heard = listen(lambda: terrio.transform_points(xs, ys, src, dst, **kw))
     if error is not None:
         again(heard)

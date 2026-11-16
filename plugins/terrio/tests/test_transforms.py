@@ -136,8 +136,9 @@ class _Terrio:
         return tuple(np.asarray(v, np.float64) for v in ((xs, ys) if zs is None else (xs, ys, zs)))
 
 
-def _heights(fake, what="Le quote"):
-    return transforms.transform_points(fake, [36.5], [36.0], "EPSG:4979", "EPSG:4326+3855", zs=[100.0], what=what)
+def _heights(fake, what="Le quote", **kw):
+    return transforms.transform_points(fake, [36.5], [36.0], "EPSG:4979", "EPSG:4326+3855", zs=[100.0], what=what,
+                                       **kw)
 
 
 def _from(fake, *said):
@@ -245,3 +246,147 @@ def test_an_older_terrio_is_checked_against_proj():
         assert exc.value.reason == BALLPARK and not _texts(seen)
         transforms.transform_points(_OldTerrio(0.0, (BALLPARK,)), [430000.0], [4554000.0], "EPSG:32633", "EPSG:32632")
     assert _texts(seen) == [BALLPARK]
+
+
+class _Edge(_Terrio):
+    """A terrio with ``errcheck`` (0.9) whose grid ends at x = 20. A point beyond it refuses them all, as always;
+    with ``errcheck=False`` that point comes back at infinity and the others as they went. ``calls``: the
+    ``errcheck`` of each call."""
+
+    REFUSAL = ("ONLY_BEST=YES: the best vertical operation does not apply (its grid is missing, or the point is "
+               "outside it)")
+
+    def __init__(self, said=(), error="", kind=ValueError):
+        super().__init__(said, error, kind)
+        self.calls = []
+
+    def transform_points(self, xs, ys, src_crs, dst_crs, zs=None, only_best=False, errcheck=True):
+        self.calls.append(errcheck)
+        out = [np.array(v, np.float64) for v in super().transform_points(xs, ys, src_crs, dst_crs, zs, only_best)]
+        outside = out[0] > 20.0
+        if outside.any() and errcheck:
+            raise ValueError(self.REFUSAL)
+        for v in out:
+            v[outside] = np.inf
+        return tuple(out)
+
+
+class _Compiled:
+    """A terrio whose ``transform_points`` gives no signature to read (a compiled function may give none)."""
+
+    __version__ = "0.9.0"
+    transform_points = max
+
+
+def _edge(fake, xs, **kw):
+    return transforms.transform_points(fake, xs, [36.0] * len(xs), "EPSG:4979", "EPSG:4326+3855",
+                                       zs=[100.0] * len(xs), what="Le quote", **kw)
+
+
+def test_errcheck_is_told_by_the_keyword_never_by_the_version():
+    assert transforms.has_errcheck(_Edge())
+    assert not transforms.has_errcheck(_Terrio()), "0.9.0 by its number, and no such keyword"
+    assert transforms.has_only_best(_Compiled()) and not transforms.has_errcheck(_Compiled()), "unreadable: not there"
+    assert not transforms.has_errcheck(_OldTerrio(0.0))
+    # the real one: the keyword came with 0.9
+    assert transforms.has_errcheck(terrio) == (tuple(int(v) for v in terrio.__version__.split(".")[:2]) >= (0, 9))
+
+
+def test_points_that_cannot_be_moved_come_back_at_infinity_when_asked():
+    """With ``partial`` and a terrio that has ``errcheck``, one call tells the points that went from those that did
+    not (at infinity in every coordinate). It is asked for, never the default: whoever needs an answer for every
+    point keeps the refusal of them all. What terrio warned of meanwhile is issued again, or given to ``said``."""
+    old = DeprecationWarning("zs will be required")
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        fake = _Edge((BALLPARK, old))
+        x, y, z = _edge(fake, [0.0, 25.0, 10.0, 40.0], partial=True)
+    assert fake.calls == [False], "one call for all the points"
+    assert np.isfinite(x).tolist() == np.isfinite(y).tolist() == np.isfinite(z).tolist() == [True, False, True, False]
+    assert x[[0, 2]].tolist() == [0.0, 10.0] and z[[0, 2]].tolist() == [100.0, 100.0]
+    assert _seen(seen) == _from(fake, BALLPARK, old)
+    fake, said = _Edge((BALLPARK,)), []
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        assert np.isfinite(_edge(fake, [0.0, 25.0], partial=True, said=said)[2]).tolist() == [True, False]
+    assert _seen(said) == _from(fake, BALLPARK) and not _texts(seen)
+    fake = _Edge()
+    with pytest.raises(transforms.TransformUnavailable, match="outside it"):
+        _edge(fake, [0.0, 25.0, 10.0, 40.0])
+    assert fake.calls == [True], "not asked: the call of always"
+    fake = _Edge()  # no point at all: nothing to refuse
+    assert [len(v) for v in _edge(fake, [], partial=True)] == [0, 0, 0] and fake.calls == [False]
+
+
+def test_when_no_point_can_be_moved_the_refusal_is_the_one_of_always():
+    """Every point at infinity is no result: terrio is asked again as always and its refusal is the plugin's, with
+    what it said of the grid in either call, each sentence once. What goes into no message is issued again once."""
+    old = DeprecationWarning("zs will be required")
+    fake = _Edge((BY_PATH, old))
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        with pytest.raises(transforms.TransformUnavailable) as exc:
+            _edge(fake, [25.0, 40.0], partial=True)
+    assert fake.calls == [False, True]
+    assert str(exc.value).endswith(f"({_Edge.REFUSAL}; {BY_PATH})") and exc.value.reason == BY_PATH
+    assert _seen(seen) == _from(fake, old)
+    strict = _Edge((BY_PATH, old))
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        with pytest.raises(transforms.TransformUnavailable) as same:
+            _edge(strict, [25.0, 40.0])
+    assert str(same.value) == str(exc.value), "word for word the refusal of a call that asked for no partial result"
+
+
+def test_an_error_of_the_partial_call_is_terrio_s_answer():
+    """An error with ``errcheck=False`` is of the whole call, not of some points: it is a refusal of a grid, or
+    terrio's own error raised as it is (a refusal for memory), and terrio is not asked a second time."""
+    fake = _Edge((BY_PATH,), NO_POINT)
+    with pytest.raises(transforms.TransformUnavailable, match="named by a path"):
+        _edge(fake, [0.0, 25.0], partial=True)
+    assert fake.calls == [False]
+    fake = _Edge((BY_PATH,), "resource limit: the points would take 9 GiB", MemoryError)
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        with pytest.raises(MemoryError, match="9 GiB"):
+            _edge(fake, [0.0, 25.0], partial=True)
+    assert fake.calls == [False] and _seen(seen) == _from(fake, BY_PATH)
+
+
+def test_a_terrio_without_errcheck_refuses_all_the_points_as_before():
+    """``partial`` with a terrio that has no such keyword (it would not take it) changes nothing: 0.6 to 0.8 with
+    ``only_best``, the older ones with the check against PROJ."""
+    with pytest.raises(transforms.TransformUnavailable, match="named by a path"):
+        _heights(_Terrio((BY_PATH,), NO_POINT), partial=True)
+    assert _heights(_Terrio(), partial=True)[2][0] == 100.0
+    good = transforms.transform_points(_OldTerrio(0.0), [430000.0], [4554000.0], "EPSG:32633", "EPSG:32632",
+                                       partial=True)
+    assert np.isfinite(good[0]).all()
+    with pytest.raises(transforms.TransformUnavailable):
+        transforms.transform_points(_OldTerrio(120.0), [430000.0], [4554000.0], "EPSG:32633", "EPSG:32632",
+                                    partial=True)
+
+
+@needs_only_best
+def test_a_point_terrio_cannot_move_is_told_from_the_others(no_grids):
+    """The real terrio and a point no projection takes (latitude 95) between two good ones: with ``errcheck`` (0.9)
+    it alone comes back at infinity; without, and whenever no partial result is asked for, terrio's own error."""
+    points = ([36.5, 36.5, 36.6], [36.0, 95.0, 36.1], "EPSG:4326", "EPSG:32637")
+    with warnings.catch_warnings(record=True) as let_out:
+        warnings.simplefilter("always")
+        if transforms.has_errcheck(terrio):
+            x, y = transforms.transform_points(terrio, *points, partial=True)[:2]
+            assert np.isfinite(x).tolist() == np.isfinite(y).tolist() == [True, False, True]
+            assert 274000 < x[0] < 275000 and 283000 < x[2] < 284000 and 3986000 < y[0] < 3987000
+        else:
+            with pytest.raises(ValueError, match="cannot transform") as exc:
+                transforms.transform_points(terrio, *points, partial=True)
+            assert not isinstance(exc.value, transforms.TransformUnavailable)
+        with pytest.raises(ValueError, match="cannot transform") as exc:
+            transforms.transform_points(terrio, *points)
+        assert not isinstance(exc.value, transforms.TransformUnavailable)
+        # no grid for any point: the refusal of always, with terrio's reason
+        with pytest.raises(transforms.TransformUnavailable, match="needs a missing grid"):
+            transforms.transform_points(terrio, [LONDON[0]] * 2, [LONDON[1]] * 2, "EPSG:27700", "EPSG:4326",
+                                        partial=True)
+    assert not _texts(let_out)
