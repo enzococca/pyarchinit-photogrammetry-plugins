@@ -636,8 +636,8 @@ class TerrioPlugin(Plugin):
                                            activate=v["activate"], progress=progress, **grids)
             return heights.convert_cloud(chunk, source, target, activate=v["activate"], progress=progress, **grids)
 
-        self._run(t("Conversione delle quote", "Converting the heights"), job,
-                  lambda out: self._info(summary_heights(out)))
+        self._run(t("Conversione delle quote", "Converting the heights"), job,  # points left out: said as a warning
+                  lambda out: self._info(summary_heights(out), "warning" if out.get("not_transformed") else "info"))
 
     def reference_dialog(self) -> None:
         from pyarchinit_photogrammetry.gui.dialogs import Field, ParamDialog
@@ -996,6 +996,13 @@ def summary_heights(out: dict) -> str:
              t("Quote da {0} a {1}: spostate di {2} m (da {3} a {4})", "Heights from {0} to {1}: moved by {2} m ({3} to {4})")
              .format(heights.label(out["source"]), heights.label(out["target"]), signed(mean, 3), signed(lo, 3),
                      signed(hi, 3))]
+    if out.get("not_transformed"):  # a cloud across the edge of a grid: how many of its points are not in the version
+        lines.append(t("{0} punti su {1} non trasformati (nessuna griglia del geoide li copre): non sono nella nuova "
+                       "versione, la nuvola di prima li ha ancora",
+                       "{0} points of {1} not transformed (no grid of the geoid covers them): they are not in the new "
+                       "version, the cloud of before still has them")
+                     .format(num(out["not_transformed"]), num(out["points"] + out["not_transformed"]))
+                     + (f" (terrio: {out['reason']})" if out.get("reason") else ""))
     if out.get("grids"):
         lines.append(t("Griglie scaricate in: {0}", "Grids downloaded into: {0}").format(out["grids"]))
     return "\n".join(lines)

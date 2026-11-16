@@ -4,6 +4,7 @@ test, no network), reference rasters with their heights moved, the Planetary Com
 (the address only; the real catalogue with PPG_TEST_NETWORK=1), the terrio of the plugin folder."""
 from __future__ import annotations
 
+import logging
 import os
 import struct
 import sys
@@ -18,7 +19,7 @@ if tuple(int(v) for v in terrio.__version__.split(".")[:2]) < (0, 5):
 
 from ppg_terrio import cleaning, cloudfile, colour, environment, heights, rasters, transforms  # noqa: E402
 
-from test_terrio import CRS, ORIGIN, SIZE, _project  # noqa: E402
+from test_terrio import CRS, LOGGER, ORIGIN, SIZE, _project  # noqa: E402
 
 NETWORK = os.environ.get("PPG_TEST_NETWORK") == "1"
 
@@ -189,6 +190,8 @@ def test_heights_of_the_dem_and_the_cloud(tmp_path):
     z1 = chunk.to_world(chunk.point_cloud.xyz)[:, 2]
     assert np.abs(z1 - z0 + undulation).max() < 0.01 and len(versions.versions(chunk, "point_cloud")) == 1
     assert "height" in cloudfile.extra_names(chunk.product_path("point_cloud"))
+    assert out["not_transformed"] == 0 and out["points"] == len(z0), "the grid has every point: none left out"
+    assert chunk.meta["dense"]["heights"] == "EPSG:3855" and "not_transformed" not in chunk.meta["dense"]
     # a geoid of a file (a national geoid): its name and folder are enough
     own = _geoid_grid(tmp_path / "con spazi", "nazionale.gtx", base=40.0)
     out = heights.convert_dem(chunk, "ellipsoid", str(tmp_path / "con spazi" / "nazionale.gtx"), **opts)
@@ -265,6 +268,350 @@ def test_a_refusal_of_heights_says_what_terrio_said_of_the_grid(tmp_path, monkey
         shift = heights.vertical_shift(CRS, [ORIGIN[0]], [ORIGIN[1]], "ellipsoid", "EPSG:5773", network=False,
                                        cache=tmp_path / "cache", environment_paths=False)
     assert shift[0] == -30.0
+
+
+def _edge_grid(folder, east=30.0, north=None, name="egm08_25.gtx", base=20.0):
+    """A GTX geoid like the one of :func:`_geoid_grid` that ends inside the synthetic survey: its eastern edge is the
+    meridian through the point ``east`` metres east of the origin, half way up the survey (a little slanted on the
+    survey: half a metre from bottom to top), and with ``north`` its northern edge is the parallel through the point
+    that many metres north of the origin. Beyond its edges no grid has the points. Returns the undulation at the
+    longitudes and latitudes given."""
+    lon, lat = terrio.transform_points([ORIGIN[0] + east], [ORIGIN[1] + (SIZE / 2 if north is None else north)], CRS,
+                                       "EPSG:4326")[:2]
+    step, n = 0.25, 17
+    lon0 = float(lon[0]) - (n - 1) * step
+    lat0 = float(np.floor(lat[0])) - 1 if north is None else float(lat[0]) - (n - 1) * step
+    vals = np.fromfunction(lambda r, c: base + r * 0.4 + c * 0.1, (n, n)).astype(">f4")
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / name, "wb") as f:
+        f.write(struct.pack(">ddddii", lat0, lon0, step, step, n, n))
+        f.write(vals.tobytes())
+    return lambda lons, lats: base + (np.asarray(lats) - lat0) / step * 0.4 + (np.asarray(lons) - lon0) / step * 0.1
+
+
+def _across_the_edge(doc, keep=None):
+    """The dense cloud of the synthetic survey without its points from 25 to 35 metres east of the origin, where the
+    edge of :func:`_edge_grid` runs (or with the points ``keep(x, y)`` says), from west to east, with what the
+    program keeps along the points - colours, normals, classes, confidence, hand labels - and a dimension of the
+    plugin that numbers them. Returns which points lie west of the edge."""
+    from pyarchinit_photogrammetry.core.pointcloud import PointCloud
+
+    chunk = doc.chunk
+    pc = chunk.point_cloud
+    x, y = pc.xyz[:, 0], pc.xyz[:, 1]
+    pick = np.nonzero((x <= 25.0) | (x >= 35.0) if keep is None else keep(x, y))[0]
+    pick = pick[np.argsort(x[pick], kind="stable")]
+    i = np.arange(len(pick))
+    normals = np.column_stack([np.cos(i), np.sin(i), np.zeros(len(i))])
+    chunk.point_cloud = PointCloud(pc.xyz[pick], pc.rgb[pick], normals, classification=(i % 5 + 2).astype(np.uint8),
+                                   confidence=(i % 200 + 1).astype(np.uint8), manual=i % 3 == 0)
+    cloudfile.add_properties(chunk.product_path("point_cloud"), {"number": i.astype(np.int32)})
+    return pc.xyz[pick, 0] <= 25.0
+
+
+def _edge_options(tmp_path) -> dict:
+    return {"network": False, "folders": [tmp_path / "griglie"], "cache": tmp_path / "cache",
+            "environment_paths": False}
+
+
+def test_the_shift_at_the_points_no_grid_covers_is_no_number_when_asked_so(tmp_path, monkeypatch):
+    """``vertical_shift`` with ``partial`` and a terrio that tells the points it cannot move: NaN at the points beyond
+    the edge of the grid, the shift at the others. Without ``partial``, with an older terrio, and when no point is
+    covered, the refusal of always, for all the points. What tells a point that was not moved is any of its
+    coordinates without a number: a height that came back beside a position at infinity is not taken."""
+    undulation = _edge_grid(tmp_path / "griglie")
+    opts = _edge_options(tmp_path)
+    xs = ORIGIN[0] + np.array([0.0, 20.0, 29.0, 31.0, 40.0])
+    ys = ORIGIN[1] + np.array([0.0, 20.0, 20.0, 20.0, 40.0])
+    beyond = np.array([False, False, False, True, True])
+    lon, lat = terrio.transform_points(xs, ys, CRS, "EPSG:4326")[:2]
+    with pytest.raises(heights.HeightsUnavailable, match="in 5 punti su 5"):
+        heights.vertical_shift(CRS, xs, ys, "ellipsoid", "EPSG:3855", **opts)
+    if transforms.has_errcheck(terrio):
+        dz = heights.vertical_shift(CRS, xs, ys, "ellipsoid", "EPSG:3855", partial=True, **opts)
+        assert (np.isnan(dz) == beyond).all() and np.abs(dz[~beyond] + undulation(lon, lat)[~beyond]).max() < 1e-3
+    else:
+        with pytest.raises(heights.HeightsUnavailable, match="in 5 punti su 5"):
+            heights.vertical_shift(CRS, xs, ys, "ellipsoid", "EPSG:3855", partial=True, **opts)
+    with pytest.raises(heights.HeightsUnavailable, match="in 2 punti su 2") as none:
+        heights.vertical_shift(CRS, xs[beyond], ys[beyond], "ellipsoid", "EPSG:3855", partial=True, **opts)
+    assert isinstance(none.value.__cause__, transforms.TransformUnavailable)
+    whole = heights.vertical_shift(CRS, xs[~beyond], ys[~beyond], "ellipsoid", "EPSG:3855", partial=True, **opts)
+    assert np.abs(whole + undulation(lon, lat)[~beyond]).max() < 1e-3
+    real, edge = terrio.transform_points, float(lon[2] + lon[3]) / 2
+
+    def in_part(xs, ys, src_crs, dst_crs, zs=None, only_best=False, errcheck=True):
+        if zs is None:
+            return real(xs, ys, src_crs, dst_crs)
+        x, y = np.array(xs, np.float64), np.array(ys, np.float64)
+        out = x > edge
+        if errcheck and out.any():
+            raise ValueError("coordinate reference system: cannot transform")
+        x[out], y[out] = np.inf, np.inf
+        return x, y, np.asarray(zs, np.float64) - 30.0  # a height also where the position is at infinity
+
+    monkeypatch.setattr(terrio, "transform_points", in_part)
+    dz = heights.vertical_shift(CRS, xs, ys, "ellipsoid", "EPSG:3855", partial=True, **opts)
+    assert (np.isnan(dz) == beyond).all() and (dz[~beyond] == -30.0).all()
+
+
+def test_a_cloud_across_the_edge_of_a_geoid_leaves_out_and_counts_the_points_beyond_it(tmp_path, monkeypatch, caplog):
+    """A cloud that crosses the edge of the grid of the geoid: with a terrio that tells the points it cannot move
+    (0.9, ``errcheck``) the new version has the points the grid covers, each with its colour, normal, class,
+    confidence, hand label and values, and how many were left out is in the log, in the parameters of the version and
+    in the summary the window and the command line show; no point without numbers is written. An older terrio refuses
+    the whole cloud, as before."""
+    from ppg_terrio import summary_heights
+    from ppg_terrio.texts import num
+    from pyarchinit_photogrammetry.core import versions
+    from pyarchinit_photogrammetry.core.pointcloud import PointCloud
+    from pyarchinit_photogrammetry.gui import i18n
+
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    west = _across_the_edge(doc)
+    undulation = _edge_grid(tmp_path / "griglie")
+    before = chunk.point_cloud
+    world = chunk.to_world(before.xyz)
+    total, beyond = len(west), int((~west).sum())
+    assert 500 < beyond < total - 500
+    monkeypatch.setattr(heights, "BLOCK", 500)  # the points beside the edge asked in several blocks
+    if not transforms.has_errcheck(terrio):
+        with pytest.raises(heights.HeightsUnavailable, match="in 9 punti su 9"):
+            heights.convert_cloud(chunk, "ellipsoid", "EPSG:3855", **_edge_options(tmp_path))
+        assert not (chunk.data_dir / "versions").exists() and not versions.versions(chunk, "point_cloud")
+        return
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        out = heights.convert_cloud(chunk, "ellipsoid", "EPSG:3855", **_edge_options(tmp_path))
+    assert out["points"] == total - beyond and out["not_transformed"] == beyond and not out["active"]
+    made = PointCloud.load(out["path"])
+    assert len(made) == total - beyond and np.isfinite(made.xyz).all()
+    lon, lat = terrio.transform_points(world[west, 0], world[west, 1], CRS, "EPSG:4326")[:2]
+    moved = chunk.to_world(made.xyz)
+    assert np.abs(moved[:, :2] - world[west, :2]).max() < 1e-6, "the points the grid covers, where they were"
+    assert np.abs(moved[:, 2] - world[west, 2] + undulation(lon, lat)).max() < 0.01, "orthometric = ellipsoidal - N"
+    assert (made.rgb == before.rgb[west]).all() and np.allclose(made.normals, before.normals[west])
+    assert (made.classification == before.classification[west]).all()
+    assert (made.confidence == before.confidence[west]).all() and (made.manual == before.manual[west]).all()
+    assert (cloudfile.read_extras(out["path"])["number"] == np.nonzero(west)[0]).all()
+    params = versions.versions(chunk, "point_cloud")[-1]["params"]
+    assert params["not_transformed"] == beyond and np.isfinite(params["height_shift"]).all()
+    lo, mean, hi = out["shift"]
+    assert -undulation(lon, lat).max() - 0.01 < lo <= mean <= hi < -undulation(lon, lat).min() + 0.01
+    said = [r.getMessage() for r in caplog.records if r.name == LOGGER]
+    assert len(said) == 1 and f"{beyond} points of {total} not transformed" in said[0]
+    assert f"{num(beyond)} punti su {num(total)} non trasformati" in summary_heights(out)
+    try:
+        i18n.set_current("en")
+        assert (f"{num(beyond)} points of {num(total)} not transformed (no grid of the geoid covers them)"
+                in summary_heights(out))
+    finally:
+        i18n.set_current(None)
+    assert len(chunk.point_cloud) == total and np.array_equal(chunk.point_cloud.xyz, before.xyz), "the active one stays"
+    # made the active version: the cloud of before, with every point, is among the versions
+    out = heights.convert_cloud(chunk, "ellipsoid", "EPSG:3855", activate=True, **_edge_options(tmp_path))
+    assert out["active"] and len(chunk.point_cloud) == total - beyond
+    assert (cloudfile.read_extras(chunk.product_path("point_cloud"))["number"] == np.nonzero(west)[0]).all()
+    kept = [PointCloud.read_column(versions.version_file(chunk, "point_cloud", e["id"]), "classification")
+            for e in versions.versions(chunk, "point_cloud")]
+    assert sorted(len(k) for k in kept) == [total - beyond, total]
+    assert chunk.meta["dense"]["not_transformed"] == beyond, "the parameters of the active cloud say it"
+    # and back: the grid has every point of the cloud that is left, the count of before is not said again
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        back = heights.convert_cloud(chunk, "EPSG:3855", "ellipsoid", **_edge_options(tmp_path))
+    assert back["points"] == total - beyond and back["not_transformed"] == 0
+    assert not [r for r in caplog.records if r.name == LOGGER]
+    assert "not_transformed" not in versions.versions(chunk, "point_cloud")[-1]["params"]
+    assert "non trasformati" not in summary_heights(back)
+    again = chunk.to_world(PointCloud.load(back["path"]).xyz)
+    assert np.abs(again - world[west]).max() < 0.01, "there and back: the points the grid covers, where they were"
+
+
+def test_what_terrio_said_of_a_grid_comes_with_the_count_of_the_points_left_out(tmp_path, monkeypatch, caplog):
+    """Points left out while terrio refused a grid for them (a model of several grids, one of them not read): what it
+    warned of meanwhile comes with their count, once, in the log and in the summary - not in the parameters of the
+    version, which go where the project goes and may hold a path of the computer - and is not issued again. A warning
+    of a conversion that left no point out is for others, as it was, and so are those heard before an error that is
+    not of the heights. terrio's answers are made up here: the real one says nothing of a point beyond the edge of
+    the one grid of the other tests."""
+    from ppg_terrio import summary_heights
+    from pyarchinit_photogrammetry.core import versions
+
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    west = _across_the_edge(doc)
+    total, beyond = len(west), int((~west).sum())
+    real = terrio.transform_points
+    edge = float(real([ORIGIN[0] + 30.0], [ORIGIN[1] + SIZE / 2], CRS, "EPSG:4326")[0][0])
+    refused = "grid file is not read: outside the folders of grids (/griglie/est.gtx)"
+    fetched = "grid read from the web"
+    state = {"edge": edge, "calls": 0, "fail_at": 0}
+
+    def two_grids(xs, ys, src_crs, dst_crs, zs=None, only_best=False, errcheck=True):
+        if zs is None:
+            return real(xs, ys, src_crs, dst_crs)
+        state["calls"] += 1
+        if state["calls"] == state["fail_at"]:
+            raise OSError("the grid cannot be read")
+        x, y, z = np.array(xs, np.float64), np.array(ys, np.float64), np.asarray(zs, np.float64) - 30.0
+        east = x > state["edge"]
+        if east.any() or state["edge"] == np.inf:
+            warnings.warn(refused if east.any() else fetched, stacklevel=1)
+        if east.any() and errcheck:
+            raise ValueError("coordinate reference system: cannot transform (39.5, 36, 0)")
+        x[east], y[east], z[east] = np.inf, np.inf, np.inf
+        return x, y, z
+
+    def convert():
+        with caplog.at_level(logging.WARNING, logger=LOGGER), warnings.catch_warnings(record=True) as let_out:
+            warnings.simplefilter("always")
+            try:
+                out = heights.convert_cloud(chunk, "ellipsoid", "EPSG:3855", **_edge_options(tmp_path))
+            except OSError as exc:
+                out = exc
+        said = [r.getMessage() for r in caplog.records if r.name == LOGGER]
+        caplog.clear()
+        return out, said, sorted(str(w.message) for w in let_out if not issubclass(w.category, ResourceWarning))
+
+    monkeypatch.setattr(terrio, "transform_points", two_grids)
+    monkeypatch.setattr(heights, "BLOCK", 500)  # blocks of points all beyond the edge, and one with both
+    out, said, let_out = convert()
+    assert out["points"] == total - beyond and out["not_transformed"] == beyond and out["reason"] == refused
+    assert out["shift"] == pytest.approx((-30.0, -30.0, -30.0)), "of the points written"
+    assert len(said) == 1 and said[0].endswith(f"terrio: {refused}")
+    assert summary_heights(out).splitlines()[2].endswith(f"(terrio: {refused})")
+    params = versions.versions(chunk, "point_cloud")[-1]["params"]
+    assert params["not_transformed"] == beyond and refused not in str(params)
+    assert let_out == [], "said with the count: not a second time"
+    monkeypatch.setattr(heights, "BLOCK", 1_000_000)  # the points beside the edge in one call, some moved and some not
+    state["calls"] = 0
+    out, said, let_out = convert()
+    assert out["not_transformed"] == beyond and out["reason"] == refused and let_out == []
+    assert len(said) == 1 and said[0].endswith(f"terrio: {refused}")
+    calls = state["calls"]
+    state.update(calls=0, fail_at=calls)  # the last call of terrio fails for a reason of its own
+    out, said, let_out = convert()
+    assert isinstance(out, OSError) and said == [] and let_out == [refused] * (calls - 1), "heard before: let out"
+    assert len(versions.versions(chunk, "point_cloud")) == 2
+    state.update(edge=np.inf, calls=0, fail_at=0)  # every point moved, and a warning with them
+    out, said, let_out = convert()
+    assert out["points"] == total and out["not_transformed"] == 0 and out["reason"] == "" and said == []
+    assert let_out == [fetched] and "not_transformed" not in versions.versions(chunk, "point_cloud")[-1]["params"]
+    assert "non trasformati" not in summary_heights(out)
+
+
+def test_a_cloud_that_no_grid_covers_is_refused_as_before(tmp_path):
+    """No point of the cloud can be moved - the grid of the geoid ends west of the survey, or it has a corner of the
+    survey where the cloud has no point -: the refusal of always, the one a DEM over the same ground has, and nothing
+    is written. With any terrio."""
+    from pyarchinit_photogrammetry.core import versions
+
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    _edge_grid(tmp_path / "griglie", east=-10.0)
+    with pytest.raises(heights.HeightsUnavailable, match="in 9 punti su 9") as cloud:
+        heights.convert_cloud(chunk, "ellipsoid", "EPSG:3855", **_edge_options(tmp_path))
+    with pytest.raises(heights.HeightsUnavailable) as dem:
+        heights.convert_dem(chunk, "ellipsoid", "EPSG:3855", **_edge_options(tmp_path))
+    assert str(cloud.value) == str(dem.value) and isinstance(cloud.value.__cause__, transforms.TransformUnavailable)
+    # the grid has the south-west corner of the survey, the cloud has no point there
+    _across_the_edge(doc, keep=lambda x, y: (x >= 35.0) | (y >= 25.0))
+    _edge_grid(tmp_path / "griglie", east=30.0, north=20.0)
+    with pytest.raises(heights.HeightsUnavailable, match="in 9 punti su 9") as cloud:
+        heights.convert_cloud(chunk, "ellipsoid", "EPSG:3855", **_edge_options(tmp_path))
+    with pytest.raises(heights.HeightsUnavailable) as dem:
+        heights.convert_dem(chunk, "ellipsoid", "EPSG:3855", **_edge_options(tmp_path))
+    assert str(cloud.value) == str(dem.value)
+    assert not (chunk.data_dir / "versions").exists() and not versions.versions(chunk, "point_cloud")
+
+
+def test_a_terrio_that_does_not_tell_its_points_refuses_a_cloud_across_a_grid_as_before(tmp_path, monkeypatch):
+    """A terrio without ``errcheck`` does not tell the points it could not move: a height that came back as it was
+    (a terrio before ``only_best``, which took a rougher operation there) refuses all the points, also when a partial
+    result is asked for, and the cloud across the edge of a grid is refused whole, nothing written - as before. The
+    answers of that terrio are made up here: beyond the edge the heights as they are."""
+    from pyarchinit_photogrammetry.core import versions
+
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    _edge_grid(tmp_path / "griglie")
+    opts = _edge_options(tmp_path)
+    xs = ORIGIN[0] + np.array([0.0, 20.0, 29.0, 31.0, 40.0])
+    ys = ORIGIN[1] + np.array([0.0, 20.0, 20.0, 20.0, 40.0])
+    real = terrio.transform_points
+    lon = real(xs, ys, CRS, "EPSG:4326")[0]
+    edge = float(lon[2] + lon[3]) / 2
+
+    def older(xs, ys, src_crs, dst_crs, zs=None):  # neither only_best nor errcheck
+        if zs is None:
+            return real(xs, ys, src_crs, dst_crs)
+        x, z = np.asarray(xs, np.float64), np.array(zs, np.float64)
+        z[x <= edge] -= 30.0
+        return x, np.asarray(ys, np.float64), z
+
+    monkeypatch.setattr(terrio, "transform_points", older)
+    assert not transforms.has_errcheck(terrio)
+    for partial in (False, True):
+        with pytest.raises(heights.HeightsUnavailable, match="in 2 punti su 5"):
+            heights.vertical_shift(CRS, xs, ys, "ellipsoid", "EPSG:3855", partial=partial, **opts)
+    with pytest.raises(heights.HeightsUnavailable, match="in 3 punti su 9"):
+        heights.convert_cloud(chunk, "ellipsoid", "EPSG:3855", **opts)
+    assert not (chunk.data_dir / "versions").exists() and not versions.versions(chunk, "point_cloud")
+
+
+def test_the_window_and_the_command_line_say_how_many_points_the_heights_left_out(tmp_path, monkeypatch, capsys):
+    """The count of the points left out of a conversion of heights, where the user reads it: the command line prints
+    it and the window shows it as a warning; the project keeps it in the parameters of the version. With an older
+    terrio both say the refusal of before."""
+    import pyarchinit_photogrammetry as ppg
+    from ppg_terrio import TerrioPlugin
+    from ppg_terrio.texts import num
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import dialogs
+    from pyarchinit_photogrammetry.plugins import Context
+
+    doc = _project(tmp_path)
+    west = _across_the_edge(doc)
+    doc.save()
+    grids = tmp_path / "griglie"
+    _edge_grid(grids)
+    total, beyond = len(west), int((~west).sum())
+    line = f"{num(beyond)} punti su {num(total)} non trasformati"
+    monkeypatch.setattr(heights, "_environment_grid_paths", lambda: [])  # no grid of the computer the test runs on
+    shown = []
+
+    class Window:
+        def run_task(self, title, job, done=None, refresh=True, save=True):
+            result = job(lambda *a: None)
+            if done is not None:
+                done(result)
+
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", staticmethod(
+        lambda parent, title, fields, intro="": {f.name: f.default for f in fields} | {
+            "product": "point_cloud", "network": False, "folder": str(grids)}))
+    monkeypatch.setattr(dialogs, "message", lambda parent, kind, title, text, **k: shown.append((kind, text)))
+    plugin = TerrioPlugin()
+    plugin.activate(Context("terrio", tmp_path / "_data", window=Window()))
+    command = ("heights", str(doc.path), "--product", "point_cloud", "--from", "ellipsoid", "--to", "EPSG:3855",
+               "--no-network", "--grids", str(grids))
+    previous, app.document = app.document, doc
+    try:
+        if not transforms.has_errcheck(terrio):
+            assert plugin.command(*command) == 1 and "error: Nessun modello ha spostato" in capsys.readouterr().out
+            with pytest.raises(heights.HeightsUnavailable):
+                plugin.heights_dialog()
+            assert not shown
+            return
+        assert plugin.command(*command) == 0
+        assert line in capsys.readouterr().out
+        saved = ppg.Document.open(doc.path).chunk.meta["versions"]["point_cloud"]
+        assert len(saved) == 1 and saved[0]["params"]["not_transformed"] == beyond
+        plugin.heights_dialog()
+    finally:
+        app.document = previous
+    assert len(shown) == 1 and shown[0][0] == "warning" and line in shown[0][1]
+    assert "non sono nella nuova versione" in shown[0][1]
 
 
 def test_reference_raster_with_its_heights_moved(tmp_path):

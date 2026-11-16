@@ -22,12 +22,20 @@ already on the computer - a folder given, PROJ's own (``PROJ_DATA``, ``projsync`
 folder) - are used first. A height that no grid moved (grid missing, area outside the model) is
 an error, never a silent copy: :class:`HeightsUnavailable`.
 
+One point no grid covers refuses them all. A cloud across the edge of a grid is the one case where the
+others can go on without it: with a terrio that tells the points it could not move (0.9, ``errcheck``)
+:func:`convert_cloud` leaves those points out of the new version and says how many - in the log, in
+its result and in the parameters of the version; the cloud of before keeps them. A DEM, whose cells
+cannot be left out, is refused whole as before, and so is everything with an older terrio and a cloud
+of which no point was moved.
+
 The shift is computed on a grid of samples over the area (every 25 m at most, 129 a side) and
 interpolated bilinearly: the geoid models are grids of 1-15 minutes of arc, so the
 interpolation adds nothing measurable.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import warnings
@@ -49,11 +57,20 @@ SHORT = {ELLIPSOID: ("ellissoidiche", "ellipsoidal"), "EPSG:3855": ("EGM2008", "
          "EPSG:5773": ("EGM96", "EGM96"), "EPSG:5703": ("NAVD88", "NAVD88"), "EPSG:5701": ("ODN", "ODN")}
 GRID_SUFFIXES = (".gtx", ".tif", ".tiff")
 STEP, MAX_SAMPLES = 25.0, 129  # metres between samples of the shift, samples a side at most
+BLOCK = 1_000_000  # points of a cloud asked of terrio at a time, where the samples do not give their shift
 _ELLIPSOID_WORDS = ("ellipsoid", "ellipsoidal", "ellissoide", "ellissoidale", "ellissoidiche")
 
 
+log = logging.getLogger("pyarchinit_photogrammetry.plugins.terrio")  # the plugin's own (its context's ``log``)
+
+
 class HeightsUnavailable(RuntimeError):
-    """No geoid model moved the heights: its grid is missing, or it does not cover the area."""
+    """No geoid model moved the heights: its grid is missing, or it does not cover the area.
+    ``reason``: what terrio said of the grid in its warnings, "" when it said nothing."""
+
+    def __init__(self, message: str, reason: str = ""):
+        super().__init__(message)
+        self.reason = reason
 
 
 def normalise(spec) -> str:
@@ -190,9 +207,16 @@ def grid_access(network: bool = True, keep: bool = True, folders=(), cache=None,
 
 
 def vertical_shift(crs: str, xs, ys, source: str, target: str, network: bool = True, keep: bool = True,
-                   folders=(), cache=None, environment_paths: bool = True) -> np.ndarray:
+                   folders=(), cache=None, environment_paths: bool = True, partial: bool = False,
+                   said: list | None = None) -> np.ndarray:
     """What to add to heights in the system ``source`` at the points ``(xs, ys)`` of ``crs`` to
-    have them in ``target`` (for ellipsoid -> geoid, minus the undulation of the geoid)."""
+    have them in ``target`` (for ellipsoid -> geoid, minus the undulation of the geoid).
+
+    A point no model moved refuses them all (:class:`HeightsUnavailable`). ``partial``, with a terrio
+    that tells the points it could not move (0.9): NaN at those points and the shift at the others,
+    for a caller that leaves them out and counts them; no point moved is still the refusal. ``said``,
+    a list: takes the warnings of terrio of a call that left points out, for what the caller says of
+    them (they are issued again else, as those of every call that moved all its points)."""
     from pyarchinit_photogrammetry.core import crs as crs_mod
 
     source, target = normalise(source), normalise(target)
@@ -208,18 +232,21 @@ def vertical_shift(crs: str, xs, ys, source: str, target: str, network: bool = T
     folders = list(folders) + [Path(s).parent for s in (source, target) if is_grid_file(s)]
     what = t("Le quote", "The heights")
     z0 = np.zeros(len(xs))
-    refused, said = None, []  # what terrio warned of while it moved the heights: for the refusal, if there is one
+    refused, heard = None, []  # what terrio warned of while it moved the heights: for the refusal, if there is one
     with grid_access(network, keep, folders, cache, environment_paths) as terrio:
+        partial = partial and transforms.has_errcheck(terrio)
         lon, lat = transforms.transform_points(terrio, xs, ys, crs, geo["2d"], what=what)[:2]
         try:  # never a ballpark that leaves the heights as they are (terrio 0.6: only_best)
-            z1 = transforms.transform_points(terrio, lon, lat, _crs3d(source, geo), _crs3d(target, geo), zs=z0,
-                                             what=what, said=said)[2]
+            out = transforms.transform_points(terrio, lon, lat, _crs3d(source, geo), _crs3d(target, geo), zs=z0,
+                                              what=what, said=heard, partial=partial)
+            # a point terrio did not move has no number in some coordinate: its height is none, whatever came back
+            z1 = np.where(transforms.finite(out), np.asarray(out[2], np.float64).ravel(), np.nan)
         except transforms.TransformUnavailable as exc:
             z1, refused = np.full(len(xs), np.nan), exc
-    dz = np.asarray(z1, np.float64) - z0
+    dz = z1 - z0
     missing = ~np.isfinite(dz) | (dz == 0.0)  # and with an older terrio: a height no grid moved
-    if missing.any():
-        reason, rest = (refused.reason, []) if refused is not None else transforms.words(said)
+    if missing.any() and (missing.all() or not partial):
+        reason, rest = (refused.reason, []) if refused is not None else transforms.words(heard)
         transforms.again(rest)
         where = t("in {0} punti su {1}", "at {0} points of {1}").format(int(missing.sum()), len(dz))
         raise HeightsUnavailable(t(
@@ -227,16 +254,24 @@ def vertical_shift(crs: str, xs, ys, source: str, target: str, network: bool = T
             "per scaricarla dal CDN di PROJ, o mettila in una cartella delle griglie - oppure non copre il rilievo.",
             "No model moved the heights from {0} to {1} ({2}): the grid of the geoid is missing - allow the network "
             "to download it from the PROJ CDN, or put it in a folder of grids - or it does not cover the survey.")
-            .format(label(source), label(target), where) + (f" terrio: {reason}" if reason else "")) from refused
-    transforms.again(said)
+            .format(label(source), label(target), where) + (f" terrio: {reason}" if reason else ""),
+            reason) from refused
+    if missing.any() and said is not None:  # points left out: what terrio said meanwhile is for who counts them
+        said.extend(heard)
+    else:
+        transforms.again(heard)
+    dz[missing] = np.nan  # with ``partial``: the points to leave out
     return dz
 
 
 class ShiftField:
     """The shift between two height systems sampled over ``bounds`` (``min_x, min_y, max_x,
-    max_y`` in ``crs``) and interpolated bilinearly: :meth:`at` gives it at any point."""
+    max_y`` in ``crs``) and interpolated bilinearly: :meth:`at` gives it at any point. With
+    ``partial`` and ``said`` (see :func:`vertical_shift`) the samples no model moved are NaN, and so
+    is the shift :meth:`at` gives beside them: those points are to be asked one by one."""
 
-    def __init__(self, crs, bounds, source, target, step: float = STEP, max_samples: int = MAX_SAMPLES, **grids):
+    def __init__(self, crs, bounds, source, target, step: float = STEP, max_samples: int = MAX_SAMPLES,
+                 partial: bool = False, said: list | None = None, **grids):
         x0, y0, x1, y1 = (float(v) for v in bounds)
         if x1 <= x0:
             x1 = x0 + 1.0
@@ -246,7 +281,8 @@ class ShiftField:
         ny = int(np.clip(np.ceil((y1 - y0) / step) + 1, 2, max_samples))
         self.x, self.y = np.linspace(x0, x1, nx), np.linspace(y0, y1, ny)
         gx, gy = np.meshgrid(self.x, self.y)
-        self.grid = vertical_shift(crs, gx.ravel(), gy.ravel(), source, target, **grids).reshape(ny, nx)
+        self.grid = vertical_shift(crs, gx.ravel(), gy.ravel(), source, target, partial=partial, said=said,
+                                   **grids).reshape(ny, nx)
 
     def at(self, xs, ys) -> np.ndarray:
         xs, ys = np.asarray(xs, np.float64), np.asarray(ys, np.float64)
@@ -352,8 +388,16 @@ def convert_cloud(chunk, source: str, target: str, name: str | None = None, acti
                   progress=None) -> dict:
     """The heights of the dense cloud moved from ``source`` to ``target`` (see the module), written
     as a new version of the cloud with its classes, colours and the plugin's dimensions - made the
-    active one with ``activate``. Returns the file, the version, its name and the shift."""
+    active one with ``activate``. Returns the file, the version, its name and the shift.
+
+    The points no model moved (the cloud crosses the edge of a grid; terrio 0.9 tells them) are not
+    in the new version, with everything that runs along the points cut as they are: ``points`` is
+    how many were written, ``not_transformed`` how many were left out (also in the parameters of
+    the version when above zero, and in the log) and ``reason`` what terrio said of a grid
+    meanwhile. No point moved, or an older terrio: :class:`HeightsUnavailable`, nothing written."""
     from pyarchinit_photogrammetry.core import versions
+
+    from .texts import num
 
     progress = as_progress(progress)
     source, target = normalise(source), normalise(target)
@@ -364,19 +408,54 @@ def convert_cloud(chunk, source: str, target: str, name: str | None = None, acti
     progress(0.1, t("Spostamento da {0} a {1}", "Shift from {0} to {1}").format(label(source), label(target)))
     world = chunk.to_world(pc.xyz)
     lo, hi = world.min(0), world.max(0)
-    field = ShiftField(chunk.crs, (lo[0], lo[1], hi[0], hi[1]), source, target,
-                       **_grid_options(network, keep, folders, cache, environment_paths))
-    progress(0.5, t("{0} punti", "{0} points").format(len(pc)))
-    world[:, 2] += field.at(world[:, 0], world[:, 1])
+    bounds, grids = (lo[0], lo[1], hi[0], hi[1]), _grid_options(network, keep, folders, cache, environment_paths)
+    total = len(pc)
+    heard, why = [], ""  # what terrio said while it left points out: said with their count, issued again else
+    try:
+        field = ShiftField(chunk.crs, bounds, source, target, partial=True, said=heard, **grids)  # none moved: refused
+        progress(0.5, t("{0} punti", "{0} points").format(total))
+        dz = field.at(world[:, 0], world[:, 1])
+        beside = np.nonzero(~np.isfinite(dz))[0]  # beside a sample no model moved: each asked of terrio
+        for start in range(0, len(beside), BLOCK):
+            part = beside[start:start + BLOCK]
+            try:
+                dz[part] = vertical_shift(chunk.crs, world[part, 0], world[part, 1], source, target, partial=True,
+                                          said=heard, **grids)
+            except HeightsUnavailable as exc:  # none of these was moved: they stay without a shift
+                why = why or exc.reason
+            progress(0.5 + 0.3 * (start + len(part)) / len(beside),
+                     t("Punti al bordo della griglia: {0} di {1}", "Points at the edge of the grid: {0} of {1}")
+                     .format(num(start + len(part)), num(len(beside))))
+        if not np.isfinite(dz).any():  # no point of the cloud was moved: the refusal of always, as for a DEM here
+            field = ShiftField(chunk.crs, bounds, source, target, **grids)
+            dz = field.at(world[:, 0], world[:, 1])
+        moved = np.isfinite(dz)
+        left_out = total - int(moved.sum())
+        if left_out:
+            said, rest = transforms.words(heard)
+            heard[:], why = rest, why or said
+    finally:
+        transforms.again(heard)
+    # the shift of the samples, as before, when they all have one; else that of the points written
+    whole = bool(np.isfinite(field.grid).all())
+    shift = field.stats() if whole else (float(dz[moved].min()), float(dz[moved].mean()), float(dz[moved].max()))
+    if left_out:  # never written without a height in the new system: left out and counted
+        log.warning("heights of the dense cloud from %s to %s: %d points of %d not transformed (no grid of the "
+                    "geoid covers them), left out of the new version%s", source, target, left_out, total,
+                    f" - terrio: {why}" if why else "")
+        pc, extras, world, dz = pc.subset(moved), cloudfile.subset(extras, moved), world[moved], dz[moved]
+    world[:, 2] += dz
     pc.xyz = chunk.to_internal(world)
     vid, folder = _new_version_folder(chunk, "point_cloud")
     out = cloudfile.save(pc, folder / "point_cloud.ply", extras)
-    shift = field.stats()
     base = versions.active_info(chunk, "point_cloud")["name"]
     label_name = name or _version_name(base, target)
     params = dict(chunk.meta.get("dense") or {})
+    params.pop("not_transformed", None)  # of the conversion the active cloud came from, not of this one
     params.update({"heights": target, "heights_from": source, "height_shift": [round(v, 4) for v in shift],
                    "terrio": str(environment.load_features().__version__)})
+    if left_out:
+        params["not_transformed"] = left_out
     entry = {"id": vid, "name": label_name, "created": datetime.now().isoformat(timespec="seconds"),
              "params": params, "files": {"point_cloud": str(out.relative_to(chunk.data_dir))}}
     chunk.meta.setdefault("versions", {}).setdefault("point_cloud", []).append(entry)
@@ -385,7 +464,7 @@ def convert_cloud(chunk, source: str, target: str, name: str | None = None, acti
     progress(1.0, label_name)
     return {"path": chunk.product_path("point_cloud") if activate else out, "version": vid, "name": label_name,
             "shift": shift, "source": source, "target": target, "active": bool(activate), "points": len(pc),
-            "grids": _grids_folder(cache)}
+            "not_transformed": left_out, "reason": why, "grids": _grids_folder(cache)}
 
 
 def _grids_folder(cache) -> str:
