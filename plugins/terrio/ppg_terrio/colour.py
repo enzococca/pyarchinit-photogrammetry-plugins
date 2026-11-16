@@ -147,8 +147,9 @@ def sample(chunk, path, bands, world: np.ndarray, resampling: str = "bilinear", 
     names = [f"tv{i}" for i in range(len(wanted))]
     for k, (key, idx) in enumerate(tiles):
         x0, y0 = origin + key * size
-        pad = 2 * res
-        x0, y0, x1, y1 = x0 - pad, y0 - pad, x0 + size + pad, y0 + size + pad
+        # two cells on each side; with the raster's own cells, each axis by its own size (cells may be tall)
+        px, py = (2 * abs(src.res[0]), 2 * abs(src.res[1])) if same else (2 * res, 2 * res)
+        x0, y0, x1, y1 = x0 - px, y0 - py, x0 + size + px, y0 + size + py
         if same:
             sb = src.bounds
             left, right, bottom, top = max(x0, sb[0]), min(x1, sb[2]), max(y0, sb[1]), min(y1, sb[3])

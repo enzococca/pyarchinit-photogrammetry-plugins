@@ -83,7 +83,8 @@ def listen(call):
     when it failed), its error (``None`` when it went well) and the warnings, for :func:`words` and
     :func:`again`. The window is the call and no more: the recording is of the whole process, so a
     warning of another thread in that time is recorded with terrio's (and issued again, or - when
-    it is a ``UserWarning`` and a grid was refused - quoted beside terrio's)."""
+    it is a ``UserWarning`` and a grid was refused - quoted beside terrio's). ``catch_warnings`` is not
+    safe between threads: two such windows that overlap can put the filters of the process back wrong."""
     with warnings.catch_warnings(record=True) as heard:
         warnings.simplefilter("always")
         try:

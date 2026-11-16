@@ -159,7 +159,7 @@ jobs:
         run: python -X faulthandler -m pytest -q -p no:cacheprovider -o faulthandler_timeout=600 "${{ matrix.plugin }}/tests"
       - name: The tests of terrio again, with terrio 0.6.1
         # the step above has the newest terrio the plugin's range allows; the applications in the field hold 0.6.1
-        if: matrix.plugin == 'plugins/terrio'
+        if: ${{ !cancelled() && matrix.plugin == 'plugins/terrio' }}
         run: |
           python -m pip install "terrio==0.6.1"
           python -c "import terrio; assert terrio.__version__ == '0.6.1', terrio.__version__"

@@ -166,7 +166,9 @@ def _take_pending() -> bool:
     this process has loaded that one: the terrio of before is set aside (``lib.old``), the new one moved
     in, the one set aside removed. Two renames, so the folder never holds half of one and half of the
     other; a rename that fails (``OSError``) leaves the terrio of before in its place and the new one
-    waiting. Also ends a swap that was stopped between its moves. True when a new terrio is in place."""
+    waiting. Also ends a swap that was stopped between its moves. True when a new terrio is in place.
+    "Loaded" is known of this process only: another program open on the same folder (a second window, the
+    command line) is not seen, and on macOS and Linux it keeps its terrio of before for what it has imported."""
     folder, pending = _LIB_DIR, pending_dir()
     if folder is None:
         return False

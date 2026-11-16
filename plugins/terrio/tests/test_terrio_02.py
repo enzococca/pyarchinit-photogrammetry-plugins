@@ -171,6 +171,22 @@ def test_a_tile_that_reaches_the_raster_by_less_than_a_cell_is_left_out_by_its_g
     assert np.isnan(out[0]).all() and (out[1:] == 7).all(), out
 
 
+def test_a_tile_beside_the_edge_of_a_raster_of_tall_cells_is_read(tmp_path, monkeypatch):
+    """Cells taller than they are wide: a tile whose points are inside the raster, its window crossing the edge, is
+    read (it was left out when the window was padded by the width of a cell and compared with its height)."""
+    from types import SimpleNamespace
+
+    path = tmp_path / "alto.tif"
+    terrio.Raster.from_array(np.full((3, 20, 100), 7, np.uint8), (1000.0, 0.1, 0.0, 2010.0, 0.0, -0.5),
+                             crs=CRS).write(str(path))  # 10 m by 10 m, cells 0.1 m wide and 0.5 m tall
+    monkeypatch.setattr(colour, "TILE", 20)  # tiles of 2 m (twenty cells of the width)
+    # the tile of the first point starts at 2009.75: its window, padded by two widths, reaches 0.45 m into the
+    # raster - less than a height of a cell - while the point is 0.2 m inside the top edge
+    world = np.array([[1005.0, 2009.8, 0.0], [1005.0, 2001.75, 0.0]])
+    out = colour.sample(SimpleNamespace(crs=CRS, data_dir=tmp_path), str(path), (1, 2, 3), world)
+    assert (out == 7).all(), out
+
+
 @pytest.mark.parametrize("text", ["point outside the velocity grid", "no pixel of the raster could be read"])
 def test_an_error_while_reading_a_tile_stops_the_step_whatever_its_words(tmp_path, monkeypatch, text):
     """Only the geometry leaves a tile out: an error of terrio while a tile inside the raster is read stops the step
@@ -440,6 +456,18 @@ def test_the_shift_at_the_points_no_grid_covers_is_no_number_when_asked_so(tmp_p
     monkeypatch.setattr(terrio, "transform_points", in_part)
     dz = heights.vertical_shift(CRS, xs, ys, "ellipsoid", "EPSG:3855", partial=True, **opts)
     assert (np.isnan(dz) == beyond).all() and (dz[~beyond] == -30.0).all()
+
+    def as_they_were(xs, ys, src_crs, dst_crs, zs=None, only_best=False, errcheck=True):
+        if zs is None:
+            return real(xs, ys, src_crs, dst_crs)
+        x, y = np.array(xs, np.float64), np.array(ys, np.float64)
+        z = np.asarray(zs, np.float64) - 30.0
+        z[x > edge] = np.asarray(zs, np.float64)[x > edge]  # a position with numbers, the height not moved
+        return x, y, z
+
+    monkeypatch.setattr(terrio, "transform_points", as_they_were)
+    dz = heights.vertical_shift(CRS, xs, ys, "ellipsoid", "EPSG:3855", partial=True, **opts)
+    assert (np.isnan(dz) == beyond).all() and (dz[~beyond] == -30.0).all(), "a height not moved is never copied"
 
 
 def test_a_cloud_across_the_edge_of_a_geoid_leaves_out_and_counts_the_points_beyond_it(tmp_path, monkeypatch, caplog):
