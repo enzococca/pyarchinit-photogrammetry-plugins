@@ -307,12 +307,12 @@ def test_an_update_that_cannot_be_put_in_place_says_to_close_the_program_and_wai
     assert environment.load().__version__ == "0.9.0" and _beside(folder) == ["lib"]
 
 
-@pytest.mark.parametrize("failure", ["digest", "path", "cut", "empty"])
+@pytest.mark.parametrize("failure", ["digest", "no digest", "path", "cut", "empty"])
 def test_a_download_that_fails_leaves_the_terrio_that_works_where_it_was(folder, pypi, failure):
     lib = folder / "lib"
     old = _in_use(folder, pypi)
     before = _files(lib)
-    pypi.add("0.9.0", digest="wrong" if failure == "digest" else "right", cut=failure == "cut",
+    pypi.add("0.9.0", digest={"digest": "wrong", "no digest": "none"}.get(failure, "right"), cut=failure == "cut",
              members={"../outside.py": "x = 1\n"} if failure == "path" else None)
     if failure == "empty":  # a wheel of something else under the name of terrio
         name, _ = _wheel("0.9.0")
@@ -322,7 +322,8 @@ def test_a_download_that_fails_leaves_the_terrio_that_works_where_it_was(folder,
         pypi.files[f"https://files.invalid/{name}"] = (data.getvalue(), False)
         pypi.listings[environment.PYPI.format(version="0.9.0")][1]["digests"] = {
             "sha256": hashlib.sha256(data.getvalue()).hexdigest()}
-    wanted = {"digest": (environment.TerrioMissing, "SHA-256"), "path": (environment.TerrioMissing, "unsafe path"),
+    wanted = {"digest": (environment.TerrioMissing, "does not match its SHA-256"),
+              "no digest": (environment.TerrioMissing, "no SHA-256"), "path": (environment.TerrioMissing, "unsafe path"),
               "cut": (ConnectionResetError, "reset"), "empty": (environment.TerrioMissing, "no terrio")}[failure]
     with pytest.raises(wanted[0], match=wanted[1]):
         environment.install()

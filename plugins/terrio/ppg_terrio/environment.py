@@ -344,6 +344,9 @@ def install(progress=None, version: str = TERRIO_VERSION, files: list[dict] | No
     if wheel is None:
         raise TerrioMissing(f"no wheel of terrio {version} for this computer ({platform.system()} "
                             f"{platform.machine()}, Python {sys.version_info[0]}.{sys.version_info[1]})")
+    expected = str((wheel.get("digests") or {}).get("sha256", "")).lower()
+    if not expected:  # nothing to check the file against: not downloaded
+        raise TerrioMissing(f"PyPI lists {wheel.get('filename')} with no SHA-256: the wheel is not downloaded")
     folder, pending = _LIB_DIR, pending_dir()
     folder.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=".terrio-", dir=folder.parent))
@@ -359,8 +362,7 @@ def install(progress=None, version: str = TERRIO_VERSION, files: list[dict] | No
                 done += len(chunk)
                 if total:
                     progress(0.05 + 0.85 * done / total, f"terrio {version}: {done / 1e6:.0f} / {total / 1e6:.0f} MB")
-        expected = str((wheel.get("digests") or {}).get("sha256", "")).lower()
-        if expected and digest.hexdigest() != expected:
+        if digest.hexdigest() != expected:
             raise TerrioMissing("the wheel downloaded does not match its SHA-256 on PyPI")
         unpacked = work / "unpacked"
         with zipfile.ZipFile(path) as z:
