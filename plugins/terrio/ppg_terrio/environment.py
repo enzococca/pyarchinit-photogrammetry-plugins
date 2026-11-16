@@ -9,6 +9,12 @@ into ``<plugin data>/lib`` and puts that folder on ``sys.path``; :func:`load` im
 of the two: the terrio of the environment or the one of the plugin folder (a terrio downloaded to
 update the one the application carries wins over it).
 
+An update of the terrio of the plugin folder never works on the files in use: the new terrio is made
+complete beside it (``lib.new``) and takes its place with two renames - at once when this process has
+not loaded the one of the folder, at the next start of the program (in :func:`load`, before the import)
+when it has: a compiled module stays in the process that loaded it, and on Windows its file cannot be
+removed. Whatever fails on the way leaves the terrio that worked where it was.
+
 The plugin works with terrio from 0.3.2 up to the 0.9 releases; the steps added in 0.2.0 of the
 plugin (cleaning, colours from rasters, heights, Planetary Computer) need terrio 0.5
 (:data:`FEATURES_SINCE`) and say so when an older one is installed (:class:`TerrioTooOld`). From
@@ -20,6 +26,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
+import os
 import platform
 import shutil
 import sys
@@ -37,6 +45,9 @@ USER_AGENT = "pyarchinit-photogrammetry plugin terrio"
 
 _DATA_DIR: Path | None = None  # the folder of the plugin's files (configure())
 _LIB_DIR: Path | None = None  # the plugin folder where install() puts terrio
+
+log = logging.getLogger("pyarchinit_photogrammetry.plugins.terrio")  # the plugin's logger (the log pane shows it)
+_SAID = ""  # the last failure of a swap written to the log: said once, not at every step
 
 
 class TerrioMissing(RuntimeError):
@@ -121,6 +132,61 @@ def folder_version(folder: Path | None) -> str:
     return found[-1].name[len("terrio-"):-len(".dist-info")] if found else ""
 
 
+def pending_dir() -> Path | None:
+    """Where a terrio downloaded while the one of the plugin folder is in use waits for the next start
+    of the program: ``lib.new`` beside ``lib``."""
+    return None if _LIB_DIR is None else _LIB_DIR.with_name(_LIB_DIR.name + ".new")
+
+
+def pending_version() -> str:
+    """The version of the terrio that waits for the next start (:func:`pending_dir`), "" when none."""
+    return folder_version(pending_dir())
+
+
+def _loaded_from(folder: Path | None) -> bool:
+    """Whether this process has loaded a module of terrio from ``folder``."""
+    if folder is None:
+        return False
+    root = os.path.normcase(os.path.realpath(folder)) + os.sep
+    for name, module in list(sys.modules.items()):
+        if name == "terrio" or name.startswith("terrio."):
+            file = getattr(module, "__file__", None)
+            if file and os.path.normcase(os.path.realpath(file)).startswith(root):
+                return True
+    return False
+
+
+def _take_pending() -> bool:
+    """The terrio that waits (:func:`pending_dir`) takes the place of the one of the plugin folder, unless
+    this process has loaded that one: the terrio of before is set aside (``lib.old``), the new one moved
+    in, the one set aside removed. Two renames, so the folder never holds half of one and half of the
+    other; a rename that fails (``OSError``) leaves the terrio of before in its place and the new one
+    waiting. Also ends a swap that was stopped between its moves. True when a new terrio is in place."""
+    folder, pending = _LIB_DIR, pending_dir()
+    if folder is None:
+        return False
+    aside = folder.with_name(folder.name + ".old")
+    waits = bool(folder_version(pending))
+    if not (waits or aside.exists()) or _loaded_from(folder):
+        return False
+    if waits:
+        if folder.exists():
+            if aside.exists():
+                shutil.rmtree(aside)
+            folder.rename(aside)
+        try:
+            pending.rename(folder)
+        except OSError:
+            if aside.exists() and not folder.exists():
+                aside.rename(folder)
+            raise
+    elif not folder.exists():  # only the terrio set aside is left: back in its place
+        aside.rename(folder)
+    if folder.exists():
+        shutil.rmtree(aside, ignore_errors=True)
+    return waits
+
+
 def _environment_version(folder: Path | None) -> str:
     """The version of the terrio of the Python environment (the plugin folder left out)."""
     from importlib import metadata
@@ -149,7 +215,17 @@ def _prefer_newest() -> None:
 def load(minimum: tuple | None = None, feature: str = ""):
     """The terrio module (version checked), the newer of the environment's and the plugin
     folder's. ``minimum``: the version a step needs (:class:`TerrioTooOld` otherwise, the message
-    naming ``feature``)."""
+    naming ``feature``). A terrio downloaded while the one of the folder was in use takes its place
+    here, before the first import."""
+    global _SAID
+    try:
+        _take_pending()
+    except OSError as exc:
+        said = (f"terrio {pending_version()}, downloaded into the plugin folder, could not be put in place ({exc}): "
+                "the terrio of before is used and the new one waits for the next start of the program")
+        if said != _SAID:
+            _SAID = said
+            log.warning("%s", said)
     _prefer_newest()
     try:
         return _import(minimum, feature)
@@ -253,8 +329,10 @@ def _get(url: str, timeout: float):
 
 def install(progress=None, version: str = TERRIO_VERSION, files: list[dict] | None = None) -> Path:
     """Download the wheel of terrio for this computer from PyPI (its SHA-256 checked against the
-    one PyPI publishes), unpack it into the plugin folder and make it importable at once.
-    ``files``: the PyPI listing, when already read. Returns the folder."""
+    one PyPI publishes) and unpack it in the plugin folder. ``files``: the PyPI listing, when already
+    read. Returns the folder that holds it: ``lib``, importable at once, or - when this process has
+    loaded the terrio of the folder - :func:`pending_dir`, where it waits for the next start of the
+    program. A failure at any step leaves the terrio that was in the folder as it was."""
     if _LIB_DIR is None:
         raise TerrioMissing("the plugin has no folder to install terrio into (configure() first)")
     progress = progress or (lambda *a: None)
@@ -266,7 +344,7 @@ def install(progress=None, version: str = TERRIO_VERSION, files: list[dict] | No
     if wheel is None:
         raise TerrioMissing(f"no wheel of terrio {version} for this computer ({platform.system()} "
                             f"{platform.machine()}, Python {sys.version_info[0]}.{sys.version_info[1]})")
-    folder = _LIB_DIR
+    folder, pending = _LIB_DIR, pending_dir()
     folder.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=".terrio-", dir=folder.parent))
     try:
@@ -291,11 +369,24 @@ def install(progress=None, version: str = TERRIO_VERSION, files: list[dict] | No
                 if p.is_absolute() or ".." in p.parts:
                     raise TerrioMissing(f"the wheel holds an unsafe path: {member}")
             z.extractall(unpacked)
-        if folder.exists():
-            shutil.rmtree(folder)
-        unpacked.rename(folder)
+        if not folder_version(unpacked) or not (unpacked / "terrio").is_dir():
+            raise TerrioMissing(f"the wheel downloaded holds no terrio ({wheel['filename']})")
+        if pending.exists():  # an earlier download that still waited
+            pending.rename(work / "replaced")
+        unpacked.rename(pending)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    try:
+        taken = _take_pending()
+    except OSError as exc:
+        raise TerrioMissing(_text(
+            "terrio {0} e' scaricato ma non ha potuto prendere il posto di quello della cartella del plugin ({1}): "
+            "chiudi il programma (ogni sua finestra) e riaprilo",
+            "terrio {0} is downloaded but could not take the place of the one of the plugin folder ({1}): "
+            "close the program (every window of it) and open it again").format(version, exc)) from exc
+    if not taken:  # the terrio of the folder is in use by this process
+        progress(1.0, f"terrio {version} waits in {pending} for the next start of the program")
+        return pending
     for name in [m for m in sys.modules if m == "terrio" or m.startswith("terrio.")]:
         del sys.modules[name]
     if str(folder) in sys.path:

@@ -126,6 +126,13 @@ class TerrioPlugin(Plugin):
             return True
         window = self.context.window
         old = environment.installed()
+        waiting = self._waiting()
+        if waiting:  # downloaded in this session already: not offered a second time
+            if old and minimum is not None and environment._key(old) < tuple(minimum):
+                waiting = t("{0} richiede terrio {1} o successivo.", "{0} needs terrio {1} or later.").format(
+                    feature or t("Questo passo", "This step"), environment.dotted(minimum)) + " " + waiting
+            self._info(waiting)
+            return False
         if old and minimum is not None and environment._key(old) < tuple(minimum):
             from .texts import needs_newer
 
@@ -167,14 +174,49 @@ class TerrioPlugin(Plugin):
             return None
         return chunk
 
+    def _waiting(self) -> str:
+        """What the window says of a terrio that is downloaded and waits for the next start of the program
+        (``environment.pending_version``); "" when none waits."""
+        used = environment.installed()  # first: at the start of the program the terrio that waited is put in place
+        waits = environment.pending_version()
+        if not waits:
+            return ""
+        return t("terrio {0} e' gia' scaricato nella cartella del plugin: chiudi e riapri il programma per usarlo.",
+                 "terrio {0} is already downloaded into the plugin folder: close and reopen the program to use it."
+                 ).format(waits) + (" " + t("Fino ad allora resta in uso terrio {0}.",
+                                            "Until then terrio {0} stays in use.").format(used) if used else "")
+
     def install_dialog(self, force: bool = False) -> None:
+        """*Installa terrio...*: the first download, or the update of a terrio older than the one the plugin
+        is written for (asked first). ``force``: the download was already agreed to (:meth:`_ready`)."""
+        from pyarchinit_photogrammetry.gui.dialogs import choice
+
         window = self.context.window
+        waiting = self._waiting()
+        if waiting:
+            self._info(waiting)
+            return
         found = environment.available(environment.FEATURES_SINCE)
         if found and not force:
-            self._info(t("terrio {0} e' gia' disponibile.", "terrio {0} is already available.").format(found))
-            return
+            if environment._key(found) >= environment._key(environment.TERRIO_VERSION) or window is None:
+                self._info(t("terrio {0} e' gia' disponibile.", "terrio {0} is already available.").format(found))
+                return
+            text = t("E' installato terrio {0}; il plugin e' scritto e provato con terrio {1}. Scaricare terrio {1} "
+                     "da PyPI (circa {2} MB) nella cartella del plugin?",
+                     "terrio {0} is installed; the plugin is written and tested with terrio {1}. Download terrio {1} "
+                     "from PyPI (about {2} MB) into the plugin folder?").format(found, environment.TERRIO_VERSION, MIB)
+            if choice(window, "question", self.title, text, [t("Aggiorna", "Update")],
+                      cancel=t("Annulla", "Cancel")) != 0:
+                return
 
         def done(folder):
+            if folder == environment.pending_dir():  # the terrio in use is the one of the plugin folder
+                self._info(t("terrio {0} e' scaricato: chiudi e riapri il programma per usarlo (un modulo compilato "
+                             "non si cambia a programma aperto). Fino ad allora resta in uso terrio {1}.",
+                             "terrio {0} is downloaded: close and reopen the program to use it (a compiled module "
+                             "cannot be changed while the program runs). Until then terrio {1} stays in use."
+                             ).format(environment.TERRIO_VERSION, environment.installed()))
+                return
             self._info(t("terrio {0} installato in {1}. Avvia di nuovo il passo.",
                          "terrio {0} installed in {1}. Start the step again.").format(environment.TERRIO_VERSION, folder))
 
