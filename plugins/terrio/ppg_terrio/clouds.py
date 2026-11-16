@@ -7,6 +7,7 @@ from a file takes a round origin as its internal frame, as the laser scans of th
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +15,9 @@ from pyarchinit_photogrammetry.core.pointcloud import PointCloud
 from pyarchinit_photogrammetry.core.progress import as_progress
 
 from . import cloudfile, environment
+from .texts import num, t
 
+log = logging.getLogger("pyarchinit_photogrammetry.plugins.terrio")  # the plugin's own (its context's ``log``)
 METHODS = ("smrf", "csf", "pmf")
 NOISE, GROUND, OTHER = 7, 2, 1
 VEGETATION = ((0.5, 3), (2.0, 4), (np.inf, 5))  # height above the ground -> ASPRS low, medium, high vegetation
@@ -100,10 +103,16 @@ def import_cloud(doc, source, chunk=None, label: str | None = None, crs: str | N
     """The cloud of ``source`` as the dense cloud of a new chunk (its CRS the one of the file, or
     ``crs``, else local; internal frame from a round origin), or in place of the dense cloud of
     ``chunk``, which is kept as a version (the coordinates reprojected into the chunk CRS when the
-    two are known and differ). Returns the chunk."""
+    two are known and differ). Returns the chunk.
+
+    The points that come back from the reprojection without numbers (outside what a projection
+    takes) are never written: they are left out with their colours and classes, and how many is
+    in the log and in ``chunk.meta["terrio_import"]`` (``not_transformed``, when above zero;
+    ``points`` is how many were written). No point with numbers: a ``ValueError``, the chunk as it was."""
     from pyarchinit_photogrammetry.core import crs as crs_mod
 
     progress = as_progress(progress)
+    left_out = 0
     xyz, rgb, cls, file_crs = read(source, max_points, classes, progress.sub(0.0, 0.7))
     if not len(xyz):
         raise ValueError(f"{Path(str(source)).name}: no point")
@@ -126,7 +135,19 @@ def import_cloud(doc, source, chunk=None, label: str | None = None, crs: str | N
                              "import it into a new chunk")
         if source_crs and not _same_crs(source_crs, chunk.crs):
             progress(0.75, f"Reprojecting from {source_crs} to {chunk.crs}")
-            xyz = _to_chunk_crs(xyz, source_crs, chunk, name)
+            xyz = np.asarray(_to_chunk_crs(xyz, source_crs, chunk, name), np.float64)
+            moved = np.isfinite(xyz).all(axis=1)
+            left_out = len(xyz) - int(moved.sum())
+            if not moved.any():  # nothing to import: said before anything of the chunk is touched
+                raise ValueError(t(
+                    "{0}: nessuno dei suoi {1} punti si trasforma da {2} a {3} (il sistema del chunk): la nuvola non "
+                    "e' stata importata",
+                    "{0}: none of its {1} points can be transformed from {2} to {3} (the system of the chunk): the "
+                    "cloud was not imported").format(name, num(len(xyz)), source_crs, chunk.crs))
+            if left_out:  # never written without numbers: left out with their colours and classes, and counted
+                log.warning("import of %s: %d points of %d not transformed from %s to %s, left out of the cloud of %s",
+                            name, left_out, len(xyz), source_crs, chunk.crs, chunk.label)
+                xyz, rgb, cls = xyz[moved], (None if rgb is None else rgb[moved]), (None if cls is None else cls[moved])
         old = chunk.product_path("point_cloud")
         if old is not None and old.exists():
             versions.keep_active(chunk, "point_cloud", move=True)
@@ -134,6 +155,8 @@ def import_cloud(doc, source, chunk=None, label: str | None = None, crs: str | N
     chunk.meta["point_cloud_source"] = f"terrio: {name}"
     chunk.meta["terrio_import"] = {"source": str(source), "points": int(len(xyz)), "crs": file_crs or "",
                                    "max_points": int(max_points or 0), "classes": [int(c) for c in classes or []]}
+    if left_out:
+        chunk.meta["terrio_import"]["not_transformed"] = left_out
     progress(1.0, f"{len(xyz):,} points in {chunk.label}")
     return chunk
 

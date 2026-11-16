@@ -243,8 +243,8 @@ class TerrioPlugin(Plugin):
                     self.context.activate_chunk(chunk)
                 elif getattr(window, "_activate_chunk", None) is not None:
                     window._activate_chunk(chunk)
-            n = (chunk.meta.get("terrio_import") or {}).get("points", 0)
-            self._info(t("{0} punti in {1}.", "{0} points in {1}.").format(num(n), chunk.label))
+            left_out = (chunk.meta.get("terrio_import") or {}).get("not_transformed")
+            self._info(summary_import(chunk).replace("\n", ".\n") + ".", "warning" if left_out else "info")
 
         self._run(t("Importazione della nuvola", "Importing the cloud"), job, done)
 
@@ -879,7 +879,7 @@ class TerrioPlugin(Plugin):
             elif doc.chunk is not active:  # the active chunk of the project stays as it was
                 doc.chunk = active
             doc.save()
-            print(t("{0} punti in {1}", "{0} points in {1}").format(num(new.meta["terrio_import"]["points"]), new.label))
+            print(summary_import(new))
         elif a.what == "ground":
             from .clouds import ground
 
@@ -970,6 +970,19 @@ def summary_ground(report: dict) -> str:
                        "  {0} points of other classes or labelled by hand left as they were").format(num(report["kept"])))
     for code, n in sorted(report["counts"].items()):
         lines.append(f"  {code} {class_label(code, report.get('labels'))}: {num(n)}")
+    return "\n".join(lines)
+
+
+def summary_import(chunk) -> str:
+    """The import of a cloud into ``chunk``, in words, in the language of the program: how many points it has of the
+    file and, when the reprojection gave no numbers for some, how many were left out."""
+    info = chunk.meta.get("terrio_import") or {}
+    points, left_out = info.get("points", 0), info.get("not_transformed", 0)
+    lines = [t("{0} punti in {1}", "{0} points in {1}").format(num(points), chunk.label)]
+    if left_out:
+        lines.append(t("{0} punti su {1} non trasformati nel sistema del chunk ({2}): lasciati fuori dalla nuvola",
+                       "{0} points of {1} not transformed into the system of the chunk ({2}): left out of the cloud")
+                     .format(num(left_out), num(points + left_out), chunk.crs))
     return "\n".join(lines)
 
 

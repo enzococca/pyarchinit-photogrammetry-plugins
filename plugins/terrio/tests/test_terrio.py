@@ -4,6 +4,7 @@ cloud written by terrio (new chunk and in place of the dense cloud), E57 and EPT
 tiles of the orthomosaic, a reference raster kept as a version, the plugin in the program."""
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from ppg_terrio import clouds, environment, rasters  # noqa: E402
 CRS = "EPSG:32637"
 ORIGIN = np.array([300000.0, 3960000.0, 100.0])
 SIZE = 40.0  # metres of ground
+LOGGER = "pyarchinit_photogrammetry.plugins.terrio"  # where the plugin writes its log lines
 
 
 def _cloud(rng):
@@ -161,6 +163,168 @@ def test_import_between_european_frames_goes_at_the_epoch_of_the_survey(tmp_path
     assert np.abs(chunk.to_world(chunk.point_cloud.xyz) - expected).max() < 0.001
     null = crs_mod.by_proj(stored, "EPSG:8403", chunk.crs)
     assert np.linalg.norm((null - expected)[:, :2], axis=1).min() > 0.03  # what the plain conversion would have given
+
+
+def _geographic_las(doc, path, beyond=None, count=500):
+    """The first ``count`` points of the dense cloud of the synthetic survey written as a LAS in longitude and latitude,
+    with colours and classes that number them; the points ``beyond`` (a mask) at 95 degrees of latitude, where no
+    projection takes them. Returns their world coordinates in the system of the chunk, their colours and classes."""
+    from pyarchinit_photogrammetry.core.crs import transform_points
+
+    chunk = doc.chunk
+    world = chunk.to_world(chunk.point_cloud.xyz)[:count]
+    lonlat = transform_points(world, CRS, "EPSG:4326")
+    if beyond is not None:
+        lonlat[beyond, 1] = 95.0
+    i = np.arange(count)
+    rgb = np.column_stack([i % 256, i // 256 + 1, np.full(count, 7)]).astype(np.uint8)
+    cls = (i % 4 + 2).astype(np.uint8)
+    red, green, blue = (rgb[:, k].astype(np.uint16) * 257 for k in range(3))
+    terrio.PointCloud.from_dict({"x": lonlat[:, 0], "y": lonlat[:, 1], "z": lonlat[:, 2], "classification": cls,
+                                 "red": red, "green": green, "blue": blue}, crs="EPSG:4326").write(str(path))
+    return world, rgb, cls
+
+
+def test_points_no_projection_takes_are_left_out_of_an_imported_cloud_and_counted(tmp_path, caplog):
+    """A cloud imported into a chunk of another system: the points that come back from the reprojection without
+    numbers (here beyond the pole) are not written - they were, at infinity - and their colours and classes go with
+    them; how many is in the log, in what the project keeps of the import and in the summary of the window and of the
+    command line. The cloud of before, among the versions, has every point. An import that moved every point says
+    no more than before."""
+    from ppg_terrio import summary_import
+    from pyarchinit_photogrammetry.core import versions
+    from pyarchinit_photogrammetry.core.pointcloud import PointCloud
+    from pyarchinit_photogrammetry.gui import i18n
+
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    before = len(chunk.point_cloud)
+    beyond = np.arange(500) % 5 == 3
+    world, rgb, cls = _geographic_las(doc, tmp_path / "geo.las", beyond)
+    _geographic_las(doc, tmp_path / "tutti.las")
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        clouds.import_cloud(doc, tmp_path / "geo.las", chunk=chunk)
+    pc = PointCloud.load(chunk.product_path("point_cloud"))
+    assert len(pc) == 400 and np.isfinite(pc.xyz).all(), "no point without numbers is written"
+    assert np.abs(chunk.to_world(pc.xyz) - world[~beyond]).max() < 0.02
+    assert (pc.rgb == rgb[~beyond]).all() and (pc.classification == cls[~beyond]).all()
+    info = chunk.meta["terrio_import"]
+    assert info["points"] == 400 and info["not_transformed"] == 100
+    said = [r.getMessage() for r in caplog.records if r.name == LOGGER]
+    assert len(said) == 1 and "geo.las" in said[0]
+    assert "100 points of 500 not transformed from EPSG:4326 to EPSG:32637" in said[0]
+    assert summary_import(chunk).splitlines() == [
+        "400 punti in rilievo",
+        "100 punti su 500 non trasformati nel sistema del chunk (EPSG:32637): lasciati fuori dalla nuvola"]
+    try:
+        i18n.set_current("en")
+        assert summary_import(chunk).splitlines() == [
+            "400 points in rilievo",
+            "100 points of 500 not transformed into the system of the chunk (EPSG:32637): left out of the cloud"]
+    finally:
+        i18n.set_current(None)
+    kept = versions.versions(chunk, "point_cloud")
+    assert len(kept) == 1
+    assert len(PointCloud.read_column(versions.version_file(chunk, "point_cloud", kept[0]["id"]), "red")) == before
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        clouds.import_cloud(doc, tmp_path / "tutti.las", chunk=chunk)
+    assert len(chunk.point_cloud) == 500 and not [r for r in caplog.records if r.name == LOGGER]
+    info = chunk.meta["terrio_import"]
+    assert info["points"] == 500 and "not_transformed" not in info
+    assert summary_import(chunk) == "500 punti in rilievo"
+
+
+def test_a_point_without_a_number_in_any_coordinate_is_left_out_of_an_imported_cloud(tmp_path, monkeypatch):
+    """What tells a point the reprojection did not move is any of its coordinates without a number: a height alone
+    that came back as no number leaves the point out, as a position at infinity does. The answer of the reprojection
+    is changed here for three points."""
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    world, rgb, cls = _geographic_las(doc, tmp_path / "geo.las")
+    real = clouds._to_chunk_crs
+
+    def holed(xyz, source_crs, chunk, name):
+        out = np.array(real(xyz, source_crs, chunk, name), np.float64)
+        out[3, 2], out[7, 0], out[11, 1] = np.nan, np.inf, -np.inf
+        return out
+
+    monkeypatch.setattr(clouds, "_to_chunk_crs", holed)
+    clouds.import_cloud(doc, tmp_path / "geo.las", chunk=chunk)
+    pc, keep = chunk.point_cloud, ~np.isin(np.arange(500), [3, 7, 11])
+    assert len(pc) == 497 and np.isfinite(pc.xyz).all()
+    assert np.abs(chunk.to_world(pc.xyz) - world[keep]).max() < 0.02
+    assert (pc.rgb == rgb[keep]).all() and (pc.classification == cls[keep]).all()
+    assert chunk.meta["terrio_import"]["points"] == 497 and chunk.meta["terrio_import"]["not_transformed"] == 3
+
+
+def test_a_cloud_no_point_of_which_can_be_reprojected_is_not_imported(tmp_path, caplog):
+    """No point of the file comes back from the reprojection with numbers: an error that says so, and the chunk is as
+    it was - its dense cloud the active one, no version, nothing kept of an import."""
+    from pyarchinit_photogrammetry.core import versions
+
+    doc = _project(tmp_path)
+    chunk = doc.chunk
+    before = chunk.point_cloud.xyz.copy()
+    _geographic_las(doc, tmp_path / "polo.las", np.ones(500, bool))
+    with caplog.at_level(logging.WARNING, logger=LOGGER), pytest.raises(ValueError) as exc:
+        clouds.import_cloud(doc, tmp_path / "polo.las", chunk=chunk)
+    assert str(exc.value) == ("polo.las: nessuno dei suoi 500 punti si trasforma da EPSG:4326 a EPSG:32637 (il sistema "
+                              "del chunk): la nuvola non e' stata importata")
+    assert not versions.versions(chunk, "point_cloud") and "terrio_import" not in chunk.meta
+    assert np.array_equal(chunk.point_cloud.xyz, before)
+    assert not [r for r in caplog.records if r.name == LOGGER]
+
+
+def test_the_window_and_the_command_line_say_how_many_points_the_import_left_out(tmp_path, monkeypatch, capsys):
+    """The count of the points left out of an import, where the user reads it: the command line prints it after the
+    points imported, the window shows it as a warning; a cloud with no point to import is an error in both."""
+    import pyarchinit_photogrammetry as ppg
+    from ppg_terrio import TerrioPlugin
+    from pyarchinit_photogrammetry.app import app
+    from pyarchinit_photogrammetry.gui import dialogs
+    from pyarchinit_photogrammetry.plugins import Context
+
+    doc = _project(tmp_path)
+    geo, pole, whole = tmp_path / "geo.las", tmp_path / "polo.las", tmp_path / "tutti.las"
+    _geographic_las(doc, geo, np.arange(500) % 5 == 3)
+    _geographic_las(doc, pole, np.ones(500, bool))
+    _geographic_las(doc, whole)
+    line = "100 punti su 500 non trasformati nel sistema del chunk (EPSG:32637): lasciati fuori dalla nuvola"
+    answers, shown = {"file": str(geo), "where": "replace"}, []
+
+    class Window:
+        def run_task(self, title, job, done=None, refresh=True, save=True):
+            result = job(lambda *a: None)
+            if done is not None:
+                done(result)
+
+    monkeypatch.setattr(dialogs.ParamDialog, "ask", staticmethod(
+        lambda parent, title, fields, intro="": {f.name: f.default for f in fields} | answers))
+    monkeypatch.setattr(dialogs, "message", lambda parent, kind, title, text, **k: shown.append((kind, text)))
+    plugin = TerrioPlugin()
+    plugin.activate(Context("terrio", tmp_path / "_data", window=Window()))
+    previous, app.document = app.document, doc
+    try:
+        plugin.import_dialog()
+        answers["file"] = str(whole)
+        plugin.import_dialog()
+        answers["file"] = str(pole)
+        with pytest.raises(ValueError, match="polo.las"):
+            plugin.import_dialog()
+    finally:
+        app.document = previous
+    assert shown == [("warning", f"400 punti in rilievo.\n{line}."), ("info", "500 punti in rilievo.")]
+    doc.save()
+    assert plugin.command("import", str(doc.path), str(geo), "--chunk", "rilievo") == 0
+    assert capsys.readouterr().out.endswith(f"400 punti in rilievo\n{line}\n")
+    saved = ppg.Document.open(doc.path).chunk
+    assert len(saved.point_cloud) == 400 and saved.meta["terrio_import"]["not_transformed"] == 100
+    assert plugin.command("import", str(doc.path), str(pole), "--chunk", "rilievo") == 1
+    assert "error: polo.las: nessuno dei suoi 500 punti si trasforma" in capsys.readouterr().out
+    assert len(ppg.Document.open(doc.path).chunk.point_cloud) == 400, "the cloud of before"
+    assert plugin.command("import", str(doc.path), str(whole), "--chunk", "rilievo") == 0
+    assert capsys.readouterr().out.endswith("500 punti in rilievo\n")
 
 
 def test_export_e57_and_ept(tmp_path):
