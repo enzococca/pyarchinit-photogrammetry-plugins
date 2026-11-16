@@ -133,7 +133,20 @@ class TerrioPlugin(Plugin):
                     feature or t("Questo passo", "This step"), environment.dotted(minimum)) + " " + waiting
             self._info(waiting)
             return False
-        if old and minimum is not None and environment._key(old) < tuple(minimum):
+        if old and not environment.accepted(old):
+            from .texts import outside_range
+
+            text = outside_range(old)
+            mine = environment._environment_version(environment.lib_dir())
+            if mine and environment._key(mine) >= environment.NEWEST:  # a terrio of the plugin folder would not win
+                self._info(text + " " + t("Installa una versione accettata: pip install \"{0}\".",
+                                          "Install an accepted version: pip install \"{0}\".").format(
+                    environment.requirement()), "warning")
+                return False
+            text += "\n\n" + t("Scaricare ora terrio {0} da PyPI (circa {1} MB) nella cartella del plugin?",
+                                "Download terrio {0} from PyPI (about {1} MB) into the plugin folder now?").format(
+                environment.TERRIO_VERSION, MIB)
+        elif old and minimum is not None and environment._key(old) < tuple(minimum):
             from .texts import needs_newer
 
             text = needs_newer(feature or t("Questo passo", "This step"), old, ".".join(str(v) for v in minimum)) + \

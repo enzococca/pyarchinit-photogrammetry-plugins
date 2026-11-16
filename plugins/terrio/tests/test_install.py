@@ -432,3 +432,32 @@ def test_a_first_terrio_that_cannot_be_put_in_place_is_not_downloaded_twice(fold
     monkeypatch.setattr(Path, "rename", rename)
     assert plugin._ready() is True and _beside(folder) == ["lib"] and len(asked) == 1 and len(said) == 1
     assert environment.load().__version__ == "0.9.0"
+
+
+@pytest.mark.parametrize("found", ["0.10.0", "0.3.0"])
+def test_a_terrio_outside_the_accepted_range_is_named_with_the_range(folder, pypi, monkeypatch, found):
+    """A terrio is there but the plugin does not accept its version: the window says which version it found and
+    which it accepts (not that terrio is missing), and offers the download that can replace it."""
+    pypi.add(found)
+    environment.install(version=found)  # in the plugin folder: what the plugin downloads takes its place
+    downloads = len(pypi.asked)
+    plugin, asked, said = _window(folder, monkeypatch, answer=None)
+    assert plugin._ready() is False
+    assert len(asked) == 1 and not said and len(pypi.asked) == downloads
+    text, options = asked[0]
+    assert "non e' installato" not in text
+    assert f"terrio {found}" in text and "da 0.3.2" in text and "0.10 escluso" in text, text
+    assert "terrio 0.9.0" in text and options == ["Scarica"]
+
+
+def test_a_newer_terrio_of_the_environment_is_named_and_pip_is_said(folder, pypi, monkeypatch):
+    """The terrio of the Python environment is newer than the plugin accepts: a terrio downloaded into the plugin
+    folder would not be used (the newer one wins), so nothing is offered: the window says what pip is asked for."""
+    monkeypatch.setattr(environment, "available", lambda minimum=None: "")
+    monkeypatch.setattr(environment, "installed", lambda: "0.10.1")
+    monkeypatch.setattr(environment, "_environment_version", lambda folder=None: "0.10.1")
+    plugin, asked, said = _window(folder, monkeypatch)
+    assert plugin._ready() is False
+    assert not asked and len(pypi.asked) == 0 and len(said) == 1
+    assert "terrio 0.10.1" in said[0] and "da 0.3.2" in said[0] and "0.10 escluso" in said[0], said
+    assert "pip install" in said[0] and environment.requirement() in said[0]

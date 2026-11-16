@@ -107,11 +107,16 @@ def requirement(minimum: tuple = FEATURES_SINCE) -> str:
     return f"terrio>={dotted(minimum)},<{dotted(NEWEST)}"
 
 
+def accepted(version: str) -> bool:
+    """Whether the plugin works with terrio ``version`` (from :data:`OLDEST` up to, not including, :data:`NEWEST`)."""
+    return OLDEST <= _key(version) < NEWEST
+
+
 def _import(minimum: tuple | None = None, feature: str = ""):
     import terrio
 
     version = getattr(terrio, "__version__", "0")
-    if not (OLDEST <= _key(version) < NEWEST):
+    if not accepted(version):
         raise TerrioMissing(f"terrio {version} is installed, this plugin works with terrio from {dotted(OLDEST)} "
                             f"up to (not including) {dotted(NEWEST)} and is written for {TERRIO_VERSION}: "
                             f"pip install '{requirement()}'")

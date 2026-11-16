@@ -66,3 +66,13 @@ def needs_newer(feature: str, found: str, wanted: str) -> str:
              "terrio... lo aggiorna (oppure pip install -U \"terrio>={1},<{3}\").",
              "{0} needs terrio {1} or later, but terrio {2} is installed: Plugin > terrio > Install terrio... "
              "updates it (or pip install -U \"terrio>={1},<{3}\").").format(feature, wanted, found, dotted(NEWEST))
+
+
+def outside_range(found: str) -> str:
+    """The message of a terrio that is installed but outside the versions the plugin accepts."""
+    from .environment import NEWEST, OLDEST, TERRIO_VERSION, dotted
+
+    return t("E' installato terrio {0}, ma il plugin funziona con terrio da {1} fino a {2} escluso (ed e' scritto "
+             "per terrio {3}).",
+             "terrio {0} is installed, but the plugin works with terrio from {1} up to (not including) {2} (and is "
+             "written for terrio {3}).").format(found, dotted(OLDEST), dotted(NEWEST), TERRIO_VERSION)
