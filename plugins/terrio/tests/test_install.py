@@ -461,3 +461,43 @@ def test_a_newer_terrio_of_the_environment_is_named_and_pip_is_said(folder, pypi
     assert not asked and len(pypi.asked) == 0 and len(said) == 1
     assert "terrio 0.10.1" in said[0] and "da 0.3.2" in said[0] and "0.10 escluso" in said[0], said
     assert "pip install" in said[0] and environment.requirement() in said[0]
+
+
+@pytest.mark.parametrize("failure", [environment.TerrioMissing("no wheel of terrio 0.9.0 for this computer"),
+                                     ConnectionResetError(54, "Connection reset by peer")])
+def test_an_install_from_the_command_line_that_fails_is_a_sentence(folder, monkeypatch, capsys, failure):
+    """``ppg plugin terrio install``: a download that fails is said in one line and the command ends with 1."""
+    from ppg_terrio import TerrioPlugin
+
+    def fails(progress=None, *a, **k):
+        raise failure
+
+    monkeypatch.setattr(environment, "install", fails)
+    assert TerrioPlugin().command("install") == 1
+    out = capsys.readouterr().out
+    assert out.startswith("error: ") and str(failure) in out and "Traceback" not in out, out
+
+
+@pytest.mark.parametrize("failure", [MemoryError("the cloud needs more memory than the limit set"),
+                                     MemoryError(), PermissionError(13, "Permission denied", "nuvola.laz"),
+                                     IsADirectoryError(21, "Is a directory", "nuvola.laz")])
+def test_a_step_refused_for_memory_or_for_its_files_on_the_command_line_is_a_sentence(monkeypatch, capsys, failure):
+    """A step of the command line that terrio refuses for memory (its ResourceLimitError is a MemoryError) or for
+    a file (its TerrioIOError is an OSError): one line that says it, the command ends with 1, no traceback."""
+    import pyarchinit_photogrammetry as ppg
+    from types import SimpleNamespace
+
+    from ppg_terrio import TerrioPlugin
+
+    monkeypatch.setattr(ppg.Document, "open", staticmethod(lambda path: SimpleNamespace(chunk=object(), chunks=[])))
+    plugin = TerrioPlugin()
+
+    def fails(*a, **k):
+        raise failure
+
+    monkeypatch.setattr(plugin, "_command", fails)
+    assert plugin.command("ground", "scavo.ppg") == 1
+    out = capsys.readouterr().out
+    assert out.startswith("error: ") and str(failure) in out and "Traceback" not in out, out
+    if isinstance(failure, MemoryError):
+        assert "memoria" in out, out

@@ -898,26 +898,30 @@ class TerrioPlugin(Plugin):
                       f"{'.'.join(map(str, environment.FEATURES_SINCE))}: ppg plugin terrio install")
             print(f"grids: {environment.grids_dir()}")
             return 0 if found else 1
-        if a.what == "install":
-            print(environment.install(print_progress))
-            return 0
         if a.what == "catalogue":
             from .rasters import CATALOGUE, catalogue_label
 
             for key, entry in CATALOGUE.items():
                 print(f"{key:16} {entry['product']:12} {entry['asset']:10} {catalogue_label(key)}")
             return 0
-        import pyarchinit_photogrammetry as ppg
-
-        doc = ppg.Document.open(a.project)
-        chunk = doc.chunk if not a.chunk else next((c for c in doc.chunks if c.label == a.chunk), None)
-        if chunk is None and (a.chunk or a.what != "import"):
-            print(f"no chunk {a.chunk!r} in {a.project}" if a.chunk else f"no active chunk in {a.project}")
-            return 2
         try:
+            if a.what == "install":
+                print(environment.install(print_progress))
+                return 0
+            import pyarchinit_photogrammetry as ppg
+
+            doc = ppg.Document.open(a.project)
+            chunk = doc.chunk if not a.chunk else next((c for c in doc.chunks if c.label == a.chunk), None)
+            if chunk is None and (a.chunk or a.what != "import"):
+                print(f"no chunk {a.chunk!r} in {a.project}" if a.chunk else f"no active chunk in {a.project}")
+                return 2
             return self._command(a, doc, chunk, print_progress)
-        except (environment.TerrioMissing, RuntimeError, ValueError, KeyError, FileNotFoundError) as exc:
-            print(f"error: {exc}")
+        except MemoryError as exc:  # terrio's ResourceLimitError too
+            print("error: " + t("memoria insufficiente, o oltre un limite di terrio", "not enough memory, or over a "
+                                "limit of terrio") + (f": {exc}" if str(exc) else ""))
+            return 1
+        except (environment.TerrioMissing, RuntimeError, ValueError, KeyError, OSError) as exc:
+            print(f"error: {exc}")  # OSError: a file or the network (terrio's TerrioIOError and NotFoundError too)
             return 1
 
     def _command(self, a, doc, chunk, print_progress) -> int:
