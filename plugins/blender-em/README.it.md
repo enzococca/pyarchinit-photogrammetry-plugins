@@ -5,7 +5,7 @@
 **[Guida d'uso](https://enzococca.github.io/pyarchinit-photogrammetry/it/plugins/blender-em/)**: che cosa deve contenere il progetto, l'em.json, il progetto EM, Blender dal vivo, le camere con le foto, il ritorno da Blender, la sincronizzazione con EMtools.
 
 Plugin di [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.3.4 o successiva): i **proxy 3D delle unità stratigrafiche**, il **rilievo fotogrammetrico** e le **camere
+(2.1.0 o successiva; la 0.1.3 funziona dalla 1.3.4): i **proxy 3D delle unità stratigrafiche**, il **rilievo fotogrammetrico** e le **camere
 allineate con le loro foto** in [Blender](https://www.blender.org) e nell'Extended Matrix di
 [EMtools](https://github.com/zalmoxes-laran/EM-blender-tools), aggiornati mentre il lavoro va avanti,
 come il collegamento con QGIS tiene aggiornati i disegni; e ciò che si modella in Blender di nuovo nel
@@ -79,6 +79,19 @@ quello) e scambia la selezione (`select`). Con *Proxy in Blender* manda il coman
 EMtools ed EMStudio) e legge il `command_result`. Non manda mai modifiche al grafo: la matrice è di
 EMtools e di EMStudio. Si ricollega da solo quando Blender riparte. EMtools 1.5 non ha la
 sincronizzazione: i file, le camere, lo script dal vivo e il ritorno da Blender funzionano lo stesso.
+
+## Sul sito web
+
+Con il programma 2.1.0 o successivo, il sito web del rilievo (`ppg web build`, il pannello *Pubblica sul
+web*) colora i volumi delle US (prodotto `proxies`) secondo le epoche dell'em.json collegato al chunk, con
+una legenda e un interruttore per epoca: ogni unità va nel gruppo della sua prima epoca (`has_first_epoch`),
+con il colore che le dà l'em.json (`#rrggbb`, altrimenti uno del programma). Le epoche sono ordinate per
+inizio; uno stesso nome in due grafi (un sito diviso per saggio) resta in due gruppi, con il nome del grafo.
+Le unità senza epoca, o assenti dalla matrice, tengono i colori del programma nel gruppo *Senza gruppo*. Al
+sito vanno solo i nomi delle epoche, i loro colori e tipo, numero e area delle unità: niente della scena di
+Blender (`ppg_scene.json`, i percorsi del progetto EM, il sistema di riferimento o lo shift dell'em.json).
+Un chunk senza em.json collegato (o con uno illeggibile) si pubblica come prima; quello che EMtools manda
+dal vivo non viene usato. Con un programma più vecchio il plugin funziona come la 0.1.3.
 
 ## Uso
 
