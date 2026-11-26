@@ -94,3 +94,112 @@ def test_two_epochs_of_one_name_in_two_graphs_stay_two_groups(tmp_path):
     assert sum(n.startswith("Età romana") for n in names) == 2
     areas = sorted(u["area"] for g in c["groups"] for u in g["units"])
     assert areas == ["1", "1", "2", "2"]
+
+
+# ------------------------------------------------------------------------------------------------ in the program
+import pytest  # noqa: E402
+
+from pyarchinit_photogrammetry.plugins import Context  # noqa: E402
+
+needs_hook_3 = pytest.mark.skipif(getattr(Context, "site_hook", 0) < 3,
+                                  reason="the program has no site hook 3 (unit groups, 2.1.0)")
+
+
+def _ours():
+    from pyarchinit_photogrammetry.io import site_plugins
+
+    return [p for p in site_plugins.providers() if p[0] == "blender-em"]
+
+
+@needs_hook_3
+def test_registered_only_with_hook_3(tmp_path, monkeypatch):
+    from ppg_blender_em import BlenderEmPlugin
+
+    before = len(_ours())
+    context = Context("blender-em", tmp_path / "plugin")
+    BlenderEmPlugin().activate(context)
+    try:
+        assert len(_ours()) == before + 1
+    finally:
+        context.release()
+    assert len(_ours()) == before  # the plugin disabled: nothing of it left on the site
+    monkeypatch.setattr(Context, "site_hook", 2)
+    context = Context("blender-em", tmp_path / "plugin2")
+    BlenderEmPlugin().activate(context)
+    try:
+        assert len(_ours()) == before
+    finally:
+        context.release()
+
+
+@needs_hook_3
+def test_an_unreadable_em_json_gives_nothing(tmp_path):
+    from samples import project
+
+    from ppg_blender_em import BlenderEmPlugin
+
+    doc = project(tmp_path, model=False)
+    plugin = BlenderEmPlugin()
+    context = Context("blender-em", tmp_path / "plugin")
+    plugin.activate(context)
+    try:
+        assert plugin.site_contributions(doc.chunk, None) == []  # no em.json linked
+        other = tmp_path / "other.em.json"
+        emjson(other)
+        plugin.snapshot = em.load(other)  # what EMtools sent live is not the em.json of the chunk
+        assert plugin.site_contributions(doc.chunk, None) == []
+        bad = tmp_path / "EM" / "Scavo.em.json"
+        bad.parent.mkdir(parents=True)
+        bad.write_text("{not json", encoding="utf-8")
+        plugin._store(doc.chunk, emjson=bad)
+        assert plugin.site_contributions(doc.chunk, None) == []
+    finally:
+        context.release()
+
+
+@pytest.fixture
+def built_site(tmp_path):
+    from samples import project
+
+    from ppg_blender_em import BlenderEmPlugin
+
+    doc = project(tmp_path, model=False)
+    em_path = tmp_path / "Scavo" / "EM" / "Scavo.em.json"
+    emjson(em_path, units=[("1", "US", "1"), ("1", "USM", "2")], shift=(300000.0, 4500000.0, 0.0))
+    plugin = BlenderEmPlugin()
+    context = Context("blender-em", tmp_path / "plugin")
+    plugin.activate(context)
+    try:
+        plugin._store(doc.chunk, emjson=em_path)
+        doc.save()
+        manifest = doc.export_site(tmp_path / "site", products=("proxies", "units"))
+    finally:
+        context.release()
+    return manifest.parent, json.loads(manifest.read_text(encoding="utf-8"))
+
+
+@needs_hook_3
+def test_site_volumes_coloured_by_epoch(built_site):
+    site, manifest = built_site
+    data = json.loads((site / "data" / "proxies.json").read_text(encoding="utf-8"))
+    us1 = next(v for v in data["volumes"] if v["us"] == "1")
+    usm2 = next(v for v in data["volumes"] if v["us"] == "2")
+    us3 = next(v for v in data["volumes"] if v["us"] == "3")
+    assert (us1["group"], us1["colour"]) == ("Tardoantico", "#3366cc")
+    assert (usm2["group"], usm2["colour"]) == ("Età romana", "#cc6633")
+    assert us3["group"] is None  # not in the matrix: the program's colour, *Senza gruppo*
+    assert [(g["name"], g["count"]) for g in data["groups"]] == [("Età romana", 1), ("Tardoantico", 1), ("", 1)]
+    layer = next(x for c in manifest["chunks"] for x in c["layers"] if x["id"] == "volumes")
+    assert layer["groups"] == data["groups"]
+
+
+@needs_hook_3
+def test_nothing_of_the_blender_scene_in_the_site(built_site):
+    site, _manifest = built_site
+    words = ("blender_em", "blender-em", "ppg_scene", "em.json", "Scavo/EM", "EPSG", "300000", "4500000")
+    for f in site.rglob("*"):
+        if "vendor" not in f.relative_to(site).parts and f.is_file() and f.suffix in (".json", ".js", ".html", ".geojson", ".txt", ".csv"):
+            text = f.read_text(encoding="utf-8", errors="replace")
+            found = [w for w in words if w in text]
+            assert not found, (f.relative_to(site), found)
+    assert not (site / "data" / "plugins").exists()

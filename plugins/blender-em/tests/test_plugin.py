@@ -17,13 +17,16 @@ def test_the_plugin_in_the_program(tmp_path):
 
     manager = Manager(tmp_path / "plugins")
     manager.load()
-    info = manager.get("blender-em")
-    assert info is not None and info.active, info and info.error
-    titles = [a.title for a in manager.actions if a.plugin == "blender-em"]
-    assert titles == ["Pannello Blender ed EMtools", "Collega l'em.json del sito...", "Esporta nel progetto EM",
-                      "Apri in Blender (aggiornato dal vivo)", "Importa i proxy da Blender",
-                      "Scegli il programma Blender..."]
-    assert "blender-em" in manager.commands
+    try:
+        info = manager.get("blender-em")
+        assert info is not None and info.active, info and info.error
+        titles = [a.title for a in manager.actions if a.plugin == "blender-em"]
+        assert titles == ["Pannello Blender ed EMtools", "Collega l'em.json del sito...", "Esporta nel progetto EM",
+                          "Apri in Blender (aggiornato dal vivo)", "Importa i proxy da Blender",
+                          "Scegli il programma Blender..."]
+        assert "blender-em" in manager.commands
+    finally:
+        manager.unload()  # nothing of the plugins left registered for the next tests (the site providers)
 
 
 def test_the_version_is_the_distribution_s():
