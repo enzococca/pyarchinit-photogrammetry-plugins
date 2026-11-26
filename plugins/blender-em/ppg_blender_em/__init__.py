@@ -33,7 +33,7 @@ from pyarchinit_photogrammetry.plugins import Plugin
 
 from .texts import plural, t
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 META = "blender_em"  # chunk.meta: the em.json linked and the EM project of the chunk
 LIVE_MS = 2000  # how often the live update looks at the chunk
 
@@ -156,6 +156,9 @@ class BlenderEmPlugin(Plugin):
         context.add_command("blender-em", self.command,
                             help="the proxies and the survey into an Extended Matrix project for Blender and EMtools: "
                                  "export, open, take, status, blender")
+        hook = getattr(context, "site_hook", 1) if hasattr(context, "add_site_contributions") else 0
+        if hook >= 3:  # program 2.1.0: the epochs colour the unit volumes on the web site
+            context.add_site_contributions(self.site_contributions, with_site=True)
         if context.window is not None:
             self._install_pane()
             context.on_refresh(self.refresh_pane)
@@ -281,6 +284,22 @@ class BlenderEmPlugin(Plugin):
                 self._matrices[str(path)] = cached
             return cached[1]
         return self.snapshot
+
+    def site_contributions(self, chunk, site) -> list[dict]:
+        """The groups of the unit volumes on the web site of ``chunk``: the epochs of its em.json (names,
+        colours and unit numbers only; nothing of the Blender scene). ``[]`` without a readable em.json."""
+        from .site import unit_groups
+
+        try:
+            path = self._resolve(chunk, self.linked(chunk), "emjson")
+            if path is None or not path.exists():  # only the em.json paired with the chunk, never a live snapshot
+                return []
+            return unit_groups(self.matrix(chunk))
+        except Exception:  # the site is built without the groups
+            if self.context is not None:
+                self.context.log.exception("blender-em: the epochs of %s not given to the site",
+                                           getattr(chunk, "label", chunk))
+            return []
 
     def folders(self, chunk, ask: bool = False):
         """Where the EM project of the chunk is: from its em.json, else the folder chosen for it (asked

@@ -5,7 +5,7 @@
 **[User guide](https://enzococca.github.io/pyarchinit-photogrammetry/plugins/blender-em/)**: what the project must hold, the em.json, the EM project, Blender live, the cameras with their photos, the way back from Blender, the sync with EMtools.
 
 A plugin of [pyarchinit-photogrammetry](https://github.com/enzococca/pyarchinit-photogrammetry)
-(1.3.4 or later): the **3D proxies of the stratigraphic units**, the **photogrammetric survey** and
+(2.1.0 or later; 0.1.3 runs on 1.3.4): the **3D proxies of the stratigraphic units**, the **photogrammetric survey** and
 the **aligned cameras with their photos** in [Blender](https://www.blender.org) and in the Extended
 Matrix of [EMtools](https://github.com/zalmoxes-laran/EM-blender-tools), kept up to date while the
 work goes on, as the QGIS link keeps the drawings up to date; and what is modelled in Blender back
@@ -79,6 +79,19 @@ exchanges the selection (`select`). With *Proxy in Blender* it sends the command
 compute it) and reads the `command_result`. It never sends graph edits: the matrix belongs to EMtools
 and EMStudio. It connects again by itself when Blender restarts. EMtools 1.5 has no sync: the files,
 the cameras, the live script and the way back from Blender work the same.
+
+## On the web site
+
+With program 2.1.0 or later, a web site of the survey (`ppg web build`, the pane *Pubblica sul web*) colours
+the volumes of the units (product `proxies`) by the epochs of the em.json linked to the chunk, with a
+legend and a switch per epoch: each unit goes into the group of its first epoch (`has_first_epoch`), in
+the colour the em.json gives it (`#rrggbb`, else one of the program's). The epochs are ordered by their start;
+one name in two graphs (a site split per saggio) stays two groups, named with their graph. The units with no
+epoch, or not in the matrix, keep the program's colours in the group *Senza gruppo*. Only the names of the
+epochs, their colours and the type, number and area of the units go to the site: nothing of the Blender scene
+(`ppg_scene.json`, the paths of the EM project, the reference system or the shift of the em.json). A chunk
+with no em.json linked (or one that cannot be read) is published as before; what EMtools sent live is not
+used. On an older program the plugin works as 0.1.3 did.
 
 ## Use
 
