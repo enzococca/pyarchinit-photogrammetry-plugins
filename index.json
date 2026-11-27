@@ -24,23 +24,23 @@
     },
     {
       "name": "blender-em",
-      "version": "0.1.3",
+      "version": "0.2.0",
       "title": "Blender and EMtools",
-      "description": "The unit proxies, the survey and the cameras with their photos into an Extended Matrix project, named after the nodes of the em.json of PyArchInit or EMStudio; Blender kept up to date as the proxies change; the proxies modelled in Blender back with their volume; the selection shared live with EMtools 1.6, which starts the proxies of units without one",
+      "description": "The unit proxies, the survey and the cameras with their photos into an Extended Matrix project, named after the nodes of the em.json of PyArchInit or EMStudio; Blender kept up to date as the proxies change; the proxies modelled in Blender back with their volume; the selection shared live with EMtools 1.6, which starts the proxies of units without one; the epochs group the volumes on the web site",
       "i18n": {
         "it": {
           "title": "Blender ed EMtools",
-          "description": "I proxy delle US, il rilievo e le camere con le foto in un progetto Extended Matrix, con i nomi dei nodi dell'em.json di PyArchInit o EMStudio; Blender aggiornato dal vivo; i proxy modellati in Blender di ritorno con il volume; la selezione condivisa dal vivo con EMtools 1.6, che crea i proxy delle unità che non ne hanno"
+          "description": "I proxy delle US, il rilievo e le camere con le foto in un progetto Extended Matrix, con i nomi dei nodi dell'em.json di PyArchInit o EMStudio; Blender aggiornato dal vivo; i proxy modellati in Blender di ritorno con il volume; la selezione condivisa dal vivo con EMtools 1.6, che crea i proxy delle unità che non ne hanno; le epoche colorano i volumi delle US sul sito web"
         }
       },
       "author": "Enzo Cocca",
       "homepage": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/tree/main/plugins/blender-em",
       "license": "GPL-2.0-or-later",
       "api": 1,
-      "min_app": "1.3.4",
+      "min_app": "2.1.0",
       "requires": [],
-      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/blender-em-v0.1.3/ppg_blender_em-0.1.3-py3-none-any.whl",
-      "sha256": "7ac2e751c08461bffc2845799ddd7dc2f35d3a06a2302fdf9ae9db5832a70e2d"
+      "wheel": "https://github.com/enzococca/pyarchinit-photogrammetry-plugins/releases/download/blender-em-v0.2.0/ppg_blender_em-0.2.0-py3-none-any.whl",
+      "sha256": "574f604d404388f497b6c30eccad5d92d067a352ec7096fe1095029c5c228f2e"
     },
     {
       "name": "conservation",
