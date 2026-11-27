@@ -26,6 +26,8 @@ env:
   PPG_APP_PHOTOCAD: "pyarchinit-photogrammetry[gui,postgis]>=1.7.1"
   # flightplan needs 1.7.4 (context.add_rail_group); its tests never touch the network
   PPG_APP_FLIGHTPLAN: "pyarchinit-photogrammetry[gui,postgis]>=1.7.4"
+  # blender-em 0.2.0 needs 2.1.0 (site hook 3, unit_groups); with an older program its site tests skip
+  PPG_APP_BLENDER_EM: "pyarchinit-photogrammetry[gui,postgis]>=2.1.0"
   PPG_NO_UPDATE_CHECK: "1"
   QT_QPA_PLATFORM: offscreen
 
@@ -84,6 +86,7 @@ jobs:
           if [ "${{ matrix.plugin }}" = "plugins/shipwreck" ]; then app="$PPG_APP_SHIPWRECK"; fi
           if [ "${{ matrix.plugin }}" = "plugins/photocad" ]; then app="$PPG_APP_PHOTOCAD"; fi
           if [ "${{ matrix.plugin }}" = "plugins/flightplan" ]; then app="$PPG_APP_FLIGHTPLAN"; fi
+          if [ "${{ matrix.plugin }}" = "plugins/blender-em" ]; then app="$PPG_APP_BLENDER_EM"; fi
           python -m pip install "$app" pytest -e "${{ matrix.plugin }}" $extra
       - name: MeshLab for the tests of mesh-tools (its other tests run without it)
         if: matrix.plugin == 'plugins/mesh-tools'
