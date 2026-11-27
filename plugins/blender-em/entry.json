@@ -1,6 +1,6 @@
 {
   "title": "Blender and EMtools",
-  "description": "The unit proxies, the survey and the cameras with their photos into an Extended Matrix project, named after the nodes of the em.json of PyArchInit or EMStudio; Blender kept up to date as the proxies change; the proxies modelled in Blender back with their volume; the selection shared live with EMtools 1.6, which starts the proxies of units without one; the epochs colour the unit volumes on the web site",
+  "description": "The unit proxies, the survey and the cameras with their photos into an Extended Matrix project, named after the nodes of the em.json of PyArchInit or EMStudio; Blender kept up to date as the proxies change; the proxies modelled in Blender back with their volume; the selection shared live with EMtools 1.6, which starts the proxies of units without one; the epochs group the volumes on the web site",
   "i18n": {
     "it": {
       "title": "Blender ed EMtools",
